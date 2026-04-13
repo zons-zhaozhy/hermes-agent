@@ -942,8 +942,6 @@ Optional cheap-vs-strong routing lets Hermes keep your main model for complex wo
 ```yaml
 smart_model_routing:
   enabled: true
-  max_simple_chars: 160
-  max_simple_words: 28
   cheap_model:
     provider: openrouter
     model: google/gemini-2.5-flash
@@ -952,19 +950,28 @@ smart_model_routing:
 ```
 
 How it works:
-- If a turn is short, single-line, and does not look code/tool/debug heavy, Hermes may route it to `cheap_model`
-- If the turn looks complex, Hermes stays on your primary model/provider
+- Uses a complexity scoring system (not simple length thresholds)
+- Score > 0: complex task → use primary model
+- Score ≤ 0: simple task → use cheap model
+- Scoring signals:
+  - Complex keywords (+10): debug, implement, refactor, analyze, architecture, design, compare, review, tool, delegate, subagent, cron, docker, kubernetes, test, plan
+  - Simple keywords (-5): what/why/how/where/when/which, current/status/config/list/show/read/check/version (and Chinese equivalents)
+  - Code patterns (+15): presence of ```, ``, def, class, function, import, from
+  - URLs (+10): http/https/www
+  - Very long text (+10): >500 characters
 - If the cheap route cannot be resolved cleanly, Hermes falls back to the primary model automatically
 
 This is intentionally conservative. It is meant for quick, low-stakes turns like:
-- short factual questions
-- quick rewrites
-- lightweight summaries
+- short factual questions (what/where/when)
+- status checks or config queries
+- lightweight rewrites
 
 It will avoid routing prompts that look like:
 - coding/debugging work
+- architecture or design discussions
+- analysis, reviews, or comparisons
 - tool-heavy requests
-- long or multi-line analysis asks
+- implementation tasks
 
 Use this when you want lower latency or cost without fully changing your default model.
 

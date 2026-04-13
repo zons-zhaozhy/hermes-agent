@@ -239,8 +239,6 @@ def test_cli_turn_routing_uses_cheap_model_when_simple(monkeypatch):
     shell._smart_model_routing = {
         "enabled": True,
         "cheap_model": {"provider": "zai", "model": "glm-5-air"},
-        "max_simple_chars": 160,
-        "max_simple_words": 28,
     }
 
     result = shell._resolve_turn_agent_config("what time is it in tokyo?")

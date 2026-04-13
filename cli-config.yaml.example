@@ -102,8 +102,6 @@ model:
 #
 # smart_model_routing:
 #   enabled: true
-#   max_simple_chars: 160
-#   max_simple_words: 28
 #   cheap_model:
 #     provider: openrouter
 #     model: google/gemini-2.5-flash
