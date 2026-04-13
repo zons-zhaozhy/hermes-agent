@@ -1190,10 +1190,12 @@ async def web_extract_tool(
     Raises:
         Exception: If extraction fails or API key is not set
     """
-    # Block URLs containing embedded secrets (exfiltration prevention)
+    # Block URLs containing embedded secrets (exfiltration prevention).
+    # URL-decode first so percent-encoded secrets (%73k- = sk-) are caught.
     from agent.redact import _PREFIX_RE
+    from urllib.parse import unquote
     for _url in urls:
-        if _PREFIX_RE.search(_url):
+        if _PREFIX_RE.search(_url) or _PREFIX_RE.search(unquote(_url)):
             return json.dumps({
                 "success": False,
                 "error": "Blocked: URL contains what appears to be an API key or token. "
@@ -1466,6 +1468,10 @@ async def web_extract_tool(
             result_json = json.dumps(trimmed_response, indent=2, ensure_ascii=False)
             
             cleaned_result = clean_base64_images(result_json)
+            
+            # Filter web_extract output to reduce token waste
+            from tools.output_filter import filter_web_extract_output
+            cleaned_result = filter_web_extract_output(cleaned_result, url=safe_urls[0] if safe_urls else "")
         
         debug_call_data["final_response_size"] = len(cleaned_result)
         debug_call_data["processing_applied"].append("base64_image_removal")

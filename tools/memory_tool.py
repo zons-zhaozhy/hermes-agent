@@ -51,6 +51,15 @@ MEMORY_DIR = get_memory_dir()
 
 ENTRY_DELIMITER = "\n§\n"
 
+# Normalize for near-duplicate detection (full/half-width punctuation + whitespace)
+import unicodedata as _unicodedata
+
+def _normalize_for_dedup(s: str) -> str:
+    s = _unicodedata.normalize("NFKC", s)
+    s = re.sub(r'\s+', ' ', s)
+    s = s.replace('\uff1a', ':').replace('\uff0c', ',').replace('\u3002', '.').replace('\uff01', '!').replace('\uff1f', '?')
+    return s.lower().strip()
+
 
 # ---------------------------------------------------------------------------
 # Memory content scanning — lightweight check for injection/exfiltration
@@ -206,6 +215,14 @@ class MemoryStore:
         if scan_error:
             return {"success": False, "error": scan_error}
 
+        # Warn on overly long entries — they waste limited capacity
+        single_entry_warning = ""
+        if len(content) > 300:
+            single_entry_warning = (
+                f" ⚠️ SINGLE ENTRY {len(content)} chars (>300). "
+                f"Keep entries concise — this one takes {len(content)/self._char_limit(target)*100:.0f}% of capacity."
+            )
+
         with self._file_lock(self._path_for(target)):
             # Re-read from disk under lock to pick up writes from other sessions
             self._reload_target(target)
@@ -216,6 +233,12 @@ class MemoryStore:
             # Reject exact duplicates
             if content in entries:
                 return self._success_response(target, "Entry already exists (no duplicate added).")
+
+            # Reject near-duplicates (normalize whitespace + punctuation for comparison)
+            norm_content = _normalize_for_dedup(content)
+            for e in entries:
+                if _normalize_for_dedup(e) == norm_content:
+                    return self._success_response(target, "Near-duplicate entry exists (no change made).")
 
             # Calculate what the new total would be
             new_entries = entries + [content]
@@ -237,6 +260,20 @@ class MemoryStore:
             entries.append(content)
             self._set_entries(target, entries)
             self.save_to_disk(target)
+
+        # Hygiene warning: nudge agent to clean up when capacity is high
+        current = self._char_count(target)
+        limit = self._char_limit(target)
+        pct = (current / limit * 100) if limit > 0 else 0
+        
+        msg = "Entry added." + single_entry_warning
+        if pct > 60:
+            msg += (
+                f" ⚠️ MEMORY AT {pct:.0f}% — clean up old entries before adding more. "
+                f"Direct-edit ~/.hermes/memories/MEMORY.md for bulk cleanup."
+            )
+        if msg != "Entry added.":
+            return self._success_response(target, msg)
 
         return self._success_response(target, "Entry added.")
 
@@ -365,7 +402,11 @@ class MemoryStore:
         return resp
 
     def _render_block(self, target: str, entries: List[str]) -> str:
-        """Render a system prompt block with header and usage indicator."""
+        """Render a system prompt block with header and usage indicator.
+
+        Tiered hygiene warnings injected into system prompt so every session
+        starts with awareness of memory health — not just when writing.
+        """
         if not entries:
             return ""
 
@@ -380,7 +421,22 @@ class MemoryStore:
             header = f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]"
 
         separator = "═" * 46
-        return f"{separator}\n{header}\n{separator}\n{content}"
+        block = f"{separator}\n{header}\n{separator}\n{content}"
+
+        # Tiered hygiene warning — visible every session via system prompt
+        if target == "memory" and pct > 40:
+            if pct >= 80:
+                level = "🔴 CRITICAL"
+                action = "Clean up NOW. Remove or condense entries before adding anything new."
+            elif pct >= 60:
+                level = "🟡 WARNING"
+                action = "Consolidate verbose entries. Delete completed-task details."
+            else:
+                level = "🟢 NOTE"
+                action = "Start thinking about which entries can be condensed."
+            block += f"\n{separator}\n{level}: Memory at {pct}%. {action}"
+
+        return block
 
     @staticmethod
     def _read_file(path: Path) -> List[str]:
@@ -471,6 +527,10 @@ def memory_tool(
             return tool_error("old_text is required for 'remove' action.", success=False)
         result = store.remove(target, old_text)
 
+    elif action == "read":
+        # No-op — _success_response returns all entries and usage
+        result = store._success_response(target)
+
     else:
         return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
 
@@ -516,8 +576,8 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
-                "description": "The action to perform."
+                "enum": ["add", "replace", "remove", "read"],
+                "description": "The action to perform. 'read' returns all entries and usage without modifying anything."
             },
             "target": {
                 "type": "string",
