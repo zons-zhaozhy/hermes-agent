@@ -1157,6 +1157,15 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         if isinstance(metadata, dict):
             result["metadata"] = metadata
 
+        # Extract enforcement rules for system-level behavioral constraints
+        try:
+            from agent.skill_utils import extract_enforcement_rules
+            enforcement = extract_enforcement_rules(frontmatter)
+            if enforcement:
+                result["enforcement"] = enforcement
+        except Exception as e:
+            logger.debug("Could not extract enforcement rules for skill %s: %s", skill_name, e)
+
         return json.dumps(result, ensure_ascii=False)
 
     except Exception as e:

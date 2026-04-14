@@ -426,6 +426,77 @@ def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
     return desc
 
 
+def extract_enforcement_rules(frontmatter: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract enforcement rules from parsed frontmatter.
+
+    Enforcement rules define system-level behavioral constraints that must be
+    honored by the agent when executing a skill. The schema is::
+
+        enforcement:
+          tool_call_rhythm:
+            max_calls_per_round: 3
+            require_text_after_tools: true
+          preconditions:
+            require_plan_before_action: true
+          quality_gates:
+            - name: "认知升级三问"
+              check: "可表述 + 可反驳 + 可应用"
+          constraints:
+            max_keywords_per_dimension: 5
+            min_deep_reading_count: 1
+
+    Returns an empty dict if enforcement field is absent or malformed.
+    """
+    raw_enforcement = frontmatter.get("enforcement")
+    if not isinstance(raw_enforcement, dict):
+        return {}
+
+    # Validate and normalize enforcement structure
+    result: Dict[str, Any] = {}
+
+    # Extract tool_call_rhythm
+    tcr = raw_enforcement.get("tool_call_rhythm")
+    if isinstance(tcr, dict):
+        result["tool_call_rhythm"] = {
+            "max_calls_per_round": int(tcr.get("max_calls_per_round", 10)),
+            "require_text_after_tools": bool(tcr.get("require_text_after_tools", False)),
+        }
+
+    # Extract preconditions
+    prec = raw_enforcement.get("preconditions")
+    if isinstance(prec, dict):
+        result["preconditions"] = {
+            "require_plan_before_action": bool(prec.get("require_plan_before_action", False)),
+        }
+
+    # Extract quality_gates
+    qg = raw_enforcement.get("quality_gates")
+    if isinstance(qg, list):
+        result["quality_gates"] = []
+        for gate in qg:
+            if isinstance(gate, dict):
+                name = gate.get("name", "")
+                check = gate.get("check", "")
+                if name and check:
+                    result["quality_gates"].append({
+                        "name": str(name),
+                        "check": str(check),
+                    })
+
+    # Extract constraints
+    cons = raw_enforcement.get("constraints")
+    if isinstance(cons, dict):
+        result["constraints"] = {}
+        if "max_keywords_per_dimension" in cons:
+            result["constraints"]["max_keywords_per_dimension"] = int(cons["max_keywords_per_dimension"])
+        if "min_deep_reading_count" in cons:
+            result["constraints"]["min_deep_reading_count"] = int(cons["min_deep_reading_count"])
+        if "require_arxiv_html" in cons:
+            result["constraints"]["require_arxiv_html"] = bool(cons["require_arxiv_html"])
+
+    return result
+
+
 # ── File iteration ────────────────────────────────────────────────────────
 
 
