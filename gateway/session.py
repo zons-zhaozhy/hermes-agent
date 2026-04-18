@@ -441,6 +441,7 @@ def build_session_key(
     source: SessionSource,
     group_sessions_per_user: bool = True,
     thread_sessions_per_user: bool = False,
+    profile: str = "main",
 ) -> str:
     """Build a deterministic session key from a message source.
 
@@ -465,18 +466,19 @@ def build_session_key(
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
+    agent_prefix = f"agent:{profile}"
     platform = source.platform.value
     if source.chat_type == "dm":
         if source.chat_id:
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{source.chat_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{source.chat_id}"
+                return f"{agent_prefix}:{platform}:dm:{source.chat_id}:{source.thread_id}"
+            return f"{agent_prefix}:{platform}:dm:{source.chat_id}"
         if source.thread_id:
-            return f"agent:main:{platform}:dm:{source.thread_id}"
-        return f"agent:main:{platform}:dm"
+            return f"{agent_prefix}:{platform}:dm:{source.thread_id}"
+        return f"{agent_prefix}:{platform}:dm"
 
     participant_id = source.user_id_alt or source.user_id
-    key_parts = ["agent:main", platform, source.chat_type]
+    key_parts = [agent_prefix, platform, source.chat_type]
 
     if source.chat_id:
         key_parts.append(source.chat_id)
@@ -494,6 +496,25 @@ def build_session_key(
         key_parts.append(str(participant_id))
 
     return ":".join(key_parts)
+
+
+def get_active_profile() -> str:
+    """Get the active profile name for session key isolation.
+
+    Returns the profile name when using a non-default profile
+    (i.e. HERMES_HOME points to ~/.hermes/profiles/<name>).
+    Returns "main" for the default profile to preserve backward-compatible
+    session keys (agent:main:*).
+    """
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        name = get_active_profile_name()
+        # "default" means standard ~/.hermes — keep "main" for backward compat
+        if name and name != "default":
+            return name
+    except Exception:
+        pass
+    return "main"
 
 
 class SessionStore:
@@ -578,6 +599,7 @@ class SessionStore:
             source,
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            profile=get_active_profile(),
         )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:

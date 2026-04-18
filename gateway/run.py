@@ -901,10 +901,13 @@ class GatewayRunner:
             except Exception:
                 pass
         config = getattr(self, "config", None)
+        from .session import get_active_profile
+        profile = get_active_profile()
         return build_session_key(
             source,
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+            profile=profile,
         )
 
     def _resolve_session_agent_runtime(
