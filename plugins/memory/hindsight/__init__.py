@@ -1095,6 +1095,14 @@ class HindsightMemoryProvider(MemoryProvider):
         if session_id:
             self._session_id = str(session_id).strip()
 
+        # Per-platform retain gate: skip retain for platforms that can't
+        # provide reliable user isolation (e.g. iLink WeChat where all
+        # messages share the same from_user_id).
+        _disabled = getattr(self, '_retain_disabled_platforms', ('weixin',))
+        if getattr(self, '_platform', '') in _disabled:
+            logger.debug("sync_turn: skipped (platform %s in disabled list)", self._platform)
+            return
+
         turn = json.dumps(self._build_turn_messages(user_content, assistant_content), ensure_ascii=False)
         self._session_turns.append(turn)
         self._turn_counter += 1
