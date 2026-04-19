@@ -1237,9 +1237,13 @@ class TestMatrixUploadAndSend:
         mock_client.send_message_event = AsyncMock(return_value="$event")
         adapter._client = mock_client
 
-        result = await adapter._upload_and_send(
-            "!room:example.org", b"secret", "secret.txt", "text/plain", "m.file",
-        )
+        # Provide fake mautrix.crypto.attachments so the runtime import
+        # inside _upload_and_send succeeds without the real SDK installed.
+        fake_mautrix = _make_fake_mautrix()
+        with patch.dict("sys.modules", fake_mautrix, clear=False):
+            result = await adapter._upload_and_send(
+                "!room:example.org", b"secret", "secret.txt", "text/plain", "m.file",
+            )
 
         assert result.success is True
         # Should have uploaded ciphertext, not plaintext

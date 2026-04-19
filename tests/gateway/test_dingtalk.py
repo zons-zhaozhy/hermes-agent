@@ -605,7 +605,23 @@ class TestIncomingHandlerProcess:
             "msgId": "msg-001",
         }
 
-        result = await handler.process(callback)
+        # Mock ChatbotMessage.from_dict so the test works without the SDK
+        fake_msg = MagicMock()
+        fake_msg.session_webhook = "https://oapi.dingtalk.com/robot/sendBySession?session=abc"
+        fake_msg.is_in_at_list = False
+        fake_msg.is_admin = False
+        fake_msg.sender_nick = ""
+        fake_msg.conversation_type = "1"
+        fake_msg.conversation_id = "conv1"
+        fake_msg.sender_id = "user1"
+        fake_msg.create_at = ""
+        fake_msg.at_users = []
+        fake_msg.chatbot_user_id = ""
+
+        with patch("gateway.platforms.dingtalk.ChatbotMessage") as MockChatbotMsg:
+            MockChatbotMsg.from_dict.return_value = fake_msg
+            result = await handler.process(callback)
+
         # Should return ACK immediately (STATUS_OK = 200)
         assert result[0] == 200
 
@@ -639,7 +655,23 @@ class TestIncomingHandlerProcess:
             "msgId": "msg-002",
         }
 
-        await handler.process(callback)
+        # Mock ChatbotMessage.from_dict — simulate SDK version that
+        # does NOT map session_webhook, so the fallback logic kicks in.
+        fake_msg = MagicMock()
+        fake_msg.session_webhook = ""  # from_dict misses it
+        fake_msg.is_in_at_list = False
+        fake_msg.is_admin = False
+        fake_msg.sender_nick = ""
+        fake_msg.conversation_type = "1"
+        fake_msg.conversation_id = "conv2"
+        fake_msg.sender_id = "user2"
+        fake_msg.create_at = ""
+        fake_msg.at_users = []
+        fake_msg.chatbot_user_id = ""
+
+        with patch("gateway.platforms.dingtalk.ChatbotMessage") as MockChatbotMsg:
+            MockChatbotMsg.from_dict.return_value = fake_msg
+            await handler.process(callback)
         await asyncio.sleep(0.05)
 
         adapter._on_message.assert_called_once()
@@ -673,8 +705,24 @@ class TestIncomingHandlerProcess:
             "msgId": "m",
         }
 
-        # process() should return immediately even though _on_message blocks
-        result = await handler.process(callback)
+        # Mock ChatbotMessage.from_dict so the test works without the SDK
+        fake_msg = MagicMock()
+        fake_msg.session_webhook = "https://oapi.dingtalk.com/x"
+        fake_msg.is_in_at_list = False
+        fake_msg.is_admin = False
+        fake_msg.sender_nick = ""
+        fake_msg.conversation_type = "1"
+        fake_msg.conversation_id = "c"
+        fake_msg.sender_id = "u"
+        fake_msg.create_at = ""
+        fake_msg.at_users = []
+        fake_msg.chatbot_user_id = ""
+        fake_msg.message_id = "m"
+
+        with patch("gateway.platforms.dingtalk.ChatbotMessage") as MockChatbotMsg:
+            MockChatbotMsg.from_dict.return_value = fake_msg
+            # process() should return immediately even though _on_message blocks
+            result = await handler.process(callback)
         assert result[0] == 200
 
         # Clean up: release the gate so the background task finishes
