@@ -1302,6 +1302,11 @@ class _IncomingHandler(
                 data = json.loads(data)
 
             # Parse dict into ChatbotMessage using SDK's from_dict
+            if ChatbotMessage is None:
+                raise RuntimeError(
+                    "dingtalk-stream SDK is not installed. "
+                    "Install it with: pip install dingtalk-stream"
+                )
             chatbot_msg = ChatbotMessage.from_dict(data)
 
             # Ensure session_webhook is populated even if the SDK's
