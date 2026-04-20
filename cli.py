@@ -1726,10 +1726,14 @@ class HermesCLI:
         # Inline diff previews for write actions (display.inline_diffs in config.yaml)
         self._inline_diffs_enabled = CLI_CONFIG["display"].get("inline_diffs", True)
 
+        # show_timestamp: display HH:MM timestamp in response box header and history recap
+        self._show_timestamp = CLI_CONFIG["display"].get("show_timestamp", True)
+
         # Streaming display state
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
         self._stream_started = False  # True once first delta arrives
         self._stream_box_opened = False  # True once the response box header is printed
+        self._stream_start_time = None  # Timestamp when the response box was opened
         self._reasoning_preview_buf = ""  # Coalesce tiny reasoning chunks for [thinking] output
         self._pending_edit_snapshots = {}
         
@@ -2686,8 +2690,17 @@ class HermesCLI:
             except (ValueError, IndexError):
                 self._stream_text_ansi = ""
             w = shutil.get_terminal_size().columns
-            fill = w - 2 - len(label)
-            _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+            # Append start timestamp if enabled (dim, inside the box header)
+            _ts_str = ""
+            _ts_visible_len = 0
+            if self._show_timestamp:
+                from datetime import datetime as _dt
+                self._stream_start_time = _dt.now()
+                _ts_visible = self._stream_start_time.strftime('%H:%M:%S')
+                _ts_str = f" \033[2m{_ts_visible}\033[0m{_ACCENT} "
+                _ts_visible_len = len(_ts_visible) + 2  # +1 leading space, +1 trailing space
+            fill = w - 2 - len(label) - _ts_visible_len
+            _cprint(f"\n{_ACCENT}╭─{label}{_ts_str}{'─' * max(fill - 1, 0)}╮{_RST}")
 
         self._stream_buf += text
 
@@ -2718,7 +2731,22 @@ class HermesCLI:
         # Close the response box
         if self._stream_box_opened:
             w = shutil.get_terminal_size().columns
-            _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
+            # Build footer with end time + duration if timestamp enabled
+            _footer_str = ""
+            _footer_visible_len = 0
+            if self._show_timestamp and self._stream_start_time:
+                from datetime import datetime as _dt
+                _end_time = _dt.now()
+                _elapsed = (_end_time - self._stream_start_time).total_seconds()
+                if _elapsed >= 60:
+                    _dur = f"{int(_elapsed // 60)}m{int(_elapsed % 60):02d}s"
+                else:
+                    _dur = f"{_elapsed:.1f}s"
+                _footer_visible = f" {_end_time.strftime('%H:%M:%S')} · {_dur} "
+                _footer_str = f" \033[2m{_footer_visible}\033[0m{_ACCENT}"
+                _footer_visible_len = len(_footer_visible) + 1
+            fill = w - 2 - _footer_visible_len
+            _cprint(f"{_ACCENT}╰{'─' * max(fill, 0)}{_footer_str}{'─' * max(0, w - 2 - fill - _footer_visible_len)}╯{_RST}")
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
@@ -2731,6 +2759,7 @@ class HermesCLI:
         self._stream_last_was_newline = True
         self._reasoning_box_opened = False
         self._reasoning_buf = ""
+        self._stream_start_time = None
         self._reasoning_preview_buf = ""
         self._deferred_content = ""
 
@@ -3345,9 +3374,12 @@ class HermesCLI:
             if i < len(entries) - 1:
                 lines.append("")  # small gap
 
+        panel_title = f"[dim {_session_label_c}]Previous Conversation[/]"
+        if self._show_timestamp and self.session_start:
+            panel_title = f"[dim {_session_label_c}]Previous Conversation ({self.session_start.strftime('%H:%M')})[/]"
         panel = Panel(
             lines,
-            title=f"[dim {_session_label_c}]Previous Conversation[/]",
+            title=panel_title,
             border_style=f"dim {_session_border_c}",
             padding=(0, 1),
             style=_history_text_c,
@@ -8002,16 +8034,26 @@ class HermesCLI:
             if use_streaming_tts:
                 text_queue = queue.Queue()
                 stop_event = threading.Event()
+                _tts_start_time = None  # Track TTS start time for footer
 
                 def display_callback(sentence: str):
                     """Called by TTS consumer when a sentence is ready to display + speak."""
-                    nonlocal _streaming_box_opened
+                    nonlocal _streaming_box_opened, _tts_start_time
                     if not _streaming_box_opened:
                         _streaming_box_opened = True
                         w = self.console.width
                         label = " ⚕ Hermes "
-                        fill = w - 2 - len(label)
-                        _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+                        # Append start timestamp if enabled
+                        _ts_str = ""
+                        _ts_visible_len = 0
+                        if self._show_timestamp:
+                            from datetime import datetime as _dt
+                            _tts_start_time = _dt.now()
+                            _ts_visible = _tts_start_time.strftime('%H:%M:%S')
+                            _ts_str = f" \033[2m{_ts_visible}\033[0m{_ACCENT} "
+                            _ts_visible_len = len(_ts_visible) + 2  # +1 leading space, +1 trailing space
+                        fill = w - 2 - len(label) - _ts_visible_len
+                        _cprint(f"\n{_ACCENT}╭─{label}{_ts_str}{'─' * max(fill - 1, 0)}╮{_RST}")
                     _cprint(f"{_STREAM_PAD}{sentence.rstrip()}")
 
                 tts_thread = threading.Thread(
@@ -8255,7 +8297,21 @@ class HermesCLI:
                 if use_streaming_tts and _streaming_box_opened and not is_error_response:
                     # Text was already printed sentence-by-sentence; just close the box
                     w = shutil.get_terminal_size().columns
-                    _cprint(f"\n{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
+                    _footer_str = ""
+                    _footer_visible_len = 0
+                    if self._show_timestamp and _tts_start_time:
+                        from datetime import datetime as _dt
+                        _end_time = _dt.now()
+                        _elapsed = (_end_time - _tts_start_time).total_seconds()
+                        if _elapsed >= 60:
+                            _dur = f"{int(_elapsed // 60)}m{int(_elapsed % 60):02d}s"
+                        else:
+                            _dur = f"{_elapsed:.1f}s"
+                        _footer_visible = f" {_end_time.strftime('%H:%M:%S')} · {_dur} "
+                        _footer_str = f" \033[2m{_footer_visible}\033[0m{_ACCENT}"
+                        _footer_visible_len = len(_footer_visible) + 1
+                    fill = w - 2 - _footer_visible_len
+                    _cprint(f"\n{_ACCENT}╰{'─' * max(fill, 0)}{_footer_str}{'─' * max(0, w - 2 - fill - _footer_visible_len)}╯{_RST}")
                 elif already_streamed:
                     # Response was already streamed token-by-token with box framing;
                     # _flush_stream() already closed the box. Skip Rich Panel.
