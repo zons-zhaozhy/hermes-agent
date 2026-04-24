@@ -1559,7 +1559,37 @@ class AIAgent:
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
 
-        # Read optional explicit context_length override for the auxiliary
+        # Progressive tool-result compression: ephemeral per-call optimization.
+        # See _progressive_tool_result_compress docstring for relationship to
+        # ContextCompressor and design rationale.
+        _prog_cfg = _compression_cfg.get("progressive", {})
+        if not isinstance(_prog_cfg, dict):
+            _prog_cfg = {}
+        # Default to parent compression.enabled so users who opt out of
+        # compression entirely are not silently opted into progressive.
+        _prog_default = compression_enabled
+        _prog_bool = str(
+            _prog_cfg.get("enabled", _prog_default),
+        ).lower() in ("true", "1", "yes")
+        self._progressive_compress_enabled = _prog_bool
+        # recent_tool_keep defaults to parent protect_last_n so progressive
+        # and full compression respect the same "how much recent context to
+        # preserve" intent.  Users who want different values can override.
+        self._progressive_recent_keep = int(
+            _prog_cfg.get("recent_tool_keep", compression_protect_last),
+        )
+        # min_messages: don't activate progressive compression in short
+        # conversations where overhead outweighs savings.
+        self._progressive_min_messages = int(
+            _prog_cfg.get("min_messages", 16),
+        )
+        # max_compressed_len: skip compressing results shorter than this
+        # because the summary would be roughly the same length.
+        self._progressive_max_len = int(
+            _prog_cfg.get("max_compressed_len", 300),
+        )
+
+         # Read optional explicit context_length override for the auxiliary
         # compression model. Custom endpoints often cannot report this via
         # /models, so the startup feasibility check needs the config hint.
         try:
@@ -1641,7 +1671,7 @@ class AIAgent:
                                         file=sys.stderr,
                                     )
                     break
-        
+
         # Select context engine: config-driven (like memory providers).
         # 1. Check config.yaml context.engine setting
         # 2. Check plugins/context_engine/<name>/ directory (repo-shipped)
@@ -4221,6 +4251,154 @@ class AIAgent:
         return getattr(tc, "id", "") or ""
 
     _VALID_API_ROLES = frozenset({"system", "user", "assistant", "tool", "function", "developer"})
+
+    # ── Progressive tool-result compression ──────────────────────────
+    #
+    # This is an EPHEMERAL, per-API-call optimization that complements the
+    # persistent ContextCompressor (agent/context_compressor.py).
+    #
+    # Relationship to the existing compression system:
+    #   - ContextCompressor: persistent, triggered at a token-threshold, SUMMARIZES
+    #     conversation history via LLM. It mutates self.messages and is irreversible.
+    #   - Progressive tool-result compress: ephemeral, triggered on every API call,
+    #     COMPRESSES individual tool results to one-line summaries. It operates on
+    #     the API copy (api_messages) only; self.messages is never touched.
+    #
+    # The two are orthogonal: progressive compression runs BEFORE the API call to
+    # reduce token waste, while ContextCompressor runs AFTER a 413/overflow to
+    # permanently shrink history. Progressive compression can delay the need for
+    # a full ContextCompressor trigger by keeping token usage lower.
+    #
+    # Configuration: all thresholds are read from config.yaml under
+    #   compression.progressive:
+    #     enabled: true           # Master switch (defaults to compression.enabled)
+    #     recent_tool_keep: 20    # Keep last N tool results intact (defaults to protect_last_n)
+    #     min_messages: 16        # Only activate when > N total messages
+    #     max_compressed_len: 300 # Don't compress results shorter than this
+    #
+
+    @staticmethod
+    def _progressive_tool_result_compress(
+        api_messages: List[Dict[str, Any]],
+        *,
+        enabled: bool = True,
+        recent_tool_keep: int = -1,  # -1 = defer to config (protect_last_n)
+        min_messages: int = 16,
+        max_compressed_len: int = 300,
+    ) -> List[Dict[str, Any]]:
+        """Compress old tool results to one-line summaries for token efficiency.
+
+        In long conversations, old tool results (file contents, command outputs,
+        search results) consume thousands of tokens that the model no longer needs
+        verbatim. The model only needs to remember: WHAT tool was called, and
+        the OUTCOME (success/failure + key result).
+
+        Strategy:
+        - Identify all role="tool" messages and record their positions.
+        - Keep the last ``recent_tool_keep`` tool results untouched (recent context).
+        - For older tool results, replace their content with a compact summary:
+          "[tool_name] status/length summary" instead of full output.
+
+        This runs on the API copy (api_messages), so the original conversation
+        history in self.messages is untouched — compression is ephemeral per call.
+        """
+        if not enabled:
+            return api_messages
+
+        # Sentinel: -1 means "caller didn't specify", use a reasonable default.
+        if recent_tool_keep < 0:
+            recent_tool_keep = 20
+
+        total = len(api_messages)
+
+        # Only compress in long conversations
+        if total <= min_messages:
+            return api_messages
+
+        # Collect positions of all tool messages
+        tool_positions = []
+        for i, msg in enumerate(api_messages):
+            if msg.get("role") == "tool":
+                tool_positions.append(i)
+
+        tool_count = len(tool_positions)
+        # Not enough tools to bother compressing
+        if tool_count <= recent_tool_keep:
+            return api_messages
+
+        # Identify which tool messages to compress (all except the last N).
+        # Note: tool_positions[:-0] is [] (Python slice gotcha), so handle 0 explicitly.
+        if recent_tool_keep > 0:
+            compress_positions = set(tool_positions[:-recent_tool_keep])
+        else:
+            compress_positions = set(tool_positions)
+
+        if not compress_positions:
+            return api_messages
+
+        # Build a shallow copy of compressible tool messages so we don't mutate
+        # the caller's list. The API pipeline passes api_messages which is already
+        # a copy of self.messages, but defensive copying is safer for unit tests
+        # and any future call sites.
+        api_messages = list(api_messages)
+
+        # Build a lookup: tool_call_id → tool_name from assistant messages
+        tool_id_to_name = {}
+        for msg in api_messages:
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    if isinstance(tc, dict):
+                        tool_id_to_name[tc.get("id", "")] = tc.get("function", {}).get("name", "unknown")
+                    elif hasattr(tc, "id"):
+                        tool_id_to_name[str(tc.id)] = getattr(tc, "function", type('obj', (), {'name': 'unknown'})()).name
+
+        # Compress old tool results
+        for i in compress_positions:
+            if i >= len(api_messages):
+                continue
+            msg = api_messages[i]
+            content = msg.get("content", "")
+            if not content or not isinstance(content, str):
+                continue
+
+            # Already short enough — skip
+            if len(content) <= max_compressed_len:
+                continue
+
+            # Derive tool name
+            tc_id = msg.get("tool_call_id", "")
+            tool_name = tool_id_to_name.get(tc_id, "tool")
+
+            # Build compact summary: first line + last line + char count
+            lines = content.split("\n")
+            first_line = lines[0].strip()[:120] if lines else ""
+            last_line = ""
+            for line in reversed(lines):
+                stripped = line.strip()
+                if stripped:
+                    last_line = stripped[:120]
+                    break
+
+            # Detect common outcome patterns
+            outcome = "done"
+            lower_content = content.lower()
+            if any(kw in lower_content for kw in ["error", "failed", "exception", "traceback", "❌"]):
+                outcome = "ERROR"
+            elif any(kw in lower_content for kw in ["success", "✅", "ok", "passed"]):
+                outcome = "OK"
+            elif "exit_code" in lower_content:
+                ec_match = re.search(r"exit[_\s]?code[:\s]*(\d+)", lower_content)
+                outcome = f"exit={ec_match.group(1)}" if ec_match else "done"
+
+            summary = f"[{tool_name}] {outcome} ({len(content)} chars)"
+            if first_line:
+                summary += f" | {first_line}"
+            if last_line and last_line != first_line:
+                summary += f" → {last_line}"
+
+            api_messages[i] = {**msg, "content": summary}
+
+        return api_messages
 
     @staticmethod
     def _sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -9165,6 +9343,19 @@ class AIAgent:
                 sys_offset = 1 if effective_system else 0
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
+
+            # ── Progressive tool-result compression ──────────────────────
+            # Ephemeral per-call optimization: compress old tool results to
+            # one-line summaries while preserving recent context intact.
+            # Complements ContextCompressor (persistent, threshold-triggered).
+            # Controlled by compression.progressive in config.yaml.
+            api_messages = self._progressive_tool_result_compress(
+                api_messages,
+                enabled=self._progressive_compress_enabled,
+                recent_tool_keep=self._progressive_recent_keep,
+                min_messages=self._progressive_min_messages,
+                max_compressed_len=self._progressive_max_len,
+            )
 
             # Apply Anthropic prompt caching for Claude models on native
             # Anthropic, OpenRouter, and third-party Anthropic-compatible
