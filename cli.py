@@ -5359,6 +5359,16 @@ class HermesCLI:
                     base_url=result.base_url,
                     api_mode=result.api_mode,
                 )
+                # Keep signature in sync so the next turn doesn't
+                # destroy and rebuild the agent (#15250 class of bugs).
+                self._active_agent_route_signature = (
+                    result.new_model,
+                    result.target_provider,
+                    result.base_url or "",
+                    result.api_mode or "",
+                    getattr(self, "acp_command", ""),
+                    tuple(getattr(self, "acp_args", None) or ()),
+                )
             except Exception as exc:
                 _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
 

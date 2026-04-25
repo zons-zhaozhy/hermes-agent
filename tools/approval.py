@@ -441,6 +441,23 @@ def prompt_dangerous_approval(command: str, description: str,
             logger.error("Approval callback failed: %s", e, exc_info=True)
             return "deny"
 
+    # No callback registered.  In the CLI, the approval callback is stored
+    # in a threading.local() (tools/terminal_tool._callback_tls).  When a
+    # delegate subagent runs inside a ThreadPoolExecutor worker, that
+    # thread-local slot is empty so _get_approval_callback() returns None.
+    # Calling input() from a non-main thread would deadlock because:
+    #   - prompt_toolkit owns stdin exclusively on the main thread
+    #   - multiple subagent threads racing input() corrupt the terminal
+    #   - HERMES_SPINNER_PAUSE is clobbered by concurrent set/del
+    if threading.current_thread() is not threading.main_thread():
+        logger.warning(
+            "Approval requested in non-main thread %s — cannot prompt, "
+            "denying dangerous command: %s",
+            threading.current_thread().name,
+            command[:120],
+        )
+        return "deny"
+
     os.environ["HERMES_SPINNER_PAUSE"] = "1"
     try:
         while True:

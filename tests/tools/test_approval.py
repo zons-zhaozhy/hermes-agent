@@ -906,3 +906,79 @@ class TestChmodExecuteCombo:
         cmd = "chmod +x script.sh"
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
+
+
+# ── Non-main thread deadlock prevention ──────────────────────────────
+
+
+class TestNonMainThreadApprovalDeadlock:
+    """prompt_dangerous_approval must never call input() from a non-main
+    thread — it deadlocks because prompt_toolkit owns stdin exclusively
+    on the main thread.
+
+    Regression: delegate subagents run in ThreadPoolExecutor workers;
+    threading.local() doesn't inherit the approval callback, so
+    _get_approval_callback() returns None.  Without the guard, the code
+    fell through to input() and deadlocked.
+    """
+
+    def test_main_thread_without_callback_hits_input(self):
+        """On the main thread with no callback, input() IS reachable
+        (the function should prompt the user normally).  We mock input()
+        to avoid actually blocking the test runner."""
+        with mock_patch("builtins.input", return_value="1"):
+            with mock_patch("tools.approval._get_approval_timeout", return_value=5):
+                result = prompt_dangerous_approval(
+                    "rm -rf /tmp/test", "recursive delete",
+                    approval_callback=None,
+                )
+        assert result in ("once", "session", "always", "deny")
+
+    def test_non_main_thread_without_callback_denies(self):
+        """On a non-main thread with no callback, must deny immediately
+        without calling input() — otherwise deadlock."""
+        import concurrent.futures
+
+        def _run_in_worker():
+            return prompt_dangerous_approval(
+                "rm -rf /tmp/test", "recursive delete",
+                approval_callback=None,
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_run_in_worker)
+            result = future.result(timeout=5)
+
+        assert result == "deny"
+
+    def test_non_main_thread_with_callback_uses_callback(self):
+        """On a non-main thread WITH a callback, the callback should be
+        used (the thread check only applies when callback is None)."""
+        import concurrent.futures
+
+        def _callback(cmd, desc, *, allow_permanent=True):
+            return "session"
+
+        def _run_in_worker():
+            return prompt_dangerous_approval(
+                "rm -rf /tmp/test", "recursive delete",
+                approval_callback=_callback,
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_run_in_worker)
+            result = future.result(timeout=5)
+
+        assert result == "session"
+
+    def test_main_thread_with_callback_uses_callback(self):
+        """On the main thread with a callback, callback takes priority."""
+
+        def _callback(cmd, desc, *, allow_permanent=True):
+            return "always"
+
+        result = prompt_dangerous_approval(
+            "rm -rf /tmp/test", "recursive delete",
+            approval_callback=_callback,
+        )
+        assert result == "always"
