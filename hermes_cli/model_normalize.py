@@ -114,33 +114,48 @@ _DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
     "cot",
 })
 
-_DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
-    "deepseek-chat",
-    "deepseek-reasoner",
-})
+# Models that the user can reference directly — any model name starting with
+# ``deepseek-`` is accepted verbatim (passthrough).  The set below is only used
+# for *alias* resolution (e.g. "v3" -> "deepseek-chat").
+_DEEPSEEK_PASSTHROUGH_PREFIXES: tuple[str, ...] = ("deepseek-",)
+
+# Legacy aliases that map to specific model IDs.
+# Only short forms (without ``deepseek-`` prefix) go here — names starting
+# with ``deepseek-`` are always passed through verbatim.
+_DEEPSEEK_ALIASES: dict[str, str] = {
+    "v3": "deepseek-chat",
+    "r1": "deepseek-reasoner",
+}
 
 
 def _normalize_for_deepseek(model_name: str) -> str:
-    """Map any model input to one of DeepSeek's two accepted identifiers.
+    """Normalize a DeepSeek model name.
 
-    Rules:
-    - Already ``deepseek-chat`` or ``deepseek-reasoner`` -> pass through.
-    - Contains any reasoner keyword (r1, think, reasoning, cot, reasoner)
-      -> ``deepseek-reasoner``.
-    - Everything else -> ``deepseek-chat``.
+    Rules (applied in order):
+    1. If the bare name starts with ``deepseek-``, return it unchanged
+       (passthrough).  This covers current and future models like
+       ``deepseek-v4-pro``, ``deepseek-v4-flash``, etc.
+    2. If it matches a known alias (e.g. ``v3``, ``r1``), resolve it.
+    3. If it contains a reasoner keyword, map to ``deepseek-reasoner``.
+    4. Otherwise, fall back to ``deepseek-chat`` for backward compatibility.
 
     Args:
         model_name: The bare model name (vendor prefix already stripped).
 
     Returns:
-        One of ``"deepseek-chat"`` or ``"deepseek-reasoner"``.
+        A DeepSeek model identifier suitable for the API ``model`` parameter.
     """
     bare = _strip_vendor_prefix(model_name).lower()
 
-    if bare in _DEEPSEEK_CANONICAL_MODELS:
+    # Passthrough: any name that already looks like a DeepSeek model ID.
+    if bare.startswith(_DEEPSEEK_PASSTHROUGH_PREFIXES):
         return bare
 
-    # Check for reasoner-like keywords anywhere in the name
+    # Alias resolution.
+    if bare in _DEEPSEEK_ALIASES:
+        return _DEEPSEEK_ALIASES[bare]
+
+    # Check for reasoner-like keywords anywhere in the name.
     for keyword in _DEEPSEEK_REASONER_KEYWORDS:
         if keyword in bare:
             return "deepseek-reasoner"

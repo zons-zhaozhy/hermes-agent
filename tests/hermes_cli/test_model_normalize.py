@@ -191,3 +191,60 @@ class TestDetectVendor:
     ])
     def test_detects_known_vendors(self, model, expected):
         assert detect_vendor(model) == expected
+
+
+# ── DeepSeek V4 model normalization ──────────────────────────────────
+
+class TestDeepSeekModelNormalization:
+    """DeepSeek V4+ models must passthrough; legacy aliases still work.
+
+    Regression: before the fix, all non-chat/reasoner names were forced to
+    ``deepseek-chat``, making V4 models unusable.
+    """
+
+    # --- Passthrough: current and future ``deepseek-*`` models ---
+
+    @pytest.mark.parametrize("model", [
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "deepseek-chat",
+        "deepseek-reasoner",
+        "deepseek-v5-ultra",       # future-proof
+        "deepseek-r1",
+    ])
+    def test_deepseek_prefix_passthrough(self, model):
+        result = normalize_model_for_provider(model, "deepseek")
+        assert result == model
+
+    # --- Legacy short aliases ---
+
+    @pytest.mark.parametrize("alias,canonical", [
+        ("v3", "deepseek-chat"),
+        ("r1", "deepseek-reasoner"),
+    ])
+    def test_short_alias_resolution(self, alias, canonical):
+        assert normalize_model_for_provider(alias, "deepseek") == canonical
+
+    # --- Reasoner keyword detection (no deepseek- prefix) ---
+
+    @pytest.mark.parametrize("model", [
+        "thinker",
+        "cot-model",
+        "reasoning-v2",
+    ])
+    def test_reasoner_keyword_mapping(self, model):
+        assert normalize_model_for_provider(model, "deepseek") == "deepseek-reasoner"
+
+    # --- Unknown fallback ---
+
+    def test_unknown_falls_back_to_chat(self):
+        assert normalize_model_for_provider("something-weird", "deepseek") == "deepseek-chat"
+
+    # --- Vendor prefix stripping then passthrough ---
+
+    @pytest.mark.parametrize("model,expected", [
+        ("deepseek/deepseek-v4-pro", "deepseek-v4-pro"),
+        ("deepseek/deepseek-v4-flash", "deepseek-v4-flash"),
+    ])
+    def test_vendor_prefix_stripped_then_passthrough(self, model, expected):
+        assert normalize_model_for_provider(model, "deepseek") == expected
