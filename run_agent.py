@@ -1773,8 +1773,15 @@ class AIAgent:
             "Progressive compression initialized: enabled=%s, recent_tool_keep=%s, min_messages=%s, max_compressed_len=%s",
             _prog_bool, self._progressive_recent_keep, self._progressive_min_messages, self._progressive_max_len,
         )
+        # max_single_size: compress any single tool result exceeding this
+        # size, regardless of its position. Catches git diff, build logs,
+        # and other large outputs that would otherwise eat recent-priority
+        # slots. 0 = disable.
+        self._progressive_max_single_size = int(
+            _prog_cfg.get("max_single_size", 5000),
+        )
 
-         # Read optional explicit context_length override for the auxiliary
+        # Read optional explicit context_length override for the auxiliary
         # compression model. Custom endpoints often cannot report this via
         # /models, so the startup feasibility check needs the config hint.
         try:
@@ -4677,6 +4684,7 @@ class AIAgent:
         recent_tool_keep: int = -1,  # -1 = defer to config (protect_last_n)
         min_messages: int = 16,
         max_compressed_len: int = 300,
+        max_single_size: int = 5000,
     ) -> List[Dict[str, Any]]:
         """Compress old tool results to one-line summaries for token efficiency.
 
@@ -4703,27 +4711,34 @@ class AIAgent:
 
         total = len(api_messages)
 
-        # Only compress in long conversations
-        if total <= min_messages:
-            return api_messages
-
         # Collect positions of all tool messages
         tool_positions = []
         for i, msg in enumerate(api_messages):
             if msg.get("role") == "tool":
                 tool_positions.append(i)
 
-        tool_count = len(tool_positions)
-        # Not enough tools to bother compressing
-        if tool_count <= recent_tool_keep:
-            return api_messages
+        # Build set of positions to compress
+        compress_positions: set = set()
 
-        # Identify which tool messages to compress (all except the last N).
-        # Note: tool_positions[:-0] is [] (Python slice gotcha), so handle 0 explicitly.
-        if recent_tool_keep > 0:
-            compress_positions = set(tool_positions[:-recent_tool_keep])
-        else:
-            compress_positions = set(tool_positions)
+        # Size-gated: compress large tool results regardless of age/position.
+        # Catches git diff, build logs, and other large outputs that would
+        # otherwise eat recent-priority slots. 0 = disable.
+        if max_single_size > 0 and tool_positions:
+            for i in tool_positions:
+                content = api_messages[i].get("content", "")
+                if isinstance(content, str) and len(content) > max_single_size:
+                    compress_positions.add(i)
+
+        # Old-position logic: compress all tool results except the last N
+        # in long conversations with enough tools.  Independent of the
+        # size gate — both can fire in the same call.
+        if total > min_messages:
+            tool_count = len(tool_positions)
+            if tool_count > recent_tool_keep:
+                if recent_tool_keep > 0:
+                    compress_positions |= set(tool_positions[:-recent_tool_keep])
+                else:
+                    compress_positions |= set(tool_positions)
 
         if not compress_positions:
             return api_messages
