@@ -4719,6 +4719,7 @@ class AIAgent:
 
         # Build set of positions to compress
         compress_positions: set = set()
+        tool_count = len(tool_positions)
 
         # Size-gated: compress large tool results regardless of age/position.
         # Catches git diff, build logs, and other large outputs that would
@@ -4733,7 +4734,6 @@ class AIAgent:
         # in long conversations with enough tools.  Independent of the
         # size gate — both can fire in the same call.
         if total > min_messages:
-            tool_count = len(tool_positions)
             if tool_count > recent_tool_keep:
                 if recent_tool_keep > 0:
                     compress_positions |= set(tool_positions[:-recent_tool_keep])
@@ -9936,6 +9936,7 @@ class AIAgent:
                 recent_tool_keep=self._progressive_recent_keep,
                 min_messages=self._progressive_min_messages,
                 max_compressed_len=self._progressive_max_len,
+                max_single_size=self._progressive_max_single_size,
             )
 
             # Apply Anthropic prompt caching for Claude models on native

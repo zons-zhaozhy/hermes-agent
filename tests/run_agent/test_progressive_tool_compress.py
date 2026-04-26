@@ -690,3 +690,104 @@ class TestProgressiveCompressEdgeCases:
         # Should be "done" not "exit=..."
         assert "done" in first_compressed["content"]
         assert "exit=" not in first_compressed["content"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: size-gated compression
+# ---------------------------------------------------------------------------
+
+class TestProgressiveCompressSizeGated:
+
+    def test_large_recent_result_compressed_within_window(self):
+        """Large recent result gets compressed even when tool_count <= recent_tool_keep."""
+        messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}]
+        tid = "call_000"
+        large = "Large output line 1\n" + "x" * 5100 + "\nLarge output line N"
+        messages.append({"role": "assistant", "content": "", "tool_calls": [
+            {"id": tid, "type": "function", "function": {"name": "terminal", "arguments": "{}"}},
+        ]})
+        messages.append({"role": "tool", "tool_call_id": tid, "content": large})
+
+        result = AgentRunner._progressive_tool_result_compress(
+            messages, recent_tool_keep=8, min_messages=2, max_compressed_len=100,
+            max_single_size=3000,
+        )
+
+        tool_results = [m for m in result if m.get("role") == "tool"]
+        assert len(tool_results) == 1
+        summary = tool_results[0]["content"]
+        assert len(summary) < 500
+        assert "[terminal]" in summary
+        assert "chars" in summary
+
+    def test_large_result_compressed_below_min_messages(self):
+        """Size-gated works even when total < min_messages."""
+        messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}]
+        tid = "call_000"
+        large = "A" * 6000
+        messages.append({"role": "assistant", "content": "", "tool_calls": [
+            {"id": tid, "type": "function", "function": {"name": "terminal", "arguments": "{}"}},
+        ]})
+        messages.append({"role": "tool", "tool_call_id": tid, "content": large})
+
+        result = AgentRunner._progressive_tool_result_compress(
+            messages, recent_tool_keep=8, min_messages=16, max_compressed_len=100,
+            max_single_size=5000,
+        )
+
+        tool_results = [m for m in result if m.get("role") == "tool"]
+        assert len(tool_results) == 1
+        assert len(tool_results[0]["content"]) < 500
+
+    def test_disabled_with_zero(self):
+        """max_single_size=0 disables size-gated compression."""
+        messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}]
+        tid = "call_000"
+        large = "A" * 6000
+        messages.append({"role": "assistant", "content": "", "tool_calls": [
+            {"id": tid, "type": "function", "function": {"name": "terminal", "arguments": "{}"}},
+        ]})
+        messages.append({"role": "tool", "tool_call_id": tid, "content": large})
+
+        result = AgentRunner._progressive_tool_result_compress(
+            messages, recent_tool_keep=8, min_messages=2, max_compressed_len=100,
+            max_single_size=0,
+        )
+
+        assert [m for m in result if m.get("role") == "tool"][0]["content"] == large
+
+    def test_small_result_untouched_by_size_gate(self):
+        """Results below max_single_size are not affected."""
+        messages, originals = _build_long_conversation(num_tool_pairs=5, content_length=200)
+        result = AgentRunner._progressive_tool_result_compress(
+            messages, recent_tool_keep=8, min_messages=2, max_compressed_len=100,
+            max_single_size=300,
+        )
+        for msg in (m for m in result if m.get("role") == "tool"):
+            assert msg["content"] == originals[msg["tool_call_id"]]
+
+    def test_size_gated_and_old_compression_both_fire(self):
+        """Old-position + size-gated compression both work in the same call."""
+        messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}]
+        for i in range(10):
+            tid = f"call_{i:03d}"
+            name = "tool_big" if i == 0 else "terminal"
+            messages.append({"role": "assistant", "content": "", "tool_calls": [
+                {"id": tid, "type": "function", "function": {"name": name, "arguments": "{}"}},
+            ]})
+            if i == 0:
+                messages.append({"role": "tool", "tool_call_id": tid,
+                                 "content": "Initial big output\n" + "a" * 8000 + "\nDone"})
+            else:
+                messages.append({"role": "tool", "tool_call_id": tid, "content": "x" * 200})
+
+        result = AgentRunner._progressive_tool_result_compress(
+            messages, recent_tool_keep=3, min_messages=2, max_compressed_len=100,
+            max_single_size=5000,
+        )
+
+        tool_results = [m for m in result if m.get("role") == "tool"]
+        assert len(tool_results[0]["content"]) < 500
+        assert "[tool_big]" in tool_results[0]["content"]
+        for msg in tool_results[-3:]:
+            assert len(msg["content"]) == 200
