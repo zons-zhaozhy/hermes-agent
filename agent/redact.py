@@ -253,11 +253,20 @@ def _redact_form_body(text: str) -> str:
     return _redact_query_string(text.strip())
 
 
-def redact_sensitive_text(text: str) -> str:
+def redact_sensitive_text(text: str, *, code_file: bool = False) -> str:
     """Apply all redaction patterns to a block of text.
 
     Safe to call on any string -- non-matching text passes through unchanged.
     Disabled when security.redact_secrets is false in config.yaml.
+
+    Args:
+        text: The text to redact.
+        code_file: When True, skip patterns that cause false positives on
+            source code (ENV assignments and JSON field patterns).  These
+            patterns match legitimate code like ``_TOKENS=2000`` or
+            ``"key": "value"`` which are not secrets.  The remaining patterns
+            (known prefixes, JWTs, DB connstrings, private keys, etc.) still
+            apply because real secrets can appear in code files too.
     """
     if text is None:
         return None
@@ -268,38 +277,41 @@ def redact_sensitive_text(text: str) -> str:
     if not _REDACT_ENABLED:
         return text
 
-    # Known prefixes (sk-, ghp_, etc.)
+    # Known prefixes (sk-, ghp_, etc.) — real secrets even in code
     text = _PREFIX_RE.sub(lambda m: _mask_token(m.group(1)), text)
 
-    # ENV assignments: OPENAI_API_KEY=sk-abc...
-    def _redact_env(m):
-        name, quote, value = m.group(1), m.group(2), m.group(3)
-        return f"{name}={quote}{_mask_token(value)}{quote}"
-    text = _ENV_ASSIGN_RE.sub(_redact_env, text)
+    # ENV assignments: OPENAI_API_KEY=***
+    # Skip for code files — matches legitimate constants like _TOKENS=2000
+    if not code_file:
+        def _redact_env(m):
+            name, quote, value = m.group(1), m.group(2), m.group(3)
+            return f"{name}={quote}{_mask_token(value)}{quote}"
+        text = _ENV_ASSIGN_RE.sub(_redact_env, text)
 
-    # JSON fields: "apiKey": "value"
-    def _redact_json(m):
-        key, value = m.group(1), m.group(2)
-        return f'{key}: "{_mask_token(value)}"'
-    text = _JSON_FIELD_RE.sub(_redact_json, text)
+        # JSON fields: "apiKey": "***"
+        # Skip for code files — matches legitimate {"key": "value"} in code
+        def _redact_json(m):
+            key, value = m.group(1), m.group(2)
+            return f'{key}: "{_mask_token(value)}"'
+        text = _JSON_FIELD_RE.sub(_redact_json, text)
 
-    # Authorization headers
+    # Authorization headers — real secrets even in code
     text = _AUTH_HEADER_RE.sub(
         lambda m: m.group(1) + _mask_token(m.group(2)),
         text,
     )
 
-    # Telegram bot tokens
+    # Telegram bot tokens — real secrets even in code
     def _redact_telegram(m):
         prefix = m.group(1) or ""
         digits = m.group(2)
         return f"{prefix}{digits}:***"
     text = _TELEGRAM_RE.sub(_redact_telegram, text)
 
-    # Private key blocks
+    # Private key blocks — real secrets even in code
     text = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
 
-    # Database connection string passwords
+    # Database connection string passwords — real secrets even in code
     text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)
 
     # JWT tokens (eyJ... — base64-encoded JSON headers)

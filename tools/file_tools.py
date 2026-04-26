@@ -478,8 +478,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             }, ensure_ascii=False)
 
         # ── Redact secrets (after guard check to skip oversized content) ──
+        # Use code_file=True to skip ENV/JSON patterns that cause false
+        # positives on source code (e.g. _TOKENS=2000 → ***).  Dangerous
+        # patterns (sk- prefixes, JWTs, DB passwords, private keys) still
+        # apply — real secrets can appear in code files too.
         if result.content:
-            result.content = redact_sensitive_text(result.content)
+            result.content = redact_sensitive_text(result.content, code_file=True)
             result_dict["content"] = result.content
 
         # Large-file hint: if the file is big and the caller didn't ask
@@ -846,7 +850,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         if hasattr(result, 'matches'):
             for m in result.matches:
                 if hasattr(m, 'content') and m.content:
-                    m.content = redact_sensitive_text(m.content)
+                    m.content = redact_sensitive_text(m.content, code_file=True)
         result_dict = result.to_dict()
 
         if count >= 3:
