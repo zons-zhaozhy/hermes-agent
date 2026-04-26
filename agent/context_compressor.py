@@ -792,7 +792,6 @@ Use this exact structure:
 
 FOCUS TOPIC: "{focus_topic}"
 The user has requested that this compaction PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, NEVER preserve API keys, tokens, passwords, or credentials — use [REDACTED]."""
-
         try:
             call_kwargs = {
                 "task": "compression",
@@ -827,6 +826,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # No provider configured — long cooldown, unlikely to self-resolve
             self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
             self._last_summary_error = "no auxiliary LLM provider configured"
+
             logging.warning("Context compression: no provider available for "
                             "summary. Middle turns will be dropped without summary "
                             "for %d seconds.",
@@ -845,15 +845,22 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 or "does not exist" in _err_str
                 or "no available channel" in _err_str
             )
+            # Timeout errors should also trigger fallback — compression of
+            # long conversations (200+ turns) routinely exceeds short timeouts.
+            _is_timeout = (
+                "timeout" in _err_str
+                or "timed out" in _err_str
+                or _status in (408, 429, 502, 504)
+            )
             if (
-                _is_model_not_found
+                (_is_model_not_found or _is_timeout)
                 and self.summary_model
                 and self.summary_model != self.model
                 and not getattr(self, "_summary_model_fallen_back", False)
             ):
                 self._summary_model_fallen_back = True
                 logging.warning(
-                    "Summary model '%s' not available (%s). "
+                    "Summary model '%s' failed (%s). "
                     "Falling back to main model '%s' for compression.",
                     self.summary_model, e, self.model,
                 )
