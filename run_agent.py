@@ -1769,6 +1769,10 @@ class AIAgent:
         self._progressive_max_len = int(
             _prog_cfg.get("max_compressed_len", 300),
         )
+        logger.info(
+            "Progressive compression initialized: enabled=%s, recent_tool_keep=%s, min_messages=%s, max_compressed_len=%s",
+            _prog_bool, self._progressive_recent_keep, self._progressive_min_messages, self._progressive_max_len,
+        )
 
          # Read optional explicit context_length override for the auxiliary
         # compression model. Custom endpoints often cannot report this via
@@ -4723,6 +4727,12 @@ class AIAgent:
 
         if not compress_positions:
             return api_messages
+
+        logger.info(
+            "Progressive tool-result compression: %d/%d tool results compressed "
+            "(total=%d msgs, keep_recent=%d)",
+            len(compress_positions), tool_count, total, recent_tool_keep,
+        )
 
         # Build a shallow copy of compressible tool messages so we don't mutate
         # the caller's list. The API pipeline passes api_messages which is already
