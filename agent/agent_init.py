@@ -411,6 +411,13 @@ def init_agent(
     agent._tool_guardrails = ToolCallGuardrailController()
     agent._tool_guardrail_halt_decision: ToolGuardrailDecision | None = None
 
+    # Completion gate 开关（全部默认关闭，可通过 config 开启）
+    agent._completion_gate_enabled = False      # 门控1：完成度检查
+    agent._tool_prereq_enabled = False          # 门控2：工具前置约束
+    agent._iteration_floor_enabled = False      # 门控3：迭代下限
+    # 同步到 guardrails 实例（before_call 通过 getattr(self, ...) 检查）
+    agent._tool_guardrails._tool_prereq_enabled = False
+
     # Interrupt mechanism for breaking out of tool loops
     agent._interrupt_requested = False
     agent._interrupt_message = None  # Optional message that triggered interrupt

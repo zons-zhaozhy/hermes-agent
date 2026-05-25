@@ -4102,6 +4102,13 @@ class AIAgent:
         """
         tool_calls = assistant_message.tool_calls
 
+        # Completion gate: 记录本轮调用的工具名称（用于完成度检查和前置约束）
+        if hasattr(self, "_turn_tool_names") and tool_calls:
+            self._turn_tool_names.extend(
+                tc.function.name for tc in tool_calls
+                if hasattr(tc, "function") and hasattr(tc.function, "name")
+            )
+
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True
         try:

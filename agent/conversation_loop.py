@@ -362,6 +362,9 @@ def run_conversation(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
+    # Completion gate: reset per-turn state for gate 1 (completion check)
+    agent._completion_gate_retry_count = 0
+    agent._turn_tool_names = []
     # True until the server rejects an image_url content part with an error
     # like "Only 'text' content type is supported."  Set to False on first
     # rejection and kept False for the rest of the session so we never re-send
@@ -3992,6 +3995,39 @@ def run_conversation(
                     messages.pop()
 
                 messages.append(final_msg)
+                
+                # ── Completion gate: 完成度检查 ─────────────────────
+                if getattr(agent, "_completion_gate_enabled", False):
+                    from agent.completion_gate import check_completion
+                    _cg_should_continue, _cg_nudge = check_completion(
+                        turn_tool_names=getattr(agent, "_turn_tool_names", []),
+                        turn_failed_mutations=getattr(agent, "_turn_failed_file_mutations", {}),
+                        original_user_message=original_user_message,
+                        final_response=final_response,
+                        completion_retry_count=getattr(agent, "_completion_gate_retry_count", 0),
+                    )
+                    if _cg_should_continue and _cg_nudge:
+                        agent._completion_gate_retry_count += 1
+                        agent._vprint(
+                            f"  🔒 Completion gate: 任务未完成，推回继续 "
+                            f"({agent._completion_gate_retry_count}/{3})"
+                        )
+                        messages.append({"role": "user", "content": _cg_nudge})
+                        agent._session_messages = messages
+                        continue
+
+                # ── Completion gate: 迭代下限检查 ──────────────────
+                if getattr(agent, "_iteration_floor_enabled", False):
+                    from agent.completion_gate import compute_iteration_floor, check_iteration_floor
+                    _if_tool_names = getattr(agent, "_turn_tool_names", [])
+                    _min_iters = compute_iteration_floor(_if_tool_names, api_call_count)
+                    if _min_iters > 0:
+                        _if_continue, _if_nudge = check_iteration_floor(api_call_count, _min_iters)
+                        if _if_continue and _if_nudge:
+                            agent._vprint(f"  🔒 Iteration floor: {_if_nudge}")
+                            messages.append({"role": "user", "content": _if_nudge})
+                            agent._session_messages = messages
+                            continue
                 
                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                 if not agent.quiet_mode:

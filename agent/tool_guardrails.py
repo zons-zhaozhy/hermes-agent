@@ -233,6 +233,8 @@ class ToolCallGuardrailController:
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
+        # Completion gate: 记录已执行的工具（用于前置约束）
+        self._turn_tool_log: set[str] = set()
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -242,6 +244,20 @@ class ToolCallGuardrailController:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
         if not self.config.hard_stop_enabled:
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+
+        # Completion gate: 工具前置约束（门控2）
+        # 要求写文件前必须先读过，通过 completion_gate.py 的逻辑检查
+        if getattr(self, "_tool_prereq_enabled", False):
+            from agent.completion_gate import check_tool_prerequisite
+            prereq_msg = check_tool_prerequisite(tool_name, self._turn_tool_log)
+            if prereq_msg:
+                return ToolGuardrailDecision(
+                    action="block",
+                    code="prerequisite_not_met",
+                    message=prereq_msg,
+                    tool_name=tool_name,
+                    signature=signature,
+                )
 
         exact_count = self._exact_failure_counts.get(signature, 0)
         if exact_count >= self.config.exact_failure_block_after:
@@ -346,6 +362,9 @@ class ToolCallGuardrailController:
 
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
+
+        # Completion gate: 记录成功执行的工具（用于前置约束）
+        self._turn_tool_log.add(tool_name)
 
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
