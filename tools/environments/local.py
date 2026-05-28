@@ -164,6 +164,12 @@ def _build_provider_env_blocklist() -> frozenset:
     return frozenset(blocked)
 
 
+_MALLOC_STACK_LOGGING_VARS = frozenset({
+    "MallocStackLogging", "MallocStackLoggingNoCompact",
+    "MallocStackLoggingDisableEachThread", "MallocStackLoggingLite",
+    "MallocStackLoggingLiveMode",
+})
+
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
 
@@ -190,6 +196,10 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
 
     for key, value in (base_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+            continue
+        # Strip macOS malloc debugging vars to prevent "can't turn off malloc
+        # stack logging" spam in child processes (OrbStack, Xcode, etc.).
+        if key in _MALLOC_STACK_LOGGING_VARS:
             continue
         if key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
             sanitized[key] = value
