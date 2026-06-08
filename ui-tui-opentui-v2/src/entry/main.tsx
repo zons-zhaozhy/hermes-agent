@@ -268,7 +268,10 @@ if (import.meta.main) {
   const cols = process.stdout.columns || 80
   const initialPrompt = process.env.HERMES_TUI_PROMPT?.trim() || process.argv.slice(2).join(' ').trim()
   const resumeId = process.env.HERMES_TUI_RESUME?.trim()
-  const base = { mouse: false, fake, cols }
+  // Mouse on by default (opencode parity: wheel-scroll the transcript, drag the
+  // scrollbar, click-to-expand tools, text-aware selection). HERMES_TUI_MOUSE=0 opts out.
+  const mouse = !/^(?:0|false|no|off)$/i.test(process.env.HERMES_TUI_MOUSE?.trim() ?? '')
+  const base = { mouse, fake, cols }
   const withPrompt = initialPrompt ? { ...base, initialPrompt } : base
   const input: TuiInput = resumeId ? { ...withPrompt, resumeId } : withPrompt
 

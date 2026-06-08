@@ -53,13 +53,17 @@ function syntaxStyleFor(theme: Theme): SyntaxStyle {
 
 export function Markdown(props: { text: string; streaming?: boolean }) {
   const theme = useTheme()
+  // opencode's v2 text path (session-v2.tsx AssistantText): the markdown engine via
+  // <code filetype="markdown" streaming>. `drawUnstyledText={false}` avoids the
+  // raw→styled flash per delta (the streaming flicker); `streaming` re-tokenizes
+  // incrementally rather than reparsing the whole buffer each repaint.
   return (
     <code
       filetype="markdown"
       content={props.text}
       syntaxStyle={syntaxStyleFor(theme())}
       streaming={props.streaming ?? false}
-      drawUnstyledText
+      drawUnstyledText={false}
       conceal
       fg={theme().color.text}
     />
