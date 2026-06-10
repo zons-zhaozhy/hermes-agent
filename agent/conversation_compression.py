@@ -588,12 +588,49 @@ def compress_context(
 
     # Warn on repeated compressions (quality degrades with each pass)
     _cc = agent.context_compressor.compression_count
+
+    # 累积 token 计数（跨续接链）
+    _approx_tokens_for_cumulative = approx_tokens or 0
+    if _approx_tokens_for_cumulative <= 0:
+        _approx_tokens_for_cumulative = getattr(
+            agent.context_compressor, "last_prompt_tokens", 0
+        ) or 0
+    # 防御性类型检查：测试中可能使用 MagicMock
+    _current_cum = getattr(agent.context_compressor, "cumulative_input_tokens", 0)
+    if not isinstance(_current_cum, int):
+        _current_cum = 0
+    agent.context_compressor.cumulative_input_tokens = _current_cum + _approx_tokens_for_cumulative
+
     if _cc >= 2:
         agent._vprint(
             f"{agent.log_prefix}⚠️  Session compressed {_cc} times — "
             f"accuracy may degrade. Consider /new to start fresh.",
             force=True,
         )
+
+    # 快速压缩检测：最近3次间隔都<3分钟 → 恶性循环，建议 /new
+    if hasattr(agent.context_compressor, "is_rapid_compression_loop") and \
+            agent.context_compressor.is_rapid_compression_loop():
+        _rapid_count = len(agent.context_compressor._compression_timestamps) - 1
+        agent._emit_warning(
+            f"⚠ Rapid compression loop detected — the last {_rapid_count} "
+            f"compressions all happened within 3 minutes of each other. "
+            f"Context is growing faster than compression can manage. "
+            f"Use /new to start a fresh session."
+        )
+
+    # 累积 token 预警：超过 100万 tokens 提醒用户
+    _cum_tokens = agent.context_compressor.cumulative_input_tokens
+    if _cum_tokens >= 1_000_000:
+        # 只在每跨过 100万 的整数倍时警告一次
+        _prev = _cum_tokens - _approx_tokens_for_cumulative
+        _threshold_crossed = int(_cum_tokens / 1_000_000) > int(_prev / 1_000_000) if _prev > 0 else True
+        if _threshold_crossed:
+            agent._emit_warning(
+                f"⚠ This session lineage has consumed {_cum_tokens / 1_000_000:.1f}M "
+                f"input tokens across {_cc} compression rounds. Consider /new to "
+                f"avoid further quality degradation and token cost."
+            )
 
     # Keep the post-compression rough estimate for diagnostics, but do not
     # treat it as provider-reported prompt usage. Schema-heavy rough estimates
