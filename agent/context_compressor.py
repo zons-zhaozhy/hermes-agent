@@ -23,8 +23,9 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
-# 续接硬上限：超过此次数不再压缩，建议用户 /new
-MAX_COMPRESSION_CHAIN_DEPTH = 10
+# 续接上限：超过此次数仍压缩，但降低日志级别避免刷屏
+# 过低会导致长会话上下文持续膨胀最终崩溃，宁可多压缩也不放弃
+MAX_COMPRESSION_CHAIN_DEPTH = 30
 # 压缩最小间隔（秒）：距上次压缩不足此时间不触发
 MIN_COMPRESSION_INTERVAL_SECS = 180  # 3分钟
 # 快速压缩检测窗口：最近 N 次压缩
@@ -672,8 +673,12 @@ class ContextCompressor(ContextEngine):
         self.provider = provider
         self.api_mode = api_mode
         self.context_length = context_length
+        ABSOLUTE_COMPRESSION_TOKEN_CAP = 150_000
         self.threshold_tokens = max(
-            int(context_length * self.threshold_percent),
+            min(
+                int(context_length * self.threshold_percent),
+                ABSOLUTE_COMPRESSION_TOKEN_CAP,
+            ),
             MINIMUM_CONTEXT_LENGTH,
         )
         # Recalculate token budgets for the new context length so the
@@ -721,12 +726,14 @@ class ContextCompressor(ContextEngine):
             config_context_length=config_context_length,
             provider=provider,
         )
-        # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if
-        # the percentage would suggest a lower value.  This prevents premature
-        # compression on large-context models at 50% while keeping the % sane
-        # for models right at the minimum.
+        # 压缩阈值：取百分比阈值和绝对上限(150K)中较小的值
+        # 不管模型上下文多大，超过 150K tokens 就必须压缩
+        ABSOLUTE_COMPRESSION_TOKEN_CAP = 150_000
         self.threshold_tokens = max(
-            int(self.context_length * threshold_percent),
+            min(
+                int(self.context_length * threshold_percent),
+                ABSOLUTE_COMPRESSION_TOKEN_CAP,
+            ),
             MINIMUM_CONTEXT_LENGTH,
         )
         self.compression_count = 0
@@ -843,35 +850,28 @@ class ContextCompressor(ContextEngine):
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False
-        # 续接硬上限：超过此次数不再压缩
+        # 所有安全阀改为只提示不阻断——到阈值必须压缩，
+        # 宁可压缩质量下降也不让上下文膨胀到模型拒绝请求
         if self.compression_count >= MAX_COMPRESSION_CHAIN_DEPTH:
-            logger.warning(
-                "Compression skipped — chain depth %d reached hard limit (%d). "
-                "Use /new to start a fresh session.",
+            logger.info(
+                "Compression at chain depth %d (limit %d) — "
+                "quality may degrade. Consider /new.",
                 self.compression_count, MAX_COMPRESSION_CHAIN_DEPTH,
             )
-            return False
-        # 压缩间隔保护：距上次压缩不足阈值时跳过
         _timestamps = getattr(self, "_compression_timestamps", None) or []
         if _timestamps:
             elapsed = time.time() - _timestamps[-1]
             if elapsed < MIN_COMPRESSION_INTERVAL_SECS:
-                logger.warning(
-                    "Compression skipped — only %.0fs since last compression (min %.0fs). "
-                    "Context is growing too fast — consider /new.",
+                logger.info(
+                    "Compressing despite short interval (%.0fs < min %.0fs).",
                     elapsed, MIN_COMPRESSION_INTERVAL_SECS,
                 )
-                return False
-        # Anti-thrashing: back off if recent compressions were ineffective
         if self._ineffective_compression_count >= 2:
-            if not self.quiet_mode:
-                logger.warning(
-                    "Compression skipped — last %d compressions saved <10%% each. "
-                    "Consider /new to start a fresh session, or /compress <topic> "
-                    "for focused compression.",
-                    self._ineffective_compression_count,
-                )
-            return False
+            logger.info(
+                "Compressing despite %d consecutive ineffective rounds. "
+                "Consider /new or /compress <topic>.",
+                self._ineffective_compression_count,
+            )
         return True
 
     def is_rapid_compression_loop(self) -> bool:
