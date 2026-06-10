@@ -1427,13 +1427,23 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. NOTE: Cannot read images or binary files — use vision_analyze for images.",
+    "description": (
+        "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. "
+        "Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. "
+        "Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. "
+        "NOTE: Cannot read images or binary files — use vision_analyze for images.\n\n"
+        "SPARSE READ RULE — context economy discipline:\n"
+        "1. ALWAYS use search_files first to locate target lines, then read_file with offset+limit to read only what you need.\n"
+        "2. Keep limit ≤ 60 unless exploring a brand-new file (limit=50 for structure scan is OK).\n"
+        "3. NEVER read an entire large file without limit. Full-file reads are the #1 cause of context bloat (~40% of overflow cases).\n"
+        "4. For edits: search_files → targeted read_file(offset, limit≤60) → patch. Do NOT full-read then write_file."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000}
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000). Keep ≤ 60 for targeted reads.", "default": 500, "maximum": 2000}
         },
         "required": ["path"]
     }
