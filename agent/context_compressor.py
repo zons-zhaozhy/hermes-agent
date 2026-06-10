@@ -23,6 +23,19 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
+# 续接硬上限：超过此次数不再压缩，建议用户 /new
+MAX_COMPRESSION_CHAIN_DEPTH = 10
+# 压缩最小间隔（秒）：距上次压缩不足此时间不触发
+MIN_COMPRESSION_INTERVAL_SECS = 180  # 3分钟
+# 快速压缩检测窗口：最近 N 次压缩
+RAPID_COMPRESSION_WINDOW = 3
+# 快速压缩判定阈值（秒）：窗口内所有间隔都低于此值视为恶性循环
+RAPID_COMPRESSION_THRESHOLD_SECS = 180  # 3分钟
+# tail 区工具输出裁剪阈值（字符）：超过此长度的工具输出在 tail 区也会被截断
+TAIL_TOOL_OUTPUT_TRUNCATE_CHARS = 8000
+# 累积 token 预警阈值
+CUMULATIVE_TOKEN_WARN_THRESHOLD = 1_000_000
+
 from agent.auxiliary_client import call_llm, _is_connection_error
 from agent.context_engine import ContextEngine
 from agent.model_metadata import (
@@ -623,6 +636,9 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
+        # /new 或 /reset 时重置续接链状态
+        self._compression_timestamps = []
+        self.cumulative_input_tokens = 0
 
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Clear per-session compaction state at a real session boundary.
@@ -748,6 +764,10 @@ class ContextCompressor(ContextEngine):
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
+        # 压缩时间戳列表，用于间隔检测和快速压缩检测
+        self._compression_timestamps: List[float] = []
+        # 累积 token 计数（跨压缩续接链）
+        self.cumulative_input_tokens: int = 0
         self._summary_failure_cooldown_until: float = 0.0
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
@@ -815,13 +835,33 @@ class ContextCompressor(ContextEngine):
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold.
 
-        Includes anti-thrashing protection: if the last two compressions
-        each saved less than 10%, skip compression to avoid infinite loops
-        where each pass removes only 1-2 messages.
+        Includes multiple safety guards:
+        - Anti-thrashing: if the last two compressions each saved less than 10%, skip
+        - Chain depth limit: stop compressing after MAX_COMPRESSION_CHAIN_DEPTH rounds
+        - Interval guard: skip if last compression was less than MIN_COMPRESSION_INTERVAL_SECS ago
         """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False
+        # 续接硬上限：超过此次数不再压缩
+        if self.compression_count >= MAX_COMPRESSION_CHAIN_DEPTH:
+            logger.warning(
+                "Compression skipped — chain depth %d reached hard limit (%d). "
+                "Use /new to start a fresh session.",
+                self.compression_count, MAX_COMPRESSION_CHAIN_DEPTH,
+            )
+            return False
+        # 压缩间隔保护：距上次压缩不足阈值时跳过
+        _timestamps = getattr(self, "_compression_timestamps", None) or []
+        if _timestamps:
+            elapsed = time.time() - _timestamps[-1]
+            if elapsed < MIN_COMPRESSION_INTERVAL_SECS:
+                logger.warning(
+                    "Compression skipped — only %.0fs since last compression (min %.0fs). "
+                    "Context is growing too fast — consider /new.",
+                    elapsed, MIN_COMPRESSION_INTERVAL_SECS,
+                )
+                return False
         # Anti-thrashing: back off if recent compressions were ineffective
         if self._ineffective_compression_count >= 2:
             if not self.quiet_mode:
@@ -833,6 +873,65 @@ class ContextCompressor(ContextEngine):
                 )
             return False
         return True
+
+    def is_rapid_compression_loop(self) -> bool:
+        """检测是否存在恶性快速压缩循环。
+
+        最近 RAPID_COMPRESSION_WINDOW 次压缩的间隔全部低于
+        RAPID_COMPRESSION_THRESHOLD_SECS 时返回 True。
+        """
+        ts = self._compression_timestamps
+        if len(ts) < RAPID_COMPRESSION_WINDOW + 1:
+            return False
+        recent = ts[-(RAPID_COMPRESSION_WINDOW + 1):]
+        for i in range(len(recent) - 1):
+            gap = recent[i + 1] - recent[i]
+            if gap >= RAPID_COMPRESSION_THRESHOLD_SECS:
+                return False
+        return True
+
+    # ------------------------------------------------------------------
+    # Tail tool output truncation (post-compression pass)
+    # ------------------------------------------------------------------
+
+    def _truncate_large_tool_outputs_in_tail(
+        self, messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """截断 tail 区中超过阈值的工具输出。
+
+        压缩后 tail 区的工具结果可能非常大（read_file 返回 30K+ 字符），
+        即使只有2-3条就足以占据大量 token 预算。此方法在压缩完成后
+        对 tail 区的超大工具输出做截断，保留头部内容 + 截断提示。
+
+        只处理 tool 角色的消息，不触碰 user/assistant 消息。
+        """
+        if TAIL_TOOL_OUTPUT_TRUNCATE_CHARS <= 0:
+            return messages
+        result = []
+        truncated_count = 0
+        for msg in messages:
+            if msg.get("role") != "tool":
+                result.append(msg)
+                continue
+            content = msg.get("content", "")
+            if not isinstance(content, str) or len(content) <= TAIL_TOOL_OUTPUT_TRUNCATE_CHARS:
+                result.append(msg)
+                continue
+            # 截断：保留前2/3内容 + 截断标记
+            keep_chars = int(TAIL_TOOL_OUTPUT_TRUNCATE_CHARS * 0.67)
+            truncated = (
+                content[:keep_chars]
+                + f"\n\n... [TRUNCATED: {len(content):,} chars total, "
+                f"showing first {keep_chars:,} chars to save context space] ..."
+            )
+            result.append({**msg, "content": truncated})
+            truncated_count += 1
+        if truncated_count > 0:
+            logger.info(
+                "Tail truncation: truncated %d large tool output(s) to %d chars each",
+                truncated_count, TAIL_TOOL_OUTPUT_TRUNCATE_CHARS,
+            )
+        return result
 
     # ------------------------------------------------------------------
     # Tool output pruning (cheap pre-pass, no LLM call)
@@ -2391,6 +2490,15 @@ This compaction should PRIORITISE preserving all information related to the focu
             compressed.append(msg)
 
         self.compression_count += 1
+        # 记录压缩时间戳（防御性初始化，兼容 __new__ 构造的测试对象）
+        if not hasattr(self, "_compression_timestamps") or self._compression_timestamps is None:
+            self._compression_timestamps = []
+        self._compression_timestamps.append(time.time())
+
+        # Phase 5: Tail 区工具输出二次裁剪
+        # 即使在 tail 保护区内，超过阈值的工具输出也会被截断，
+        # 防止几个巨大的 read_file/execute_code 结果撑爆上下文
+        compressed = self._truncate_large_tool_outputs_in_tail(compressed)
 
         compressed = self._sanitize_tool_pairs(compressed)
 
