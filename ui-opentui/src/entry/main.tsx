@@ -67,6 +67,19 @@ const READY_TIMEOUT_MS = 20_000
 /** Window after a Ctrl+C in which a second Ctrl+C quits the TUI (item 11). */
 const QUIT_WINDOW_MS = 3_000
 
+/** Recursive renderable count under a node (the /mem store-cap diagnostic —
+ *  same walk as scripts/mem-bench.tsx; cheap: one tree pass on demand). */
+function descendantCount(node: { getChildren(): unknown[] }): number {
+  let n = 0
+  for (const child of node.getChildren()) {
+    n += 1
+    if (child && typeof child === 'object' && 'getChildren' in child) {
+      n += descendantCount(child as { getChildren(): unknown[] })
+    }
+  }
+  return n
+}
+
 /**
  * Resume a session INTO the store: buffer live events across the `session.resume`
  * RPC, then replace history + replay (gotcha §8 #5 tool rows handled by
@@ -366,6 +379,17 @@ export const run = Effect.fn('Tui.run')(function* (input: TuiInput) {
       // Promise-returning `request` + the host capabilities it needs).
       const slashCtx: SlashContext = {
         clearTranscript: () => store.clearTranscript(),
+        compact: () => store.state.compact,
+        setCompact: on => store.setCompact(on),
+        details: () => store.state.details,
+        setDetails: mode => store.setDetails(mode),
+        renderableCount: () => {
+          try {
+            return descendantCount(renderer.root)
+          } catch {
+            return undefined
+          }
+        },
         confirm: (message, onConfirm) => store.setConfirm(message, onConfirm),
         copyResponse: n => {
           const text = nthAssistantResponse(store.state.messages, n)

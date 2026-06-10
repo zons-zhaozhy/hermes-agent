@@ -22,6 +22,7 @@
 import { type ToolPartState } from '../logic/store.ts'
 import type { ThemeColors } from '../logic/theme.ts'
 import { useDimensions } from './dimensions.tsx'
+import { useDisplay } from './display.tsx'
 import { createSignal, Show } from 'solid-js'
 
 import { truncate } from '../logic/toolOutput.ts'
@@ -90,8 +91,12 @@ export function ToolPart(props: { part: ToolPartState }) {
   const dims = useDimensions()
   const info = useSessionInfo() // session cwd for path-relativizing renderers
   const anchor = useScrollAnchor()
-  const [expanded, setExpanded] = createSignal(false)
-  const toggle = () => anchor(() => setExpanded(e => !e))
+  const display = useDisplay()
+  // /details expanded → settled bodies default-OPEN; a manual click overrides
+  // either way (and a later global flip applies again to un-overridden parts).
+  const [override, setOverride] = createSignal<boolean | undefined>(undefined)
+  const expanded = () => override() ?? display().details === 'expanded'
+  const toggle = () => anchor(() => setOverride(!expanded()))
 
   // Per-tool renderer (re-dispatches if the name settles on tool.complete).
   const renderer = () => rendererFor(props.part.name)

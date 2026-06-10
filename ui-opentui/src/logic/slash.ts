@@ -11,6 +11,9 @@
  *      (exec/plugin → system · alias → re-dispatch · skill/send → submit a turn ·
  *       prefill → notice). Long output routes to the pager (Phase 5a).
  */
+import { DETAILS_SECTIONS, DETAILS_USAGE, type DetailsMode, nextDetailsMode, parseDetailsMode } from './details.ts'
+import { formatBytes, memReport, performHeapdump } from './diagnostics.ts'
+import { formatSpawnTree, formatSpawnTreeList, readSpawnTreeEntries } from './replay.ts'
 import type { CompletionItem, PickerItem, PickerState, SessionItem } from './store.ts'
 
 export interface ParsedSlash {
@@ -57,6 +60,15 @@ export interface SlashContext {
   readonly modelItems: () => PickerItem[] | undefined
   /** Update the cached `/model` picker rows. */
   readonly setModelItems: (items: PickerItem[]) => void
+  /** Read / set the compact-transcript display flag (/compact — Epic 3). */
+  readonly compact: () => boolean
+  readonly setCompact: (on: boolean) => void
+  /** Read / set the global tool/reasoning detail mode (/details — Epic 3). */
+  readonly details: () => DetailsMode
+  readonly setDetails: (mode: DetailsMode) => void
+  /** Mounted-renderable count under the live renderer root (a /mem diagnostic);
+   *  undefined when no renderer is reachable (tests). */
+  readonly renderableCount: () => number | undefined
 }
 
 function readStr(value: unknown, key: string): string | undefined {
@@ -143,6 +155,11 @@ const CLIENT_HELP = [
   '/skills — browse skills',
   '/sessions, /resume — switch/resume a session',
   '/clear, /new — clear the transcript (confirm)',
+  '/compact [on|off|toggle] — compact transcript spacing',
+  '/details [hidden|collapsed|expanded|cycle] — tool/reasoning detail',
+  '/replay [n|path] — inspect an archived spawn tree',
+  '/mem — live memory stats',
+  '/heapdump — write a V8 heap snapshot',
   '/logs — recent engine log lines',
   '/quit, /exit — quit',
   '(other /commands run on the gateway)'
@@ -337,6 +354,137 @@ const skillsCmd: ClientHandler = async (_arg, ctx) => {
   })
 }
 
+/** `on`/`off`/`toggle`/bare → the next flag value; null on garbage (Ink flagFromArg). */
+function flagFromArg(arg: string, current: boolean): boolean | null {
+  const mode = arg.trim().toLowerCase()
+  if (!mode || mode === 'toggle') return !current
+  if (mode === 'on') return true
+  if (mode === 'off') return false
+  return null
+}
+
+/** `/compact [on|off|toggle]` — compact transcript spacing. The flag flips locally
+ *  (the store drives the render); persistence mirrors Ink: a fire-and-forget
+ *  `config.set {key:'compact'}` so the Ink TUI + future launches share the pref
+ *  (the gateway does NOT send the persisted value to this TUI, so each launch
+ *  starts off — see store.ts `compact`). */
+const compactCmd: ClientHandler = (arg, ctx) => {
+  const next = flagFromArg(arg, ctx.compact())
+  if (next === null) {
+    ctx.pushSystem('usage: /compact [on|off|toggle]')
+    return
+  }
+  ctx.setCompact(next)
+  void ctx.request('config.set', { key: 'compact', value: next ? 'on' : 'off' }).catch(() => {})
+  ctx.pushSystem(`compact ${next ? 'on' : 'off'}`)
+}
+
+/**
+ * `/details [hidden|collapsed|expanded|cycle]` — GLOBAL detail mode (per-section
+ * overrides deferred; the gateway's arg completion also suggests section names,
+ * so those get an honest "not supported yet" notice). Bare `/details` reports the
+ * persisted mode (`config.get details_mode`) and syncs the local flag to it; a
+ * mode set persists via `config.set` (fire-and-forget, Ink parity).
+ */
+const detailsCmd: ClientHandler = async (arg, ctx) => {
+  const first = arg.trim().toLowerCase().split(/\s+/)[0] ?? ''
+  if (!first) {
+    try {
+      const r = await ctx.request('config.get', { key: 'details_mode' })
+      const mode = parseDetailsMode(readStr(r, 'value')) ?? ctx.details()
+      ctx.setDetails(mode)
+      ctx.pushSystem(`details: ${mode}`)
+    } catch {
+      ctx.pushSystem(`details: ${ctx.details()}`)
+    }
+    return
+  }
+  if ((DETAILS_SECTIONS as readonly string[]).includes(first)) {
+    ctx.pushSystem(`per-section detail overrides are not supported in the native engine yet — ${DETAILS_USAGE}`)
+    return
+  }
+  const next = first === 'cycle' || first === 'toggle' ? nextDetailsMode(ctx.details()) : parseDetailsMode(first)
+  if (!next) {
+    ctx.pushSystem(DETAILS_USAGE)
+    return
+  }
+  ctx.setDetails(next)
+  void ctx.request('config.set', { key: 'details_mode', value: next }).catch(() => {})
+  ctx.pushSystem(`details: ${next}`)
+}
+
+/** Fetch + map the session's archived spawn trees (`spawn_tree.list`). */
+async function listSpawnTrees(ctx: SlashContext) {
+  const r = await ctx.request('spawn_tree.list', { limit: 30, session_id: ctx.sessionId() ?? 'default' })
+  return readSpawnTreeEntries(r)
+}
+
+/**
+ * `/replay [n|path]` — spawn-tree inspector through the pager (Ink renders these
+ * in its agents overlay; the flow + RPCs are the same): bare lists the archived
+ * trees with indices, `<n>` loads the n-th listed tree, anything else is treated
+ * as a snapshot path on disk (`load <path>` accepted for Ink muscle memory).
+ */
+const replayCmd: ClientHandler = async (arg, ctx) => {
+  const raw = arg.trim()
+  const lower = raw.toLowerCase()
+  try {
+    if (!raw || lower === 'list' || lower === 'ls') {
+      const entries = await listSpawnTrees(ctx)
+      if (!entries.length) {
+        ctx.pushSystem('no archived spawn trees for this session — completed delegations are archived automatically')
+        return
+      }
+      ctx.openPager('Spawn trees', formatSpawnTreeList(entries))
+      return
+    }
+    if (/^\d+$/.test(raw)) {
+      const n = Number.parseInt(raw, 10)
+      const entries = await listSpawnTrees(ctx)
+      const entry = entries[n - 1]
+      if (!entry) {
+        ctx.pushSystem(
+          entries.length
+            ? `replay: index out of range 1..${entries.length} — /replay to list`
+            : 'no archived spawn trees for this session'
+        )
+        return
+      }
+      const tree = await ctx.request('spawn_tree.load', { path: entry.path })
+      ctx.openPager(`Replay ${n}`, formatSpawnTree(tree))
+      return
+    }
+    const path = lower.startsWith('load ') ? raw.slice(5).trim() : raw
+    const tree = await ctx.request('spawn_tree.load', { path })
+    ctx.openPager('Replay', formatSpawnTree(tree))
+  } catch (error) {
+    ctx.pushSystem(`/replay: ${error instanceof Error ? error.message : 'failed'}`)
+  }
+}
+
+/** `/heapdump` — write a V8 heap snapshot to `$HERMES_HOME|~/.hermes/logs/` and
+ *  report the path + heap/rss before vs after (Ink ref debug.ts /heapdump). */
+const heapdumpCmd: ClientHandler = (_arg, ctx) => {
+  const pre = process.memoryUsage()
+  ctx.pushSystem(`writing heap dump (heap ${formatBytes(pre.heapUsed)} · rss ${formatBytes(pre.rss)})…`)
+  try {
+    const { after, before, path } = performHeapdump()
+    ctx.pushSystem(
+      `heapdump: ${path}\n` +
+        `heap ${formatBytes(before.heapUsed)} → ${formatBytes(after.heapUsed)} · ` +
+        `rss ${formatBytes(before.rss)} → ${formatBytes(after.rss)}`
+    )
+  } catch (error) {
+    ctx.pushSystem(`heapdump failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+/** `/mem` — live V8 heap/rss numbers + uptime + the mounted-renderable count
+ *  (the store-cap diagnostic) as one system block (Ink ref debug.ts /mem). */
+const memCmd: ClientHandler = (_arg, ctx) => {
+  ctx.pushSystem(memReport(process.memoryUsage(), process.uptime(), ctx.renderableCount()))
+}
+
 /** `/tools` — fetch the tool roster from the gateway and show it in the pager (navigable). */
 const toolsCmd: ClientHandler = async (arg, ctx) => {
   const command = arg.trim() ? `tools ${arg.trim()}` : 'tools'
@@ -352,12 +500,18 @@ const toolsCmd: ClientHandler = async (arg, ctx) => {
 const CLIENT: Record<string, ClientHandler> = {
   agents: (_arg, ctx) => ctx.openDashboard(),
   clear: (_arg, ctx) => ctx.confirm('Clear the transcript?', ctx.clearTranscript),
+  compact: compactCmd,
   copy: (arg, ctx) => {
     const n = Math.max(1, Number.parseInt(arg, 10) || 1)
     if (!ctx.copyResponse(n)) ctx.pushSystem('Nothing to copy yet.')
   },
+  detail: detailsCmd,
+  details: detailsCmd,
   exit: (_arg, ctx) => ctx.quit(),
+  heapdump: heapdumpCmd,
+  mem: memCmd,
   model: modelCmd,
+  replay: replayCmd,
   resume: openSwitcher,
   session: openSwitcher,
   sessions: openSwitcher,
@@ -377,6 +531,11 @@ const CLIENT: Record<string, ClientHandler> = {
   logs: (_arg, ctx) => ctx.openPager('Logs', ctx.logTail().join('\n') || '(log empty)'),
   new: (_arg, ctx) => ctx.confirm('Start fresh? (clears the transcript)', ctx.clearTranscript),
   quit: (_arg, ctx) => ctx.quit()
+}
+
+/** The registered client-command names (catalog introspection — tests/menus). */
+export function clientCommandNames(): string[] {
+  return Object.keys(CLIENT).sort()
 }
 
 /** Render the gateway `commands.catalog` into a help block (loose-typed read).

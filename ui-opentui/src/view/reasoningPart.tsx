@@ -14,6 +14,7 @@
 import { createMemo, createSignal, Show } from 'solid-js'
 
 import type { ThemeColors } from '../logic/theme.ts'
+import { useDisplay } from './display.tsx'
 import { Markdown } from './markdown.tsx'
 import { useScrollAnchor } from './scrollAnchor.tsx'
 import { useTheme } from './theme.tsx'
@@ -44,10 +45,12 @@ function reasoningSummary(text: string): { title?: string; body: string } {
 export function ReasoningPart(props: { text: string; streaming?: boolean }) {
   const theme = useTheme()
   const anchor = useScrollAnchor()
+  const display = useDisplay()
   const [override, setOverride] = createSignal<boolean | undefined>(undefined)
-  // live → expanded so you see it think; settled → collapsed. Click overrides.
-  const expanded = () => override() ?? !!props.streaming
-  const toggle = () => anchor(() => setOverride(e => !(e ?? !!props.streaming)))
+  // live → expanded so you see it think; settled → collapsed, unless the global
+  // /details mode is `expanded` (previews default-open). Click overrides.
+  const expanded = () => override() ?? (!!props.streaming || display().details === 'expanded')
+  const toggle = () => anchor(() => setOverride(!expanded()))
   const summary = createMemo(() => reasoningSummary(props.text))
   const label = () => (props.streaming ? 'Thinking' : 'Thought')
 

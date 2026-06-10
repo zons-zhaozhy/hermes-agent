@@ -21,6 +21,7 @@ import {
   type CatalogDecoded,
   type SessionInfoPatchDecoded
 } from '../boundary/schema/SessionInfo.ts'
+import type { DetailsMode } from './details.ts'
 import { diffStats, type DiffStats } from './diff.ts'
 import { envOutputLinesSet } from './env.ts'
 import { stripAnsi, stripOmittedNote, stripToolEnvelope } from './toolOutput.ts'
@@ -242,6 +243,14 @@ export interface StoreState {
   modelItems: PickerItem[] | undefined
   /** The current session id (shown in the home panel; updated on create/resume). */
   sessionId: string | undefined
+  // ── display flags (utility commands — Epic 3) ────────────────────────────
+  /** Compact transcript (/compact): collapses the blank line between turns/parts.
+   *  Defaults OFF — the persisted `display.tui_compact` config doesn't reach the
+   *  TUI via session.info, so the flag starts false each launch. */
+  compact: boolean
+  /** Global tool/reasoning detail mode (/details): collapsed (default) /
+   *  expanded (bodies default-open) / hidden (runs fold to one muted line). */
+  details: DetailsMode
 }
 
 const LRU_LIMIT = 1000
@@ -399,7 +408,9 @@ export function createSessionStore() {
     hint: undefined,
     catalog: undefined,
     modelItems: undefined,
-    sessionId: undefined
+    sessionId: undefined,
+    compact: false,
+    details: 'collapsed'
   })
 
   // Monotonic part id (stable `key` per part so a new tool part below a streaming
@@ -584,6 +595,16 @@ export function createSessionStore() {
   /** Set / clear the transient composer hint ("Ctrl+C again to quit" — item 11). */
   function setHint(text: string | undefined): void {
     setState('hint', text)
+  }
+
+  /** /compact — set the compact-transcript display flag (Epic 3). */
+  function setCompact(on: boolean): void {
+    setState('compact', on)
+  }
+
+  /** /details — set the global tool/reasoning detail mode (Epic 3). */
+  function setDetails(mode: DetailsMode): void {
+    setState('details', mode)
   }
 
   /** Merge a session-info patch into the chrome state (status bar — item 14). */
@@ -974,6 +995,8 @@ export function createSessionStore() {
     clearCompletions,
     applyInfo,
     setHint,
+    setCompact,
+    setDetails,
     openDashboard,
     closeDashboard,
     hydrate,

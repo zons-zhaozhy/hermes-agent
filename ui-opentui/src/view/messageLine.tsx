@@ -10,7 +10,9 @@
  */
 import { For, Match, Show, Switch } from 'solid-js'
 
+import { collapseHiddenParts, hiddenRunLabel } from '../logic/details.ts'
 import type { Message } from '../logic/store.ts'
+import { useDisplay } from './display.tsx'
 import { Markdown } from './markdown.tsx'
 import { ReasoningPart } from './reasoningPart.tsx'
 import { useTheme } from './theme.tsx'
@@ -20,6 +22,7 @@ const GUTTER = 2
 
 export function MessageLine(props: { message: Message }) {
   const theme = useTheme()
+  const display = useDisplay()
   const m = () => props.message
   const glyph = () => (m().role === 'assistant' ? theme().brand.icon : m().role === 'user' ? theme().brand.prompt : '·')
   // Role-distinct color IS the hierarchy (Ink model): the human's turn is tinted
@@ -29,11 +32,15 @@ export function MessageLine(props: { message: Message }) {
   const bodyFg = () =>
     m().role === 'user' ? theme().color.label : m().role === 'system' ? theme().color.muted : theme().color.text
   const hasParts = () => (m().parts?.length ?? 0) > 0
+  // /details hidden: fold each run of tool/reasoning parts into ONE muted line
+  // (the parts stay in the store — flipping the mode back restores them).
+  const displayParts = () => (display().details === 'hidden' ? collapseHiddenParts(m().parts ?? []) : (m().parts ?? []))
 
   return (
     // One blank line above every turn so user / assistant / tool blocks read as
-    // distinct turns (item: spacing). The gold-vs-bright color split does the rest.
-    <box style={{ flexDirection: 'row', flexShrink: 0, marginTop: 1 }}>
+    // distinct turns (item: spacing); /compact collapses it so long sessions
+    // read denser. The gold-vs-bright color split does the rest.
+    <box style={{ flexDirection: 'row', flexShrink: 0, marginTop: display().compact ? 0 : 1 }}>
       <box style={{ flexShrink: 0, width: GUTTER }}>
         {/* the role glyph is decorative — exclude it from mouse selection (item 4).
             Bold so the user `❯` / assistant `⚕` turn boundaries pop (item 8). */}
@@ -45,8 +52,9 @@ export function MessageLine(props: { message: Message }) {
       </box>
       {/* gap owns ALL inter-part spacing (item 5) — uniform 1 line between text /
           reasoning / tool regardless of order or stream timing, so blank lines
-          don't pop in and out as parts are created/merged mid-stream. */}
-      <box style={{ flexDirection: 'column', flexGrow: 1, minWidth: 0, gap: 1 }}>
+          don't pop in and out as parts are created/merged mid-stream. /compact
+          drops the gap along with the per-turn margin above. */}
+      <box style={{ flexDirection: 'column', flexGrow: 1, minWidth: 0, gap: display().compact ? 0 : 1 }}>
         <Show
           when={m().role === 'assistant' && hasParts()}
           fallback={
@@ -71,12 +79,21 @@ export function MessageLine(props: { message: Message }) {
             </Show>
           }
         >
-          <For each={m().parts ?? []}>
+          <For each={displayParts()}>
             {part => (
               <Switch>
                 <Match when={part.type === 'tool' && part}>{tool => <ToolPart part={tool()} />}</Match>
                 <Match when={part.type === 'reasoning' && part}>
                   {r => <ReasoningPart text={r().text} streaming={m().streaming ?? false} />}
+                </Match>
+                <Match when={part.type === 'hiddenRun' && part}>
+                  {/* /details hidden — the honest minimal render for a folded
+                      tool/reasoning run; chrome, not copyable content. */}
+                  {run => (
+                    <text selectable={false}>
+                      <span style={{ fg: theme().color.muted }}>{`⚡ ${hiddenRunLabel(run())}`}</span>
+                    </text>
+                  )}
                 </Match>
                 <Match when={part.type === 'text' && part}>
                   {/* ONE stable native <markdown> fed the growing text in place (no

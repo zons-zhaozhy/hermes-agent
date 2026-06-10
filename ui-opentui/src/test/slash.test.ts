@@ -4,6 +4,7 @@
  */
 import { afterEach, describe, expect, test } from 'vitest'
 
+import type { DetailsMode } from '../logic/details.ts'
 import {
   dispatchSlash,
   mapCompletions,
@@ -137,6 +138,9 @@ interface Probe {
   copyN: { value: (n: number) => boolean }
   /** The cached /model rows (Epic 7) — seed to simulate a prefetched catalog. */
   modelCache: { value: PickerItem[] | undefined }
+  /** Display flags (/compact, /details — Epic 3). */
+  compactFlag: { value: boolean }
+  detailsFlag: { value: DetailsMode }
 }
 
 function makeCtx(request: (method: string, params: Record<string, unknown>) => Promise<unknown>): Probe {
@@ -153,8 +157,15 @@ function makeCtx(request: (method: string, params: Record<string, unknown>) => P
   const copied: number[] = []
   const copyN: Probe['copyN'] = { value: () => false }
   const modelCache: Probe['modelCache'] = { value: undefined }
+  const compactFlag: Probe['compactFlag'] = { value: false }
+  const detailsFlag: Probe['detailsFlag'] = { value: 'collapsed' }
   const ctx: SlashContext = {
     clearTranscript: () => (cleared.value = true),
+    compact: () => compactFlag.value,
+    setCompact: on => (compactFlag.value = on),
+    details: () => detailsFlag.value,
+    setDetails: mode => (detailsFlag.value = mode),
+    renderableCount: () => undefined,
     confirm: (message, onConfirm) => confirmed.push({ message, onConfirm }),
     copyResponse: n => {
       copied.push(n)
@@ -180,11 +191,13 @@ function makeCtx(request: (method: string, params: Record<string, unknown>) => P
   return {
     calls,
     cleared,
+    compactFlag,
     confirmed,
     copied,
     copyN,
     ctx,
     dashboard,
+    detailsFlag,
     modelCache,
     paged,
     pickers,
