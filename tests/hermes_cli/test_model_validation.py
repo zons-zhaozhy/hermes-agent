@@ -522,10 +522,12 @@ class TestValidateFormatChecks:
         assert result["accepted"] is True
         assert result["persist"] is True
 
-    def test_no_slash_model_rejected_if_not_in_api(self):
+    def test_no_slash_model_warned_if_not_in_api(self):
+        # Models not in API listing are accepted with a warning (providers
+        # sometimes list models late after they're usable).
         result = _validate("gpt-5.4", api_models=["openai/gpt-5.4"])
-        assert result["accepted"] is False
-        assert result["persist"] is False
+        assert result["accepted"] is True
+        assert result["persist"] is True
         assert "not found" in result["message"]
 
 
@@ -551,10 +553,12 @@ class TestValidateApiFound:
 # -- validate — API not found ------------------------------------------------
 
 class TestValidateApiNotFound:
-    def test_model_not_in_api_rejected_with_guidance(self):
+    def test_model_not_in_api_accepted_with_warning(self):
+        # Models not in the provider's /models listing are accepted with a
+        # warning rather than rejected (providers list new models late).
         result = _validate("anthropic/claude-nonexistent")
-        assert result["accepted"] is False
-        assert result["persist"] is False
+        assert result["accepted"] is True
+        assert result["persist"] is True
         assert "not found" in result["message"]
 
     def test_warning_includes_suggestions(self):
@@ -571,9 +575,9 @@ class TestValidateApiNotFound:
         assert result["recognized"] is True
 
     def test_dissimilar_model_shows_suggestions_not_autocorrect(self):
-        """Models too different for auto-correction are rejected with suggestions."""
+        """Models too different for auto-correction are accepted with suggestions."""
         result = _validate("anthropic/claude-nonexistent")
-        assert result["accepted"] is False
+        assert result["accepted"] is True
         assert result.get("corrected_model") is None
         assert "not found" in result["message"]
 
