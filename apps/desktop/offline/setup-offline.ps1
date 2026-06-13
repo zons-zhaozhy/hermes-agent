@@ -322,12 +322,11 @@ New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
 try {
     Safe-ExtractZip $pipWheel.FullName $tempDir
-    $bootstrapCode = "import sys, runpy`n" +
-        "sys.path.insert(0, r''" + $tempDir + "'')`n" +
-        "runpy.run_module(''pip'', run_name=''__main__'')"
-    $bootstrapFile = Join-Path $tempDir "_bootstrap.py"
-    Set-Content -Path $bootstrapFile -Value $bootstrapCode -Encoding UTF8
-    & $pythonExe -S $bootstrapFile 2>&1 | Out-Null
+
+    # Run pip directly from the extracted wheel, install itself into site-packages.
+    # This is the standard bootstrap: python <extracted-pip> install <pip-wheel>
+    # No need to generate a bootstrap .py file (avoids PowerShell string escaping issues).
+    & $pythonExe $tempDir install $pipWheel.FullName 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "pip bootstrap failed (exit code $LASTEXITCODE)"
     }
