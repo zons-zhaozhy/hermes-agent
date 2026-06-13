@@ -286,8 +286,8 @@ if (-not (Test-Path $pythonExe)) {
 # python311._pth makes PYTHONPATH ignored; we add source dir inside it
 $pthFile = Join-Path $ScriptsDir "python311._pth"
 $pthLines = @(
+    "python311.zip",
     ".",
-    "Lib",
     "Lib\site-packages",
     "import site",
     "# Source dir - replaces PYTHONPATH (ignored in embeddable mode)",
