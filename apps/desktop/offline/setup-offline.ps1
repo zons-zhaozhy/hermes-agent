@@ -76,7 +76,7 @@ function Write-Warn2 { param([string]$Message) [Console]::Out.WriteLine("[!]  $M
 function Write-Err2  { param([string]$Message) [Console]::Out.WriteLine("[X]  $Message") }
 
 # Safe ZIP extraction - handles existing destination dirs.
-# .NET ExtractToDirectory throws IOException if dest exists, so we extract
+# .NET zip extraction throws IOException if dest exists, so we extract
 # file-by-file with overwrite.
 function Safe-ExtractZip {
     param([string]$ZipPath, [string]$DestDir)
