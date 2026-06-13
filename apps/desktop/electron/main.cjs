@@ -230,6 +230,14 @@ if (INSTALL_STAMP) {
 function resolveHermesHome() {
   if (process.env.HERMES_HOME) return path.resolve(process.env.HERMES_HOME)
   if (USER_DATA_OVERRIDE) return path.join(path.resolve(USER_DATA_OVERRIDE), 'hermes-home')
+  // 离线安装包：检测到 bundled offline payload 时，固定使用 C:\hermes
+  // 这样首次启动就确定 HERMES_HOME=C:\hermes，不会出现路径不一致
+  if (IS_WINDOWS && IS_PACKAGED && process.resourcesPath) {
+    const offlineScript = path.join(process.resourcesPath, 'offline', 'setup-offline.ps1')
+    if (fs.existsSync(offlineScript)) {
+      return 'C:\\hermes'
+    }
+  }
   if (IS_WINDOWS && process.env.LOCALAPPDATA) {
     const localappdata = path.join(process.env.LOCALAPPDATA, 'hermes')
     const legacy = path.join(app.getPath('home'), '.hermes')
