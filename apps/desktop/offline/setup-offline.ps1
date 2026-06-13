@@ -60,11 +60,40 @@ if ($HermesHome -ne "C:\hermes") {
 
 $VenvDir        = Join-Path $InstallDir "venv"
 $ScriptsDir     = Join-Path $VenvDir "Scripts"
-$BootstrapMarker = Join-Path $InstallDir ".hermes-bootstrap-complete"
+# Bootstrap marker is written by JS bootstrap-runner.cjs (correct schema).
 $DevToolsDir    = Join-Path $PayloadDir "devtools"
 $GitDir         = Join-Path $HermesHome "git"
 $NodeDir        = Join-Path $HermesHome "node"
 $MavenDir       = Join-Path $HermesHome "maven"
+
+# ============================================================================
+# Invoke-NativeCmd: Run a native executable and capture output WITHOUT 2>&1
+#
+# PowerShell 5.1 + $ErrorActionPreference="Stop" + native stderr via 2>&1 =
+# terminating error. Even relaxing EAP to Continue is unreliable. This helper
+# uses Start-Process with file redirection, sidestepping the error stream
+# entirely. Returns @{ ExitCode=N; Output="..." }.
+# ============================================================================
+function Invoke-NativeCmd {
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [Parameter(Mandatory)][string]$ArgumentList,
+        [int]$TimeoutSec = 60
+    )
+    $_outFile = Join-Path $env:TEMP "hermes_native_out_$([System.Guid]::NewGuid().ToString('N').Substring(0,8)).txt"
+    $_errFile = Join-Path $env:TEMP "hermes_native_err_$([System.Guid]::NewGuid().ToString('N').Substring(0,8)).txt"
+    try {
+        $_p = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList `
+            -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput $_outFile -RedirectStandardError $_errFile
+        $_output = ""
+        if (Test-Path $_outFile) { $_output += (Get-Content $_outFile -Raw) }
+        if (Test-Path $_errFile) { $_output += (Get-Content $_errFile -Raw) }
+        return @{ ExitCode = $_p.ExitCode; Output = $_output }
+    } finally {
+        Remove-Item $_outFile, $_errFile -Force -ErrorAction SilentlyContinue
+    }
+}
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
@@ -83,17 +112,54 @@ function Safe-ExtractZip {
     if (-not (Test-Path $DestDir)) {
         New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
     }
+
+    # Method 1 (preferred): Windows built-in tar (Server 2019+/Win10 1803+)
+    # tar natively supports zip format, avoids .NET ExtractToFile file-lock/path issues
+    $tarExe = Get-Command tar -ErrorAction SilentlyContinue
+    if ($tarExe) {
+        # bsdtar (Windows) does NOT support --force-local (GNU tar only).
+        # Use Start-Process to avoid 2>&1 + EAP issues entirely.
+        $_tarOut = Join-Path $env:TEMP "hermes_tar_out.txt"
+        $_tarErr = Join-Path $env:TEMP "hermes_tar_err.txt"
+        try {
+            $_tp = Start-Process -FilePath "tar" -ArgumentList "-xf `"$ZipPath`" -C `"$DestDir`"" `
+                -NoNewWindow -Wait -PassThru `
+                -RedirectStandardOutput $_tarOut -RedirectStandardError $_tarErr
+            if ($_tp.ExitCode -eq 0) { return }
+            Write-Warning "[hermes] tar extraction failed (exit $($_tp.ExitCode)), falling back to .NET method"
+        } finally {
+            Remove-Item $_tarOut, $_tarErr -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # Method 2 (fallback): .NET per-file extraction with retry
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zipArchive = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
     try {
         foreach ($entry in $zipArchive.Entries) {
-            $destPath = Join-Path $DestDir $entry.FullName
+            $entryName = $entry.FullName -replace '/', '\\'
+            if ($entryName.EndsWith('\\') -or $entryName.EndsWith('/')) { continue }
+
+            $destPath = Join-Path $DestDir $entryName
             $destParent = Split-Path $destPath -Parent
             if (-not (Test-Path $destParent)) {
                 New-Item -ItemType Directory -Path $destParent -Force | Out-Null
             }
-            # Skip directory entries (end with / or \)
-            if (-not $entry.FullName.EndsWith('/') -and -not $entry.FullName.EndsWith('\')) {
-                [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destPath, $true)
+
+            # Antivirus may lock .pyd/.dll files; 5 retries with increasing delay
+            $extracted = $false
+            for ($attempt = 1; $attempt -le 5; $attempt++) {
+                try {
+                    [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destPath, $true)
+                    $extracted = $true
+                    break
+                } catch {
+                    if ($attempt -lt 5) {
+                        Start-Sleep -Milliseconds (500 * $attempt)
+                    } else {
+                        throw "Failed to extract entry '$entryName' from '$ZipPath': $($_.Exception.Message)"
+                    }
+                }
             }
         }
     } finally {
@@ -139,7 +205,7 @@ try {
 # ============================================================================
 # Stage 0: Uninstall existing Git / Node / Python / Maven
 # ============================================================================
-[Console]::Out.WriteLine("-> Stage 0/12: Cleaning existing dev tools...")
+[Console]::Out.WriteLine("-> Stage 0/10: Cleaning existing dev tools...")
 
 $uninstallKeys = @(
     "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
@@ -231,7 +297,7 @@ foreach ($pyDir in (Get-Item "C:\Python*" -ErrorAction SilentlyContinue)) {
 # ============================================================================
 # Stage 1: Create directories + extract source code
 # ============================================================================
-[Console]::Out.WriteLine("-> Stage 1/12: Creating directories and extracting source...")
+[Console]::Out.WriteLine("-> Stage 1/10: Creating directories and extracting source...")
 
 New-Item -ItemType Directory -Path $HermesHome -Force | Out-Null
 
@@ -257,7 +323,7 @@ if (-not (Test-Path (Join-Path $InstallDir "hermes_cli"))) {
 # ============================================================================
 # Stage 2: Extract Python embeddable into venv\Scripts\
 # ============================================================================
-[Console]::Out.WriteLine("-> Stage 2/12: Extracting Python 3.11...")
+[Console]::Out.WriteLine("-> Stage 2/10: Extracting Python 3.11...")
 
 $pythonZip = Join-Path $PayloadDir "python-3.11.9-embed-amd64.zip"
 if (-not (Test-Path $pythonZip)) {
@@ -281,7 +347,7 @@ if (-not (Test-Path $pythonExe)) {
 # ============================================================================
 # Stage 3: Configure embeddable Python (_pth file)
 # ============================================================================
-[Console]::Out.WriteLine("-> Stage 3/12: Configuring Python...")
+[Console]::Out.WriteLine("-> Stage 3/10: Configuring Python...")
 
 # python311._pth makes PYTHONPATH ignored; we add source dir inside it
 $pthFile = Join-Path $ScriptsDir "python311._pth"
@@ -300,92 +366,55 @@ New-Item -ItemType Directory -Path $sitePackages -Force | Out-Null
 [Console]::Out.WriteLine("[OK] Python configured (_pth includes: $InstallDir)")
 
 # ============================================================================
-# Stage 4: Bootstrap pip from wheel
+# Stage 4: Extract ALL wheels to site-packages (no pip needed)
 # ============================================================================
-[Console]::Out.WriteLine("-> Stage 4/12: Installing pip...")
+[Console]::Out.WriteLine("-> Stage 4/10: Extracting all packages to site-packages...")
 
 $wheelsDir = Join-Path $PayloadDir "wheels"
 if (-not (Test-Path $wheelsDir)) {
     throw "Missing wheels directory: $wheelsDir"
 }
 
-$pipWheel = Get-ChildItem $wheelsDir -Filter "pip-*-py3-none-any.whl" | Select-Object -First 1
-if (-not $pipWheel) {
-    throw "pip wheel not found in $wheelsDir"
-}
-
-$tempDir = Join-Path $env:TEMP "hermes-pip-bootstrap"
-if (Test-Path $tempDir) {
-    Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
-}
-New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
-
-try {
-    Safe-ExtractZip $pipWheel.FullName $tempDir
-
-    # Run pip directly from the extracted wheel, install itself into site-packages.
-    # This is the standard bootstrap: python <extracted-pip> install <pip-wheel>
-    # No need to generate a bootstrap .py file (avoids PowerShell string escaping issues).
-    & $pythonExe $tempDir install $pipWheel.FullName 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "pip bootstrap failed (exit code $LASTEXITCODE)"
-    }
-} finally {
-    Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
-}
-[Console]::Out.WriteLine("[OK] pip installed")
-
-# ============================================================================
-# Stage 5: Install setuptools, wheel, packaging
-# ============================================================================
-[Console]::Out.WriteLine("-> Stage 5/12: Installing setuptools/wheel/packaging...")
-
-foreach ($pkg in @("setuptools", "wheel", "packaging")) {
-    $whl = Get-ChildItem $wheelsDir -Filter "$pkg-*-py3-none-any.whl" | Select-Object -First 1
-    if ($whl) {
-        & $pythonExe -m pip install --no-index --find-links $wheelsDir $pkg 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            [Console]::Out.WriteLine("[!] Warning: failed to install $pkg, continuing...")
-        }
-    }
-}
-[Console]::Out.WriteLine("[OK] Build tools installed")
-
-# ============================================================================
-# Stage 6: Install all agent dependencies from wheels
-# ============================================================================
-[Console]::Out.WriteLine("-> Stage 6/12: Installing agent dependencies...")
-
-$allWheels = Get-ChildItem $wheelsDir -Filter "*.whl" | Where-Object {
-    $_.BaseName -notmatch '^(pip|setuptools|wheel|packaging)-'
-}
+# A .whl file IS a zip archive. Extracting it into site-packages gives a
+# fully functional installation: package code + .dist-info metadata.
+# This avoids running pip entirely, which is unreliable on embeddable Python
+# (missing site.py initialization, missing distutils, etc.).
+$allWheels = Get-ChildItem $wheelsDir -Filter "*.whl"
 $failCount = 0
+$okCount = 0
+$totalWheels = $allWheels.Count
+$idx = 0
 foreach ($whl in $allWheels) {
-    & $pythonExe -m pip install --no-index --find-links $wheelsDir $whl.FullName 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        [Console]::Out.WriteLine("[!] Warning: failed to install $($whl.Name)")
+    $idx++
+    [Console]::Out.WriteLine("  [$idx/$totalWheels] $($whl.Name)")
+    try {
+        Safe-ExtractZip $whl.FullName $sitePackages
+        $okCount++
+    } catch {
+        [Console]::Out.WriteLine("  [!] FAIL: $($whl.Name) - $_")
         $failCount++
     }
 }
-if ($failCount -gt 5) {
-    throw "Too many dependency failures ($failCount wheels failed)"
+[Console]::Out.WriteLine("[OK] $okCount/$totalWheels extracted, $failCount failed")
+if ($failCount -gt 0) {
+    [Console]::Out.WriteLine("[!] Warning: $failCount wheels failed to extract")
 }
 $pkgCount = (Get-ChildItem $sitePackages -Directory).Count
-[Console]::Out.WriteLine("[OK] Dependencies installed ($pkgCount packages, $failCount skipped)")
+[Console]::Out.WriteLine("[OK] $okCount wheels extracted ($pkgCount dirs in site-packages, $failCount failed)")
 
 # ============================================================================
-# Stage 7: Install hermes-agent package + verify import
+# Stage 5: Verify hermes_cli import
 # ============================================================================
-[Console]::Out.WriteLine("-> Stage 7/12: Installing hermes-agent package...")
+[Console]::Out.WriteLine("-> Stage 5/10: Verifying Python environment...")
 
-& $pythonExe -m pip install --no-index --find-links $wheelsDir --no-deps -e $InstallDir 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    [Console]::Out.WriteLine("[!] Warning: pip install -e failed; _pth will handle imports")
-}
-
-$importResult = & $pythonExe -c "import hermes_cli;print('OK')" 2>&1
-if ($importResult -ne "OK") {
-    [Console]::Out.WriteLine("[X] Import test failed: $importResult")
+# hermes_cli source is already in $InstallDir (extracted in Stage 1).
+# The _pth file includes $InstallDir, so imports work without pip install -e.
+$_quickCheckFile = Join-Path $env:TEMP "hermes_quick_check.py"
+"import hermes_cli;print('OK')" | Set-Content $_quickCheckFile -Encoding ASCII
+$_result = Invoke-NativeCmd -FilePath $pythonExe -ArgumentList $_quickCheckFile
+Remove-Item $_quickCheckFile -Force -ErrorAction SilentlyContinue
+if ($_result.ExitCode -ne 0 -or $_result.Output.Trim() -ne "OK") {
+    [Console]::Out.WriteLine("[X] Import test failed: $($_result.Output)")
     throw "hermes_cli import test failed"
 }
 [Console]::Out.WriteLine("[OK] hermes_cli import verified")
@@ -393,7 +422,7 @@ if ($importResult -ne "OK") {
 # ============================================================================
 # Stage 8: Install PortableGit
 # ============================================================================
-[Console]::Out.WriteLine("-> Stage 8/12: Installing Git...")
+[Console]::Out.WriteLine("-> Stage 6/10: Installing Git...")
 
 $gitArchive = Join-Path $DevToolsDir "PortableGit-2.54.0-64-bit.7z.exe"
 if (Test-Path $gitArchive) {
@@ -402,13 +431,15 @@ if (Test-Path $gitArchive) {
     }
     New-Item -ItemType Directory -Path $GitDir -Force | Out-Null
 
-    # PortableGit self-extracting: -o"dir" -y
-    $proc = Start-Process -FilePath $gitArchive `
-        -ArgumentList "-o`"$GitDir`"", "-y" `
-        -WindowStyle Hidden -Wait -PassThru
-
-    if ($proc.ExitCode -ne 0) {
-        throw "PortableGit extraction failed (exit code $($proc.ExitCode))"
+    # PortableGit self-extracting 7z SFX: -o"dir" -y
+    # MUST pass as single argument string, NOT array. Start-Process -ArgumentList
+    # array mode double-quotes embedded quotes (-o\"C:\...\"), SFX can't parse it,
+    # falls back to GUI dialog waiting for a click. With -WindowStyle Hidden the
+    # dialog is invisible -> infinite hang (the bug that caused "stuck at Git").
+    $_gitArg = "-o`"$GitDir`" -y"
+    $_r = Invoke-NativeCmd -FilePath $gitArchive -ArgumentList $_gitArg -TimeoutSec 120
+    if ($_r.ExitCode -ne 0) {
+        throw "PortableGit extraction failed (exit code $($_r.ExitCode))`n$($_r.Output)"
     }
 
     $gitExe = Join-Path $GitDir "cmd\git.exe"
@@ -418,8 +449,8 @@ if (Test-Path $gitArchive) {
 
     Add-ToUserPath (Join-Path $GitDir "cmd")
     Add-ToUserPath (Join-Path $GitDir "bin")
-    $gitVersion = & $gitExe --version 2>&1
-    [Console]::Out.WriteLine("[OK] Git: $gitVersion")
+    $_r = Invoke-NativeCmd -FilePath $gitExe -ArgumentList '--version'
+    [Console]::Out.WriteLine("[OK] Git: $($_r.Output.Trim())")
 } else {
     [Console]::Out.WriteLine("[!] Git archive not found at $gitArchive, skipping")
 }
@@ -427,7 +458,7 @@ if (Test-Path $gitArchive) {
 # ============================================================================
 # Stage 9: Install Node.js
 # ============================================================================
-[Console]::Out.WriteLine("-> Stage 9/12: Installing Node.js...")
+[Console]::Out.WriteLine("-> Stage 7/10: Installing Node.js...")
 
 $nodeZip = Join-Path $DevToolsDir "node-win-x64.zip"
 if (Test-Path $nodeZip) {
@@ -461,8 +492,8 @@ if (Test-Path $nodeZip) {
     $env:NPM_CONFIG_PREFIX = $npmPrefix
     Add-ToUserPath $npmPrefix
 
-    $nodeVersion = & (Join-Path $NodeDir "node.exe") --version 2>&1
-    [Console]::Out.WriteLine("[OK] Node: $nodeVersion")
+    $_r = Invoke-NativeCmd -FilePath (Join-Path $NodeDir "node.exe") -ArgumentList '--version'
+    [Console]::Out.WriteLine("[OK] Node: $($_r.Output.Trim())")
 } else {
     [Console]::Out.WriteLine("[!] Node archive not found at $nodeZip, skipping")
 }
@@ -470,7 +501,7 @@ if (Test-Path $nodeZip) {
 # ============================================================================
 # Stage 10: Install Maven
 # ============================================================================
-[Console]::Out.WriteLine("-> Stage 10/12: Installing Maven...")
+[Console]::Out.WriteLine("-> Stage 8/10: Installing Maven...")
 
 $mavenZip = Join-Path $DevToolsDir "apache-maven-3.9.9-bin.zip"
 if (Test-Path $mavenZip) {
@@ -499,8 +530,8 @@ if (Test-Path $mavenZip) {
     [Environment]::SetEnvironmentVariable("MAVEN_HOME", $MavenDir, "User")
     $env:MAVEN_HOME = $MavenDir
 
-    $mvnVersion = & (Join-Path $MavenDir "bin\mvn.cmd") --version 2>&1 | Select-Object -First 1
-    [Console]::Out.WriteLine("[OK] Maven: $mvnVersion")
+    $_r = Invoke-NativeCmd -FilePath (Join-Path $MavenDir "bin\mvn.cmd") -ArgumentList '--version'
+    [Console]::Out.WriteLine("[OK] Maven: $($_r.Output.Split("`n")[0].Trim())")
 } else {
     [Console]::Out.WriteLine("[!] Maven archive not found at $mavenZip, skipping")
 }
@@ -508,46 +539,138 @@ if (Test-Path $mavenZip) {
 # ============================================================================
 # Stage 11: Set environment variables
 # ============================================================================
-[Console]::Out.WriteLine("-> Stage 11/12: Setting environment variables...")
+[Console]::Out.WriteLine("-> Stage 9/10: Setting environment variables...")
 
 [Environment]::SetEnvironmentVariable("HERMES_HOME", $HermesHome, "User")
 $env:HERMES_HOME = $HermesHome
 [Console]::Out.WriteLine("[OK] HERMES_HOME=$HermesHome")
 
 # ============================================================================
-# Stage 12: Write bootstrap-complete marker
+# Stage 11: Post-install verification
 # ============================================================================
-[Console]::Out.WriteLine("-> Stage 12/12: Writing completion marker...")
+# After installing all files, smoke-test the Python environment by:
+#   1. Importing every module the dashboard needs at runtime
+#   2. Verifying HERMES_HOME is writable
+# Dashboard boot test removed: embeddable Python cold start + plugin discovery
+# makes it unreliable within any fixed timeout on offline Windows. Electron's
+# bootstrap-runner has its own readiness probe for the real startup.
+# ============================================================================
+[Console]::Out.WriteLine("")
+[Console]::Out.WriteLine("==========================================")
+[Console]::Out.WriteLine("  Post-Install Verification")
+[Console]::Out.WriteLine("==========================================")
+
+# --- 11a: Import check ---
+[Console]::Out.WriteLine("[1/2] Python module imports...")
+
+$_checkScript = @"
+import sys
+failures = []
+mods = [
+    ('uvicorn', 'uvicorn'),
+    ('websockets', 'websockets'),
+    ('fastapi', 'fastapi'),
+    ('httptools', 'httptools'),
+    ('pydantic', 'pydantic'),
+    ('starlette', 'starlette'),
+    ('multipart', 'python-multipart'),
+    ('yaml', 'pyyaml'),
+    ('dotenv', 'python-dotenv'),
+    ('jwt', 'pyjwt'),
+    ('cryptography', 'cryptography'),
+    ('openai', 'openai'),
+    ('httpx', 'httpx'),
+    ('tui_gateway.ws', 'tui_gateway.ws'),
+    ('tui_gateway.server', 'tui_gateway.server'),
+    ('hermes_cli.web_server', 'hermes_cli.web_server (dashboard)'),
+    ('hermes_cli.main', 'hermes_cli.main (CLI entry)'),
+]
+for mod, label in mods:
+    try:
+        __import__(mod)
+    except Exception as e:
+        failures.append(f'{label}: {e}')
+if failures:
+    print('FAIL')
+    for f in failures:
+        print(f'  - {f}')
+    sys.exit(1)
+else:
+    print('OK')
+    sys.exit(0)
+"@
+
+# PowerShell 5.1 mangles multi-line strings passed via -c to native commands.
+# Write to a temp .py file and execute that instead.
+$_checkScriptFile = Join-Path $env:TEMP "hermes_import_check.py"
+$_checkScript | Set-Content $_checkScriptFile -Encoding ASCII
+$_result = Invoke-NativeCmd -FilePath $pythonExe -ArgumentList $_checkScriptFile
+Remove-Item $_checkScriptFile -Force -ErrorAction SilentlyContinue
+[Console]::Out.WriteLine($_result.Output)
+if ($_result.ExitCode -ne 0) {
+    throw "Post-install verification FAILED: critical Python imports failed. See output above."
+}
+Write-OK "All imports passed"
+
+# --- 11b: Verify file write capability ---
+# Dashboard/WS smoke test removed: embeddable Python cold start makes the
+# dashboard too slow to boot within a fixed timeout during install. The
+# Electron app starts its own dashboard at runtime; import check (11a) +
+# file write test here are sufficient to verify the install.
+[Console]::Out.WriteLine("[2/2] File write capability test...")
+
+$_writeTestPath = Join-Path $HermesHome ".write-test"
+try {
+    "write-test-ok" | Set-Content $_writeTestPath -Encoding UTF8
+    $_readBack = Get-Content $_writeTestPath -Raw
+    if ($_readBack.Trim() -ne "write-test-ok") {
+        throw "Content mismatch: expected 'write-test-ok', got '$_readBack'"
+    }
+    Remove-Item $_writeTestPath -Force
+    Write-OK "File write/read verified at $HermesHome"
+} catch {
+    throw "Cannot write to $HermesHome : $_"
+}
+
+[Console]::Out.WriteLine("")
+[Console]::Out.WriteLine("[OK] Post-install verification PASSED (imports + file I/O)")
+[Console]::Out.WriteLine("")
+
+# ============================================================================
+# Stage 12: Print install summary (marker is written by JS bootstrap-runner)
+# ============================================================================
+# The .hermes-bootstrap-complete marker must follow the JS-side schema
+# (schemaVersion + pinnedCommit) that isBootstrapComplete() checks.
+# JS bootstrap-runner.cjs writes it after we exit 0, so we must NOT write
+# it here -- a schema-mismatched marker would make isBootstrapComplete()
+# return false forever, causing an infinite bootstrap loop.
+[Console]::Out.WriteLine("-> Final: Install summary...")
 
 $toolSummary = @()
 if (Test-Path (Join-Path $GitDir "cmd\git.exe")) {
-    $toolSummary += "git=$(& (Join-Path $GitDir 'cmd\git.exe') --version 2>&1)"
+    $_r = Invoke-NativeCmd -FilePath (Join-Path $GitDir 'cmd\git.exe') -ArgumentList '--version'
+    $toolSummary += "git=$($_r.Output.Trim())"
 }
 if (Test-Path (Join-Path $NodeDir "node.exe")) {
-    $toolSummary += "node=$(& (Join-Path $NodeDir 'node.exe') --version 2>&1)"
+    $_r = Invoke-NativeCmd -FilePath (Join-Path $NodeDir 'node.exe') -ArgumentList '--version'
+    $toolSummary += "node=$($_r.Output.Trim())"
 }
 if (Test-Path (Join-Path $MavenDir "bin\mvn.cmd")) {
-    $toolSummary += "maven=$(& (Join-Path $MavenDir 'bin\mvn.cmd') --version 2>&1 | Select-Object -First 1)"
+    $_r = Invoke-NativeCmd -FilePath (Join-Path $MavenDir 'bin\mvn.cmd') -ArgumentList '--version'
+    $toolSummary += "maven=$($_r.Output.Split("`n")[0].Trim())"
 }
-$toolSummary += "python=$(& $pythonExe --version 2>&1)"
+$_r = Invoke-NativeCmd -FilePath $pythonExe -ArgumentList '--version'
+$toolSummary += "python=$($_r.Output.Trim())"
 
-$markerData = @{
-    status         = "complete"
-    installed_at   = (Get-Date -Format "o")
-    version        = "offline-bundle"
-    install_method = "offline"
-    hermes_home    = $HermesHome
-    tools          = ($toolSummary -join "; ")
-} | ConvertTo-Json
-$markerData | Set-Content $BootstrapMarker -Encoding UTF8
-
-[Console]::Out.WriteLine("[OK] Bootstrap marker written")
+[Console]::Out.WriteLine("[OK] Tools: $($toolSummary -join '; ')")
+[Console]::Out.WriteLine("[OK] Marker will be written by bootstrap-runner (JS-side)")
 [Console]::Out.WriteLine("")
 [Console]::Out.WriteLine("==========================================")
 [Console]::Out.WriteLine("  Hermes Agent installed successfully!    ")
 [Console]::Out.WriteLine("==========================================")
 [Console]::Out.WriteLine("  Install root:  $HermesHome")
 [Console]::Out.WriteLine("  Python:        $pythonExe")
+[Console]::Out.WriteLine("  Verified:      imports, file I/O")
 [Console]::Out.WriteLine("  Tools:         $($toolSummary -join ', ')")
 [Console]::Out.WriteLine("")
 

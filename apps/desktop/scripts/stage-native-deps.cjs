@@ -38,7 +38,10 @@ const STAGE_ROOT = path.join(APP_ROOT, 'build', 'native-deps')
 // The target arch may be overridden by electron-builder via npm_config_arch
 // (e.g. `npm run dist -- --arm64`); fall back to the build host's arch.
 const TARGET_ARCH = process.env.npm_config_arch || process.arch
-const TARGET_PLATFORM = process.platform
+// Cross-compilation: allow override via TARGET_PLATFORM env var (e.g. 'win32'
+// when building a Windows installer on macOS).  Falls back to process.platform
+// when not set (native builds).
+const TARGET_PLATFORM = process.env.TARGET_PLATFORM || process.platform
 
 // Modules to stage. The "from" path is the hoisted location in the workspace
 // root; "to" is the layout we want inside build/native-deps/.  The "include"
