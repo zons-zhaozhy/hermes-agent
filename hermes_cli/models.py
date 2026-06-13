@@ -3876,15 +3876,20 @@ def validate_requested_model(
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
 
-        return {
-            "accepted": False,
-            "persist": False,
-            "recognized": False,
-            "message": (
-                f"Model `{requested}` was not found in this provider's model listing."
-                f"{suggestion_text}"
-            ),
-        }
+            # Accept with a warning — providers sometimes list models in
+            # /models late (e.g. GLM-5.2 was usable before appearing in the
+            # listing).  Rejecting here breaks newly-released models that
+            # the API hasn't catalogued yet.
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in this provider's model listing "
+                    f"but has been accepted.  It may still work (new or unlisted model)."
+                    f"{suggestion_text}"
+                ),
+            }
 
     # api_models is None — couldn't reach API.  Accept and persist,
     # but warn so typos don't silently break things.
