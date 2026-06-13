@@ -10850,8 +10850,35 @@ def cmd_claw(args):
     claw_command(args)
 
 
+def _patch_prompt_toolkit_no_console():
+    """在无 console 的 Windows 环境（如桌面应用子进程）中，
+    prompt_toolkit 的 create_output() 会抛 NoConsoleScreenBufferError。
+    这里提前 patch，让它回退到 DummyOutput，避免整个进程崩溃。
+    current.py 的 output 属性做局部 from ...defaults import create_output，
+    所以 patch defaults 模块的函数即可生效。
+    """
+    try:
+        import prompt_toolkit.output.defaults as _pt_defaults
+        _orig_create_output = _pt_defaults.create_output
+
+        def _safe_create_output(*args, **kwargs):
+            try:
+                return _orig_create_output(*args, **kwargs)
+            except Exception:
+                from prompt_toolkit.output import DummyOutput
+                return DummyOutput()
+
+        _pt_defaults.create_output = _safe_create_output
+    except Exception:
+        pass
+
+
 def main():
     """Main entry point for hermes CLI."""
+    # 无 console 环境下 patch prompt_toolkit，必须在任何 prompt_toolkit
+    # 导入之前执行（Windows Server / 桌面应用子进程等场景）
+    _patch_prompt_toolkit_no_console()
+
     # Cosmetic: make the process show up as 'hermes' instead of 'python3.11'
     # in ps/top/htop.  Non-fatal — just a nicer UX.
     _set_process_title()
