@@ -1,4 +1,4 @@
-# ============================================================================
+﻿# ============================================================================
 # Hermes Agent Offline Setup (Windows)
 # ============================================================================
 # Self-contained offline installer. Zero network access required.
@@ -38,8 +38,10 @@ $ProgressPreference = "SilentlyContinue"
 function script:Write-Host {
     param(
         [Parameter(Position=0)][object]$Object,
-        [switch]$ForegroundColor,
-        [switch]$NoNewline
+        [object]$ForegroundColor,
+        [object]$BackgroundColor,
+        [switch]$NoNewline,
+        [object]$Separator
     )
     $text = if ($null -ne $Object) { $Object.ToString() } else { "" }
     if ($NoNewline) {
@@ -51,7 +53,7 @@ function script:Write-Host {
 
 # Force C:\hermes regardless of what was passed in
 if ($HermesHome -ne "C:\hermes") {
-    Write-Host "[INFO] Forcing HermesHome to C:\hermes (offline bundle standard)"
+    [Console]::Out.WriteLine("[INFO] Forcing HermesHome to C:\hermes (offline bundle standard)")
     $HermesHome = "C:\hermes"
     $InstallDir = "C:\hermes\hermes-agent"
 }
@@ -68,10 +70,10 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 # --- Helper functions ---
 
-function Write-Info  { param([string]$Message) Write-Host "-> $Message" }
-function Write-OK    { param([string]$Message) Write-Host "[OK] $Message" }
-function Write-Warn2 { param([string]$Message) Write-Host "[!]  $Message" }
-function Write-Err2  { param([string]$Message) Write-Host "[X]  $Message" }
+function Write-Info  { param([string]$Message) [Console]::Out.WriteLine("-> $Message") }
+function Write-OK    { param([string]$Message) [Console]::Out.WriteLine("[OK] $Message") }
+function Write-Warn2 { param([string]$Message) [Console]::Out.WriteLine("[!]  $Message") }
+function Write-Err2  { param([string]$Message) [Console]::Out.WriteLine("[X]  $Message") }
 
 # Safe ZIP extraction - handles existing destination dirs.
 # .NET ExtractToDirectory throws IOException if dest exists, so we extract
@@ -106,7 +108,7 @@ function Add-ToUserPath {
     $newPath = if ($currentPath) { "$PathToAdd;$currentPath" } else { $PathToAdd }
     [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
     $env:PATH = "$PathToAdd;$env:PATH"
-    Write-Host "[OK] PATH updated: $PathToAdd"
+    [Console]::Out.WriteLine("[OK] PATH updated: $PathToAdd")
 }
 
 function Remove-FromPath {
@@ -121,7 +123,7 @@ function Remove-FromPath {
             $newPath = $entries -join ';'
             if ($newPath -ne $currentPath) {
                 [Environment]::SetEnvironmentVariable("PATH", $newPath, $scope)
-                Write-Host "[!] Removed from $scope PATH: $PathToRemove"
+                [Console]::Out.WriteLine("[!] Removed from $scope PATH: $PathToRemove")
             }
         } catch {
             # Machine scope may need admin; ignore
@@ -137,7 +139,7 @@ try {
 # ============================================================================
 # Stage 0: Uninstall existing Git / Node / Python / Maven
 # ============================================================================
-Write-Host "-> Stage 0/12: Cleaning existing dev tools..."
+[Console]::Out.WriteLine("-> Stage 0/12: Cleaning existing dev tools...")
 
 $uninstallKeys = @(
     "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
@@ -165,7 +167,7 @@ foreach ($key in $uninstallKeys) {
 }
 
 foreach ($tool in $toolsFound) {
-    Write-Host "[!] Uninstalling: $($tool.Name)"
+    [Console]::Out.WriteLine("[!] Uninstalling: $($tool.Name)")
     try {
         $cmd = $tool.QuietUninstallString
         if (-not $cmd) { $cmd = $tool.UninstallString }
@@ -214,22 +216,22 @@ $oldDirs = @(
 )
 foreach ($old in $oldDirs) {
     if (Test-Path $old) {
-        Write-Host "[!] Removing old directory: $old"
+        [Console]::Out.WriteLine("[!] Removing old directory: $old")
         try { Remove-Item -Recurse -Force $old -ErrorAction SilentlyContinue } catch {}
     }
 }
 # Wildcard: C:\Python*
 foreach ($pyDir in (Get-Item "C:\Python*" -ErrorAction SilentlyContinue)) {
-    Write-Host "[!] Removing old directory: $($pyDir.FullName)"
+    [Console]::Out.WriteLine("[!] Removing old directory: $($pyDir.FullName)")
     try { Remove-Item -Recurse -Force $pyDir.FullName -ErrorAction SilentlyContinue } catch {}
 }
 
-Write-Host "[OK] Stage 0 complete"
+[Console]::Out.WriteLine("[OK] Stage 0 complete")
 
 # ============================================================================
 # Stage 1: Create directories + extract source code
 # ============================================================================
-Write-Host "-> Stage 1/12: Creating directories and extracting source..."
+[Console]::Out.WriteLine("-> Stage 1/12: Creating directories and extracting source...")
 
 New-Item -ItemType Directory -Path $HermesHome -Force | Out-Null
 
@@ -250,12 +252,12 @@ Safe-ExtractZip $sourceZip $InstallDir
 if (-not (Test-Path (Join-Path $InstallDir "hermes_cli"))) {
     throw "Source extraction failed - hermes_cli not found in $InstallDir"
 }
-Write-Host "[OK] Source code extracted"
+[Console]::Out.WriteLine("[OK] Source code extracted")
 
 # ============================================================================
 # Stage 2: Extract Python embeddable into venv\Scripts\
 # ============================================================================
-Write-Host "-> Stage 2/12: Extracting Python 3.11..."
+[Console]::Out.WriteLine("-> Stage 2/12: Extracting Python 3.11...")
 
 $pythonZip = Join-Path $PayloadDir "python-3.11.9-embed-amd64.zip"
 if (-not (Test-Path $pythonZip)) {
@@ -274,12 +276,12 @@ $pythonExe = Join-Path $ScriptsDir "python.exe"
 if (-not (Test-Path $pythonExe)) {
     throw "Python extraction failed - python.exe not found at $pythonExe"
 }
-Write-Host "[OK] Python 3.11 extracted"
+[Console]::Out.WriteLine("[OK] Python 3.11 extracted")
 
 # ============================================================================
 # Stage 3: Configure embeddable Python (_pth file)
 # ============================================================================
-Write-Host "-> Stage 3/12: Configuring Python..."
+[Console]::Out.WriteLine("-> Stage 3/12: Configuring Python...")
 
 # python311._pth makes PYTHONPATH ignored; we add source dir inside it
 $pthFile = Join-Path $ScriptsDir "python311._pth"
@@ -295,12 +297,12 @@ $pthLines -join "`r`n" | Set-Content $pthFile -Encoding ASCII
 
 $sitePackages = Join-Path $ScriptsDir "Lib\site-packages"
 New-Item -ItemType Directory -Path $sitePackages -Force | Out-Null
-Write-Host "[OK] Python configured (_pth includes: $InstallDir)"
+[Console]::Out.WriteLine("[OK] Python configured (_pth includes: $InstallDir)")
 
 # ============================================================================
 # Stage 4: Bootstrap pip from wheel
 # ============================================================================
-Write-Host "-> Stage 4/12: Installing pip..."
+[Console]::Out.WriteLine("-> Stage 4/12: Installing pip...")
 
 $wheelsDir = Join-Path $PayloadDir "wheels"
 if (-not (Test-Path $wheelsDir)) {
@@ -320,11 +322,9 @@ New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
 try {
     Safe-ExtractZip $pipWheel.FullName $tempDir
-    $bootstrapCode = @"
-import sys, runpy
-sys.path.insert(0, r'$tempDir')
-runpy.run_module('pip', run_name='__main__')
-"@
+    $bootstrapCode = "import sys, runpy`n" +
+        "sys.path.insert(0, r''" + $tempDir + "'')`n" +
+        "runpy.run_module(''pip'', run_name=''__main__'')"
     $bootstrapFile = Join-Path $tempDir "_bootstrap.py"
     Set-Content -Path $bootstrapFile -Value $bootstrapCode -Encoding UTF8
     & $pythonExe -S $bootstrapFile 2>&1 | Out-Null
@@ -334,28 +334,28 @@ runpy.run_module('pip', run_name='__main__')
 } finally {
     Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
 }
-Write-Host "[OK] pip installed"
+[Console]::Out.WriteLine("[OK] pip installed")
 
 # ============================================================================
 # Stage 5: Install setuptools, wheel, packaging
 # ============================================================================
-Write-Host "-> Stage 5/12: Installing setuptools/wheel/packaging..."
+[Console]::Out.WriteLine("-> Stage 5/12: Installing setuptools/wheel/packaging...")
 
 foreach ($pkg in @("setuptools", "wheel", "packaging")) {
     $whl = Get-ChildItem $wheelsDir -Filter "$pkg-*-py3-none-any.whl" | Select-Object -First 1
     if ($whl) {
         & $pythonExe -m pip install --no-index --find-links $wheelsDir $pkg 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "[!] Warning: failed to install $pkg, continuing..."
+            [Console]::Out.WriteLine("[!] Warning: failed to install $pkg, continuing...")
         }
     }
 }
-Write-Host "[OK] Build tools installed"
+[Console]::Out.WriteLine("[OK] Build tools installed")
 
 # ============================================================================
 # Stage 6: Install all agent dependencies from wheels
 # ============================================================================
-Write-Host "-> Stage 6/12: Installing agent dependencies..."
+[Console]::Out.WriteLine("-> Stage 6/12: Installing agent dependencies...")
 
 $allWheels = Get-ChildItem $wheelsDir -Filter "*.whl" | Where-Object {
     $_.BaseName -notmatch '^(pip|setuptools|wheel|packaging)-'
@@ -364,7 +364,7 @@ $failCount = 0
 foreach ($whl in $allWheels) {
     & $pythonExe -m pip install --no-index --find-links $wheelsDir $whl.FullName 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "[!] Warning: failed to install $($whl.Name)"
+        [Console]::Out.WriteLine("[!] Warning: failed to install $($whl.Name)")
         $failCount++
     }
 }
@@ -372,29 +372,29 @@ if ($failCount -gt 5) {
     throw "Too many dependency failures ($failCount wheels failed)"
 }
 $pkgCount = (Get-ChildItem $sitePackages -Directory).Count
-Write-Host "[OK] Dependencies installed ($pkgCount packages, $failCount skipped)"
+[Console]::Out.WriteLine("[OK] Dependencies installed ($pkgCount packages, $failCount skipped)")
 
 # ============================================================================
 # Stage 7: Install hermes-agent package + verify import
 # ============================================================================
-Write-Host "-> Stage 7/12: Installing hermes-agent package..."
+[Console]::Out.WriteLine("-> Stage 7/12: Installing hermes-agent package...")
 
 & $pythonExe -m pip install --no-index --find-links $wheelsDir --no-deps -e $InstallDir 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "[!] Warning: pip install -e failed; _pth will handle imports"
+    [Console]::Out.WriteLine("[!] Warning: pip install -e failed; _pth will handle imports")
 }
 
 $importResult = & $pythonExe -c "import hermes_cli;print('OK')" 2>&1
 if ($importResult -ne "OK") {
-    Write-Host "[X] Import test failed: $importResult"
+    [Console]::Out.WriteLine("[X] Import test failed: $importResult")
     throw "hermes_cli import test failed"
 }
-Write-Host "[OK] hermes_cli import verified"
+[Console]::Out.WriteLine("[OK] hermes_cli import verified")
 
 # ============================================================================
 # Stage 8: Install PortableGit
 # ============================================================================
-Write-Host "-> Stage 8/12: Installing Git..."
+[Console]::Out.WriteLine("-> Stage 8/12: Installing Git...")
 
 $gitArchive = Join-Path $DevToolsDir "PortableGit-2.54.0-64-bit.7z.exe"
 if (Test-Path $gitArchive) {
@@ -420,15 +420,15 @@ if (Test-Path $gitArchive) {
     Add-ToUserPath (Join-Path $GitDir "cmd")
     Add-ToUserPath (Join-Path $GitDir "bin")
     $gitVersion = & $gitExe --version 2>&1
-    Write-Host "[OK] Git: $gitVersion"
+    [Console]::Out.WriteLine("[OK] Git: $gitVersion")
 } else {
-    Write-Host "[!] Git archive not found at $gitArchive, skipping"
+    [Console]::Out.WriteLine("[!] Git archive not found at $gitArchive, skipping")
 }
 
 # ============================================================================
 # Stage 9: Install Node.js
 # ============================================================================
-Write-Host "-> Stage 9/12: Installing Node.js..."
+[Console]::Out.WriteLine("-> Stage 9/12: Installing Node.js...")
 
 $nodeZip = Join-Path $DevToolsDir "node-win-x64.zip"
 if (Test-Path $nodeZip) {
@@ -463,15 +463,15 @@ if (Test-Path $nodeZip) {
     Add-ToUserPath $npmPrefix
 
     $nodeVersion = & (Join-Path $NodeDir "node.exe") --version 2>&1
-    Write-Host "[OK] Node: $nodeVersion"
+    [Console]::Out.WriteLine("[OK] Node: $nodeVersion")
 } else {
-    Write-Host "[!] Node archive not found at $nodeZip, skipping"
+    [Console]::Out.WriteLine("[!] Node archive not found at $nodeZip, skipping")
 }
 
 # ============================================================================
 # Stage 10: Install Maven
 # ============================================================================
-Write-Host "-> Stage 10/12: Installing Maven..."
+[Console]::Out.WriteLine("-> Stage 10/12: Installing Maven...")
 
 $mavenZip = Join-Path $DevToolsDir "apache-maven-3.9.9-bin.zip"
 if (Test-Path $mavenZip) {
@@ -501,24 +501,24 @@ if (Test-Path $mavenZip) {
     $env:MAVEN_HOME = $MavenDir
 
     $mvnVersion = & (Join-Path $MavenDir "bin\mvn.cmd") --version 2>&1 | Select-Object -First 1
-    Write-Host "[OK] Maven: $mvnVersion"
+    [Console]::Out.WriteLine("[OK] Maven: $mvnVersion")
 } else {
-    Write-Host "[!] Maven archive not found at $mavenZip, skipping"
+    [Console]::Out.WriteLine("[!] Maven archive not found at $mavenZip, skipping")
 }
 
 # ============================================================================
 # Stage 11: Set environment variables
 # ============================================================================
-Write-Host "-> Stage 11/12: Setting environment variables..."
+[Console]::Out.WriteLine("-> Stage 11/12: Setting environment variables...")
 
 [Environment]::SetEnvironmentVariable("HERMES_HOME", $HermesHome, "User")
 $env:HERMES_HOME = $HermesHome
-Write-Host "[OK] HERMES_HOME=$HermesHome"
+[Console]::Out.WriteLine("[OK] HERMES_HOME=$HermesHome")
 
 # ============================================================================
 # Stage 12: Write bootstrap-complete marker
 # ============================================================================
-Write-Host "-> Stage 12/12: Writing completion marker..."
+[Console]::Out.WriteLine("-> Stage 12/12: Writing completion marker...")
 
 $toolSummary = @()
 if (Test-Path (Join-Path $GitDir "cmd\git.exe")) {
@@ -542,26 +542,26 @@ $markerData = @{
 } | ConvertTo-Json
 $markerData | Set-Content $BootstrapMarker -Encoding UTF8
 
-Write-Host "[OK] Bootstrap marker written"
-Write-Host ""
-Write-Host "==========================================" -ForegroundColor Green
-Write-Host "  Hermes Agent installed successfully!    " -ForegroundColor Green
-Write-Host "==========================================" -ForegroundColor Green
-Write-Host "  Install root:  $HermesHome"
-Write-Host "  Python:        $pythonExe"
-Write-Host "  Tools:         $($toolSummary -join ', ')"
-Write-Host ""
+[Console]::Out.WriteLine("[OK] Bootstrap marker written")
+[Console]::Out.WriteLine("")
+[Console]::Out.WriteLine("==========================================")
+[Console]::Out.WriteLine("  Hermes Agent installed successfully!    ")
+[Console]::Out.WriteLine("==========================================")
+[Console]::Out.WriteLine("  Install root:  $HermesHome")
+[Console]::Out.WriteLine("  Python:        $pythonExe")
+[Console]::Out.WriteLine("  Tools:         $($toolSummary -join ', ')")
+[Console]::Out.WriteLine("")
 
 } catch {
-    Write-Host ""
-    Write-Host "[FATAL] setup-offline.ps1 failed:" -ForegroundColor Red
-    Write-Host "  $_" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Stack Trace:" -ForegroundColor Yellow
-    Write-Host "  $($_.ScriptStackTrace)" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "Error Record:" -ForegroundColor Yellow
-    Write-Host "  $($_.Exception.Message)" -ForegroundColor Yellow
-    Write-Host ""
+    [Console]::Out.WriteLine("")
+    [Console]::Out.WriteLine("[FATAL] setup-offline.ps1 failed:")
+    [Console]::Out.WriteLine("  $_")
+    [Console]::Out.WriteLine("")
+    [Console]::Out.WriteLine("Stack Trace:")
+    [Console]::Out.WriteLine("  $($_.ScriptStackTrace)")
+    [Console]::Out.WriteLine("")
+    [Console]::Out.WriteLine("Error Record:")
+    [Console]::Out.WriteLine("  $($_.Exception.Message)")
+    [Console]::Out.WriteLine("")
     exit 1
 }
