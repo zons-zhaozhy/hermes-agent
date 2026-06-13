@@ -110,6 +110,10 @@ export interface Translations {
     statusOverview: string;
     system: string;
     webUi: string;
+    /** Optional — fall back to English literals until translated. */
+    managingProfile?: string;
+    currentProfileOption?: string;
+    managingProfileBanner?: string;
   };
 
   // ── Status page ──
@@ -350,7 +354,8 @@ export interface Translations {
     nameRequired: string;
     nameRule: string;
     invalidName: string;
-    cloneFromDefault: string;
+    cloneFrom: string;
+    cloneFromNone: string;
     allProfiles: string;
     noProfiles: string;
     defaultBadge: string;
