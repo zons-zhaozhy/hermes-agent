@@ -31,9 +31,9 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
 # ============================================================================
-# 关键修复：无 console 环境（Electron windowsHide 子进程）下 Write-Host 抛
-# HostException（Cannot invoke this cmdlet because the host did not provide a
-# console）。重定义为写 stdout，使 bootstrap-runner 的 stdio:pipe 能捕获输出。
+# CRITICAL FIX: Write-Host throws HostException in no-console environments
+# (Electron windowsHide subprocess). Override to write to [Console]::Out
+# (stdout pipe) so bootstrap-runner can capture all output.
 # ============================================================================
 function script:Write-Host {
     param(
