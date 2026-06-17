@@ -57,7 +57,7 @@ DEFAULT_JUDGE_TIMEOUT = 30.0
 # specifically constrained setups.
 DEFAULT_JUDGE_MAX_TOKENS = 4096
 # Cap how much of the last response + recent messages we send to the judge.
-_JUDGE_RESPONSE_SNIPPET_CHARS = 4000
+_JUDGE_RESPONSE_SNIPPET_CHARS = 8000
 # After this many consecutive judge *parse* failures (empty output / non-JSON),
 # the loop auto-pauses and points the user at the goal_judge config. API /
 # transport errors do NOT count toward this — those are transient. This guards
@@ -69,68 +69,77 @@ DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
 
 
 CONTINUATION_PROMPT_TEMPLATE = (
-    "[Continuing toward your standing goal]\n"
-    "Goal: {goal}\n\n"
-    "Continue working toward this goal. Take the next concrete step. "
-    "If you believe the goal is complete, state so explicitly and stop. "
-    "If you are blocked and need input from the user, say so clearly and stop."
+    '[继续执行目标]\n'
+    '目标: {goal}\n\n'
+    '继续推进。自主决策，自主执行，不要停下来等待。\n'
+    '- 遇到技术问题：自己排查修复，不要请示。\n'
+    '- 遇到缺失信息：做合理假设并继续，在最终报告中列出所有假设。\n'
+    '- 遇到不可逆操作（DROP、TRUNCATE、删数据、推送代码）：暂停并说明，这是唯一需要暂停的情况。\n'
+    '- 一轮做不完就汇报进度后继续下一轮，不要声称完成然后收工。\n'
+    '- 只有目标彻底完成、产出了可验证的结果时才停下来。'
 )
 
 # Used when the user has added one or more /subgoal criteria. Surfaced
 # to the agent verbatim so it sees what to target on the next turn,
 # and surfaced to the judge so the verdict considers them too.
 CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE = (
-    "[Continuing toward your standing goal]\n"
-    "Goal: {goal}\n\n"
-    "Additional criteria the user added mid-loop:\n"
-    "{subgoals_block}\n\n"
-    "Continue working toward the goal AND all additional criteria. Take "
-    "the next concrete step. If you believe the goal and every "
-    "additional criterion are complete, state so explicitly and stop. "
-    "If you are blocked and need input from the user, say so clearly "
-    "and stop."
+    '[继续执行目标]\n'
+    '目标: {goal}\n\n'
+    '用户追加的验收标准:\n'
+    '{subgoals_block}\n\n'
+    '继续推进，同时满足原始目标和所有验收标准。自主决策，自主执行。\n'
+    '- 遇到技术问题：自己排查修复，不要请示。\n'
+    '- 遇到缺失信息：做合理假设并继续，在最终报告中列出所有假设。\n'
+    '- 遇到不可逆操作（DROP、TRUNCATE、删数据、推送代码）：暂停并说明，这是唯一需要暂停的情况。\n'
+    '- 一轮做不完就汇报进度后继续下一轮，不要声称完成然后收工。\n'
+    '- 只有目标与所有验收标准全部满足、产出可验证结果时才停下来。'
 )
 
 
 JUDGE_SYSTEM_PROMPT = (
-    "You are a strict judge evaluating whether an autonomous agent has "
-    "achieved a user's stated goal. You receive the goal text and the "
-    "agent's most recent response. Your only job is to decide whether "
-    "the goal is fully satisfied based on that response.\n\n"
-    "A goal is DONE only when:\n"
-    "- The response explicitly confirms the goal was completed, OR\n"
-    "- The response clearly shows the final deliverable was produced, OR\n"
-    "- The response explains the goal is unachievable / blocked / needs "
-    "user input (treat this as DONE with reason describing the block).\n\n"
-    "Otherwise the goal is NOT done — CONTINUE.\n\n"
-    "Reply ONLY with a single JSON object on one line:\n"
-    '{\"done\": <true|false>, \"reason\": \"<one-sentence rationale>\"}'
+    '你是严格的目标评审员，判断自主 agent 是否真正完成了用户的目标。'
+    '你会收到目标文本和 agent 的最新响应片段，据此做出判断。\n\n'
+    '=== 判定为 DONE 的条件（必须全部满足） ===\n'
+    '1. 交付物已产出且有可验证的证据（文件路径、命令输出、测试结果、具体数据等），'
+    '不能只有笼统描述（如「已完成」「改好了」「部署成功」）。\n'
+    '2. 目标的每一项要求都被逐一回应，不存在「留到后续」「待完善」「下一步再处理」等未完成项。\n'
+    '3. 响应中无实质性错误或半成品（空的 placeholder 文件、未通过的测试、TODO 注释等）。\n\n'
+    '=== 判定为 CONTINUE 的情况（出现任意一条即判定未完成） ===\n'
+    '1. agent 说「需要用户确认」「需要用户输入」「请用户决定」——'
+    '除非明确涉及不可逆操作，否则 agent 应自主决策，不应停工等待。\n'
+    '2. agent 说「遇到阻塞」，但该阻塞可通过技术手段自行解决（查文档、换方案、重试、读配置等）。\n'
+    '3. agent 做了一部分工作但还有未完成的子任务或待验证的步骤。\n'
+    '4. agent 给出了方案或计划但没有实际执行——描述不等于完成。\n'
+    '5. agent 声称完成但未提供具体可验证的证据。\n'
+    '6. agent 在响应末尾说「等待用户指示」「请用户确认」等放弃继续的信号。\n\n'
+    '=== 特殊情况 ===\n'
+    '唯一因「阻塞」判定为 DONE 的场景：agent 遇到真正的不可逆操作'
+    '（如 DROP TABLE、TRUNCATE、删除生产数据、git push --force、ALTER TABLE 删列），'
+    '明确列出具体操作内容、影响范围，并等待用户批准。'
+    '除此之外，所有「阻塞」都应判定为 CONTINUE。\n\n'
+    '只回复一行 JSON，不要输出任何其他内容：\n'
+    '{{"done": <true|false>, "reason": "<一句话理由>"}}'
 )
 
 
 JUDGE_USER_PROMPT_TEMPLATE = (
-    "Goal:\n{goal}\n\n"
-    "Agent's most recent response:\n{response}\n\n"
-    "Current time: {current_time}\n\n"
-    "Is the goal satisfied?"
+    '目标:\n{goal}\n\n'
+    'agent 最新响应:\n{response}\n\n'
+    '当前时间: {current_time}\n\n'
+    '目标是否已完成？'
 )
 
 # Used when the user has added /subgoal criteria. The judge must
 # evaluate ALL of them being met, not just the original goal.
 JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
-    "Goal:\n{goal}\n\n"
-    "Additional criteria the user added mid-loop (all must also be "
-    "satisfied for the goal to be DONE):\n{subgoals_block}\n\n"
-    "Agent's most recent response:\n{response}\n\n"
-    "Current time: {current_time}\n\n"
-    "Decision: For each numbered criterion above, find concrete "
-    "evidence in the agent's response that the criterion is "
-    "satisfied. Do not accept generic phrases like 'all requirements "
-    "met' or 'implying it was done' — require specific evidence (a "
-    "file contents excerpt, an output line, a command result). If "
-    "ANY criterion lacks specific evidence in the response, the goal "
-    "is NOT done — return CONTINUE.\n\n"
-    "Is the goal AND every additional criterion satisfied?"
+    '目标:\n{goal}\n\n'
+    '用户追加的验收标准（全部满足才算 DONE）:\n{subgoals_block}\n\n'
+    'agent 最新响应:\n{response}\n\n'
+    '当前时间: {current_time}\n\n'
+    '逐条检查：在响应中找到每条验收标准的具体满足证据（文件内容、命令输出、'
+    '测试结果等），不接受「所有要求已满足」「看起来完成了」等笼统说法。'
+    '如果任意一条标准缺少具体证据，判定为 CONTINUE。\n\n'
+    '目标与所有验收标准是否全部完成？'
 )
 
 
