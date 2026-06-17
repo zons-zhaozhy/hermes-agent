@@ -305,6 +305,38 @@ TASK_COMPLETION_GUIDANCE = (
     "is always better than inventing a result."
 )
 
+# YAGNI code-simplicity guard.  Compact decision ladder injected into the
+# stable system-prompt tier whenever write-capable tools are present.
+# Inspired by Ponytail (github.com/DietrichGebert/ponytail) — the core
+# insight is that the biggest problem with AI coding assistants is writing
+# too much code that isn't needed, not writing bad code.
+#
+# Design: injected at stable-tier build time (system_prompt.py), gated on
+# valid_tool_names so cron/read-only sessions don't pay the token cost.
+# The model sees this every turn → enforced by presence, not by hope.
+YAGNI_LADDER = (
+    "# Code simplicity guard\\n"
+    "<yagni_ladder>\\n"
+    "Before writing new code, run this decision ladder (stop at first hit):\\n"
+    "1. Does this need to exist at all?  → skip if not\\n"
+    "2. Does the stdlib / framework already do it?  → use it, don't re-implement\\n"
+    "3. Does an already-installed dependency do it?  → use it\\n"
+    "4. Can it be one line?  → one line, no wrapper\\n"
+    "5. Only after all above fail → write the minimum code needed.\\n"
+    "Common AI anti-patterns to avoid:\\n"
+    "- Custom email validator (use email.utils.parseaddr or email-validator)\\n"
+    "- Custom rate limiter (use slowapi/tenacity/limits)\\n"
+    "- Custom retry/backoff (use tenacity @retry)\\n"
+    "- Custom config loader (use pydantic Settings / dynaconf)\\n"
+    "- Abstract base class with one implementation → inline until a 2nd impl appears\\n"
+    "NEVER simplify away: input validation (trust boundaries), error handling that "
+    "prevents data loss, security measures, accessibility.\\n"
+    "When you take a deliberate simplification, annotate with a comment explaining "
+    "the ceiling and when to upgrade, e.g.:\\n"
+    "  # minimal: global lock, per-account locks if concurrency throughput matters\\n"
+    "</yagni_ladder>"
+)
+
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
 # hallucinate instead of using tools, and declare "done" without verification.

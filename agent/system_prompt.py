@@ -41,6 +41,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     drain_truncation_warnings,
+    YAGNI_LADDER,
 )
 from agent.runtime_cwd import resolve_context_cwd
 
@@ -111,6 +112,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # users who want a leaner prompt can turn it off.
     if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
         stable_parts.append(TASK_COMPLETION_GUIDANCE)
+
+    # YAGNI code-simplicity ladder — only when the agent has write-capable
+    # tools (patch/write_file/terminal/execute_code).  Read-only or
+    # cron-only sessions don't pay the ~200 token cost.
+    _yagni_tools = {"patch", "write_file", "terminal", "execute_code"}
+    if _yagni_tools & set(agent.valid_tool_names):
+        stable_parts.append(YAGNI_LADDER)
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
