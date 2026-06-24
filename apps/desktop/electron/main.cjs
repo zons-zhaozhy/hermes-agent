@@ -260,6 +260,14 @@ function resolveHermesHome() {
   if (process.env.HERMES_HOME) return normalizeHermesHomeRoot(process.env.HERMES_HOME)
   if (USER_DATA_OVERRIDE) return path.join(path.resolve(USER_DATA_OVERRIDE), 'hermes-home')
   if (IS_WINDOWS) {
+    // 离线安装包：检测到 bundled offline payload 时，固定使用 C:\hermes
+    // 这样首次启动就确定 HERMES_HOME=C:\hermes，不会出现路径不一致
+    if (IS_PACKAGED && process.resourcesPath) {
+      const offlineScript = path.join(process.resourcesPath, 'offline', 'setup-offline.ps1')
+      if (fs.existsSync(offlineScript)) {
+        return 'C:\\hermes'
+      }
+    }
     // A GUI app launched from Explorer inherits the environment block captured
     // at login, so a HERMES_HOME set via `setx` AFTER login is invisible in
     // process.env even though the CLI (a fresh shell) sees it. Without this the
