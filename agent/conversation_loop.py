@@ -170,6 +170,24 @@ def _nous_entitlement_message(capability: str) -> str:
         return ""
 
 
+def _get_cost_warning_threshold() -> float:
+    """读取 display.cost_warning_threshold_usd，默认 $1.0。
+
+    每次 API call 后检查会话累计成本是否跨过此阈值的整数倍，
+    跨过时通过 _vprint(force=True) 提醒用户。
+    设为 0 则关闭提醒。
+    """
+    try:
+        from hermes_cli.config import load_config as _load_config
+        _cfg = _load_config() or {}
+        _display = _cfg.get("display") if isinstance(_cfg, dict) else None
+        if isinstance(_display, dict) and "cost_warning_threshold_usd" in _display:
+            return float(_display.get("cost_warning_threshold_usd", 1.0))
+    except Exception:
+        pass
+    return 1.0
+
+
 def _print_nous_entitlement_guidance(agent, capability: str) -> bool:
     message = _nous_entitlement_message(capability)
     if not message:
@@ -1875,6 +1893,21 @@ def run_conversation(
                         agent.session_estimated_cost_usd += float(cost_result.amount_usd)
                     agent.session_cost_status = cost_result.status
                     agent.session_cost_source = cost_result.source
+
+                    # 会话成本阈值提醒——每跨过一个 threshold 倍数提醒一次
+                    _session_cost = float(agent.session_estimated_cost_usd or 0.0)
+                    if _session_cost > 0 and not getattr(agent, "quiet_mode", False):
+                        _threshold = _get_cost_warning_threshold()
+                        if _threshold > 0:
+                            _next_tier = getattr(agent, "_cost_next_warn_tier", _threshold)
+                            if _session_cost >= _next_tier:
+                                agent._cost_next_warn_tier = _next_tier + _threshold
+                                agent._vprint(
+                                    f"{agent.log_prefix}   💰 会话成本: "
+                                    f"${_session_cost:.2f} "
+                                    f"(阈值: ${_threshold:.2f})",
+                                    force=True,
+                                )
 
                     # Persist token counts to session DB for /insights.
                     # Do this for every platform with a session_id so non-CLI
