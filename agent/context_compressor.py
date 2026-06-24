@@ -967,12 +967,25 @@ class ContextCompressor(ContextEngine):
         Includes anti-thrashing protection: if the last two compressions
         each saved less than 10%, skip compression to avoid infinite loops
         where each pass removes only 1-2 messages.
+
+        Includes an escape hatch: if context has grown to 2x the threshold
+        or beyond, anti-thrashing is bypassed so a session cannot grow
+        unbounded after consecutive ineffective compressions (#local-fix).
         """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False
-        # Anti-thrashing: back off if recent compressions were ineffective
+        # Escape hatch: far past threshold → bypass anti-thrashing
         if self._ineffective_compression_count >= 2:
+            if tokens >= self.threshold_tokens * 2:
+                if not self.quiet_mode:
+                    logger.warning(
+                        "Compression forced — tokens (%d) >= 2x threshold (%d), "
+                        "bypassing anti-thrashing (%d ineffective compressions).",
+                        tokens, self.threshold_tokens,
+                        self._ineffective_compression_count,
+                    )
+                return True
             if not self.quiet_mode:
                 logger.warning(
                     "Compression skipped — last %d compressions saved <10%% each. "
