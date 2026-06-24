@@ -175,7 +175,7 @@ _AUTO_FOCUS_MAX_CHARS = 700
 # already exhausted.  The public ``protect_last_n`` default is intentionally
 # high for small/light tails, but using all 20 as a hard floor here would bring
 # back the old large-tool-output case where nothing can be compacted.
-_MAX_TAIL_MESSAGE_FLOOR = 8
+_MAX_TAIL_MESSAGE_FLOOR = 5
 
 
 _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
@@ -783,10 +783,10 @@ class ContextCompressor(ContextEngine):
     def __init__(
         self,
         model: str,
-        threshold_percent: float = 0.50,
+        threshold_percent: float = 0.35,
         protect_first_n: int = 3,
         protect_last_n: int = 20,
-        summary_target_ratio: float = 0.20,
+        summary_target_ratio: float = 0.12,
         quiet_mode: bool = False,
         summary_model_override: str = None,
         base_url: str = "",
