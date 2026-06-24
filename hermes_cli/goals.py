@@ -57,7 +57,7 @@ DEFAULT_JUDGE_TIMEOUT = 30.0
 # specifically constrained setups.
 DEFAULT_JUDGE_MAX_TOKENS = 4096
 # Cap how much of the last response + recent messages we send to the judge.
-_JUDGE_RESPONSE_SNIPPET_CHARS = 4000
+_JUDGE_RESPONSE_SNIPPET_CHARS = 8000
 # After this many consecutive judge *parse* failures (empty output / non-JSON),
 # the loop auto-pauses and points the user at the goal_judge config. API /
 # transport errors do NOT count toward this — those are transient. This guards
@@ -69,11 +69,14 @@ DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
 
 
 CONTINUATION_PROMPT_TEMPLATE = (
-    "[Continuing toward your standing goal]\n"
-    "Goal: {goal}\n\n"
-    "Continue working toward this goal. Take the next concrete step. "
-    "If you believe the goal is complete, state so explicitly and stop. "
-    "If you are blocked and need input from the user, say so clearly and stop."
+    '[继续执行目标]\n'
+    '目标: {goal}\n\n'
+    '继续推进。自主决策，自主执行，不要停下来等待。\n'
+    '- 遇到技术问题：自己排查修复，不要请示。\n'
+    '- 遇到缺失信息：做合理假设并继续，在最终报告中列出所有假设。\n'
+    '- 遇到不可逆操作（DROP、TRUNCATE、删数据、推送代码）：暂停并说明，这是唯一需要暂停的情况。\n'
+    '- 一轮做不完就汇报进度后继续下一轮，不要声称完成然后收工。\n'
+    '- 只有目标彻底完成、产出了可验证的结果时才停下来。'
 )
 
 # Used when the goal carries a structured completion contract. The contract
@@ -81,71 +84,69 @@ CONTINUATION_PROMPT_TEMPLATE = (
 # to break, what's in scope, and when to stop and ask — so it targets the
 # verification surface instead of declaring victory loosely.
 CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE = (
-    "[Continuing toward your standing goal]\n"
-    "Goal: {goal}\n\n"
-    "Completion contract:\n"
-    "{contract_block}\n\n"
-    "Continue working toward the outcome above. Take the next concrete step. "
-    "Stay within the stated boundaries and do not violate the constraints. "
-    "Before claiming the goal is done, satisfy the Verification criterion and "
-    "show the concrete evidence (command output, file contents, test result). "
-    "If you hit the stated stop condition or are otherwise blocked and need "
-    "user input, say so clearly and stop."
+    '[继续执行目标]\n'
+    '目标: {goal}\n\n'
+    '完成合同:\n'
+    '{contract_block}\n\n'
+    '继续推进，达成上述结果。自主执行下一步。\n'
+    '遵守所述边界，不违反约束条件。\n'
+    '声称目标完成前，必须满足验证条件，并展示具体证据（命令输出、文件内容、测试结果）。\n'
+    '如果触发了停止条件或因其他原因受阻需要用户输入，暂停并说明。'
 )
 
 # Used when the user has added one or more /subgoal criteria. Surfaced
 # to the agent verbatim so it sees what to target on the next turn,
 # and surfaced to the judge so the verdict considers them too.
 CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE = (
-    "[Continuing toward your standing goal]\n"
-    "Goal: {goal}\n\n"
-    "Additional criteria the user added mid-loop:\n"
-    "{subgoals_block}\n\n"
-    "Continue working toward the goal AND all additional criteria. Take "
-    "the next concrete step. If you believe the goal and every "
-    "additional criterion are complete, state so explicitly and stop. "
-    "If you are blocked and need input from the user, say so clearly "
-    "and stop."
+    '[继续执行目标]\n'
+    '目标: {goal}\n\n'
+    '用户追加的验收标准:\n'
+    '{subgoals_block}\n\n'
+    '继续推进，同时满足原始目标和所有验收标准。自主决策，自主执行。\n'
+    '- 遇到技术问题：自己排查修复，不要请示。\n'
+    '- 遇到缺失信息：做合理假设并继续，在最终报告中列出所有假设。\n'
+    '- 遇到不可逆操作（DROP、TRUNCATE、删数据、推送代码）：暂停并说明，这是唯一需要暂停的情况。\n'
+    '- 一轮做不完就汇报进度后继续下一轮，不要声称完成然后收工。\n'
+    '- 只有目标与所有验收标准全部满足、产出可验证结果时才停下来。'
 )
 
 
 JUDGE_SYSTEM_PROMPT = (
-    "You are a strict judge evaluating whether an autonomous agent has "
-    "achieved a user's stated goal. You receive the goal text, the agent's "
-    "most recent response, and — when present — a list of background "
-    "processes the agent has running. Decide one of three verdicts.\n\n"
-    "DONE — the goal is fully satisfied:\n"
-    "- The response explicitly confirms the goal was completed, OR\n"
-    "- The response clearly shows the final deliverable was produced, OR\n"
-    "- The response explains the goal is unachievable / blocked / needs "
-    "user input (treat this as DONE with reason describing the block).\n\n"
-    "WAIT — the goal is NOT done, but the next step is to wait for async "
-    "work to finish rather than act again. Choose this ONLY when the agent's "
-    "progress is genuinely gated on something running on its own:\n"
-    "- A background process listed below is still running AND the response "
-    "shows the agent is waiting on its result (e.g. a CI poller, build, "
-    "test run, deploy). If the process has a session id, return it in "
-    "``wait_on_session`` — that releases when the process exits OR its "
-    "watch_patterns trigger fires (use this for a long-lived watcher that "
-    "signals mid-run and may never exit). Otherwise return its pid in "
-    "``wait_on_pid`` (releases on exit only).\n"
-    "- The agent says it is rate-limited / backing off / must wait a fixed "
-    "period — return seconds in ``wait_for_seconds``.\n"
-    "Picking WAIT parks the loop without burning a turn; it resumes "
-    "automatically when the pid exits or the time elapses. Do NOT pick WAIT "
-    "just because work remains — only when re-poking now would be pure "
-    "busy-work because the agent can't progress until the async thing "
-    "finishes.\n\n"
-    "CONTINUE — not done, and there is a concrete next step the agent can "
-    "take right now. This is the default when in doubt.\n\n"
-    "Reply ONLY with a single JSON object on one line. Shapes:\n"
-    '{"verdict": "done", "reason": "<one sentence>"}\n'
-    '{"verdict": "continue", "reason": "<one sentence>"}\n'
-    '{"verdict": "wait", "wait_on_session": "<id>", "reason": "<one sentence>"}\n'
-    '{"verdict": "wait", "wait_on_pid": <int>, "reason": "<one sentence>"}\n'
-    '{"verdict": "wait", "wait_for_seconds": <int>, "reason": "<one sentence>"}\n'
-    "The legacy shape {\"done\": <true|false>, \"reason\": \"...\"} is still "
-    "accepted (true=done, false=continue)."
+    '你是严格的目标评审员，判断自主 agent 是否真正完成了用户的目标。'
+    '你会收到目标文本和 agent 的最新响应片段，以及当前运行的后台进程列表。做出三选一判定。\n\n'
+    '=== 判定为 DONE 的条件（必须全部满足） ===\n'
+    '1. 交付物已产出且有可验证的证据（文件路径、命令输出、测试结果、具体数据等），'
+    '不能只有笼统描述（如「已完成」「改好了」「部署成功」）。\n'
+    '2. 目标的每一项要求都被逐一回应，不存在「留到后续」「待完善」「下一步再处理」等未完成项。\n'
+    '3. 响应中无实质性错误或半成品（空的 placeholder 文件、未通过的测试、TODO 注释等）。\n\n'
+    '=== 判定为 WAIT 的条件 — 目标未完成，但下一步是等待异步工作完成而非继续操作 ===\n'
+    '仅在 agent 的进度确实被某个自主运行的事物阻塞时选择 WAIT：\n'
+    '- 下方列出的某个后台进程仍在运行，且 agent 明确在等待其结果（如 CI 轮询、构建、'
+    '测试、部署）。如果进程有 session id，在 ``wait_on_session`` 中返回——它会在进程退出'
+    '或 watch_patterns 触发时释放。否则在 ``wait_on_pid`` 中返回其 pid（仅在退出时释放）。\n'
+    '- agent 表示自己被限速/退避/必须等待固定时间——在 ``wait_for_seconds`` 中返回秒数。\n'
+    '选择 WAIT 会暂停循环而不消耗一轮；当 pid 退出或时间到达时自动恢复。'
+    '不要仅仅因为还有工作要做就选 WAIT——只有当现在重新推进纯粹是白忙活时才选。\n\n'
+    '=== 判定为 CONTINUE 的情况（出现任意一条即判定未完成） ===\n'
+    '1. agent 说「需要用户确认」「需要用户输入」「请用户决定」——'
+    '除非明确涉及不可逆操作，否则 agent 应自主决策，不应停工等待。\n'
+    '2. agent 说「遇到阻塞」，但该阻塞可通过技术手段自行解决（查文档、换方案、重试、读配置等）。\n'
+    '3. agent 做了一部分工作但还有未完成的子任务或待验证的步骤。\n'
+    '4. agent 给出了方案或计划但没有实际执行——描述不等于完成。\n'
+    '5. agent 声称完成但未提供具体可验证的证据。\n'
+    '6. agent 在响应末尾说「等待用户指示」「请用户确认」等放弃继续的信号。\n\n'
+    '=== 特殊情况 ===\n'
+    '唯一因「阻塞」判定为 DONE 的场景：agent 遇到真正的不可逆操作'
+    '（如 DROP TABLE、TRUNCATE、删除生产数据、git push --force、ALTER TABLE 删列），'
+    '明确列出具体操作内容、影响范围，并等待用户批准。'
+    '除此之外，所有「阻塞」都应判定为 CONTINUE。\n\n'
+    '只回复一行 JSON，不要输出任何其他内容。格式：\n'
+    '{"verdict": "done", "reason": "<一句话理由>"}\n'
+    '{"verdict": "continue", "reason": "<一句话理由>"}\n'
+    '{"verdict": "wait", "wait_on_session": "<id>", "reason": "<一句话理由>"}\n'
+    '{"verdict": "wait", "wait_on_pid": <int>, "reason": "<一句话理由>"}\n'
+    '{"verdict": "wait", "wait_for_seconds": <int>, "reason": "<一句话理由>"}\n'
+    '旧格式 {"done": <true|false>, "reason": "..."} 仍然兼容（true=done, false=continue）。'
 )
 
 
@@ -153,37 +154,30 @@ JUDGE_SYSTEM_PROMPT = (
 # running. Gives the judge the context it needs to decide WAIT vs CONTINUE
 # (and which pid to wait on) without it having to probe anything itself.
 JUDGE_BACKGROUND_BLOCK_TEMPLATE = (
-    "Background processes the agent currently has running (it may be waiting "
-    "on one of these):\n{background_lines}\n\n"
+    "Agent 当前运行的后台进程（可能在等待其中某一个）:\n{background_lines}\n\n"
 )
 
 
 JUDGE_USER_PROMPT_TEMPLATE = (
-    "Goal:\n{goal}\n\n"
-    "Agent's most recent response:\n{response}\n\n"
+    "目标:\n{goal}\n\n"
+    "Agent 最新响应:\n{response}\n\n"
     "{background_block}"
-    "Current time: {current_time}\n\n"
-    "Is the goal satisfied — done, continue, or wait?"
+    "当前时间: {current_time}\n\n"
+    "目标是否已完成 — done、continue 还是 wait？"
 )
 
 # Used when the user has added /subgoal criteria. The judge must
 # evaluate ALL of them being met, not just the original goal.
 JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
-    "Goal:\n{goal}\n\n"
-    "Additional criteria the user added mid-loop (all must also be "
-    "satisfied for the goal to be DONE):\n{subgoals_block}\n\n"
-    "Agent's most recent response:\n{response}\n\n"
+    "目标:\n{goal}\n\n"
+    "用户追加的验收标准（全部满足才算 DONE）:\n{subgoals_block}\n\n"
+    "Agent 最新响应:\n{response}\n\n"
     "{background_block}"
-    "Current time: {current_time}\n\n"
-    "Decision: For each numbered criterion above, find concrete "
-    "evidence in the agent's response that the criterion is "
-    "satisfied. Do not accept generic phrases like 'all requirements "
-    "met' or 'implying it was done' — require specific evidence (a "
-    "file contents excerpt, an output line, a command result). If "
-    "ANY criterion lacks specific evidence in the response, the goal "
-    "is NOT done — return CONTINUE (or WAIT if blocked on a listed "
-    "background process).\n\n"
-    "Is the goal AND every additional criterion satisfied?"
+    "当前时间: {current_time}\n\n"
+    "逐条检查：在响应中找到每条验收标准的具体满足证据（文件内容、命令输出、"
+    "测试结果等），不接受「所有要求已满足」「看起来完成了」等笼统说法。"
+    "如果任意一条标准缺少具体证据，判定为 CONTINUE（如果被后台进程阻塞则判 WAIT）。\n\n"
+    "目标与所有验收标准是否全部完成 — done、continue 还是 wait？"
 )
 
 
@@ -191,27 +185,22 @@ JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
 # decides DONE strictly against the Verification criterion and refuses to
 # accept completion when a constraint was violated.
 JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE = (
-    "Goal:\n{goal}\n\n"
-    "Completion contract (the authoritative definition of done):\n"
+    "目标:\n{goal}\n\n"
+    "完成合同（done 的权威定义）:\n"
     "{contract_block}\n\n"
-    "Agent's most recent response:\n{response}\n\n"
+    "Agent 最新响应:\n{response}\n\n"
     "{background_block}"
-    "Current time: {current_time}\n\n"
-    "Decision rules:\n"
-    "- The goal is DONE only when the Verification criterion is satisfied AND "
-    "the response shows concrete evidence of it (a command result, file "
-    "contents excerpt, test/benchmark output) — not a claim like 'done' or "
-    "'all tests pass' without evidence.\n"
-    "- If any stated Constraint was violated, the goal is NOT done — CONTINUE.\n"
-    "- If the response shows the agent is waiting on a listed background "
-    "process to satisfy the Verification criterion (e.g. CI is the "
-    "verification and it's still running), return WAIT on that process "
-    "instead of re-poking — re-poking now would be pure busy-work.\n"
-    "- If the response explains the work is blocked / unachievable / needs "
-    "user input (e.g. the stated Stop condition was hit), treat it as DONE "
-    "with the reason describing the block.\n"
-    "- Otherwise the goal is NOT done — CONTINUE.\n\n"
-    "Is the goal satisfied per its completion contract — done, continue, or wait?"
+    "当前时间: {current_time}\n\n"
+    "判定规则:\n"
+    "- 仅当验证条件满足且响应中有具体证据（命令结果、文件内容、测试/基准输出）时，"
+    "目标才算 DONE——不接受「已完成」「所有测试通过」等空洞声明。\n"
+    "- 如果违反了任何约束条件，目标未完成 — CONTINUE。\n"
+    "- 如果 agent 正在等待后台进程完成验证（如 CI 仍在运行），返回 WAIT——"
+    "现在重新推进只会白忙活。\n"
+    "- 如果响应表明工作受阻/无法完成/需要用户输入（如触发了停止条件），"
+    "判定为 DONE 并说明阻塞原因。\n"
+    "- 否则目标未完成 — CONTINUE。\n\n"
+    "根据完成合同，目标是否已完成 — done、continue 还是 wait？"
 )
 
 
