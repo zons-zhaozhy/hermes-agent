@@ -92,21 +92,37 @@ fetch_upstream() {
 
 # ── 步骤 3: 收集本地补丁 SHA ──
 collect_patches() {
-    # 收集当前分支相对于 upstream-main 的所有补丁（正序）
-    local base; base="$CNB_REMOTE/upstream-main"
+    # 收集当前分支相对于旧 upstream 的所有补丁（正序），每行一个 SHA。
+    # 关键：补丁列表必须在 fetch 新 upstream 之前收集，
+    # 因为 fetch 后 cnb/upstream-main 指向新基点，旧补丁链会丢失。
+    #
+    # 策略：用 reflog 找到 fetch 前的 HEAD，收集 HEAD 上的所有非 merge commit。
+    # 补丁定义：不属于 upstream 孤儿 commit 链的 commit。
+    # 简化：收集当前 HEAD 上所有带 [skip upstream] 标记的 commit message 不现实，
+    # 改用 ref 文件记录补丁列表。
+    local patch_ref; patch_ref="refs/sync/local-patches"
+    local list_file; list_file="${HERMES_HOME:-$HOME/.hermes}/.sync-patches.txt"
 
-    # 如果存在旧的 upstream/main ref，用它确定补丁链
-    # 否则用当前 cnb/upstream-main 作为基点
-    local patches=()
-    while IFS= read -r sha; do
-        patches+=("$sha")
-    done < <(git rev-list --reverse "${base}..HEAD" 2>/dev/null || true)
-
-    if [ ${#patches[@]} -eq 0 ]; then
-        warn "没有本地补丁需要 rebase"
+    # 优先从持久化文件读取（最可靠）
+    if [ -f "$list_file" ]; then
+        cat "$list_file"
         return 0
     fi
-    echo "${patches[@]}"
+
+    # 回退：用当前分支相对于 cnb/upstream-main 的 diff
+    # 注意：这只在 fetch 前有效
+    git rev-list --reverse "${CNB_REMOTE}/upstream-main..HEAD" 2>/dev/null || true
+}
+
+# ── 保存当前补丁列表（在 fetch 前调用）──
+save_patches() {
+    local list_file; list_file="${HERMES_HOME:-$HOME/.hermes}/.sync-patches.txt"
+    local old_base; old_base=$(git rev-parse "${CNB_REMOTE}/upstream-main" 2>/dev/null || echo "")
+    if [ -n "$old_base" ]; then
+        git rev-list --reverse "${old_base}..HEAD" > "$list_file" 2>/dev/null
+        local count; count=$(wc -l < "$list_file" | tr -d ' ')
+        log "保存 $count 个补丁到 $list_file"
+    fi
 }
 
 # ── 步骤 4: rebase 补丁到新 upstream ──
@@ -252,6 +268,7 @@ main() {
             log "本地领先: $patches 个补丁"
             ;;
         sync|"")
+            save_patches           # 必须在 fetch 前保存，否则补丁链丢失
             trigger_cnb_sync || exit 1
             fetch_upstream
             rebase_patches || warn "有冲突需手动处理"
