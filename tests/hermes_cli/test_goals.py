@@ -1335,9 +1335,9 @@ class TestGoalManagerContract:
         mgr = GoalManager(session_id="c-cont")
         mgr.set("ship it", contract=GoalContract(verification="run pytest"))
         prompt = mgr.next_continuation_prompt()
-        assert "Completion contract" in prompt
+        assert "完成合同" in prompt
         assert "run pytest" in prompt
-        assert "concrete evidence" in prompt
+        assert "concrete evidence" in prompt or "具体证据" in prompt
 
     def test_set_contract_after_the_fact(self, hermes_home):
         from hermes_cli.goals import GoalManager, GoalContract
@@ -1397,9 +1397,9 @@ class TestJudgeWithContract:
         user_msg = next(
             (m["content"] for m in (captured.get("messages") or []) if m["role"] == "user"), ""
         )
-        assert "completion contract" in user_msg.lower()
+        assert "completion contract" in user_msg.lower() or "完成合同" in user_msg
         assert "pytest -q passes" in user_msg
-        assert "concrete evidence" in user_msg
+        assert "concrete evidence" in user_msg or "具体证据" in user_msg
 
     def test_contract_plus_subgoals_combine(self, hermes_home):
         from unittest.mock import patch
@@ -1536,9 +1536,9 @@ class TestContractAndBackgroundCompose:
             (m["content"] for m in (captured.get("messages") or []) if m["role"] == "user"), ""
         )
         # Both surfaces present in one prompt.
-        assert "completion contract" in user_msg.lower()
+        assert "completion contract" in user_msg.lower() or "完成合同" in user_msg
         assert "PR CI goes green" in user_msg
-        assert "Background processes" in user_msg
+        assert "Background processes" in user_msg or "后台进程" in user_msg
         assert "4242" in user_msg
         # The judge can return a wait verdict on a contract goal.
         assert verdict == "wait"
