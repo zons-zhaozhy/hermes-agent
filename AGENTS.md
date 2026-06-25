@@ -9,7 +9,7 @@ Hermes is a personal AI agent that runs the same agent core across a CLI, a mess
 
 Two load-bearing design properties:
 - **Per-conversation prompt caching is sacred**. Anything that mutates past context invalidates the cached prefix.
-- **The core is a narrow waist; capability lives at the edges**. Every model tool is sent on every API call.
+- **The core is a narrow waist; capability lives at the edges**. Every model tool is sent on every API call — but peripheral tools (browser, vision, TTS, smart-home, kanban) are **deferrable** behind `tool_search` bridge tools, reducing schema overhead ~50% (see `_TOOL_SEARCH_PROTECTED_TOOLS` in `toolsets.py`).
 
 ## Important Policies
 
@@ -118,15 +118,15 @@ hermes-agent/
 
 - **AIAgent (run_agent.py ~12K LOC)**: Core loop — tool dispatch, skill loading, memory, session tracking, context management, compression, error handling, provider abstraction.
 - **cli.py (~11K LOC)**: CLI orchestrator — input processing, rendering, multi-line editing, conversation history, tmux, streaming, file upload.
-- **Context compression** (`agent/context_compressor.py`): Summarizes middle turns while protecting head (system prompt) and tail (recent messages). Default threshold: 66% of context window. After 2 ineffective compressions (<10% savings), compression is skipped (anti-thrashing). Escape hatch: 2x threshold triggers forced compression.
-- **prompt_builder.py**: Injects AGENTS.md/CLAUDE.md/.cursorrules from workdir as context.
-- **toolsets.py**: Defines tool groups. `_HERMES_CORE_TOOLS` is the always-loaded set; peripherals (search, terminal, file, etc.) are toolset-gated.
+- **Context compression** (`agent/context_compressor.py`): Summarizes middle turns while protecting head (system prompt) and tail (recent messages). Default threshold: 66% of context window. Tail-zone tool outputs are age-decayed (Pass 4: age 0 full → age 3+ truncated to 800 chars). After 2 ineffective compressions (<10% savings), compression is skipped (anti-thrashing). Escape hatch: 2x threshold triggers forced compression.
+- **prompt_builder.py**: Injects AGENTS.md/CLAUDE.md/.cursorrules from workdir as context. Skills index is ranked by `state.db` historical `skill_view` frequency (top-5 get ★ marker). Terminal state snapshot (`~/.hermes/.terminal_state.json`) injected into environment hints for cross-session continuity.
+- **toolsets.py**: Defines tool groups. `_HERMES_CORE_TOOLS` is the always-loaded set (48 tools). `_TOOL_SEARCH_PROTECTED_TOOLS` is the strict subset (18 tools) that `tool_search` will never defer — peripheral tools (browser, vision, TTS, etc.) become deferrable behind bridge tools.
 - **model_tools.py**: `discover_builtin_tools()`, `handle_function_call()` — tool schema generation + dispatch.
 - **gateway/**: Each platform adapter inherits `BasePlatformAdapter`. Extracted media via `extract_media()` returns `(path, is_voice)` tuples. Background tasks use `_run_background_task()`.
 
 ## Known Pitfalls
 
-- **MCP tool deep trees**: `read_file` + MCP schemas dominate prompt tokens. Use `enabled_toolsets` to limit.
+- **MCP tool deep trees**: `read_file` + MCP schemas dominate prompt tokens. Use `enabled_toolsets` to limit. `tool_search` auto-defers MCP + peripheral tools when schema overhead exceeds 10% of context (see `_TOOL_SEARCH_PROTECTED_TOOLS`).
 - **macOS `/private/var`**: macOS `/var` is a symlink to `/private/var` — path comparisons that don't resolve symlinks will fail.
 - **shoelace component a11y**: Always use `role="img"` + `aria-label="..."` on `sl-icon` for accessibility.
 - **platform-only file**: Writing platform-only-changes to files that are imported by tests for other platforms = import time explosion.

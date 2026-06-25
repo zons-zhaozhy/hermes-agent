@@ -1046,6 +1046,27 @@ def build_environment_hints() -> str:
         except OSError:
             pass
 
+        # Inject last-known terminal state from previous session(s).
+        # The terminal tool persists cwd to .terminal_state.json after each
+        # successful command; reading it here tells the model where the last
+        # session left off, closing the "invisible state loss" gap.
+        try:
+            _ts_path = os.path.join(get_hermes_home(), ".terminal_state.json")
+            if os.path.exists(_ts_path):
+                from pathlib import Path as _Path
+                _ts_data = json.loads(_Path(_ts_path).read_text(encoding="utf-8"))
+                _last_cwd = _ts_data.get("cwd", "")
+                _ts_age = _ts_data.get("timestamp", 0)
+                if _last_cwd:
+                    import time as _time
+                    _age_min = int((_time.time() - _ts_age) / 60) if _ts_age else 0
+                    host_lines.append(
+                        f"Last terminal cwd (from {_age_min}m ago): {_last_cwd}"
+                        " — state does NOT persist across sessions; re-cd/export if needed"
+                    )
+        except Exception:
+            pass
+
         if sys.platform == "win32" and not is_wsl():
             host_lines.append(
                 "Note: on Windows, the machine hostname (e.g. from `hostname` "
@@ -1373,6 +1394,51 @@ def _skill_should_show(
     return True
 
 
+def _get_skill_usage_frequencies() -> dict[str, int]:
+    """Query state.db for historical skill_view call frequencies.
+
+    Returns a {skill_name: count} dict.  Used to sort the skills index so
+    the most-used skills appear first within their category, with a ★
+    marker on the top performers.  This runs once per system-prompt build
+    (stable tier), so it does not threaten prompt caching.
+
+    Silently returns {} if state.db is unavailable (fresh install, non-
+    standard layouts, permission errors, etc.).
+    """
+    try:
+        import sqlite3 as _sqlite3
+        db_path = os.path.join(get_hermes_home(), "state.db")
+        if not os.path.exists(db_path):
+            return {}
+        conn = _sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                """
+                SELECT
+                  json_extract(tc.value, '$.function.arguments') AS args,
+                  COUNT(*) AS freq
+                FROM messages m, json_each(m.tool_calls) tc
+                WHERE json_extract(tc.value, '$.function.name') = 'skill_view'
+                GROUP BY args
+                """,
+            ).fetchall()
+        finally:
+            conn.close()
+        result: dict[str, int] = {}
+        for args_json, freq in rows:
+            if not args_json:
+                continue
+            try:
+                name = json.loads(args_json).get("name", "")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if name:
+                result[name] = result.get(name, 0) + freq
+        return result
+    except Exception:
+        return {}
+
+
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
@@ -1580,6 +1646,16 @@ def build_skills_system_prompt(
     if not skills_by_category:
         result = ""
     else:
+        # Query historical skill usage frequencies for frequency-based ranking.
+        # Runs once per system-prompt build; cached for the session lifetime.
+        skill_freq = _get_skill_usage_frequencies()
+        # Determine the top-N threshold for ★ marking (top 5 by global freq)
+        _STAR_THRESHOLD = 0
+        if skill_freq:
+            sorted_freqs = sorted(skill_freq.values(), reverse=True)
+            if len(sorted_freqs) >= 5:
+                _STAR_THRESHOLD = sorted_freqs[4]  # 5th most used
+
         index_lines = []
         for category in sorted(skills_by_category.keys()):
             # Deduplicate and sort skills within each category
@@ -1593,14 +1669,24 @@ def build_skills_system_prompt(
                 index_lines.append(f"  {category}: {cat_desc}")
             else:
                 index_lines.append(f"  {category}:")
-            for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
+            # Sort by usage frequency (desc) then alphabetically — most-used
+            # skills appear first so the model sees them before lower-ranked
+            # ones.  Skills with no usage history sort alphabetically at the end.
+            sorted_skills = sorted(
+                skills_by_category[category],
+                key=lambda x: (-skill_freq.get(x[0], 0), x[0]),
+            )
+            for name, desc in sorted_skills:
                 if name in seen:
                     continue
                 seen.add(name)
+                freq = skill_freq.get(name, 0)
+                # Mark frequently-used skills with ★ to draw model attention
+                star = " ★" if freq > 0 and freq >= _STAR_THRESHOLD else ""
                 if desc:
-                    index_lines.append(f"    - {name}: {desc}")
+                    index_lines.append(f"    - {name}{star}: {desc}")
                 else:
-                    index_lines.append(f"    - {name}")
+                    index_lines.append(f"    - {name}{star}")
 
         result = (
             "## Skills (mandatory)\n"

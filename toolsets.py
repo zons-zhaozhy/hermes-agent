@@ -73,6 +73,37 @@ _HERMES_CORE_TOOLS = [
     "computer_use",
 ]
 
+# Tool-search protected subset: tools that must NEVER be deferred behind
+# bridge tools, even when ``tool_search`` is active.  This is a strict
+# subset of ``_HERMES_CORE_TOOLS`` — it contains only the tools that are
+# needed in virtually every turn (file ops, terminal, code execution,
+# web research, planning, memory, session history, skills, clarification,
+# delegation, cron).  Peripheral tools (browser_*, vision_*, text_to_speech,
+# ha_*, kanban_*, image_generate, computer_use, read_terminal) are
+# **not** here so ``tool_search`` can defer them when token budget is tight.
+# They are still loaded normally (via ``_HERMES_CORE_TOOLS`` above); only
+# their deferrability changes.
+_TOOL_SEARCH_PROTECTED_TOOLS = frozenset({
+    # Web research
+    "web_search", "web_extract",
+    # Terminal + process management
+    "terminal", "process",
+    # File manipulation
+    "read_file", "write_file", "patch", "search_files",
+    # Skills
+    "skills_list", "skill_view", "skill_manage",
+    # Planning & memory
+    "todo", "memory",
+    # Session history search
+    "session_search",
+    # Clarifying questions
+    "clarify",
+    # Code execution + delegation
+    "execute_code", "delegate_task",
+    # Cronjob management
+    "cronjob",
+})
+
 # Webhook events may originate from untrusted third-party content (for example,
 # public PR titles/comments). Keep the default webhook toolset intentionally
 # constrained to avoid local file/system execution by prompt injection.
