@@ -1160,57 +1160,6 @@ class ContextCompressor(ContextEngine):
             if modified:
                 result[i] = {**msg, "tool_calls": new_tcs}
 
-        # Pass 4: Age-based decay of tool outputs INSIDE the protected tail.
-        #
-        # The tail zone preserves recent messages verbatim — but large tool
-        # outputs (read_file, search_files, execute_code) accumulate fast.
-        # A single 30K-char read_file result (~7.5K tokens) eats 12% of a
-        # 60K tail budget; 3 of them trigger re-compression within 2 turns.
-        #
-        # Instead of all-or-nothing, progressively truncate older tool
-        # results within the tail so the most recent one stays full and
-        # older ones shrink — keeping the information but reclaiming space.
-        #
-        # Decay schedule (by tool-message index counting back from the tail end):
-        #   age 0 (most recent tool msg): full — no truncation
-        #   age 1: truncate to 8,000 chars
-        #   age 2: truncate to 3,000 chars
-        #   age 3+: truncate to 800 chars (headline summary)
-        #
-        # Only applies to string content > the age's threshold. Multimodal
-        # content and small outputs are untouched.
-        _TAIL_AGE_THRESHOLDS = [0, 8000, 3000, 800]  # age 0, 1, 2, 3+
-
-        tool_msg_indices_in_tail: list[int] = []
-        for i in range(prune_boundary, len(result)):
-            if result[i].get("role") == "tool":
-                tool_msg_indices_in_tail.append(i)
-
-        for age, idx in enumerate(reversed(tool_msg_indices_in_tail)):
-            threshold_idx = age if age < len(_TAIL_AGE_THRESHOLDS) else len(_TAIL_AGE_THRESHOLDS) - 1
-            char_limit = _TAIL_AGE_THRESHOLDS[threshold_idx]
-            if char_limit <= 0:
-                continue
-            msg = result[idx]
-            content = msg.get("content", "")
-            if not isinstance(content, str) or len(content) <= char_limit:
-                continue
-            # Keep head + tail with a clear truncation marker so the model
-            # knows the middle was elided and can re-read if needed.
-            head_keep = min(char_limit * 3 // 4, 6000)
-            tail_keep = char_limit - head_keep
-            truncated = (
-                content[:head_keep]
-                + "\n...[tail-decay: age="
-                + str(age)
-                + " truncated "
-                + f"{len(content) - char_limit:,}"
-                + " chars]...\n"
-                + content[-tail_keep:]
-            )
-            result[idx] = {**msg, "content": truncated}
-            pruned += 1
-
         return result, pruned
 
     # ------------------------------------------------------------------
@@ -2310,6 +2259,79 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Safety: never go back into the head region.
         return max(last_user_idx, head_end + 1)
 
+    def _decay_tool_outputs_before_tail_cut(
+        self, messages: List[Dict[str, Any]], head_end: int
+    ) -> List[Dict[str, Any]]:
+        """Pre-truncate older tool outputs before tail boundary calculation.
+
+        Called between Phase 1 (prune old tool results) and Phase 2
+        (_find_tail_cut_by_tokens).  By shrinking large tool outputs in
+        the candidate tail region *before* the budget walk, the budget
+        calculation sees smaller messages and can include more conversation
+        turns — preventing the bug where 2-3 large tool results consume
+        the entire tail budget and push conversation messages into the
+        summary.  (#13164 Option B)
+
+        Decay schedule (age = distance from tail end, age 0 = most recent):
+          age 0: no truncation (current tool result stays full)
+          age 1: truncate to 8,000 chars
+          age 2: truncate to 3,000 chars
+          age 3+: truncate to 800 chars
+
+        Only applies to string ``content`` exceeding the age's threshold.
+        Multimodal content (image_url lists) and small outputs are left
+        untouched.  Returns a new list (messages list is rebuilt, never
+        mutated in-place past ``head_end``).
+
+        This is cache-safe: it runs only inside compress(), which already
+        replaces the message array with a summary.  No prefix mutation
+        occurs during normal (non-compression) turns.  (#415)
+        """
+        _AGE_THRESHOLDS = [0, 8000, 3000, 800]
+
+        # Collect indices of tool messages in the candidate tail region.
+        tool_indices: list[int] = []
+        for i in range(head_end, len(messages)):
+            if messages[i].get("role") == "tool":
+                tool_indices.append(i)
+
+        if not tool_indices:
+            return messages
+
+        # Age: 0 for the last tool msg, 1 for the one before, etc.
+        # reversed() gives us most-recent-first, so enumerate starts at 0.
+        result = list(messages)
+        decayed = 0
+        for age, idx in enumerate(reversed(tool_indices)):
+            ti = age if age < len(_AGE_THRESHOLDS) else len(_AGE_THRESHOLDS) - 1
+            char_limit = _AGE_THRESHOLDS[ti]
+            if char_limit <= 0:
+                continue
+            msg = result[idx]
+            content = msg.get("content", "")
+            if not isinstance(content, str) or len(content) <= char_limit:
+                continue
+            head_keep = min(char_limit * 3 // 4, 6000)
+            tail_keep = char_limit - head_keep
+            truncated = (
+                content[:head_keep]
+                + "\n...[tail-decay: age="
+                + str(age)
+                + " truncated "
+                + f"{len(content) - char_limit:,}"
+                + " chars]...\n"
+                + content[-tail_keep:]
+            )
+            result[idx] = {**msg, "content": truncated}
+            decayed += 1
+
+        if decayed and not self.quiet_mode:
+            logger.info(
+                "Pre-tail-cut decay: truncated %d tool output(s) by age",
+                decayed,
+            )
+        return result
+
     def _find_tail_cut_by_tokens(
         self, messages: List[Dict[str, Any]], head_end: int,
         token_budget: int | None = None,
@@ -2492,8 +2514,14 @@ This compaction should PRIORITISE preserving all information related to the focu
         if pruned_count and not self.quiet_mode:
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
 
-        # Phase 2: Determine boundaries
+        # Phase 1.5: Age-based decay of tool outputs in candidate tail region.
+        # Pre-truncate older tool results BEFORE tail boundary calculation so
+        # the budget walk sees smaller messages and fits more conversation.
+        # (#13164 Option B)
         compress_start = self._protect_head_size(messages)
+        messages = self._decay_tool_outputs_before_tail_cut(messages, compress_start)
+
+        # Phase 2: Determine boundaries
         compress_start = self._align_boundary_forward(messages, compress_start)
 
         # Use token-budget tail protection instead of fixed message count

@@ -150,20 +150,37 @@ def load_config() -> ToolSearchConfig:
 def _core_tool_names() -> frozenset[str]:
     """Return the set of tool names that must NEVER be deferred.
 
-    Imported lazily because ``toolsets`` imports from ``tools.registry``
-    and we don't want a hard cycle.
+    Configuration (highest priority):
+      ``tools.tool_search.protected_tools`` in config.yaml — a list of
+      tool names that overrides the built-in default.  Use this to
+      customise which tools stay always-loaded for your workflow.
 
-    Uses ``_TOOL_SEARCH_PROTECTED_TOOLS`` (a strict subset of
-    ``_HERMES_CORE_TOOLS``) when available — this allows peripheral tools
-    like browser_*, vision_*, text_to_speech, ha_*, kanban_* to be deferred
-    behind bridge tools, saving ~8-10K tokens per API call.
-    Falls back to the full ``_HERMES_CORE_TOOLS`` for backward compat.
+    Built-in default:
+      ``_TOOL_SEARCH_PROTECTED_TOOLS`` (18 tools: web, terminal, file,
+      skills, memory, delegation, cron).  Peripheral tools like browser_*,
+      vision_*, text_to_speech, ha_*, kanban_* are intentionally excluded
+      so tool_search can defer them, saving ~8-10K tokens per API call.
+
+    Fallback:
+      Full ``_HERMES_CORE_TOOLS`` when the protected subset is unavailable
+      (backward compatibility with older installations).
     """
+    # 1. Check config.yaml override
+    try:
+        from hermes_cli.config import load_config as _load_cfg
+        cfg = _load_cfg()
+        override = cfg.get("tools", {}).get("tool_search", {}).get("protected_tools")
+        if isinstance(override, list) and override:
+            return frozenset(override)
+    except Exception:
+        pass
+    # 2. Built-in protected subset
     try:
         from toolsets import _TOOL_SEARCH_PROTECTED_TOOLS
         return _TOOL_SEARCH_PROTECTED_TOOLS
     except ImportError:
         pass
+    # 3. Full core set fallback
     try:
         from toolsets import _HERMES_CORE_TOOLS
         return frozenset(_HERMES_CORE_TOOLS)
