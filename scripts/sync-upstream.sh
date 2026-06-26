@@ -98,8 +98,8 @@ collect_patches() {
     #
     # 策略：用 reflog 找到 fetch 前的 HEAD，收集 HEAD 上的所有非 merge commit。
     # 补丁定义：不属于 upstream 孤儿 commit 链的 commit。
-    # 简化：收集当前 HEAD 上所有带 [skip upstream] 标记的 commit message 不现实，
-    # 改用 ref 文件记录补丁列表。
+    # 简化：收集当前分支相对于 cnb/upstream-main 的 diff
+    # 注意：这只在 fetch 前有效
     local patch_ref; patch_ref="refs/sync/local-patches"
     local list_file; list_file="${HERMES_HOME:-$HOME/.hermes}/.sync-patches.txt"
 
@@ -112,6 +112,32 @@ collect_patches() {
     # 回退：用当前分支相对于 cnb/upstream-main 的 diff
     # 注意：这只在 fetch 前有效
     git rev-list --reverse "${CNB_REMOTE}/upstream-main..HEAD" 2>/dev/null || true
+}
+
+# ── 从 manifest 读取补丁分类 ──
+# manifest 文件: ${HERMES_HOME:-$HOME/.hermes}/.patch-manifest.yaml
+# 返回补丁的分类: pr-track / local-only / upstream-absorbed / unknown
+get_patch_category() {
+    local sha="$1"
+    local manifest="${HERMES_HOME:-$HOME/.hermes}/.patch-manifest.yaml"
+    if [ ! -f "$manifest" ]; then
+        echo "unknown"
+        return
+    fi
+    python3 -c "
+import sys
+sha, path = sys.argv[1], sys.argv[2]
+try:
+    text = open(path).read()
+    chunk = text.split(sha, 1)[1]
+    cat_line = [l for l in chunk.splitlines() if 'category:' in l]
+    if cat_line:
+        print(cat_line[0].split(':', 1)[1].strip().strip('\"'))
+    else:
+        print('unknown')
+except (IndexError, FileNotFoundError):
+    print('unknown')
+" "$sha" "$manifest" 2>/dev/null || echo "unknown"
 }
 
 # ── 保存当前补丁列表（在 fetch 前调用）──
@@ -145,7 +171,9 @@ rebase_patches() {
     echo "  补丁列表:"
     while IFS= read -r sha; do
         [ -z "$sha" ] && continue
-        echo "    $(git log -1 --format='%h %s' "$sha" | cut -c1-70)"
+        local msg; msg=$(git log -1 --format='%s' "$sha" | cut -c1-50)
+        local cat; cat=$(get_patch_category "$sha")
+        echo "    $(git log -1 --format='%h' "$sha") [$cat] ${msg}"
     done < "$patch_file"
 
     # 创建临时分支，reset 到新 upstream，逐个 cherry-pick
@@ -185,7 +213,13 @@ rebase_patches() {
     if [ $fail -gt 0 ]; then
         warn "冲突补丁（需手动处理）:"
         for sha in "${failed_shas[@]}"; do
-            echo "    $(git log -1 --format='%h %s' "$sha" | cut -c1-70)"
+            local cat; cat=$(get_patch_category "$sha")
+            echo "    $(git log -1 --format='%h %s' "$sha" | cut -c1-70) [$cat]"
+            if [ "$cat" = "local-only" ]; then
+                warn "    → local-only 补丁，如 upstream 已有类似修复可考虑丢弃"
+            elif [ "$cat" = "pr-track" ]; then
+                warn "    → PR-track 补丁，需手动解决冲突后重新 cherry-pick"
+            fi
         done
         warn "这些补丁需要手动 cherry-pick: git cherry-pick <sha>"
         return 1
