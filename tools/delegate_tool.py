@@ -2199,6 +2199,44 @@ def delegate_task(
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
 
+    # ── Goal safety check: reject goals that instruct code modification ──
+    # This is a hard guard at the tool-implementation level (not prompt text),
+    # so the LLM cannot bypass it.
+    code_modify_verbs = (
+        "修改", "修复", "替换", "更新", "迁移", "重构", "收窄", "补充", "回退",
+        "删除", "fix", "modify", "replace", "update", "refactor", "migrate",
+        "rewrite", "change", "patch",
+    )
+    code_file_exts = (
+        ".py", ".ts", ".js", ".java", ".vue", ".yaml", ".yml", ".xml",
+        ".json", ".toml", ".cfg", ".ini", ".sql",
+    )
+    for i, task in enumerate(task_list):
+        task_goal = task.get("goal", "")
+        task_context = task.get("context", "") or ""
+        combined = task_goal + " " + task_context
+        combined_lower = combined.lower()
+        # Check if the goal contains both a modify verb AND a code file reference
+        has_modify_verb = any(v in combined_lower for v in code_modify_verbs)
+        has_code_file = any(ext in combined for ext in code_file_exts)
+        has_path_ref = "/" in combined and any(
+            part.endswith(ext) for ext in code_file_exts
+            for part in combined.split("/")
+        )
+        if has_modify_verb and (has_code_file or has_path_ref):
+            logger.warning(
+                "delegate_task goal safety check REJECTED task %d: "
+                "modify verb + code file reference detected. "
+                "Code modifications must be done by the main agent, not subagents.",
+                i,
+            )
+            return tool_error(
+                f"Task {i} REJECTED: goal contains code modification instructions "
+                f"(modify verb + code file reference). Subagents must not modify "
+                f"existing code — use the main agent for all code changes. "
+                f"Goal: {task_goal[:100]}"
+            )
+
     overall_start = time.monotonic()
     results = []
 
