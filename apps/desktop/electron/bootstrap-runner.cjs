@@ -610,6 +610,137 @@ function openRunLog(logRoot) {
 // Public entrypoint
 // ---------------------------------------------------------------------------
 
+// Resolve the bundled offline setup script. On packaged builds, the offline
+// payload lives at resources/offline/setup-offline.ps1 (shipped via
+// electron-builder extraResources). Returns the absolute path to the script
+// if found, or null.
+
+// Minimal PATH lookup for the offline PowerShell resolver.  We don't need
+// the full findOnPath from main.cjs (which handles WSL edge cases, PATHEXT
+// extensions, etc.) — just a basic "does this binary exist on PATH?"
+function findOnPathSimple(command) {
+  const sep = process.platform === 'win32' ? ';' : ':'
+  const pathExt = process.platform === 'win32' ? (process.env.PATHEXT || '.EXE;.CMD;.BAT').split(';') : ['']
+  const dirs = (process.env.PATH || '').split(sep)
+  for (const dir of dirs) {
+    for (const ext of pathExt) {
+      const full = path.join(dir, command + ext)
+      try {
+        fs.accessSync(full, fs.constants.X_OK)
+        return full
+      } catch {
+        // continue
+      }
+    }
+  }
+  return null
+}
+
+function resolveOfflineSetupScript(hermesHome) {
+  const resourcesPath = process.resourcesPath
+  if (!resourcesPath) return null
+  const offlineScriptDir = path.join(resourcesPath, 'offline')
+  const scriptPath = path.join(offlineScriptDir, 'setup-offline.ps1')
+  try {
+    fs.accessSync(scriptPath, fs.constants.R_OK)
+    // Verify the payload is complete: we need the Python zip, wheels dir,
+    // and source zip alongside the script.
+    const pythonZip = path.join(offlineScriptDir, 'python-3.11.9-embed-amd64.zip')
+    const sourceZip = path.join(offlineScriptDir, 'hermes-agent-source.zip')
+    const wheelsDir = path.join(offlineScriptDir, 'wheels')
+    if (!fs.existsSync(pythonZip) || !fs.existsSync(sourceZip) || !fs.existsSync(wheelsDir)) {
+      return null
+    }
+    return scriptPath
+  } catch {
+    return null
+  }
+}
+
+// Run the bundled offline setup script. This is a full bootstrap — it
+// installs Python, all dependencies, the source code, and writes the
+// bootstrap-complete marker.  No internet access required.
+async function runOfflineSetup(scriptPath, { emit, hermesHome, abortSignal }) {
+  return new Promise((resolve) => {
+    // Offline setup only runs on Windows (the payload is Windows-only).
+    // Resolve PowerShell: prefer pwsh 7+, fall back to the built-in 5.1.
+    let ps = null
+    if (process.platform === 'win32') {
+      const systemRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows'
+      const builtin = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+      ps = findOnPathSimple('pwsh.exe') || findOnPathSimple('pwsh') || (fs.existsSync(builtin) ? builtin : null) || 'powershell.exe'
+    } else {
+      // Non-Windows host: unlikely path, but pwsh works if installed.
+      ps = 'pwsh'
+    }
+
+    const child = spawn(ps, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        HERMES_HOME: hermesHome || process.env.HERMES_HOME || ''
+      }
+    })
+
+    let stdout = ''
+    let stderr = ''
+
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+
+    let stdoutBuf = ''
+    child.stdout.on('data', chunk => {
+      stdout += chunk
+      stdoutBuf += chunk
+      let nl
+      while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
+        const line = stdoutBuf.slice(0, nl).replace(/\r$/, '')
+        stdoutBuf = stdoutBuf.slice(nl + 1)
+        if (line) emit({ type: 'log', line, stream: 'stdout' })
+      }
+    })
+
+    let stderrBuf = ''
+    child.stderr.on('data', chunk => {
+      stderr += chunk
+      stderrBuf += chunk
+      let nl
+      while ((nl = stderrBuf.indexOf('\n')) !== -1) {
+        const line = stderrBuf.slice(0, nl).replace(/\r$/, '')
+        stderrBuf = stderrBuf.slice(nl + 1)
+        if (line) emit({ type: 'log', line, stream: 'stderr' })
+      }
+    })
+
+    const onAbort = () => {
+      try { child.kill('SIGTERM') } catch { void 0 }
+    }
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        onAbort()
+      } else {
+        abortSignal.addEventListener('abort', onAbort, { once: true })
+      }
+    }
+
+    child.on('error', err => {
+      if (abortSignal) abortSignal.removeEventListener('abort', onAbort)
+      resolve({ ok: false, error: err.message })
+    })
+
+    child.on('close', (code) => {
+      if (abortSignal) abortSignal.removeEventListener('abort', onAbort)
+      if (stdoutBuf) emit({ type: 'log', line: stdoutBuf, stream: 'stdout' })
+      if (stderrBuf) emit({ type: 'log', line: stderrBuf, stream: 'stderr' })
+      if (code === 0) {
+        resolve({ ok: true })
+      } else {
+        resolve({ ok: false, error: `setup-offline.ps1 exited with code ${code}`, stderr: stderr.slice(-2000) })
+      }
+    })
+  })
+}
+
 async function runBootstrap(opts) {
   const {
     installStamp,
@@ -664,6 +795,39 @@ async function runBootstrap(opts) {
   })
 
   try {
+    // 0. Offline fast path: if the desktop app was built with a bundled
+    //    offline agent payload (python + wheels + source), run the
+    //    self-contained setup script instead of fetching install.ps1 from
+    //    GitHub.  This makes the installer work without any internet access.
+    const offlineScript = resolveOfflineSetupScript(hermesHome)
+    if (offlineScript) {
+      emit({ type: 'log', line: '[bootstrap] offline payload detected; running bundled setup' })
+      const offlineResult = await runOfflineSetup(offlineScript, { emit, hermesHome, abortSignal })
+      if (offlineResult.ok) {
+        const markerPayload = {
+          pinnedCommit: installStamp ? installStamp.commit : null,
+          pinnedBranch: installStamp ? installStamp.branch : null,
+          installMethod: 'offline-bundle'
+        }
+        const marker = typeof writeMarker === 'function' ? writeMarker(markerPayload) : markerPayload
+        emit({ type: 'complete', marker })
+        return { ok: true, marker }
+      }
+      // Offline setup failed — 离线环境下没有网络，不能 fall through 到在线路径。
+      // 直接返回失败，把具体错误信息透传给桌面 UI。
+      const errMsg = offlineResult.error || 'setup-offline.ps1 exited with non-zero code'
+      const stderrTail = offlineResult.stderr ? `\nLast 2000 chars of stderr:\n${offlineResult.stderr}` : ''
+      emit({
+        type: 'log',
+        line: `[bootstrap] offline setup FAILED: ${errMsg}${stderrTail}`
+      })
+      emit({
+        type: 'failed',
+        error: `Offline setup failed: ${errMsg}${stderrTail}`
+      })
+      return { ok: false, error: `Offline setup failed: ${errMsg}${stderrTail}` }
+    }
+
     // 1. Resolve the platform installer.
     const scriptInfo = await resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit })
     const installerKind = scriptInfo.kind || 'powershell'
@@ -735,5 +899,7 @@ module.exports = {
   resolveLocalInstallScript,
   resolveInstallScript,
   installedAgentInstallScript,
-  cachedScriptPath
+  cachedScriptPath,
+  resolveOfflineSetupScript,
+  runOfflineSetup
 }
