@@ -35,6 +35,7 @@ from agent.prompt_builder import (
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE,
     PLATFORM_HINTS,
+    REASON_THEN_ACT_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
     STEER_CHANNEL_NOTE,
@@ -173,6 +174,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # users who want a leaner prompt can turn it off.
     if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
         stable_parts.append(TASK_COMPLETION_GUIDANCE)
+
+    # Reason-then-act protocol — applied to ALL models with tools.
+    # Inspired by Ornith-1.0's self-scaffolding approach: models that
+    # reason explicitly before calling tools reduce premature-action
+    # loops.  Gated by config.yaml ``agent.reason_then_act_guidance``
+    # (default True) so users who want a leaner prompt can turn it off.
+    if getattr(agent, "_reason_then_act_guidance", True) and agent.valid_tool_names:
+        stable_parts.append(REASON_THEN_ACT_GUIDANCE)
 
     # YAGNI code-simplicity ladder — only when the agent has write-capable
     # tools (patch/write_file/terminal/execute_code).  Read-only or

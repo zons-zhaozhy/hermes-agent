@@ -31,10 +31,61 @@ import json
 import logging
 import math
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger("tools.tool_search")
+
+# ---------------------------------------------------------------------------
+# Tool metrics registry — per-session success/failure tracking for
+# deferred tools.  Inspired by Ornith-1.0's self-scaffolding: tools that
+# consistently fail are surfaced lower in search results.
+# ---------------------------------------------------------------------------
+_tool_metrics: Dict[str, Dict[str, Any]] = {}
+
+
+def record_tool_result(tool_name: str, *, success: bool,
+                       duration_ms: float = 0.0) -> None:
+    """Record one tool-call result, updating health metrics.
+
+    Idempotent — safe to call for any tool name.  Non-deferred tools
+    are silently ignored by ``search_catalog``.
+    """
+    m = _tool_metrics.setdefault(tool_name, {
+        "call_count": 0, "error_count": 0,
+        "last_error_at": None, "avg_duration_ms": 0.0,
+        "health_score": 1.0,
+    })
+    m["call_count"] += 1
+    if m["call_count"] == 1:
+        m["avg_duration_ms"] = duration_ms
+    else:
+        m["avg_duration_ms"] = 0.3 * duration_ms + 0.7 * m["avg_duration_ms"]
+    if not success:
+        m["error_count"] += 1
+        m["last_error_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    error_rate = m["error_count"] / max(m["call_count"], 1)
+    dur_penalty = max(0.0, min(1.0, (m["avg_duration_ms"] - 3000.0) / 30000.0))
+    m["health_score"] = max(0.0, 1.0 - (error_rate * 0.7 + dur_penalty * 0.3))
+
+
+def get_tool_health(tool_name: str) -> float:
+    """Return health score (0.0–1.0).  1.0 when no metrics recorded."""
+    m = _tool_metrics.get(tool_name)
+    return 1.0 if m is None else m["health_score"]
+
+
+def get_tool_health_badge(tool_name: str) -> str:
+    """Short health indicator appended to search result descriptions."""
+    m = _tool_metrics.get(tool_name)
+    if not m or m["call_count"] == 0:
+        return ""
+    s = m["health_score"]
+    if s >= 0.9:
+        return ""
+    badge = "⚠" if s >= 0.5 else "🔴"
+    return f" {badge} health={s:.1f} ({m['error_count']}/{m['call_count']} failed)"
 
 
 # Bridge tool names. These names are reserved and may not collide with a
@@ -405,7 +456,10 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5) -> L
         s = _bm25_score(query_tokens, entry._tokens, doc_lengths, avg_dl,
                         doc_freq, n_docs)
         if s > 0:
-            scored.append((s, entry))
+            # Tiny health boost (0.001 per unit health) so tools that work
+            # well are preferred over equally-relevant tools that fail often.
+            health_boost = get_tool_health(entry.name) * 0.001
+            scored.append((s + health_boost, entry))
 
     if not scored:
         # Substring fallback against the original tool name.
@@ -414,7 +468,7 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5) -> L
             if ql in entry.name.lower():
                 scored.append((0.1, entry))
 
-    scored.sort(key=lambda x: x[0], reverse=True)
+    scored.sort(key=lambda x: (-x[0], -get_tool_health(x[1].name)))
     return [e for _, e in scored[:limit]]
 
 
@@ -593,12 +647,16 @@ def is_bridge_tool(name: str) -> bool:
 
 
 def _format_search_hit(entry: CatalogEntry) -> Dict[str, Any]:
+    # Append health badge to description so the model sees it.
+    badge = get_tool_health_badge(entry.name)
+    desc = (entry.description or "")[:400]
+    if badge:
+        desc = desc[:360] + badge
     return {
         "name": entry.name,
         "source": entry.source,
         "source_name": entry.source_name,
-        # Cap description so a chatty MCP server doesn't blow up the result.
-        "description": (entry.description or "")[:400],
+        "description": desc,
     }
 
 
@@ -732,4 +790,7 @@ __all__ = [
     "dispatch_tool_describe",
     "resolve_underlying_call",
     "scoped_deferrable_names",
+    "record_tool_result",
+    "get_tool_health",
+    "get_tool_health_badge",
 ]

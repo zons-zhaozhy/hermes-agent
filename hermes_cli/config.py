@@ -969,6 +969,12 @@ DEFAULT_CONFIG = {
         # compounds over a long conversation.  Costs ~70 tokens in the cached
         # system prompt.  Set False to disable globally.
         "parallel_tool_call_guidance": True,
+        # Reason-then-act protocol — short prompt block (~140t in cached
+        # system prompt) telling the model to explicitly reason before
+        # calling tools for complex tasks.  Inspired by Ornith-1.0's
+        # self-scaffolding approach: reduces premature-action loops and
+        # wasted tool calls.  Set False to disable globally.
+        "reason_then_act_guidance": True,
         # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
         # state in the system prompt when something non-default is detected
         # (e.g. python3 has no pip module, pip→python version mismatch, PEP

@@ -1325,6 +1325,11 @@ def init_agent(
     # single turn; the runtime already executes such batches concurrently.
     agent._parallel_tool_call_guidance = bool(_agent_section.get("parallel_tool_call_guidance", True))
 
+    # Reason-then-act protocol toggle.  Default True.  Tells the model to
+    # explicitly reason before calling tools for complex tasks.  Inspired
+    # by Ornith-1.0's self-scaffolding approach.
+    agent._reason_then_act_guidance = bool(_agent_section.get("reason_then_act_guidance", True))
+
     # Local Python toolchain probe toggle.  Default True.  When False,
     # the probe is skipped entirely (no subprocess calls, no system-prompt
     # line).  Useful for users on exotic setups where the probe heuristics

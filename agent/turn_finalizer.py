@@ -22,6 +22,7 @@ keep the exact logger name (``"agent.conversation_loop"``).
 
 from __future__ import annotations
 
+import json
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
@@ -459,6 +460,42 @@ def finalize_turn(
             )
         except Exception:
             pass  # Background review is best-effort
+
+    # ── Session quality summary ──────────────────────────────────────
+    # Lightweight quality feedback stored as session meta.  The review
+    # fork (above) updates skills; this stores a compact outcome signal
+    # that future sessions can retrieve via session_search to see "last
+    # time I did X, it failed/succeeded".
+    try:
+        _session_db = getattr(agent, "_session_db", None)
+        if _session_db and agent.session_id:
+            # Read existing summary, merge in latest turn data.
+            _existing = _session_db.get_meta("_quality_summary")
+            _summary: dict = {}
+            if _existing:
+                try:
+                    _summary = json.loads(_existing)
+                except (json.JSONDecodeError, TypeError):
+                    _summary = {}
+            _summary["last_turn_completed"] = completed
+            _summary["last_turn_exit_reason"] = str(_turn_exit_reason)
+            _summary["last_turn_api_calls"] = api_call_count
+            _summary["last_turn_tool_turns"] = _turn_tool_count
+            _summary["last_turn_interrupted"] = interrupted
+            # Running totals
+            _prev_calls = _summary.get("total_api_calls", 0)
+            _prev_turns = _summary.get("total_tool_turns", 0)
+            _summary["total_api_calls"] = _prev_calls + api_call_count
+            _summary["total_tool_turns"] = _prev_turns + _turn_tool_count
+            _summary["total_turns"] = _summary.get("total_turns", 0) + 1
+            # Track consecutive failures
+            if completed:
+                _summary["consecutive_failures"] = 0
+            else:
+                _summary["consecutive_failures"] = _summary.get("consecutive_failures", 0) + 1
+            _session_db.set_meta("_quality_summary", json.dumps(_summary))
+    except Exception:
+        logger.warning("Failed to store quality summary", exc_info=True)
 
     # Note: Memory provider on_session_end() + shutdown_all() are NOT
     # called here — run_conversation() is called once per user message in

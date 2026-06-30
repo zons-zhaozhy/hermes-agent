@@ -1001,9 +1001,9 @@ def handle_function_call(
                         "Use tool_search to find tools you can call."
                     ),
                 }, ensure_ascii=False)
-            # Recurse with the underlying tool. All hooks fire against the
-            # real tool name. The bridge is invisible to hooks by design.
-            return handle_function_call(
+            # Track timing and success for deferred-tool metrics.
+            _t0 = time.monotonic()
+            _result = handle_function_call(
                 function_name=underlying_name,
                 function_args=underlying_args,
                 task_id=task_id,
@@ -1017,6 +1017,13 @@ def handle_function_call(
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
             )
+            _elapsed = (time.monotonic() - _t0) * 1000
+            _ts_mod.record_tool_result(
+                underlying_name,
+                success=not _result.startswith('{"error":'),
+                duration_ms=_elapsed,
+            )
+            return _result
 
     _tool_original_args = dict(function_args)
     if not skip_tool_request_middleware:
