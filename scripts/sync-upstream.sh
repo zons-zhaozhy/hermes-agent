@@ -6,7 +6,7 @@
 #   ./scripts/sync-upstream.sh --check  # 只检查差距，不执行
 #
 # 前提: cnb sync-config 分支存在，含 .cnb.yml 云端拉取 pipeline
-# 本地补丁列表: refs/sync/local-patches（一个 ref 指向补丁链的 HEAD）
+# 上游基点: refs/sync/upstream-base（独立 ref，不受 push 影响）
 
 set -euo pipefail
 
@@ -29,6 +29,9 @@ NC='\033[0m'
 log()  { echo -e "${GREEN}[sync]${NC} $*"; }
 warn() { echo -e "${YELLOW}[warn]${NC} $*"; }
 err()  { echo -e "${RED}[err]${NC} $*" >&2; }
+
+# ── 常量 ──
+BASE_REF="refs/sync/upstream-base"
 
 # ── 获取 cnb token ──
 get_token() {
@@ -109,9 +112,14 @@ collect_patches() {
         return 0
     fi
 
-    # 回退：用当前分支相对于 cnb/upstream-main 的 diff
-    # 注意：这只在 fetch 前有效
-    git rev-list --reverse "${CNB_REMOTE}/upstream-main..HEAD" 2>/dev/null || true
+    # 回退：优先用 upstream-base ref，再用 cnb/upstream-main
+    local fallback_base; fallback_base=$(git rev-parse "$BASE_REF" 2>/dev/null || echo "")
+    if [ -n "$fallback_base" ]; then
+        git rev-list --reverse "${fallback_base}..HEAD" 2>/dev/null || true
+    else
+        warn "upstream-base ref 未设置，使用 cnb/upstream-main（fetch 后可能不可靠）"
+        git rev-list --reverse "${CNB_REMOTE}/upstream-main..HEAD" 2>/dev/null || true
+    fi
 }
 
 # ── 从 manifest 读取补丁分类 ──
@@ -143,12 +151,35 @@ except (IndexError, FileNotFoundError):
 # ── 保存当前补丁列表（在 fetch 前调用）──
 save_patches() {
     local list_file; list_file="${HERMES_HOME:-$HOME/.hermes}/.sync-patches.txt"
-    local old_base; old_base=$(git rev-parse "${CNB_REMOTE}/upstream-main" 2>/dev/null || echo "")
-    if [ -n "$old_base" ]; then
-        git rev-list --reverse "${old_base}..HEAD" > "$list_file" 2>/dev/null
-        local count; count=$(wc -l < "$list_file" | tr -d ' ')
-        log "保存 $count 个补丁到 $list_file"
+
+    # 优先用持久化 ref（不受 push 影响），回退到 cnb/upstream-main
+    local old_base; old_base=$(git rev-parse "$BASE_REF" 2>/dev/null || echo "")
+    if [ -z "$old_base" ]; then
+        old_base=$(git rev-parse "${CNB_REMOTE}/upstream-main" 2>/dev/null || echo "")
+        [ -n "$old_base" ] && warn "upstream-base ref 未设置，回退到 cnb/upstream-main（push 后可能不可靠）"
     fi
+
+    if [ -z "$old_base" ]; then
+        err "无法确定 upstream 基点，同步中止"
+        return 1
+    fi
+
+    git rev-list --reverse "${old_base}..HEAD" > "$list_file" 2>/dev/null
+    local count; count=$(wc -l < "$list_file" | tr -d ' ')
+
+    # 安全护栏：0 补丁但 HEAD 领先 cnb/upstream-main → 基点失效
+    if [ "$count" -eq 0 ]; then
+        local remote_diff; remote_diff=$(git rev-list --count "${CNB_REMOTE}/upstream-main..HEAD" 2>/dev/null || echo "0")
+        if [ "$remote_diff" -gt 0 ]; then
+            err "补丁列表为空但 HEAD 领先 cnb/upstream-main ${remote_diff} 个 commit"
+            err "upstream-base ($(git log -1 --format='%h' "$old_base" 2>/dev/null)) 可能已失效"
+            err "修复: git update-ref $BASE_REF <正确的upstream基点SHA>"
+            return 1
+        fi
+    fi
+
+    log "保存 $count 个补丁到 $list_file（基点: $(git log -1 --format='%h' "$old_base" 2>/dev/null || echo "${old_base:0:12}")）"
+    return 0
 }
 
 # ── 步骤 4: rebase 补丁到新 upstream ──
@@ -161,9 +192,17 @@ rebase_patches() {
     local count; count=$(wc -l < "$patch_file" | tr -d ' ')
 
     if [ "$count" -eq 0 ]; then
+        # 二次确认：HEAD 确实没有本地 commit
+        local remote_diff; remote_diff=$(git rev-list --count "${CNB_REMOTE}/upstream-main..HEAD" 2>/dev/null || echo "0")
+        if [ "$remote_diff" -gt 0 ]; then
+            err "补丁列表为空但 HEAD 领先 cnb/upstream-main ${remote_diff} 个 commit — 补丁可能已丢失"
+            err "手动恢复: git rev-list --reverse <旧基点>..HEAD > ${HERMES_HOME:-$HOME/.hermes}/.sync-patches.txt"
+            return 1
+        fi
         warn "无补丁，直接 reset 到 upstream"
         git checkout "$BRANCH"
         git reset --hard "$new_base"
+        git update-ref "$BASE_REF" "$new_base"
         return 0
     fi
 
@@ -224,6 +263,9 @@ rebase_patches() {
         warn "这些补丁需要手动 cherry-pick: git cherry-pick <sha>"
         return 1
     fi
+    # 更新 upstream-base ref 到新基点
+    git update-ref "$BASE_REF" "$new_base"
+    log "upstream-base ref 更新到 $(git log -1 --format='%h' "$new_base")"
     return 0
 }
 
@@ -296,13 +338,20 @@ main() {
             git fetch "$CNB_REMOTE" upstream-main 2>/dev/null || true
             local current; current=$(git log -1 --format='%h' "$CNB_REMOTE/upstream-main" 2>/dev/null)
             local local_head; local_head=$(git log -1 --format='%h' HEAD)
+            local base_sha; base_sha=$(git rev-parse "$BASE_REF" 2>/dev/null || echo "")
+            local base_info; [ -n "$base_sha" ] && base_info=$(git log -1 --format='%h' "$base_sha" 2>/dev/null) || base_info="未设置"
             log "cnb upstream-main: $current"
             log "本地 HEAD:          $local_head"
+            log "upstream-base ref:  $base_info"
             local patches; patches=$(git rev-list --count "$CNB_REMOTE/upstream-main..HEAD" 2>/dev/null || echo "?")
-            log "本地领先: $patches 个补丁"
+            log "本地领先 (vs cnb):  $patches 个补丁"
+            if [ -n "$base_sha" ]; then
+                local real_patches; real_patches=$(git rev-list --count "${base_sha}..HEAD" 2>/dev/null || echo "?")
+                log "本地补丁 (vs base): $real_patches 个"
+            fi
             ;;
         sync|"")
-            save_patches           # 必须在 fetch 前保存，否则补丁链丢失
+            save_patches || { err "save_patches 失败，同步中止（防止丢失补丁）"; exit 1; }
             trigger_cnb_sync || exit 1
             fetch_upstream
             rebase_patches || warn "有冲突需手动处理"
