@@ -1364,7 +1364,7 @@ def init_agent(
     _compression_cfg = _agent_cfg.get("compression", {})
     if not isinstance(_compression_cfg, dict):
         _compression_cfg = {}
-    compression_threshold = float(_compression_cfg.get("threshold", 0.50))
+    compression_threshold = float(_compression_cfg.get("threshold", 0.35))
     # Per-model/route compaction-threshold override. Codex gpt-5.5 raises to
     # 85% (the Codex backend caps the window at 272K, so the default 50% would
     # compact at ~136K — half the usable context). Gated by an opt-out config
@@ -1403,7 +1403,7 @@ def init_agent(
     except Exception:
         pass
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
-    compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
+    compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.12))
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
     # protect_first_n is the number of non-system messages to protect at
     # the head, in addition to the system prompt (which is always
