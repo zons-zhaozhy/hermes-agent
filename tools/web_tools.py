@@ -943,17 +943,25 @@ from tools.registry import registry, tool_error
 
 WEB_SEARCH_SCHEMA = {
     "name": "web_search",
-    "description": "Search the web for information. Returns up to 5 results by default with titles, URLs, and descriptions. The query is passed through to the configured backend, so operators such as site:domain, filetype:pdf, intitle:word, -term, and \"exact phrase\" may work when the backend supports them.",
+    "description": (
+        "Search the web for information. Returns up to 5 results by default with titles, URLs, and descriptions. "
+        "The query is passed through to the configured backend, so operators such as site:domain, filetype:pdf, "
+        "intitle:word, -term, and \"exact phrase\" may work when the backend supports them.\n\n"
+        "SPARSE SEARCH RULE — context economy discipline:\n"
+        "1. Use narrow, specific queries. Avoid broad queries that return many irrelevant results.\n"
+        "2. Keep limit at default (5). Only increase when you genuinely need exhaustive results.\n"
+        "3. Each result enters your context — 5 results × ~200 chars = ~1K chars. 20 results = ~4K chars of potentially low-value content."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "The search query to look up on the web. You may include backend-supported operators such as site:example.com, filetype:pdf, intitle:word, -term, or \"exact phrase\"."
+                "description": "The search query to look up on the web. Be specific — narrow queries save context. You may include backend-supported operators such as site:example.com, filetype:pdf, intitle:word, -term, or \"exact phrase\"."
             },
             "limit": {
                 "type": "integer",
-                "description": "Maximum number of results to return. Defaults to 5.",
+                "description": "Maximum number of results to return. Defaults to 5. Keep at default unless you need exhaustive coverage.",
                 "minimum": 1,
                 "maximum": 100,
                 "default": 5
@@ -965,14 +973,25 @@ WEB_SEARCH_SCHEMA = {
 
 WEB_EXTRACT_SCHEMA = {
     "name": "web_extract",
-    "description": "Extract content from web page URLs. Returns clean page content in markdown/text (no LLM summarization — fast). Also works with PDF URLs (arxiv papers, documents) — pass the PDF link directly. Pages within the char budget (default 15000) return whole; larger pages return a head+tail window with a footer telling you the full text's saved file path and the read_file call to page through the omitted middle. Inline images appear as [IMAGE: alt] placeholders; real image URLs are kept as links. If a URL fails or times out, use the browser tool instead.",
+    "description": (
+        "Extract content from web page URLs. Returns clean page content in markdown/text (no LLM summarization — fast). "
+        "Also works with PDF URLs (arxiv papers, documents) — pass the PDF link directly. "
+        "Pages within the char budget (default 15000) return whole; larger pages return a head+tail window with a footer "
+        "telling you the full text's saved file path and the read_file call to page through the omitted middle. "
+        "Inline images appear as [IMAGE: alt] placeholders; real image URLs are kept as links. "
+        "If a URL fails or times out, use the browser tool instead.\n\n"
+        "SPARSE EXTRACT RULE — context economy discipline:\n"
+        "1. Start with 1-2 URLs to confirm value before extracting more.\n"
+        "2. Each extracted page = up to 15K chars in context. 5 pages = up to 75K chars.\n"
+        "3. Only extract URLs you have a specific reason to read, not 'might be useful' pages."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
             "urls": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "List of URLs to extract content from (max 5 URLs per call)",
+                "description": "List of URLs to extract content from (max 5 URLs per call). Start with 1-2 to confirm value before extracting more.",
                 "maxItems": 5
             },
             "char_limit": {
