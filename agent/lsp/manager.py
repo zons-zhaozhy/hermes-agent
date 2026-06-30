@@ -292,7 +292,7 @@ class LSPService:
         if not self.enabled_for(file_path):
             return
         try:
-            diags = self._loop.run(self._snapshot_async(file_path), timeout=8.0)
+            diags = self._loop.run(self._snapshot_async(file_path), timeout=2.0)
             self._delta_baseline[os.path.abspath(file_path)] = diags or []
         except Exception as e:  # noqa: BLE001
             logger.debug("baseline snapshot failed for %s: %s", file_path, e)
