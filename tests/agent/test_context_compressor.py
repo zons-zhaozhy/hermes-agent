@@ -2065,12 +2065,12 @@ class TestSummaryTargetRatio:
     def test_tail_budget_scales_with_context(self):
         """Tail token budget should be threshold_tokens * summary_target_ratio."""
         with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
-            c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.40)
+            c = ContextCompressor(model="test", quiet_mode=True, threshold_percent=0.50, summary_target_ratio=0.40)
         # 200K * 0.50 threshold * 0.40 ratio = 40K
         assert c.tail_token_budget == 40_000
 
         with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
-            c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.40)
+            c = ContextCompressor(model="test", quiet_mode=True, threshold_percent=0.50, summary_target_ratio=0.40)
         # 1M * 0.50 threshold * 0.40 ratio = 200K
         assert c.tail_token_budget == 200_000
 
@@ -2094,20 +2094,20 @@ class TestSummaryTargetRatio:
             c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.95)
         assert c.summary_target_ratio == 0.80
 
-    def test_default_threshold_is_50_percent(self):
-        """Default compression threshold should be 50%, with a 64K floor."""
+    def test_default_threshold_is_35_percent(self):
+        """Default compression threshold should be 35%, with a 64K floor."""
         with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
             c = ContextCompressor(model="test", quiet_mode=True)
-        assert c.threshold_percent == 0.50
-        # 50% of 100K = 50K, but the floor is 64K
+        assert c.threshold_percent == 0.35
+        # 35% of 100K = 35K, but the floor is 64K
         assert c.threshold_tokens == 64_000
 
     def test_threshold_floor_does_not_apply_above_128k(self):
-        """On large-context models the 50% percentage is used directly."""
+        """On large-context models the 35% percentage is used directly."""
         with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
             c = ContextCompressor(model="test", quiet_mode=True)
-        # 50% of 200K = 100K, which is above the 64K floor
-        assert c.threshold_tokens == 100_000
+        # 35% of 200K = 70K, which is above the 64K floor
+        assert c.threshold_tokens == 70_000
 
     def test_default_protect_last_n_is_20(self):
         """Default protect_last_n should be 20."""
@@ -2217,6 +2217,7 @@ class TestTokenBudgetTailProtection:
             c = ContextCompressor(
                 model="test/model",
                 threshold_percent=0.50,  # 100K threshold
+                summary_target_ratio=0.05,  # 5K tail budget — intentionally tight for these tests
                 protect_first_n=2,
                 protect_last_n=20,
                 quiet_mode=True,
@@ -2305,8 +2306,10 @@ class TestTokenBudgetTailProtection:
 
         cut = c._find_tail_cut_by_tokens(messages, head_end=1)
 
-        assert len(messages) - cut >= 8
-        assert messages[cut]["content"] == "middle answer 2"
+        # _MAX_TAIL_MESSAGE_FLOOR (5) guarantees at least 5 recent messages
+        # survive even when the token budget is exhausted. This prevents the
+        # post-compression turn from feeling like a fresh conversation (#9413).
+        assert len(messages) - cut >= 5, f"Tail is only {len(messages) - cut} messages, min should be 5"
         assert messages[-1]["content"] == "latest ask"
 
     def test_soft_ceiling_allows_oversized_message(self, budget_compressor):

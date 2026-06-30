@@ -1262,6 +1262,57 @@ class ContextCompressor(ContextEngine):
             if modified:
                 result[i] = {**msg, "tool_calls": new_tcs}
 
+        # Pass 4: Age-based decay of tool outputs INSIDE the protected tail.
+        #
+        # The tail zone preserves recent messages verbatim — but large tool
+        # outputs (read_file, search_files, execute_code) accumulate fast.
+        # A single 30K-char read_file result (~7.5K tokens) eats 12% of a
+        # 60K tail budget; 3 of them trigger re-compression within 2 turns.
+        #
+        # Instead of all-or-nothing, progressively truncate older tool
+        # results within the tail so the most recent one stays full and
+        # older ones shrink — keeping the information but reclaiming space.
+        #
+        # Decay schedule (by tool-message index counting back from the tail end):
+        #   age 0 (most recent tool msg): full — no truncation
+        #   age 1: truncate to 8,000 chars
+        #   age 2: truncate to 3,000 chars
+        #   age 3+: truncate to 800 chars (headline summary)
+        #
+        # Only applies to string content > the age's threshold. Multimodal
+        # content and small outputs are untouched.
+        _TAIL_AGE_THRESHOLDS = [0, 8000, 3000, 800]  # age 0, 1, 2, 3+
+
+        tool_msg_indices_in_tail: list[int] = []
+        for i in range(prune_boundary, len(result)):
+            if result[i].get("role") == "tool":
+                tool_msg_indices_in_tail.append(i)
+
+        for age, idx in enumerate(reversed(tool_msg_indices_in_tail)):
+            threshold_idx = age if age < len(_TAIL_AGE_THRESHOLDS) else len(_TAIL_AGE_THRESHOLDS) - 1
+            char_limit = _TAIL_AGE_THRESHOLDS[threshold_idx]
+            if char_limit <= 0:
+                continue
+            msg = result[idx]
+            content = msg.get("content", "")
+            if not isinstance(content, str) or len(content) <= char_limit:
+                continue
+            # Keep head + tail with a clear truncation marker so the model
+            # knows the middle was elided and can re-read if needed.
+            head_keep = min(char_limit * 3 // 4, 6000)
+            tail_keep = char_limit - head_keep
+            truncated = (
+                content[:head_keep]
+                + "\n...[tail-decay: age="
+                + str(age)
+                + " truncated "
+                + f"{len(content) - char_limit:,}"
+                + " chars]...\n"
+                + content[-tail_keep:]
+            )
+            result[idx] = {**msg, "content": truncated}
+            pruned += 1
+
         return result, pruned
 
     # ------------------------------------------------------------------

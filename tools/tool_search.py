@@ -203,7 +203,18 @@ def _core_tool_names() -> frozenset[str]:
 
     Imported lazily because ``toolsets`` imports from ``tools.registry``
     and we don't want a hard cycle.
+
+    Uses ``_TOOL_SEARCH_PROTECTED_TOOLS`` (a strict subset of
+    ``_HERMES_CORE_TOOLS``) when available — this allows peripheral tools
+    like browser_*, vision_*, text_to_speech, ha_*, kanban_* to be deferred
+    behind bridge tools, saving ~8-10K tokens per API call.
+    Falls back to the full ``_HERMES_CORE_TOOLS`` for backward compat.
     """
+    try:
+        from toolsets import _TOOL_SEARCH_PROTECTED_TOOLS
+        return _TOOL_SEARCH_PROTECTED_TOOLS
+    except ImportError:
+        pass
     try:
         from toolsets import _HERMES_CORE_TOOLS
         return frozenset(_HERMES_CORE_TOOLS)

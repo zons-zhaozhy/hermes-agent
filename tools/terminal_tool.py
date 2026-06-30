@@ -1988,6 +1988,39 @@ def _resolve_command_cwd(
     return default_cwd
 
 
+def _try_persist_terminal_snapshot(env_obj, task_id: str) -> None:
+    """Record cwd + timestamp to ~/.hermes/.terminal_state.json after each
+    successful foreground command.
+
+    This gives the next session's ``build_environment_hints`` enough data to
+    tell the model where the previous session left off — closing the
+    "invisible state loss" gap when the CLI process restarts.
+
+    Failures are silently swallowed (best-effort, never blocks the command).
+    """
+    try:
+        import time as _time
+        from hermes_constants import get_hermes_home
+
+        # Probe cwd from the live terminal environment
+        try:
+            probe = env_obj.execute("pwd", timeout=5, cwd=None)
+            cwd = (probe.get("output", "") or "").strip().split("\n")[-1].strip()
+        except Exception:
+            cwd = ""
+
+        snapshot = {
+            "cwd": cwd,
+            "task_id": task_id or "default",
+            "timestamp": _time.time(),
+        }
+        state_path = os.path.join(get_hermes_home(), ".terminal_state.json")
+        with open(state_path, "w") as f:
+            json.dump(snapshot, f)
+    except Exception:
+        pass
+
+
 def terminal_tool(
     command: str,
     background: bool = False,
@@ -2730,6 +2763,12 @@ def terminal_tool(
                 result_dict["sudo_auth_failed"] = True
             if sudo_cache_cleared:
                 result_dict["sudo_cache_cleared"] = True
+
+            # Persist terminal state snapshot for cross-session continuity.
+            # After each successful foreground command, record the cwd so the
+            # next session's system prompt can tell the model where the last
+            # session left off.  Lightweight: one pwd + one JSON write.
+            _try_persist_terminal_snapshot(env, effective_task_id)
 
             return json.dumps(result_dict, ensure_ascii=False)
 
