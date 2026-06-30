@@ -4091,16 +4091,18 @@ def validate_requested_model(
                         f"but exists in the curated catalog — accepted."
                     ),
                 }
-
-        return {
-            "accepted": False,
-            "persist": False,
-            "recognized": False,
-            "message": (
-                f"Model `{requested}` was not found in this provider's model listing."
-                f"{suggestion_text}"
-            ),
-        }
+            # Fallback: accept with warning for truly unlisted models
+            # (e.g. newly released models not yet in catalog)
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in this provider's model listing "
+                    f"but has been accepted.  It may still work (new or unlisted model)."
+                    f"{suggestion_text}"
+                ),
+            }
 
     # api_models is None — couldn't reach API.  Accept and persist,
     # but warn so typos don't silently break things.
