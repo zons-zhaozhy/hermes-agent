@@ -1739,7 +1739,15 @@ def build_skills_system_prompt(
     else:
         # Query historical skill usage frequencies for frequency-based ranking.
         # Runs once per system-prompt build; cached for the session lifetime.
-        skill_freq = _get_skill_usage_frequencies()
+        # Controlled by config: skills.frequency_ranking.enabled (default true).
+        skill_freq: dict[str, int] = {}
+        try:
+            from hermes_cli.config import load_config as _load_cfg
+            _fr_cfg = _load_cfg().get("skills", {}).get("frequency_ranking", {})
+            if _fr_cfg.get("enabled", True):
+                skill_freq = _get_skill_usage_frequencies()
+        except Exception:
+            pass
         # Determine the top-N threshold for ★ marking (top 5 by global freq)
         _STAR_THRESHOLD = 0
         if skill_freq:
