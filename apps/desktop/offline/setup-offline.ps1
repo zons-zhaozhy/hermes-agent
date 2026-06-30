@@ -30,6 +30,25 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
+# ============================================================================
+# 关键修复：无 console 环境（Electron windowsHide 子进程）下 Write-Host 抛
+# HostException（Cannot invoke this cmdlet because the host did not provide a
+# console）。重定义为写 stdout，使 bootstrap-runner 的 stdio:pipe 能捕获输出。
+# ============================================================================
+function script:Write-Host {
+    param(
+        [Parameter(Position=0)][object]$Object,
+        [switch]$ForegroundColor,
+        [switch]$NoNewline
+    )
+    $text = if ($null -ne $Object) { $Object.ToString() } else { "" }
+    if ($NoNewline) {
+        [Console]::Out.Write($text)
+    } else {
+        [Console]::Out.WriteLine($text)
+    }
+}
+
 # Force C:\hermes regardless of what was passed in
 if ($HermesHome -ne "C:\hermes") {
     Write-Host "[INFO] Forcing HermesHome to C:\hermes (offline bundle standard)"
