@@ -713,7 +713,7 @@ class TestContinuationPromptWithSubgoals:
         prompt = mgr.next_continuation_prompt()
         assert prompt is not None
         assert "ship the feature" in prompt
-        assert "Additional criteria" not in prompt
+        assert "用户追加的验收标准" not in prompt
 
     def test_with_subgoals_includes_them(self, hermes_home):
         from hermes_cli.goals import GoalManager
@@ -724,7 +724,7 @@ class TestContinuationPromptWithSubgoals:
         prompt = mgr.next_continuation_prompt()
         assert prompt is not None
         assert "ship the feature" in prompt
-        assert "Additional criteria" in prompt
+        assert "用户追加的验收标准" in prompt
         assert "1. write tests" in prompt
         assert "2. update docs" in prompt
 
@@ -772,10 +772,10 @@ class TestJudgeGoalWithSubgoals:
         # The aux client was called with a prompt that includes the subgoals.
         sent_messages = captured.get("messages") or []
         user_msg = next((m["content"] for m in sent_messages if m["role"] == "user"), "")
-        assert "Additional criteria" in user_msg
+        assert "用户追加的验收标准" in user_msg
         assert "1. write tests" in user_msg
         assert "2. update docs" in user_msg
-        assert "every additional criterion" in user_msg
+        assert "用户追加的验收标准" in user_msg
         assert verdict == "done"
 
     def test_judge_uses_original_template_when_no_subgoals(self, hermes_home):
@@ -806,7 +806,7 @@ class TestJudgeGoalWithSubgoals:
 
         sent_messages = captured.get("messages") or []
         user_msg = next((m["content"] for m in sent_messages if m["role"] == "user"), "")
-        assert "Additional criteria" not in user_msg
+        assert "用户追加的验收标准" not in user_msg
         assert "ship it" in user_msg
 
 
