@@ -1728,6 +1728,19 @@ DEFAULT_CONFIG = {
             "timeout": 120,
             "extra_body": {},
         },
+        # Quality auditor — per-turn evaluation of assistant responses.
+        # Fires after every turn in a daemon thread using a small aux model.
+        # Scores 10 dimensions (accuracy, verification, root_cause, etc.).
+        # Recommend a cheap fast model (e.g. glm-4.7, gemini-flash, haiku)
+        # since each audit is a short classification prompt (~800 tokens).
+        "quality_auditor": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 60,
+            "extra_body": {},
+        },
         "moa_reference": {
             "provider": "auto",
             "model": "",

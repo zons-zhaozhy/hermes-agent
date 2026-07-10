@@ -8288,6 +8288,69 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         else:
             _cprint("    (session only — add --global to persist)")
 
+    def _handle_audit_command(self, cmd_original: str):
+        """Handle /audit [N] — show recent quality audit scores."""
+        args = cmd_original.strip().split()
+        n = 5
+        if len(args) > 1:
+            try:
+                n = int(args[1])
+            except ValueError:
+                n = 5
+        n = min(n, 20)
+
+        from hermes_constants import get_hermes_home
+        audit_file = get_hermes_home() / "state" / "quality_audit.jsonl"
+        if not audit_file.exists():
+            print("  暂无质量审计数据。审计在每条回复后自动运行，稍后查看。")
+            return
+
+        import json
+        entries = []
+        try:
+            with open(audit_file, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and line[0] == "{":
+                        try:
+                            entries.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+        except OSError:
+            print("  质量审计数据读取失败")
+            return
+
+        if not entries:
+            print("  暂无审计记录")
+            return
+
+        recent = entries[-n:]
+        print()
+        print(f"  📊 最近 {len(recent)} 条质量审计（总分平均 {round(sum(e.get('total_score', 0) for e in recent) / len(recent), 1)}/10）")
+        _sep = "─" * 58
+        print(f"  {_sep}")
+        for e in reversed(recent):
+            score = e.get("total_score", 0)
+            fatal = e.get("fatal_issues", [])
+            if fatal:
+                flag = "🚨"
+            elif score < 5.0:
+                flag = "⚠️"
+            elif score >= 8.0:
+                flag = "✅"
+            else:
+                flag = "📊"
+            model = e.get("model", "?")[:20]
+            ts = e.get("_ts", 0)
+            from datetime import datetime
+            time_str = datetime.fromtimestamp(ts).strftime("%H:%M") if ts else "--:--"
+            issues_str = ", ".join(fatal[:2] or e.get("issues", [])[:2] or ["无具体问题"])
+            print(f"  {flag} {score}/10  {time_str}  {model}")
+            print(f"     {issues_str[:80]}")
+        _sep = "─" * 58
+        print(f"  {_sep}")
+        print(f"  完整数据: {audit_file}")
+
     def _handle_codex_runtime(self, cmd_original: str) -> None:
         """Handle /codex-runtime — toggle the codex app-server runtime opt-in.
 
@@ -8758,6 +8821,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             from hermes_cli.main import _print_version_info
 
             _print_version_info(check_updates=True)
+        elif canonical == "audit":
+            self._handle_audit_command(cmd_original)
         elif canonical == "paste":
             self._handle_paste_command()
         elif canonical == "image":
