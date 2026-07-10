@@ -205,7 +205,7 @@ class TestUserSkins:
         assert skin.get_branding("agent_name") == "Custom Agent"
         assert skin.tool_prefix == "▸"
         # Should inherit defaults for unspecified colors
-        assert skin.get_color("banner_border") == "#CD7F32"  # from default
+        assert skin.get_color("banner_border") == "#D4A44C"  # from default
 
     def test_load_user_skin_invalid_section_types_fall_back_to_defaults(self, tmp_path, monkeypatch):
         from hermes_cli.skin_engine import load_skin
@@ -386,5 +386,5 @@ class TestCliBrandingHelpers:
         set_active_skin("daylight")
         skin = get_active_skin()
         overrides = get_prompt_toolkit_style_overrides()
-        assert overrides["status-bar"] == f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('banner_text')}"
+        assert overrides["status-bar"] == f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('status_bar_text')}"
         assert overrides["voice-status"] == f"bg:{skin.get_color('voice_status_bg')} {skin.get_color('ui_label')}"

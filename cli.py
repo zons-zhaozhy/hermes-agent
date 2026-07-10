@@ -2255,6 +2255,15 @@ _LIGHT_MODE_REMAP: dict[str, str] = {
     "#FFF0D4": "#1A1A1A",
     "#CD7F32": "#8A4F1A",   # bronze -> darker bronze
     "#FFEFB5": "#3A2A00",
+    # Default skin 护眼色板（冷调）-> 浅色终端适配
+    "#8FBFA0": "#3A6B50",   # 青苔绿 -> 深绿（浅色背景可读）
+    "#7BA3B5": "#3A6070",   # 青蓝 -> 深蓝（浅色背景可读）
+    "#6B8090": "#4A5565",   # 冷灰蓝 -> 深灰蓝
+    "#E07070": "#A04040",   # 柔红 -> 深红
+    # v1.1 调优：新增色值的浅色终端适配
+    "#7DD3FC": "#2B6CB0",   # 青蓝 -> 深蓝
+    "#FFAB40": "#8B5A00",   # 暖琥珀 -> 深琥珀
+    "#FF9800": "#7A4A00",   # 标准橙 -> 深橙
     # NOTE: skipping #C0C0C0/#888888/#555555/#8B8682 — those are
     # status-bar foregrounds paired with dark navy bg, where dark
     # remap values would become invisible.
@@ -4266,18 +4275,33 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         Two steps recover a sane state:
           1. ``flush_stdin()`` drains stray escape bytes from the OS input
              buffer (``termios.tcflush(TCIFLUSH)``; no-op on non-TTY).
-          2. ``_force_full_redraw()`` drops prompt_toolkit's cached
-             screen/cursor state and forces a clean repaint.
+          2. ``_clear_prompt_toolkit_screen()`` sends ``erase_screen`` (the
+             raw ``ESC[2J`` that unsticks the VT100 parser) and resets
+             prompt_toolkit's cached screen/cursor state.
 
-        Both steps are independently safe and self-guard, so a failure of one
-        never prevents the other.
+        Unlike ``_force_full_redraw()``, this does NOT replay
+        ``_OUTPUT_HISTORY``. The interrupt response was already printed
+        through ``_cprint`` during the turn, so a replay would duplicate it
+        on screen.
         """
         try:
             from hermes_cli.curses_ui import flush_stdin
             flush_stdin()
         except Exception:
             pass
-        self._force_full_redraw()
+        app = getattr(self, "_app", None)
+        if app:
+            # _clear_prompt_toolkit_screen 含 erase_screen + renderer.reset，
+            # 这是 #33271 修复的关键——不能用 renderer.reset() 替代，
+            # 因为缺少 erase_screen 的原始转义序列无法疏通 VT100 解析器。
+            try:
+                self._clear_prompt_toolkit_screen(app)
+            except Exception:
+                pass
+            try:
+                app.invalidate()
+            except Exception:
+                pass
 
     def _clear_prompt_toolkit_screen(self, app, *, rebuild_scrollback: bool = False) -> None:
         """Clear the terminal and reset prompt_toolkit renderer state."""

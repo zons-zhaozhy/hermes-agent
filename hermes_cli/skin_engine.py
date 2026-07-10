@@ -166,22 +166,30 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         "name": "default",
         "description": "Classic Hermes — gold and kawaii",
         "colors": {
-            "banner_border": "#CD7F32",
-            "banner_title": "#FFD700",
-            "banner_accent": "#FFBF00",
-            "banner_dim": "#B8860B",
-            "banner_text": "#FFF8DC",
-            "ui_accent": "#FFBF00",
-            "ui_label": "#DAA520",
-            "ui_ok": "#4caf50",
-            "ui_error": "#ef5350",
-            "ui_warn": "#ffa726",
-            "prompt": "#FFF8DC",
-            "input_rule": "#CD7F32",
-            "response_border": "#FFD700",
-            "status_bar_bg": "#1a1a2e",
-            "session_label": "#DAA520",
-            "session_border": "#8B8682",
+            "banner_border": "#D4A44C",           # 暖金边框
+            "banner_title": "#FFD700",             # 亮金标题
+            "banner_accent": "#00D4AA",            # 青绿强调——金色的互补色
+            "banner_dim": "#B0A394",               # 暖灰暗色（WCAG AA: bg 6.9:1, menu 4.9:1）
+            "banner_text": "#F0F0FF",              # 冷白正文——清晰可读
+            "ui_accent": "#7DD3FC",                # 青蓝UI强调——从金色改出，平衡色相分布
+            "ui_label": "#5CE0D0",                 # 青绿标签
+            "ui_ok": "#00E676",                    # 鲜绿成功
+            "ui_error": "#FF5252",                 # 鲜红错误
+            "ui_warn": "#FF9800",                  # 标准橙警告
+            "prompt": "#F0F0FF",                   # 冷白输入
+            "input_rule": "#D4A44C",               # 暖金分割线
+            "response_border": "#00D4AA",          # 青绿回复框
+            "tool_activity": "#64B5F6",            # 亮蓝工具输出
+            "status_bar_bg": "#1a1a2e",            # 深海军蓝底
+            "status_bar_text": "#C0C8E0",          # 冷灰蓝
+            "status_bar_strong": "#FFD700",        # 金色强调
+            "status_bar_dim": "#A8A3B3",           # 暖紫灰（WCAG AA: bg 6.9:1, menu 4.9:1）
+            "status_bar_good": "#00E676",          # 鲜绿健康
+            "status_bar_warn": "#FFAB40",          # 暖琥珀警告——与title金色区分
+            "status_bar_bad": "#FF8A65",           # 暖珊瑚
+            "status_bar_critical": "#FF5252",      # 鲜红危险
+            "session_label": "#5CE0D0",            # 青绿会话标签
+            "session_border": "#A8A3B3",           # 暖紫灰边框（与status_bar_dim统一）
         },
         "spinner": {
             # Empty = use hardcoded defaults in display.py
@@ -213,6 +221,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#F1E6CF",
             "input_rule": "#9F1C1C",
             "response_border": "#C7A96B",
+            "tool_activity": "#927666",       # Tool output — muted bronze-brown
             "status_bar_bg": "#2A1212",
             "status_bar_text": "#F1E6CF",
             "status_bar_strong": "#C7A96B",
@@ -285,6 +294,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#c9d1d9",
             "input_rule": "#444444",
             "response_border": "#aaaaaa",
+            "tool_activity": "#6E7686",       # Tool output — cool gray-blue
             "status_bar_bg": "#1F1F1F",
             "status_bar_text": "#C9D1D9",
             "status_bar_strong": "#E6EDF3",
@@ -324,6 +334,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#c9d1d9",
             "input_rule": "#4169e1",
             "response_border": "#7eb8f6",
+            "tool_activity": "#617CA6",       # Tool output — dark slate blue
             "status_bar_bg": "#151C2F",
             "status_bar_text": "#C9D1D9",
             "status_bar_strong": "#7EB8F6",
@@ -363,6 +374,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#111827",
             "input_rule": "#93C5FD",
             "response_border": "#2563EB",
+            "tool_activity": "#6B7280",       # Tool output — medium gray for light bg
             "session_label": "#1D4ED8",
             "session_border": "#64748B",
             "status_bar_bg": "#E5EDF8",
@@ -400,6 +412,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#2C1810",
             "input_rule": "#8B6914",
             "response_border": "#8B6914",
+            "tool_activity": "#8B7355",       # Tool output — warm gray-brown
             "session_label": "#5C3D11",
             "session_border": "#A0845C",
             "status_bar_bg": "#F5F0E8",
@@ -437,6 +450,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#EAF7FF",
             "input_rule": "#2A6FB9",
             "response_border": "#5DB8F5",
+            "tool_activity": "#5186AA",       # Tool output — deep sea blue
             "status_bar_bg": "#0F2440",
             "status_bar_text": "#EAF7FF",
             "status_bar_strong": "#A9DFFF",
@@ -509,6 +523,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#F5F5F5",
             "input_rule": "#656565",
             "response_border": "#B7B7B7",
+            "tool_activity": "#757575",       # Tool output — dark neutral gray
             "status_bar_bg": "#202020",
             "status_bar_text": "#D3D3D3",
             "status_bar_strong": "#F5F5F5",
@@ -582,6 +597,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#FFF0D4",
             "input_rule": "#C75B1D",
             "response_border": "#F29C38",
+            "tool_activity": "#8B6914",       # Tool output — dark amber-orange
             "status_bar_bg": "#2B160E",
             "status_bar_text": "#FFF0D4",
             "status_bar_strong": "#FFD39A",
@@ -880,13 +896,12 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     menu_meta_bg = skin.get_color("completion_menu_meta_bg", menu_bg)
     menu_meta_current_bg = skin.get_color("completion_menu_meta_current_bg", menu_current_bg)
 
-    # 用户输入文字颜色：默认空（终端默认色，兼容明暗主题）。
-    # 皮肤可通过设置 input_text 颜色来覆盖。
-    input_text = skin.get_color("input_text", "")
     return {
-        # 皮肤设置了 input_text 时，用户输入文字用该颜色；
-        # 否则留空继承终端默认前景色（明暗主题均可读）。
-        "input-area": input_text,
+        # Typed input always uses terminal default fg/bg so it's
+        # readable in both light and dark Terminal.app modes.  The
+        # skin's `prompt` color (if any) only styles the prompt symbol,
+        # NOT the user's typed text.
+        "input-area": "",
         "placeholder": f"{dim} italic",
         "prompt": prompt,
         "prompt-working": f"{dim} italic",
