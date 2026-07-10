@@ -880,12 +880,13 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     menu_meta_bg = skin.get_color("completion_menu_meta_bg", menu_bg)
     menu_meta_current_bg = skin.get_color("completion_menu_meta_current_bg", menu_current_bg)
 
+    # 用户输入文字颜色：默认空（终端默认色，兼容明暗主题）。
+    # 皮肤可通过设置 input_text 颜色来覆盖。
+    input_text = skin.get_color("input_text", "")
     return {
-        # Typed input always uses terminal default fg/bg so it's
-        # readable in both light and dark Terminal.app modes.  The
-        # skin's `prompt` color (if any) only styles the prompt symbol,
-        # NOT the user's typed text.
-        "input-area": "",
+        # 皮肤设置了 input_text 时，用户输入文字用该颜色；
+        # 否则留空继承终端默认前景色（明暗主题均可读）。
+        "input-area": input_text,
         "placeholder": f"{dim} italic",
         "prompt": prompt,
         "prompt-working": f"{dim} italic",
