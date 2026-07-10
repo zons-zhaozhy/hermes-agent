@@ -822,73 +822,50 @@ SESSION_SEARCH_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Search query (discovery shape). Keywords, phrases, or boolean "
-                    "expressions to find in past sessions. Omit to browse recent "
-                    "sessions. Ignored when session_id + around_message_id are set "
-                    "(scroll shape)."
+                    "expressions. Omit to browse recent sessions."
                 ),
             },
             "limit": {
                 "type": "integer",
-                "description": (
-                    "Discovery shape only. Max sessions to return (default 3, max 10). "
-                    "Bump to 5–10 when the topic likely spans several sessions and you "
-                    "want to pick the right one to scroll into."
-                ),
+                "description": "Discovery shape only. Max sessions to return (default 3, max 10).",
                 "default": 3,
             },
             "sort": {
                 "type": "string",
                 "enum": ["newest", "oldest"],
                 "description": (
-                    "Discovery shape only. Temporal bias on top of FTS5 ranking. Omit "
-                    "to keep relevance-only ordering (suitable for exploratory recall — "
-                    "\"what do we know about X\"). Set 'newest' for recency-shaped "
-                    "questions (\"where did we leave X\"). Set 'oldest' for "
-                    "origin-shaped questions (\"how did X start\"). Ignored in scroll "
-                    "and browse shapes."
+                    "Discovery shape only. Omit for relevance ordering, 'newest' for "
+                    "recency, 'oldest' for origin-first."
                 ),
             },
             "session_id": {
                 "type": "string",
-                "description": (
-                    "Scroll shape. Session to read inside. Use the session_id returned "
-                    "from a prior discovery call. Must be paired with "
-                    "around_message_id."
-                ),
+                "description": "Scroll/Read shape. Session to read inside.",
             },
             "around_message_id": {
                 "type": "integer",
                 "description": (
-                    "Scroll shape. Message id to center the window on. From a discovery "
-                    "result use match_message_id, or any id seen in a prior window. To "
-                    "scroll forward pass the last window message's id; to scroll "
-                    "backward pass the first."
+                    "Scroll shape. Message id to center the window on. "
+                    "Pass match_message_id from discovery, or a prior window message id."
                 ),
             },
             "window": {
                 "type": "integer",
-                "description": (
-                    "Scroll shape only. Messages to return on each side of the anchor "
-                    "(anchor itself always included). Clamped to [1, 20]. Default 5."
-                ),
+                "description": "Scroll shape only. Messages each side of anchor. Clamped [1, 20]. Default 5.",
                 "default": 5,
             },
             "role_filter": {
                 "type": "string",
                 "description": (
-                    "Optional. Comma-separated roles to include. Discovery defaults to "
-                    "'user,assistant' (tool output is usually noise). Pass "
-                    "'user,assistant,tool' to include tool output (debugging tool "
-                    "behaviour) or 'tool' to search tool output only."
+                    "Comma-separated roles to include. Default: 'user,assistant'. "
+                    "Add 'tool' for tool output."
                 ),
             },
             "profile": {
                 "type": "string",
                 "description": (
-                    "Optional. Read sessions from another Hermes profile's database "
-                    "(read-only). Use when resolving an `@session:<profile>/<id>` link: "
-                    "pass the profile segment here with session_id as the id segment. "
-                    "Omit to use the current profile."
+                    "Read sessions from another profile's DB (read-only). "
+                    "Use for @session:<profile>/<id> links."
                 ),
             },
         },

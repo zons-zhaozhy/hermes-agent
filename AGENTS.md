@@ -135,50 +135,6 @@ conservative at the waist.
   such a directory to the tree are closed with a pointer to publish it as its own
   repo.
 
-### Before you call it a bug — verify the premise (and when NOT to close)
-
-The most common reason a well-written PR gets closed is not code quality — it
-is that the change is built on a **wrong premise**, or it treats an
-**intentional design as a gap**. These patterns cut both ways: they tell a
-human reviewer what to scrutinize, and they tell the automated sweeper when a
-PR is NOT safe to close as `implemented_on_main` / `cannot_reproduce` (when in
-doubt, leave it open for a human). They are distilled from real closes.
-
-- **"Intentional design, not a gap."** A limitation that looks like an
-  oversight is often deliberate. Before "fixing" a missing link or a
-  restriction, ask whether the isolation IS the design. Example: profiles are
-  independent islands on purpose — a PR adding live config inheritance from the
-  default profile was closed because coupling profiles together is exactly what
-  the design prevents (the copy-at-creation `--clone` path already covers the
-  legitimate "start from my default" case). Read the original commit's intent
-  (`git log -p -S "<symbol>"`) before assuming something is unfinished.
-- **"The premise doesn't hold against how X actually works."** A PR's
-  justification frequently rests on a wrong mental model of an existing
-  mechanism. Trace the real code/runtime before accepting the rationale. Two
-  real closes: a rate-limit "re-probe during cooldown" PR (the breaker only
-  trips on a *confirmed-empty* account bucket, so re-probing just hammers a
-  bucket we've already proven empty); a usage-accumulation fix whose new branch
-  **never executes at runtime** because an earlier guard already popped the
-  state it depended on. If you can't point to the exact line where the bug
-  manifests AND show the fix changes that line's behavior, you haven't verified
-  the premise.
-- **"This fix was wrong — the absence/omission was deliberate."** Adding the
-  obvious-looking missing piece can break things the omission was protecting.
-  Example: restoring "missing" `__init__.py` files made a test tree importable
-  as a dotted package that shadowed the real plugin, deleting its `register()`
-  at import time. The absence was load-bearing.
-- **"Overreached / resurrected an approach we'd moved past."** Scope creep that
-  supersedes an agreed-on base, or revives a direction the maintainers
-  deliberately closed, gets rejected even when the code works. Keep the change
-  to the narrow piece that was actually agreed; offer the rest as a focused
-  follow-up.
-
-The throughline: **verify the claim AND the intent against the codebase before
-writing or merging a fix.** A confirmed reproduction on current `main` plus a
-line-level account of where the fix acts beats a plausible-sounding rationale
-every time. When in doubt about intent, it is cheaper to ask than to ship a
-fix that fights the design.
-
 ### The Footprint Ladder (new capability decision)
 
 Each rung adds more permanent surface than the one above. Choose the highest
@@ -274,102 +230,9 @@ hermes-agent/
 `gateway.log` when running the gateway. Profile-aware via `get_hermes_home()`.
 Browse with `hermes logs [--follow] [--level ...] [--session ...]`.
 
-## TypeScript Style
 
-Applies to TypeScript across Hermes: desktop, TUI, website, and future TS packages.
 
-- Prefer small nanostores over component state when state is shared, reused, or read by distant UI.
-- Let each feature own its atoms. Chat state belongs near chat, shell state near shell, shared state in `src/store`.
-- Components that render from an atom should use `useStore`. Non-rendering actions should read with `$atom.get()`.
-- Do not pass state through three components when the leaf can subscribe to the atom.
-- Keep persistence beside the atom that owns it.
-- Keep route roots thin. They compose routes and shell; they should not become controllers.
-- No monolithic hooks. A hook should own one narrow job.
-- Prefer colocated action modules over hidden god hooks.
-- If a callback is pure side effect, use the terse void form:
-  `onState={st => void setGatewayState(st)}`.
-- Async UI handlers should make intent explicit:
-  `onClick={() => void save()}`.
-- Prefer interfaces for public props and shared object shapes. Avoid `type X = { ... }` for object props.
-- Extend React primitives for props: `React.ComponentProps<'button'>`, `React.ComponentProps<typeof Dialog>`, `Omit<...>`, `Pick<...>`.
-- Table-driven beats condition ladders when mapping ids, routes, or views.
-- `src/app` owns routes, pages, and page-specific components.
-- `src/store` owns shared atoms.
-- `src/lib` owns shared pure helpers.
-
-## File Dependency Chain
-
-```
-tools/registry.py  (no deps — imported by all tool files)
-       ↑
-tools/*.py  (each calls registry.register() at import time)
-       ↑
-model_tools.py  (imports tools/registry + triggers tool discovery)
-       ↑
-run_agent.py, cli.py, batch_runner.py, environments/
-```
-
----
-
-## AIAgent Class (run_agent.py)
-
-The real `AIAgent.__init__` takes ~60 parameters (credentials, routing, callbacks,
-session context, budget, credential pool, etc.). The signature below is the
-minimum subset you'll usually touch — read `run_agent.py` for the full list.
-
-```python
-class AIAgent:
-    def __init__(self,
-        base_url: str = None,
-        api_key: str = None,
-        provider: str = None,
-        api_mode: str = None,              # "chat_completions" | "codex_responses" | ...
-        model: str = "",                   # empty → resolved from config/provider later
-        max_iterations: int = 90,          # tool-calling iterations (shared with subagents)
-        enabled_toolsets: list = None,
-        disabled_toolsets: list = None,
-        quiet_mode: bool = False,
-        save_trajectories: bool = False,
-        platform: str = None,              # "cli", "telegram", etc.
-        session_id: str = None,
-        skip_context_files: bool = False,
-        skip_memory: bool = False,
-        credential_pool=None,
-        # ... plus callbacks, thread/user/chat IDs, iteration_budget, fallback_model,
-        # checkpoints config, prefill_messages, service_tier, reasoning_config, etc.
-    ): ...
-
-    def chat(self, message: str) -> str:
-        """Simple interface — returns final response string."""
-
-    def run_conversation(self, user_message: str, system_message: str = None,
-                         conversation_history: list = None, task_id: str = None) -> dict:
-        """Full interface — returns dict with final_response + messages."""
-```
-
-### Agent Loop
-
-The core loop is inside `run_conversation()` — entirely synchronous, with
-interrupt checks, budget tracking, and a one-turn grace call:
-
-```python
-while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) \
-        or self._budget_grace_call:
-    if self._interrupt_requested: break
-    response = client.chat.completions.create(model=model, messages=messages, tools=tool_schemas)
-    if response.tool_calls:
-        for tool_call in response.tool_calls:
-            result = handle_function_call(tool_call.name, tool_call.args, task_id)
-            messages.append(tool_result_message(result))
-        api_call_count += 1
-    else:
-        return response.content
-```
-
-Messages follow OpenAI format: `{"role": "system/user/assistant/tool", ...}`.
-Reasoning content is stored in `assistant_msg["reasoning"]`.
-
----
+-
 
 ## CLI Architecture (cli.py)
 
@@ -506,142 +369,7 @@ A **separate** chat surface from both the classic CLI and the dashboard's embedd
 
 ---
 
-## Adding New Tools
 
-Before adding any tool, settle the footprint question first (see "The
-Footprint Ladder" in the Contribution Rubric): most capabilities should NOT
-be core tools. For custom or local-only tools, do **not** edit Hermes core.
-Use the plugin route instead: create `~/.hermes/plugins/<name>/plugin.yaml`
-and `~/.hermes/plugins/<name>/__init__.py`, then register tools with
-`ctx.register_tool(...)`. Plugin toolsets are discovered automatically and can be
-enabled or disabled without touching `tools/` or `toolsets.py`.
-
-Use the built-in route below only when the user is explicitly contributing a new
-core Hermes tool that should ship in the base system.
-
-Built-in/core tools require changes in **2 files**:
-
-**1. Create `tools/your_tool.py`:**
-```python
-import json, os
-from tools.registry import registry
-
-def check_requirements() -> bool:
-    return bool(os.getenv("EXAMPLE_API_KEY"))
-
-def example_tool(param: str, task_id: str = None) -> str:
-    return json.dumps({"success": True, "data": "..."})
-
-registry.register(
-    name="example_tool",
-    toolset="example",
-    schema={"name": "example_tool", "description": "...", "parameters": {...}},
-    handler=lambda args, **kw: example_tool(param=args.get("param", ""), task_id=kw.get("task_id")),
-    check_fn=check_requirements,
-    requires_env=["EXAMPLE_API_KEY"],
-)
-```
-
-**2. Add to `toolsets.py`** — either `_HERMES_CORE_TOOLS` (all platforms) or a new toolset. **This step is required:** auto-discovery imports the tool and registers its schema, but the tool is only *exposed to an agent* if its name appears in a toolset. `_HERMES_CORE_TOOLS` is not dead code — it's the default bundle every platform's base toolset inherits from.
-
-Auto-discovery: any `tools/*.py` file with a top-level `registry.register()` call is imported automatically — no manual import list to maintain. Wiring into a toolset is still a deliberate, manual step.
-
-The registry handles schema collection, dispatch, availability checking, and error wrapping. All handlers MUST return a JSON string.
-
-**Path references in tool schemas**: If the schema description mentions file paths (e.g. default output directories), use `display_hermes_home()` to make them profile-aware. The schema is generated at import time, which is after `_apply_profile_override()` sets `HERMES_HOME`.
-
-**State files**: If a tool stores persistent state (caches, logs, checkpoints), use `get_hermes_home()` for the base directory — never `Path.home() / ".hermes"`. This ensures each profile gets its own state.
-
-**Agent-level tools** (todo, memory): intercepted by `run_agent.py` before `handle_function_call()`. See `tools/todo_tool.py` for the pattern.
-
----
-
-## Dependency Pinning Policy
-
-All dependencies must have upper bounds to limit supply-chain attack surface.
-This policy was established after the litellm compromise (PR #2796, #2810) and
-reinforced after the Mini Shai-Hulud worm campaign (May 2026).
-
-| Source type | Treatment | Example |
-|---|---|---|
-| PyPI package | `>=floor,<next_major` | `"httpx>=0.28.1,<1"` |
-| Git URL | Commit SHA | `git+https://...@<40-char-sha>` |
-| GitHub Actions | Commit SHA + comment | `uses: actions/checkout@<sha>  # v4` |
-| CI-only pip | `==exact` | `pyyaml==6.0.2` |
-
-**When adding a new dependency to `pyproject.toml`:**
-1. Pin to `>=current_version,<next_major` for post-1.0 (e.g. `>=1.5.0,<2`).
-2. For pre-1.0 packages, use `<0.(current_minor + 2)` (e.g. `>=0.29,<0.32`).
-3. Never commit a bare `>=X.Y.Z` without a ceiling — CI and reviewers will reject it.
-4. Run `uv lock` to regenerate `uv.lock` with hashes.
-
-Reference: #2810 (bounds pass), #9801 (SHA pinning + audit CI).
-
----
-
-## Adding Configuration
-
-### config.yaml options:
-1. Add to `DEFAULT_CONFIG` in `hermes_cli/config.py`
-2. Bump `_config_version` (check the current value at the top of `DEFAULT_CONFIG`)
-   ONLY if you need to actively migrate/transform existing user config
-   (renaming keys, changing structure). Adding a new key to an existing
-   section is handled automatically by the deep-merge and does NOT require
-   a version bump.
-
-### Top-level `config.yaml` sections (non-exhaustive):
-
-`model`, `agent`, `terminal`, `compression`, `display`, `stt`, `tts`,
-`memory`, `security`, `delegation`, `smart_model_routing`, `checkpoints`,
-`auxiliary`, `curator`, `skills`, `gateway`, `logging`, `cron`, `profiles`,
-`plugins`, `honcho`.
-
-`auxiliary` holds per-task overrides for side-LLM work (curator, vision,
-embedding, title generation, session_search, etc.) — each task can pin
-its own provider/model/base_url/max_tokens/reasoning_effort. See
-`agent/auxiliary_client.py::_resolve_auto` for resolution order.
-
-`curator` holds the background skill-maintenance config —
-`enabled`, `interval_hours`, `min_idle_hours`, `stale_after_days`,
-`archive_after_days`, `backup` (nested).
-
-### .env variables (SECRETS ONLY — API keys, tokens, passwords):
-1. Add to `OPTIONAL_ENV_VARS` in `hermes_cli/config.py` with metadata:
-```python
-"NEW_API_KEY": {
-    "description": "What it's for",
-    "prompt": "Display name",
-    "url": "https://...",
-    "password": True,
-    "category": "tool",  # provider, tool, messaging, setting
-},
-```
-
-Non-secret settings (timeouts, thresholds, feature flags, paths, display
-preferences) belong in `config.yaml`, not `.env`. If internal code needs an
-env var mirror for backward compatibility, bridge it from `config.yaml` to
-the env var in code (see `gateway_timeout`, `terminal.cwd` → `TERMINAL_CWD`).
-
-### Config loaders (three paths — know which one you're in):
-
-| Loader | Used by | Location |
-|--------|---------|----------|
-| `load_cli_config()` | CLI mode | `cli.py` — merges CLI-specific defaults + user YAML |
-| `load_config()` | `hermes tools`, `hermes setup`, most CLI subcommands | `hermes_cli/config.py` — merges `DEFAULT_CONFIG` + user YAML |
-| Direct YAML load | Gateway runtime | `gateway/run.py` + `gateway/config.py` — reads user YAML raw |
-
-If you add a new key and the CLI sees it but the gateway doesn't (or vice
-versa), you're on the wrong loader. Check `DEFAULT_CONFIG` coverage.
-
-### Working directory:
-- **CLI** — uses the process's current directory (`os.getcwd()`).
-- **Messaging** — uses `terminal.cwd` from `config.yaml`. The gateway bridges this
-  to the `TERMINAL_CWD` env var for child tools. **`MESSAGING_CWD` has been
-  removed** — the config loader prints a deprecation warning if it's set in
-  `.env`. Same for `TERMINAL_CWD` in `.env`; the canonical setting is
-  `terminal.cwd` in `config.yaml`.
-
----
 
 ## Skin/Theme System
 
@@ -964,15 +692,8 @@ contributor skill PRs.
 ## Toolsets
 
 All toolsets are defined in `toolsets.py` as a single `TOOLSETS` dict.
-Each platform's adapter picks a base toolset (e.g. Telegram uses
-`"messaging"`); `_HERMES_CORE_TOOLS` is the default bundle most
-platforms inherit from.
-
-Current toolset keys: `browser`, `clarify`, `code_execution`, `cronjob`,
-`debugging`, `delegation`, `discord`, `discord_admin`, `feishu_doc`,
-`feishu_drive`, `file`, `homeassistant`, `image_gen`, `kanban`, `memory`,
-`messaging`, `moa`, `rl`, `safe`, `search`, `session_search`, `skills`,
-`spotify`, `terminal`, `todo`, `tts`, `video`, `vision`, `web`, `yuanbao`.
+Each platform's adapter picks a base toolset; `_HERMES_CORE_TOOLS` is the
+default bundle most platforms inherit from.
 
 Enable/disable per platform via `hermes tools` (the curses UI) or the
 `tools.<platform>.enabled` / `tools.<platform>.disabled` lists in
@@ -982,35 +703,10 @@ Enable/disable per platform via `hermes tools` (the curses UI) or the
 
 ## Delegation (`delegate_task`)
 
-`tools/delegate_tool.py` spawns a subagent with an isolated
-context + terminal session. By default the parent waits for the
-child's summary before continuing its own loop. With `background=true`,
-Hermes returns a delegation id immediately and the result re-enters the
-conversation later through the async-delegation completion queue.
-
-Two shapes:
-
-- **Single:** pass `goal` (+ optional `context`, `toolsets`).
-- **Batch (parallel):** pass `tasks: [...]` — each gets its own subagent
-  running concurrently. Concurrency is capped by
-  `delegation.max_concurrent_children` (default 3).
-
-Roles:
-
-- `role="leaf"` (default) — focused worker. Cannot call `delegate_task`,
-  `clarify`, `memory`, `send_message`, `execute_code`.
-- `role="orchestrator"` — retains `delegate_task` so it can spawn its
-  own workers. Gated by `delegation.orchestrator_enabled` (default true)
-  and bounded by `delegation.max_spawn_depth` (default 2).
-
-Key config knobs (under `delegation:` in `config.yaml`):
-`max_concurrent_children`, `max_spawn_depth`, `child_timeout_seconds`,
-`orchestrator_enabled`, `subagent_auto_approve`, `inherit_mcp_toolsets`,
-`max_iterations`.
-
-Durability rule: background `delegate_task` is detached from the current
-turn but still process-local. For work that must survive process restart, use
-`cronjob` or `terminal(background=True, notify_on_complete=True)` instead.
+`tools/delegate_tool.py` — see the tool schema for usage. Key config knobs
+(under `delegation:` in `config.yaml`): `max_concurrent_children`,
+`max_spawn_depth`, `child_timeout_seconds`, `orchestrator_enabled`,
+`subagent_auto_approve`, `inherit_mcp_toolsets`, `max_iterations`.
 
 ---
 
@@ -1052,21 +748,8 @@ Full user-facing docs: `website/docs/user-guide/features/curator.md`.
 
 `cron/jobs.py` (job store) + `cron/scheduler.py` (tick loop). Agents
 schedule jobs via the `cronjob` tool; users via `hermes cron <verb>`
-(`list`, `add`, `edit`, `pause`, `resume`, `run`, `remove`) or the
-`/cron` slash command.
-
-Supported schedule formats:
-- Duration: `"30m"`, `"2h"`, `"1d"`
-- "every" phrase: `"every 2h"`, `"every monday 9am"`
-- 5-field cron expression: `"0 9 * * *"`
-- ISO timestamp (one-shot): `"2026-06-01T09:00:00Z"`
-
-Per-job fields include `skills` (load specific skills), `model` /
-`provider` overrides, `script` (pre-run data-collection script whose
-stdout is injected into the prompt; `no_agent=True` turns the script
-into the entire job), `context_from` (chain job A's last output into
-job B's prompt), `workdir` (run in a specific directory with its
-`AGENTS.md`/`CLAUDE.md` loaded), and multi-platform delivery.
+or the `/cron` slash command. See the tool schema for schedule formats
+and per-job fields.
 
 Hardening invariants:
 - **3-minute hard interrupt** on cron sessions — runaway agent loops
