@@ -1089,9 +1089,29 @@ class ShellFileOperations(FileOperations):
         # Check if file exists and get size (wc -c is POSIX, works on Linux + macOS)
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)
-        
+
         if stat_result.exit_code != 0:
-            # File not found - try to suggest similar files
+            # The wc -c probe conflates two failure modes:
+            #   1. File genuinely doesn't exist → suggest similar files
+            #   2. Terminal environment is not ready (stale cwd, container
+            #      not started, transport error) → report env failure
+            #
+            # Disambiguate with a trivial echo probe. If even "echo" fails
+            # through the same shell env, the environment is the problem,
+            # not the file.  See upstream issue #44750 / PR #44753/#44874.
+            health_cmd = "echo __HERMES_FILEOPS_OK__"
+            health_result = self._exec(health_cmd)
+            if health_result.exit_code != 0 \
+                    or "__HERMES_FILEOPS_OK__" not in health_result.stdout:
+                return ReadResult(
+                    error=(
+                        f"Cannot access file '{path}': the terminal "
+                        "environment is unavailable (execution failure). "
+                        "The file may still exist; retry when the "
+                        "environment is ready."
+                    ),
+                )
+            # Health probe passed → the file genuinely wasn't found
             return self._suggest_similar_files(path)
         
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
@@ -1228,6 +1248,19 @@ class ShellFileOperations(FileOperations):
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)
         if stat_result.exit_code != 0:
+            # Disambiguate env failure from missing file (same as read_file)
+            health_cmd = "echo __HERMES_FILEOPS_OK__"
+            health_result = self._exec(health_cmd)
+            if health_result.exit_code != 0 \
+                    or "__HERMES_FILEOPS_OK__" not in health_result.stdout:
+                return ReadResult(
+                    error=(
+                        f"Cannot access file '{path}': the terminal "
+                        "environment is unavailable (execution failure). "
+                        "The file may still exist; retry when the "
+                        "environment is ready."
+                    ),
+                )
             return self._suggest_similar_files(path)
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
         try:
