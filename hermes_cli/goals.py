@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field, asdict
@@ -909,41 +910,164 @@ def _render_background_block(background_processes: Optional[List[Dict[str, Any]]
     return JUDGE_BACKGROUND_BLOCK_TEMPLATE.format(background_lines="\n".join(lines))
 
 
-def _pre_judge_confidence(last_response: str) -> Tuple[bool, str]:
-    """扫描 Agent 响应中是否包含真实证据，返回 ``(有证据, 原因)``。
+def _pre_judge_confidence(last_response: str, *, cwd: str = "") -> Tuple[bool, str, bool]:
+    """扫描 Agent 响应 + 独立执行验证，返回 (可信任, 原因, 硬阻断)。
 
-    在调 Judge LLM 之前用纯文本规则扫描，不依赖模型判断力。
-    检测三类伪证据：
-    - 全 ✅ 标记但无命令输出
-    - 批量数字声明（N个/N项）但无抽样验证
-    - "全绿""全部通过"等结论性文字但无测试输出片段
+    在调 Judge LLM 之前用纯文本规则+文件系统+命令重放验证。
+    不依赖模型判断力。检测六类虚假声明。
+
+    返回值:
+      (True, "", False)   — 可信任，放行
+      (False, reason, False) — 可疑，注入警告到 Judge prompt（advisory）
+      (False, reason, True)  — 硬证据造假，直接 CONTINUE 不调 Judge
     """
+
     check_count = last_response.count('\u2705')  # ✅
+
     has_cmd_output = bool(re.search(  # noqa: 多模式正则匹配验证证据，工具本质需要
-        r'(curl\s+\S+|grep\s+|npm\s+test|pytest|docker\s+exec|HTTP/\d|exit.*code|'
-        r'rows?\s+\d+|FAILED|PASSED|Traceback|Error:.*\n)',
+        r'(curl\s+\S+|grep\s|npm\s+test|pytest|docker\s+exec|HTTP/\d|exit.*code|'
+        r'rows?\s+\d+|FAILED|PASSED|Traceback|Error:.*\n|'
+        r'pip\s+install|python3\s+\S+\.py|'
+        r'\d+\s*(?:阻断|警告|error|fail|warn))',
         last_response
     ))
     has_actual_data = bool(re.search(  # noqa: 多模式正则匹配验证证据，工具本质需要
         r'(http_status|status_code|elapsed|response\.json|'
-        r'\"score\"\s*:\s*\d+|\"passed\"\s*:\s*(?:true|false)|'
-        r'output_text|output_url|task_id.*qfwy)',
+        r'"score"\s*:\s*\d+|"passed"\s*:\s*(?:true|false)|'
+        r'output_text|output_url|task_id.*qfwy|'
+        r'真实执行|加权平均|统计|命中率)',
+        last_response
+    ))
+    has_detail_list = bool(re.search(  # noqa: Pre-Judge 多模式列表标记匹配，验证引擎本质需要
+        r'(\n\s*[✓✔✗✘●○◆◇▪▸►]\s|'
+        r'\n\s*[-*]\s|'
+        r'\n\s*\d+[.)]\s)',
         last_response
     ))
 
+    # 1. 全 ✅ 标记但无命令输出 (advisory)
     if check_count > 3 and not has_cmd_output and not has_actual_data:
         return False, (
-            f"响应含 {check_count} 个 \u2705 标记但无命令输出或实际数据——疑似未验证声明"
-        )
+            f"响应含 {check_count} 个 ✅ 标记但无命令输出或实际数据——疑似未验证声明"
+        ), False
 
-    # 检测 "全绿""全部通过""所有测试通过" 但无测试输出片段
+    # 2. 检测 "全绿""全部通过""所有测试通过" 但无测试输出片段 (advisory)
     blanket_patterns = [r'全绿', r'全部通过', r'所有测试.*通过', r'all.*pass']
     for pat in blanket_patterns:
-        if re.search(pat, last_response, re.IGNORECASE):  # noqa: 动态模式列表匹配，工具本质需要
+        if re.search(pat, last_response, re.IGNORECASE):  # noqa: 动态模式列表匹配，验证引擎本质需要
             if not has_cmd_output and check_count >= 1:
-                return False, '响应声称「全绿/全部通过」但无测试输出片段——证据不足'
+                return False, '响应声称「全绿/全部通过」但无测试输出片段——证据不足', False
 
-    return True, ""
+    # 3. 检测 "N/N 通过" 等数字声明（N>=3）但无详细列表 (advisory)
+    fraction_match = re.search(  # noqa: Pre-Judge N/N 数字声明提取，验证引擎本质需要
+        r'\b(\d+)/(\d+)\s*(?:通过|成功|pass|ok)\b', last_response, re.IGNORECASE
+    )
+    if fraction_match:
+        numer = int(fraction_match.group(1))
+        if numer >= 3 and not has_detail_list:
+            return False, (
+                f"响应声称「{fraction_match.group()}」但无逐项详细列表——"
+                f"疑似笼统总结"
+            ), False
+
+    # 4. 声称生成文件但实际不存在 (硬阻断——独立验证)
+    claimed_files = _extract_claimed_files(last_response)
+    for fpath in claimed_files:
+        if not os.path.exists(fpath):
+            return False, f"声称生成的文件不存在: {fpath}", True
+
+    # 5. "validate/test/run 通过" 但无对应工具输出 (advisory)
+    tool_claim_patterns = [
+        (r'validate\s*通过|validate\s*pass', 'validate'),
+        (r'test\S*\s*通过|test\S*\s*pass|测试\s*通过', 'test'),
+        (r'run\s*成功|run\s*succe|跑通|流程.*完成', 'run'),
+        (r'编译\s*通过|compile\s*pass', 'compile'),
+    ]
+    for pattern, tool_name in tool_claim_patterns:
+        m = re.search(pattern, last_response, re.IGNORECASE)  # noqa: 动态模式列表匹配，验证引擎本质需要
+        if m and not has_cmd_output:
+            return False, (
+                f"响应声称「{tool_name} 通过」但无实际命令输出或量化的统计数据——"
+                f"疑似口头确认"
+            ), False
+
+    # 6. 命令重放验证 (硬阻断——独立执行)
+    cmd_mismatches = _verify_claimed_commands(last_response, cwd=cwd)
+    if cmd_mismatches:
+        return False, cmd_mismatches, True
+
+    return True, "", False
+
+
+def _verify_claimed_commands(text: str, *, cwd: str = "") -> str:
+    """独立执行 Agent 声称运行过的命令，对比真实 exit code。
+
+    不是看 Agent 回复中有没有'exit code: 0'这几个字，
+    而是真的重新跑一遍命令，对比实际 exit code 是否为 0。
+
+    cwd: 命令执行的工作目录。默认当前目录。
+    """
+    commands = _extract_executed_commands(text)
+    if not commands:
+        return ""
+
+    mismatches = []
+    for cmd in commands[:2]:  # 最多验证 2 个命令
+        try:
+            r = subprocess.run(
+                cmd, shell=True, capture_output=True,
+                timeout=5, text=True, cwd=cwd or None,  # 5s 超时
+            )
+            if r.returncode != 0:
+                stderr_tail = r.stderr[-200:] if r.stderr else "(无stderr)"
+                mismatches.append(
+                    f"声称通过的「{cmd}」实际 exit={r.returncode}: {stderr_tail[:120]}"
+                )
+        except subprocess.TimeoutExpired:
+            logger.warning("命令重放超时(5s): %s", cmd)
+        except OSError:
+            logger.warning("命令不可执行: %s", cmd)
+
+    if mismatches:
+        return "命令重放验证失败: " + "; ".join(mismatches)
+    return ""
+
+
+def _extract_executed_commands(text: str) -> list:
+    """从 Agent 回复中提取可重放执行的具体命令行"""
+    commands = []
+    cmd_patterns = [
+        r'(loom\s+(?:validate|run)\s+[\w./-]+(?:\.yaml)?)',
+        r'(pytest\s+[\w./-]+)',
+        r'(npm\s+(?:run|test|build)\s+[\w-]*)',
+        r'(pip\s+install\s+[\w\[\].-]+)',
+        r'(python3?\s+(?:-m\s+)?[\w./-]+\.py[\w\s./-]*)',
+        r'(make\s+[\w-]+)',
+        r'(go\s+(?:test|build|run)\s+[\w./-]*)',
+        r'(cargo\s+(?:test|build|check)\s*)',
+        r'(docker\s+(?:build|compose)\s+[\w./-]*)',
+    ]
+    for pat in cmd_patterns:
+        for m in re.finditer(pat, text):  # noqa: 命令行模式提取，验证引擎本质需要
+            cmd = m.group(1).strip()
+            if len(cmd) >= 8:  # 过滤太短的误匹配（如 "go run" 6字符）
+                commands.append(cmd)
+    return list(dict.fromkeys(commands))  # 去重保序
+
+
+def _extract_claimed_files(text: str) -> list:
+    """从 Agent 响应中提取声称生成/写入的绝对文件路径"""
+    claimed = []
+    patterns = [
+        r'(?:生成到|生成在|生成|写入到|写入|创建|输出到|保存到|保存在|saved\s+to|wrote\s+to|written\s+to)\s+[\'"`]?([/\w.-]+\.\w+)[\'\"`]?',
+        r'文件[：:]\s*[\'"`]?([/\w.-]+\.\w+)',
+    ]
+    for pat in patterns:
+        for m in re.finditer(pat, text):  # noqa: 文件路径提取，验证引擎本质需要
+            path = m.group(1)
+            if path.startswith('/') and '.' in path.rsplit('/', 1)[-1]:
+                claimed.append(path)
+    return list(set(claimed))
 
 
 def judge_goal(
@@ -1036,19 +1160,71 @@ def judge_goal(
     background_block = _render_background_block(background_processes)
     current_time = datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
-    # ═══ OntoX 验证管道（在 Judge 之前运行） ═══
+    # ═══ 验证管道（在 Judge 之前运行） ═══
+    # 所有 /goal 项目：BUILD + TEST + E2E（确定性门控）
+    # OntoX 项目额外：COMPLIANCE + CROSS-REVIEW
     pipeline_evidence = ""
+    project_root_for_build = os.getcwd()
+
+    # 1. 尝试加载 ontox 管道模块并发现在项目配置（对所有项目生效）
+    _ensure_ontox_imports()  # 不抛异常——加载失败跳过
+    if _ontox_imported:
+        try:
+            from ontox_verification_pipeline import (
+                run_verification_pipeline, _auto_detect_project, _gate_build, _gate_test,
+            )
+
+            project_config = _auto_detect_project(goal, os.getcwd())
+            if project_config:
+                project_root_for_build = project_config.get("root", project_root_for_build)
+
+                # 2. BUILD gate（所有项目）
+                bg = _gate_build(project_config)
+                if not bg.passed:
+                    return ("continue",
+                            f"BUILD 失败: {bg.error or bg.output}", False, None)
+
+                # 3. TEST gate（所有项目——如果有配置）
+                tg = _gate_test(project_config)
+                if not tg.passed:
+                    return ("continue",
+                            f"TEST 失败: {tg.error or tg.output}", False, None)
+
+                pipeline_evidence = f"BUILD: {bg.summary()}\nTEST: {tg.summary()}"
+
+        except Exception as e:
+            logger.warning("通用验证管道错误(fail-open): %s", e, exc_info=True)
+
+    # 4. OntoX 专用：完整管道（BUILD+TEST+E2E+COMPLIANCE+CROSS-REVIEW）
     if ontox_mode and contract is not None and not contract.is_empty():
         try:
-            _ensure_ontox_imports()
             if _ontox_imported:
-                from ontox_verification_pipeline import run_verification_pipeline
+                from ontox_verification_pipeline import (
+                    run_verification_pipeline, _auto_detect_project,
+                )
+
+                # 自动获取 git diff 作为 COMPLIANCE 扫描文本（根因修复：不扫自然语言）
+                git_diff_text = ""
+                try:
+                    git_diff_text = subprocess.check_output(
+                        ["git", "diff", "--no-color"], cwd=os.getcwd(),
+                        stderr=subprocess.DEVNULL, timeout=10, text=True,
+                    )
+                except Exception:
+                    logger.warning("获取 git diff 失败，非 git 目录正常")
+
+                # 自动检测项目配置（不依赖 pipeline_projects.yaml 手工维护）
+                project_config = _auto_detect_project(goal, os.getcwd())
+
                 pipeline = run_verification_pipeline(
                     agent_response=last_response,
                     goal=goal,
                     contract_verification=contract.verification,
+                    project=project_config,
+                    compliance_mode="git_diff",
+                    compliance_text=git_diff_text,
                     enable_cross_review=False,  # 默认关闭交叉审查，避免额外 API 调用
-                    enable_build_test=True,
+                    enable_build_test=False,     # 已在通用管道中跑过
                     enable_e2e=True,
                 )
                 if not pipeline.all_passed:
@@ -1063,11 +1239,12 @@ def judge_goal(
                         + "; ".join(g.name for g in pipeline.failed_gates),
                         False, None
                     )
-                pipeline_evidence = pipeline.evidence
-                logger.info("OntoX pipeline PASSED: %d/%d gates", 
+                # 合并通用管道 + OntoX 管道证据
+                pipeline_evidence = pipeline_evidence + "\n" + pipeline.evidence if pipeline_evidence else pipeline.evidence
+                logger.info("OntoX pipeline PASSED: %d/%d gates",
                            pipeline.passed_count, len(pipeline.gates))
         except Exception as e:
-            logger.warning("OntoX pipeline error (fail-open): %s", e)
+            logger.warning("OntoX pipeline error (fail-open): %s", e, exc_info=True)
 
     if contract is not None and not contract.is_empty():
         contract_block = contract.render_block()
@@ -1107,8 +1284,21 @@ def judge_goal(
         )
 
     # 预判 Agent 响应证据质量，低置信度时在 prompt 中注入警告
-    # 不依赖 Judge 模型判断力——代码层直接扫描文本模式
-    has_evidence, evidence_note = _pre_judge_confidence(last_response)
+    # 不依赖 Judge 模型判断力——代码层直接扫描文本模式 + 命令重放验证
+    # 提取项目根目录用于命令重放（优先用 ontox 自动检测的 root）
+    project_root = os.getcwd()
+    try:
+        from ontox_verification_pipeline import _auto_detect_project
+        cfg = _auto_detect_project(goal, project_root)
+        if cfg and cfg.get("root"):
+            project_root = cfg["root"]
+    except Exception as e:
+        logger.warning("_auto_detect_project 失败，回退到 cwd", exc_info=True)
+
+    has_evidence, evidence_note, hard_block = _pre_judge_confidence(last_response, cwd=project_root)
+    if hard_block:
+        # 文件不存在或命令重放失败——硬证据造假，直接 CONTINUE 不调 Judge
+        return ("continue", f"硬证据验证失败: {evidence_note}", False, None)
     if not has_evidence:
         prompt += (
             f"\n\n⚠️ 预检警告：Agent 响应的证据质量可疑——{evidence_note}。"
@@ -1385,7 +1575,7 @@ class GoalManager:
                         stop_when=draft.get("stop_when", ""),
                     )
                 except Exception as e:
-                    logger.warning("OntoX auto-contract draft failed: %s", e)
+                    logger.warning("OntoX auto-contract draft failed: %s", e, exc_info=True)
         self._state = state
         save_goal(self.session_id, state)
         return state
@@ -1415,7 +1605,7 @@ class GoalManager:
                 if draft.get("warnings"):
                     logger.info("OntoX contract warnings: %s", draft["warnings"])
             except Exception as e:
-                logger.warning("OntoX contract draft failed: %s", e)
+                logger.warning("OntoX contract draft failed: %s", e, exc_info=True)
 
         state = self.set(goal, max_turns=max_turns, contract=contract)
         state.ontox_mode = True
