@@ -197,7 +197,7 @@ def interrupt_subagent(subagent_id: str) -> bool:
     try:
         agent.interrupt(f"Interrupted via TUI ({subagent_id})")
     except Exception as exc:
-        logger.debug("interrupt_subagent(%s) failed: %s", subagent_id, exc)
+        logger.warning("interrupt_subagent(%s) failed: %s", subagent_id, exc)
         return False
     return True
 
@@ -323,7 +323,7 @@ def _looks_like_error_output(content: Any) -> bool:
                 if status in {"error", "failed", "failure", "timeout"}:
                     return True
         except Exception:
-            pass
+            logger.warning("Suppressed exception in except block", exc_info=True)
 
     first = content.splitlines()[0].strip().lower() if content.splitlines() else ""
     return (
@@ -388,6 +388,7 @@ def _get_max_concurrent_children() -> int:
         try:
             return max(1, int(env_val))
         except (TypeError, ValueError):
+            logger.warning("Unhandled exception", exc_info=True)
             return _DEFAULT_MAX_CONCURRENT_CHILDREN
     return _DEFAULT_MAX_CONCURRENT_CHILDREN
 
@@ -458,7 +459,7 @@ def _get_child_timeout() -> Optional[float]:
         try:
             parsed = float(env_val)
         except (TypeError, ValueError):
-            pass
+            logger.warning("Suppressed exception in except block", exc_info=True)
         else:
             return None if parsed <= 0 else max(30.0, parsed)
     return DEFAULT_CHILD_TIMEOUT
@@ -537,6 +538,7 @@ def _is_mcp_toolset_name(name: str) -> bool:
 
         target = registry.get_toolset_alias_target(str(name))
     except Exception:
+        logger.warning("Unhandled exception", exc_info=True)
         target = None
     return bool(target and str(target).startswith("mcp-"))
 
@@ -757,6 +759,7 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
         try:
             text = os.path.abspath(os.path.expanduser(str(candidate)))
         except Exception:
+            logger.warning("Unhandled exception", exc_info=True)
             continue
         if os.path.isabs(text) and os.path.isdir(text):
             return text
@@ -797,7 +800,7 @@ def _emit_parent_console(parent_agent, line: str) -> None:
             printer(line)
             return
         except Exception:
-            pass
+            logger.warning("Suppressed exception in except block", exc_info=True)
     print(line)
 
 
@@ -878,7 +881,7 @@ def _build_child_progress_callback(
         try:
             parent_cb(event_type, tool_name, preview, args, **payload)
         except Exception as e:
-            logger.debug("Parent callback failed: %s", e)
+            logger.warning("Parent callback failed: %s", e)
 
     def _callback(
         event_type, tool_name: str = None, preview: str = None, args=None, **kwargs
@@ -893,7 +896,7 @@ def _build_child_progress_callback(
                 try:
                     spinner.print_above(f" {prefix}├─ 🔀 {short}")
                 except Exception as e:
-                    logger.debug("Spinner print_above failed: %s", e)
+                    logger.warning("Spinner print_above failed: %s", e)
             _relay("subagent.start", preview=preview or goal_label or "", **kwargs)
             return
 
@@ -922,6 +925,7 @@ def _build_child_progress_callback(
                 try:
                     event = DelegateEvent(event_type)
                 except (ValueError, TypeError):
+                    logger.warning("Unhandled exception", exc_info=True)
                     return  # Unknown event — ignore
 
         if event == DelegateEvent.TASK_THINKING:
@@ -931,7 +935,7 @@ def _build_child_progress_callback(
                 try:
                     spinner.print_above(f' {prefix}├─ 💭 "{short}"')
                 except Exception as e:
-                    logger.debug("Spinner print_above failed: %s", e)
+                    logger.warning("Spinner print_above failed: %s", e)
             _relay("subagent.thinking", preview=text)
             return
 
@@ -951,12 +955,12 @@ def _build_child_progress_callback(
                 try:
                     spinner.print_above(f" {prefix}├─ 🔀 {summary_text}")
                 except Exception as e:
-                    logger.debug("Spinner print_above failed: %s", e)
+                    logger.warning("Spinner print_above failed: %s", e)
             if parent_cb:
                 try:
                     parent_cb("subagent_progress", f"{prefix}{summary_text}")
                 except Exception as e:
-                    logger.debug("Parent callback relay failed: %s", e)
+                    logger.warning("Parent callback relay failed: %s", e)
             return
 
         # TASK_TOOL_STARTED — display and batch for parent relay
@@ -982,7 +986,7 @@ def _build_child_progress_callback(
             try:
                 spinner.print_above(line)
             except Exception as e:
-                logger.debug("Spinner print_above failed: %s", e)
+                logger.warning("Spinner print_above failed: %s", e)
 
         if parent_cb:
             _relay("subagent.tool", tool_name, preview, args)
@@ -1189,7 +1193,7 @@ def _build_child_agent(
             try:
                 child_progress_cb("_thinking", text)
             except Exception as e:
-                logger.debug("Child thinking callback relay failed: %s", e)
+                logger.warning("Child thinking callback relay failed: %s", e)
 
         child_thinking_cb = _child_thinking
 
@@ -1269,7 +1273,7 @@ def _build_child_agent(
                     delegation_effort,
                 )
     except Exception as exc:
-        logger.debug("Could not load delegation reasoning_effort: %s", exc)
+        logger.warning("Could not load delegation reasoning_effort: %s", exc)
 
     # Inherit the parent's fallback provider chain so subagents can recover
     # from rate-limits and credential exhaustion exactly like the top-level
@@ -1377,7 +1381,7 @@ def _build_child_agent(
         try:
             child_progress_cb("subagent.spawn_requested", preview=goal)
         except Exception as exc:
-            logger.debug("spawn_requested relay failed: %s", exc)
+            logger.warning("spawn_requested relay failed: %s", exc)
 
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
@@ -1392,7 +1396,7 @@ def _build_child_agent(
             child_goal=goal,
         )
     except Exception:
-        logger.debug("subagent_start hook invocation failed", exc_info=True)
+        logger.warning("subagent_start hook invocation failed", exc_info=True)
 
     return child
 
@@ -1428,6 +1432,7 @@ def _dump_subagent_timeout_diagnostic(
         try:
             logs_dir.mkdir(parents=True, exist_ok=True)
         except Exception:
+            logger.warning("Unhandled exception", exc_info=True)
             return None
 
         subagent_id = getattr(child, "_subagent_id", None) or f"idx{task_index}"
@@ -1468,6 +1473,7 @@ def _dump_subagent_timeout_diagnostic(
                     pass
                 _w(f"  {attr}: {val!r}")
             except Exception:
+                logger.warning("Unhandled exception", exc_info=True)
                 _w(f"  {attr}: <unreadable>")
         _w("")
 
@@ -1480,7 +1486,7 @@ def _dump_subagent_timeout_diagnostic(
             try:
                 _w(f"  loaded tools:      {sorted(tool_names)}")
             except Exception:
-                pass
+                logger.warning("Suppressed exception in except block", exc_info=True)
         _w("")
 
         _w("## Prompt / schema sizes")
@@ -1491,6 +1497,7 @@ def _dump_subagent_timeout_diagnostic(
             _w(f"  system_prompt_bytes: {len(sys_prompt.encode('utf-8')) if isinstance(sys_prompt, str) else 'n/a'}")
             _w(f"  system_prompt_chars: {len(sys_prompt) if isinstance(sys_prompt, str) else 'n/a'}")
         except Exception as exc:
+            logger.warning("Unhandled exception", exc_info=True)
             _w(f"  system_prompt: <error: {exc}>")
         try:
             tools_schema = getattr(child, "tools", None)
@@ -1499,6 +1506,7 @@ def _dump_subagent_timeout_diagnostic(
                 _w(f"  tool_schema_count: {len(tools_schema)}")
                 _w(f"  tool_schema_bytes: {len(_schema_json.encode('utf-8'))}")
         except Exception as exc:
+            logger.warning("Unhandled exception", exc_info=True)
             _w(f"  tool_schema: <error: {exc}>")
         _w("")
 
@@ -1508,6 +1516,7 @@ def _dump_subagent_timeout_diagnostic(
             for k, v in summary.items():
                 _w(f"  {k}: {v!r}")
         except Exception as exc:
+            logger.warning("Unhandled exception", exc_info=True)
             _w(f"  <get_activity_summary failed: {exc}>")
         _w("")
 
@@ -1562,7 +1571,7 @@ def _spill_summary_to_file(task_index: int, summary: str) -> Optional[str]:
         path.write_text(summary, encoding="utf-8")
         return str(path)
     except Exception as exc:
-        logger.debug("Failed to spill subagent summary to file: %s", exc)
+        logger.warning("Failed to spill subagent summary to file: %s", exc)
         return None
 
 
@@ -1657,7 +1666,7 @@ def _parent_summary_char_budget(parent_agent, n_summaries: int) -> Optional[int]
         per_summary_chars = per_summary_tokens * 4  # ~4 chars/token
         return max(_MIN_SUMMARY_CHARS, per_summary_chars)
     except Exception:
-        logger.debug("Summary budget computation failed", exc_info=True)
+        logger.warning("Summary budget computation failed", exc_info=True)
         return None
 
 
@@ -1685,6 +1694,7 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
     try:
         static_ceiling = int(cfg.get("max_summary_chars", DEFAULT_MAX_SUMMARY_CHARS))
     except (TypeError, ValueError):
+        logger.warning("Unhandled exception", exc_info=True)
         static_ceiling = DEFAULT_MAX_SUMMARY_CHARS
 
     dynamic_budget = _parent_summary_char_budget(parent_agent, len(summaries))
@@ -1750,7 +1760,7 @@ def _run_single_child(
                 if leased_entry is not None and hasattr(child, "_swap_credential"):
                     child._swap_credential(leased_entry)
             except Exception as exc:
-                logger.debug("Failed to bind child to leased credential: %s", exc)
+                logger.warning("Failed to bind child to leased credential: %s", exc)
 
     # Heartbeat: periodically propagate child activity to the parent so the
     # gateway inactivity timeout doesn't fire while the subagent is working.
@@ -1827,11 +1837,11 @@ def _run_single_child(
                             f"(iteration {child_iter}/{child_max})"
                         )
             except Exception:
-                pass
+                logger.warning("Suppressed exception in except block", exc_info=True)
             try:
                 touch(desc)
             except Exception:
-                pass
+                logger.warning("Suppressed exception in except block", exc_info=True)
 
     _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
 
@@ -1869,7 +1879,7 @@ def _run_single_child(
             try:
                 child_progress_cb("subagent.start", preview=goal)
             except Exception as e:
-                logger.debug("Progress callback start failed: %s", e)
+                logger.warning("Progress callback start failed: %s", e)
 
         # File-state coordination: reuse the stable subagent_id as the child's
         # task_id so file_state writes, active-subagents registry, and TUI
@@ -1914,7 +1924,7 @@ def _run_single_child(
             try:
                 child_progress_cb("subagent.text", preview=delta)
             except Exception as e:
-                logger.debug("Child text relay failed: %s", e)
+                logger.warning("Child text relay failed: %s", e)
 
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
@@ -1935,7 +1945,7 @@ def _run_single_child(
                 elif hasattr(child, "_interrupt_requested"):
                     child._interrupt_requested = True
             except Exception:
-                pass
+                logger.warning("Suppressed exception in except block", exc_info=True)
 
             is_timeout = isinstance(_timeout_exc, (FuturesTimeoutError, TimeoutError))
             duration = round(time.monotonic() - child_start, 2)
@@ -1955,7 +1965,7 @@ def _run_single_child(
                 _summary = child.get_activity_summary()
                 child_api_calls = int(_summary.get("api_call_count", 0) or 0)
             except Exception:
-                pass
+                logger.warning("Suppressed exception in except block", exc_info=True)
             if is_timeout and child_api_calls == 0:
                 diagnostic_path = _dump_subagent_timeout_diagnostic(
                     child=child,
@@ -1988,7 +1998,7 @@ def _run_single_child(
                         summary="",
                     )
                 except Exception:
-                    pass
+                    logger.warning("Suppressed exception in except block", exc_info=True)
 
             if is_timeout:
                 if child_api_calls == 0:
@@ -2030,7 +2040,7 @@ def _run_single_child(
             try:
                 child_progress_cb._flush()
             except Exception as e:
-                logger.debug("Progress callback flush failed: %s", e)
+                logger.warning("Progress callback flush failed: %s", e)
 
         duration = round(time.monotonic() - child_start, 2)
 
@@ -2175,7 +2185,7 @@ def _run_single_child(
                         else:
                             entry["stale_paths"] = mod_paths
         except Exception:
-            logger.debug("file_state sibling-write check failed", exc_info=True)
+            logger.warning("file_state sibling-write check failed", exc_info=True)
 
         # Per-branch observability payload: tokens, cost, files touched, and
         # a tail of tool-call results.  Fed into the TUI's overlay detail
@@ -2186,12 +2196,14 @@ def _run_single_child(
         try:
             _files_read = list(file_state.known_reads(child_task_id))[:40]
         except Exception:
+            logger.warning("Unhandled exception", exc_info=True)
             _files_read = []
         try:
             _files_written_map = file_state.writes_since(
                 "", wall_start, []
             )  # all writes since wall_start
         except Exception:
+            logger.warning("Unhandled exception", exc_info=True)
             _files_written_map = {}
         _files_written = sorted(
             {
@@ -2229,17 +2241,18 @@ def _run_single_child(
             try:
                 complete_kwargs["cost_usd"] = float(_cost_usd)
             except (TypeError, ValueError):
-                pass
+                logger.warning("Suppressed exception in except block", exc_info=True)
 
         if child_progress_cb:
             try:
                 child_progress_cb("subagent.complete", **complete_kwargs)
             except Exception as e:
-                logger.debug("Progress callback completion failed: %s", e)
+                logger.warning("Progress callback completion failed: %s", e)
 
         return entry
 
     except Exception as exc:
+        logger.warning("Unhandled exception", exc_info=True)
         duration = round(time.monotonic() - child_start, 2)
         logging.exception(f"[subagent-{task_index}] failed")
         if child_progress_cb:
@@ -2252,7 +2265,7 @@ def _run_single_child(
                     summary=str(exc),
                 )
             except Exception as e:
-                logger.debug("Progress callback failure relay failed: %s", e)
+                logger.warning("Progress callback failure relay failed: %s", e)
         return {
             "task_index": task_index,
             "status": "error",
@@ -2282,7 +2295,7 @@ def _run_single_child(
             try:
                 child_pool.release_lease(leased_cred_id)
             except Exception as exc:
-                logger.debug("Failed to release credential lease: %s", exc)
+                logger.warning("Failed to release credential lease: %s", exc)
 
         # Restore the parent's tool names so the process-global is correct
         # for any subsequent execute_code calls or other consumers.
@@ -2304,7 +2317,7 @@ def _run_single_child(
                 else:
                     parent_agent._active_children.remove(child)
             except (ValueError, UnboundLocalError) as e:
-                logger.debug("Could not remove child from active_children: %s", e)
+                logger.warning("Could not remove child from active_children: %s", e)
 
         # Close tool resources (terminal sandboxes, browser daemons,
         # background processes, httpx clients) so subagent subprocesses
@@ -2313,7 +2326,7 @@ def _run_single_child(
             if hasattr(child, "close"):
                 child.close()
         except Exception:
-            logger.debug("Failed to close child agent after delegation")
+            logger.warning("Failed to close child agent after delegation")
 
 
 def _recover_tasks_from_json_string(
@@ -2327,6 +2340,7 @@ def _recover_tasks_from_json_string(
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
+        logger.warning("Unhandled exception", exc_info=True)
         return None, (
             "tasks must be a JSON array of task objects; received a string "
             f"that could not be parsed as JSON ({exc.msg})."
@@ -2425,6 +2439,7 @@ def delegate_task(
     try:
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
+        logger.warning("Unhandled exception", exc_info=True)
         return tool_error(str(exc))
 
     # Normalize to task list
@@ -2568,6 +2583,7 @@ def delegate_task(
                                 try:
                                     entry = f.result()
                                 except Exception as exc:
+                                    logger.warning("Unhandled exception", exc_info=True)
                                     entry = {
                                         "task_index": idx,
                                         "status": "error",
@@ -2604,6 +2620,7 @@ def delegate_task(
                         try:
                             entry = future.result()
                         except Exception as exc:
+                            logger.warning("Unhandled exception", exc_info=True)
                             idx = futures[future]
                             entry = {
                                 "task_index": idx,
@@ -2633,6 +2650,7 @@ def delegate_task(
                             try:
                                 spinner_ref.print_above(completion_line)
                             except Exception:
+                                logger.warning("Unhandled exception", exc_info=True)
                                 _emit_parent_console(parent_agent, f"  {completion_line}")
                         else:
                             _emit_parent_console(parent_agent, f"  {completion_line}")
@@ -2644,7 +2662,7 @@ def delegate_task(
                                     f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining"
                                 )
                             except Exception as e:
-                                logger.debug("Spinner update_text failed: %s", e)
+                                logger.warning("Spinner update_text failed: %s", e)
 
             # Sort by task_index so results match input order
             results.sort(key=lambda r: r["task_index"])
@@ -2678,7 +2696,7 @@ def delegate_task(
                         ),
                     )
                 except Exception:
-                    pass
+                    logger.warning("Suppressed exception in except block", exc_info=True)
 
         # Fire subagent_stop hooks once per child, serialised on the parent thread.
         # This keeps Python-plugin and shell-hook callbacks off of the worker threads
@@ -2690,6 +2708,7 @@ def delegate_task(
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
         except Exception:
+            logger.warning("Unhandled exception", exc_info=True)
             _invoke_hook = None
         # Aggregate child spend here so the parent's footer/UI reflect the true
         # cost of a subagent-heavy turn.  Port of Kilo-Org/kilocode#9448.  Each
@@ -2704,7 +2723,7 @@ def delegate_task(
                 if child_cost:
                     _children_cost_total += float(child_cost)
             except (TypeError, ValueError):
-                pass
+                logger.warning("Suppressed exception in except block", exc_info=True)
             if _invoke_hook is None:
                 continue
             try:
@@ -2725,7 +2744,7 @@ def delegate_task(
                     duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
                 )
             except Exception:
-                logger.debug("subagent_stop hook invocation failed", exc_info=True)
+                logger.warning("subagent_stop hook invocation failed", exc_info=True)
 
         # Fold the aggregated child cost into the parent's session total.  This is
         # additive — each delegate_task call contributes its own children — so
@@ -2747,7 +2766,7 @@ def delegate_task(
                 if getattr(parent_agent, "session_cost_status", "unknown") in {None, "", "unknown"}:
                     parent_agent.session_cost_status = "estimated"
             except Exception:
-                logger.debug("Subagent cost rollup failed", exc_info=True)
+                logger.warning("Subagent cost rollup failed", exc_info=True)
 
         total_duration = round(time.monotonic() - overall_start, 2)
 
@@ -2779,6 +2798,7 @@ def delegate_task(
             from gateway.session_context import async_delivery_supported
             _async_ok = async_delivery_supported()
         except Exception:
+            logger.warning("Unhandled exception", exc_info=True)
             _async_ok = True
         if not _async_ok:
             logger.info(
@@ -2831,7 +2851,7 @@ def delegate_task(
                     else:
                         parent_agent._active_children.remove(_c)
                 except ValueError:
-                    pass
+                    logger.warning("Suppressed exception in except block", exc_info=True)
 
         def _batch_runner():
             return _execute_and_aggregate()
@@ -2844,7 +2864,7 @@ def delegate_task(
                     elif hasattr(_c, "_interrupt_requested"):
                         _c._interrupt_requested = True
                 except Exception:
-                    pass
+                    logger.warning("Suppressed exception in except block", exc_info=True)
 
         _goals = [t["goal"] for t in task_list]
         dispatch = dispatch_async_delegation_batch(
@@ -2970,7 +2990,7 @@ def _resolve_child_credential_pool(
             if pool is not None and pool.has_credentials():
                 return pool
         except Exception as exc:
-            logger.debug(
+            logger.warning(
                 "Could not resolve custom credential pool for child endpoint '%s': %s",
                 effective_base_url,
                 exc,
@@ -2987,7 +3007,7 @@ def _resolve_child_credential_pool(
         if pool is not None and pool.has_credentials():
             return pool
     except Exception as exc:
-        logger.debug(
+        logger.warning(
             "Could not load credential pool for child provider '%s': %s",
             effective_provider,
             exc,
@@ -3094,6 +3114,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
         runtime = resolve_runtime_provider(requested=configured_provider, target_model=configured_model)
     except Exception as exc:
+        logger.warning("Unhandled exception", exc_info=True)
         raise ValueError(
             f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
             f"Check that the provider is configured (API key set, valid provider name), "
@@ -3148,13 +3169,14 @@ def _load_config() -> dict:
             if isinstance(cfg, dict):
                 return cfg
         except Exception:
-            pass
+            logger.warning("Failed to load delegation config via shared loader", exc_info=True)
     try:
         from cli import CLI_CONFIG
 
         cfg = CLI_CONFIG.get("delegation") or {}
         return cfg if isinstance(cfg, dict) else {}
     except Exception:
+        logger.warning("Unhandled exception", exc_info=True)
         return {}
 
 
@@ -3175,14 +3197,17 @@ def _build_top_level_description() -> str:
     try:
         max_children = _get_max_concurrent_children()
     except Exception:
+        logger.warning("Unhandled exception", exc_info=True)
         max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
     try:
         max_depth = _get_max_spawn_depth()
     except Exception:
+        logger.warning("Unhandled exception", exc_info=True)
         max_depth = MAX_DEPTH
     try:
         orchestrator_on = _get_orchestrator_enabled()
     except Exception:
+        logger.warning("Unhandled exception", exc_info=True)
         orchestrator_on = True
 
     if max_depth >= 2 and orchestrator_on:
@@ -3271,6 +3296,7 @@ def _build_tasks_param_description() -> str:
     try:
         max_children = _get_max_concurrent_children()
     except Exception:
+        logger.warning("Unhandled exception", exc_info=True)
         max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
     return (
         f"Batch mode: tasks to run in parallel (up to {max_children} for this "
@@ -3285,10 +3311,12 @@ def _build_role_param_description() -> str:
     try:
         max_depth = _get_max_spawn_depth()
     except Exception:
+        logger.warning("Unhandled exception", exc_info=True)
         max_depth = MAX_DEPTH
     try:
         orchestrator_on = _get_orchestrator_enabled()
     except Exception:
+        logger.warning("Unhandled exception", exc_info=True)
         orchestrator_on = True
 
     if max_depth >= 2 and orchestrator_on:
@@ -3402,7 +3430,7 @@ DELEGATE_TASK_SCHEMA = {
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
             },
-"background": {
+            "background": {
                 "type": "boolean",
                 "description": (
                     "DEPRECATED / IGNORED. Single-task delegations always run "
@@ -3434,8 +3462,6 @@ DELEGATE_TASK_SCHEMA = {
                     "Arguments for the ACP command (default: ['--acp', '--stdio']). "
                     "Only used when acp_command is set. "
                     "Leave empty unless acp_command is explicitly provided."
-                ),
-            },
                 ),
             },
         },

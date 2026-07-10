@@ -75,9 +75,9 @@ def _format_timestamp(ts: Union[int, float, str, None]) -> str:
                 return dt.strftime("%B %d, %Y at %I:%M %p")
             return ts
     except (ValueError, OSError, OverflowError) as e:
-        logging.debug("Failed to format timestamp %s: %s", ts, e, exc_info=True)
+        logging.warning("Failed to format timestamp %s: %s", ts, e, exc_info=True)
     except Exception as e:
-        logging.debug("Unexpected error formatting timestamp %s: %s", ts, e, exc_info=True)
+        logging.warning("Unexpected error formatting timestamp %s: %s", ts, e, exc_info=True)
     return str(ts)
 
 
@@ -98,7 +98,7 @@ def _resolve_to_parent(db, session_id: str) -> str:
                 break
             cur = parent
         except Exception as e:
-            logging.debug("Error resolving parent for %s: %s", cur, e, exc_info=True)
+            logging.warning("Error resolving parent for %s: %s", cur, e, exc_info=True)
             break
     return cur
 
@@ -179,13 +179,14 @@ def _locate_session_db(session_id: str):
         from hermes_cli import profiles as profiles_mod
         from hermes_state import SessionDB
     except Exception:
+        logging.warning("Unhandled exception", exc_info=True)
         return None, None
 
     targets = [("default", profiles_mod.get_profile_dir("default"))]
     try:
         targets += [(info.name, info.path) for info in profiles_mod.list_profiles()]
     except Exception:
-        logging.debug("list_profiles failed during session locate", exc_info=True)
+        logging.warning("list_profiles failed during session locate", exc_info=True)
 
     seen: set = set()
     for name, home in targets:
@@ -197,12 +198,13 @@ def _locate_session_db(session_id: str):
         try:
             pdb = SessionDB(db_path=db_path, read_only=True)
         except Exception:
+            logging.warning("Unhandled exception", exc_info=True)
             continue
         try:
             if pdb.get_session(session_id):
                 return pdb, name
         except Exception:
-            logging.debug("get_session probe failed for %s in %s", session_id, name, exc_info=True)
+            logging.warning("get_session probe failed for %s in %s", session_id, name, exc_info=True)
         pdb.close()
 
     return None, None
@@ -219,7 +221,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
     try:
         meta = db.get_session(session_id) or {}
     except Exception as e:
-        logging.debug("get_session failed for %s: %s", session_id, e, exc_info=True)
+        logging.warning("get_session failed for %s: %s", session_id, e, exc_info=True)
         meta = {}
     if not meta:
         return tool_error(f"session_id not found: {session_id}", success=False)
@@ -320,6 +322,7 @@ def _scroll(
     try:
         around_message_id = int(around_message_id)
     except (TypeError, ValueError):
+        logging.warning("Unhandled exception", exc_info=True)
         return tool_error("scroll requires integer around_message_id", success=False)
 
     # Window clamp [1, 20]
@@ -327,6 +330,7 @@ def _scroll(
         try:
             window = int(window)
         except (TypeError, ValueError):
+            logging.warning("Unhandled exception", exc_info=True)
             window = 5
     window = max(1, min(window, 20))
 
@@ -345,7 +349,7 @@ def _scroll(
     try:
         session_meta = db.get_session(session_id) or {}
     except Exception as e:
-        logging.debug("get_session failed for %s: %s", session_id, e, exc_info=True)
+        logging.warning("get_session failed for %s: %s", session_id, e, exc_info=True)
         session_meta = {}
     if not session_meta:
         return tool_error(f"session_id not found: {session_id}", success=False)
@@ -374,7 +378,7 @@ def _scroll(
                 ).fetchone()
                 owning = row[0] if row else None
         except Exception as e:
-            logging.debug("owning-session lookup failed: %s", e, exc_info=True)
+            logging.warning("owning-session lookup failed: %s", e, exc_info=True)
             owning = None
         if owning and owning != session_id:
             a_root = _resolve_to_parent(db, session_id)
@@ -392,10 +396,10 @@ def _scroll(
                         try:
                             session_meta = db.get_session(owning) or session_meta
                         except Exception:
-                            pass
+                            logging.warning("Suppressed exception in except block", exc_info=True)
                         session_id = owning
                 except Exception as e:
-                    logging.debug("rebind get_messages_around failed: %s", e, exc_info=True)
+                    logging.warning("rebind get_messages_around failed: %s", e, exc_info=True)
 
     if not messages:
         return tool_error(
@@ -442,7 +446,7 @@ def _title_match_result(
     try:
         session_id = db.resolve_session_by_title(title_query)
     except Exception:
-        logging.debug("resolve_session_by_title failed for %r", title_query, exc_info=True)
+        logging.warning("resolve_session_by_title failed for %r", title_query, exc_info=True)
         return None
     if not session_id:
         return None
@@ -454,7 +458,7 @@ def _title_match_result(
     try:
         session_meta = db.get_session(lineage_root) or db.get_session(session_id) or {}
     except Exception:
-        logging.debug("get_session failed for title match %s", session_id, exc_info=True)
+        logging.warning("get_session failed for title match %s", session_id, exc_info=True)
         session_meta = {}
     if session_meta.get("source") in _HIDDEN_SESSION_SOURCES:
         return None
@@ -462,7 +466,7 @@ def _title_match_result(
     try:
         messages = db.get_messages(session_id)
     except Exception:
-        logging.debug("get_messages failed for title match %s", session_id, exc_info=True)
+        logging.warning("get_messages failed for title match %s", session_id, exc_info=True)
         messages = []
 
     anchor_id = messages[0].get("id") if messages else None
@@ -470,7 +474,7 @@ def _title_match_result(
         try:
             view = db.get_anchored_view(session_id, anchor_id, window=5, bookend=3)
         except Exception:
-            logging.debug("get_anchored_view failed for title match %s/%s", session_id, anchor_id, exc_info=True)
+            logging.warning("get_anchored_view failed for title match %s/%s", session_id, anchor_id, exc_info=True)
             view = {}
     else:
         view = {}
@@ -583,6 +587,7 @@ def _discover(
         try:
             session_meta = db.get_session(lineage_root) or {}
         except Exception:
+            logging.warning("Unhandled exception", exc_info=True)
             session_meta = {}
 
         entry = {
@@ -647,7 +652,7 @@ def session_search(
             from hermes_state import SessionDB
             db = SessionDB()
         except Exception:
-            logging.debug("SessionDB unavailable for session_search", exc_info=True)
+            logging.warning("SessionDB unavailable for session_search", exc_info=True)
             from hermes_state import format_session_db_unavailable
             return tool_error(format_session_db_unavailable(), success=False)
 
@@ -670,6 +675,7 @@ def session_search(
         try:
             profile_db = _resolve_profile_db(profile)
         except Exception as e:
+            logging.warning("Unhandled exception", exc_info=True)
             return tool_error(f"profile '{profile}': {e}", success=False)
         if profile_db is not None:
             db = profile_db
@@ -711,6 +717,7 @@ def session_search(
         try:
             limit = int(limit)
         except (TypeError, ValueError):
+            logging.warning("Unhandled exception", exc_info=True)
             limit = 3
     limit = max(1, min(limit, 10))
 
@@ -746,6 +753,7 @@ def check_session_search_requirements() -> bool:
         from hermes_state import DEFAULT_DB_PATH
         return DEFAULT_DB_PATH.parent.exists()
     except ImportError:
+        logging.warning("Unhandled exception", exc_info=True)
         return False
 
 
