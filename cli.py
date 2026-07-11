@@ -15392,16 +15392,40 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         # "worth its own review" and never re-landed (#20271).
                         self._drain_interrupt_queue_to_pending_input()
 
+                        # Drain process notifications (completions + watch
+                        # matches) BEFORE goal continuation so a just-finished
+                        # background process surfaces as the next turn instead
+                        # of racing the goal loop's continuation prompt. Without
+                        # this ordering, both inject into _pending_input
+                        # simultaneously — the agent gets poked by whichever
+                        # lands first, and the other becomes a redundant
+                        # duplicate turn (#goal-bg-deadlock).
+                        _bg_notify_injected = False
+                        try:
+                            from tools.process_registry import process_registry
+                            for _evt, _synth in process_registry.drain_notifications():
+                                self._pending_input.put(_synth)
+                                _bg_notify_injected = True
+                        except Exception:
+                            pass  # 非致命——不阻断主循环
+
                         # Goal continuation: if a standing goal is active, ask
                         # the judge whether the turn satisfied it. If not, and
                         # there's no real user message already queued, push the
                         # continuation prompt back into _pending_input so the
                         # next loop iteration picks it up naturally (and any
                         # user input that arrives in between still preempts).
-                        try:
-                            self._maybe_continue_goal_after_turn()
-                        except Exception as _goal_exc:
-                            logging.debug("goal continuation hook failed: %s", _goal_exc)
+                        #
+                        # 但如果刚注入了 background process 完成通知，本轮
+                        # 跳过 goal continuation——让 Agent 先处理完成通知，
+                        # 下一轮 turn 结束后 goal loop 自然会再次评估。
+                        # 这避免了"completion 通知 + continuation prompt
+                        # 同时入队"导致的 Agent 反复被拉扯。
+                        if not _bg_notify_injected:
+                            try:
+                                self._maybe_continue_goal_after_turn()
+                            except Exception as _goal_exc:
+                                logging.debug("goal continuation hook failed: %s", _goal_exc)
 
                         # Continuous voice: auto-restart recording after agent responds.
                         # Dispatch to a daemon thread so play_beep (sd.wait) and
@@ -15418,15 +15442,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                                 except Exception as e:
                                     _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
                             threading.Thread(target=_restart_recording, daemon=True).start()
-
-                        # Drain process notifications (completions + watch matches)
-                        # that arrived while the agent was running.
-                        try:
-                            from tools.process_registry import process_registry
-                            for _evt, _synth in process_registry.drain_notifications():
-                                self._pending_input.put(_synth)
-                        except Exception:
-                            pass  # Non-fatal — don't break the main loop
 
                 except Exception as e:
                     logger.warning("process_loop unhandled error (msg may be lost): %s", e)
