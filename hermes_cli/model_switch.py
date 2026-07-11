@@ -780,6 +780,14 @@ def _configured_provider_matches(
             slug = f"custom:{name}"
             if slug in matches:
                 continue
+            # Skip when the same provider is already matched via user_providers
+            # dict (providers.<slug>).  get_compatible_custom_providers() converts
+            # providers dict entries into list entries, so the same provider
+            # (e.g. providers.zai) would otherwise match in both loops and
+            # trigger a false "declared by multiple configured providers" error.
+            provider_key = entry.get("provider_key", "")
+            if (provider_key and provider_key in matches) or name in matches:
+                continue
             for key in ("models", "model", "default_model"):
                 hit = _match(entry.get(key))
                 if hit:
