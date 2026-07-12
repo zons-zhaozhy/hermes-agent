@@ -31,6 +31,7 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.tool_guardrails import ToolGuardrailDecision
+from agent.deliberation_gate import GATED_TOOL_NAMES
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
     _is_multimodal_tool_result,
@@ -351,6 +352,17 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             )
         return
 
+    # ── Deliberation gate — 一次 assistant_message 只检查一次 ──────
+    _gate_block: str | None = None
+    try:
+        _gate_block = agent._deliberation_gate.check_batch(
+            getattr(assistant_message, "content", None),
+            [tc.function.name for tc in tool_calls],
+        )
+    except Exception:
+        logger.warning("DeliberationGate check_batch failed (concurrent path)", exc_info=True)
+        # failsafe: gate crash never blocks execution
+
     # ── Parse args + pre-execution bookkeeping ───────────────────────
     parsed_calls = []  # list of (tool_call, function_name, function_args, middleware_trace, block_result, blocked_by_guardrail)
     for tool_call in tool_calls:
@@ -470,6 +482,21 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     status="blocked",
                     error_type="plugin_block",
                     error_message=block_message,
+                    middleware_trace=list(middleware_trace),
+                )
+            elif _gate_block is not None and function_name in GATED_TOOL_NAMES:
+                # Deliberation gate block — 同一 batch 所有门控工具共享
+                block_result = _gate_block
+                _emit_terminal_post_tool_call(
+                    agent,
+                    function_name=function_name,
+                    function_args=function_args,
+                    result=block_result,
+                    effective_task_id=effective_task_id,
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    status="blocked",
+                    error_type="deliberation_gate",
+                    error_message="Deliberation gate blocked this tool",
                     middleware_trace=list(middleware_trace),
                 )
             else:
@@ -995,6 +1022,20 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
     # Resolve the context-scaled tool-output budget once per turn.
     _tool_budget = _budget_for_agent(agent)
+
+    # ── Deliberation gate — 一次 assistant_message 只检查一次 ──────
+    _gate_block: str | None = None
+    try:
+        _dg = getattr(agent, "_deliberation_gate", None)
+        if _dg is not None:
+            _gate_block = _dg.check_batch(
+                getattr(assistant_message, "content", None),
+                [tc.function.name for tc in assistant_message.tool_calls],
+            )
+    except Exception:
+        logger.warning("DeliberationGate check_batch failed (sequential path)", exc_info=True)
+        # failsafe: gate crash never blocks execution
+
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
         # SAFETY: check interrupt BEFORE starting each tool.
         # If the user sent "stop" during a previous tool's execution,
@@ -1087,6 +1128,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 )
             except Exception:
                 pass
+
+        # ── Deliberation gate block — batch-level, only for mutating tools ──
+        if _gate_block is not None and _block_msg is None and function_name in GATED_TOOL_NAMES:
+            _block_msg = _gate_block
+            _block_error_type = "deliberation_gate"
 
         _guardrail_block_decision: ToolGuardrailDecision | None = None
         if _block_msg is None:

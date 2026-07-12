@@ -2361,6 +2361,8 @@ class _SkinAwareAnsi:
 
 
 _ACCENT = _SkinAwareAnsi("response_border", "#FFD700", bold=True)
+# 工具调用信息颜色——消费 skin 的 tool_activity 键（默认皮肤=#64B5F6 亮蓝）
+_TOOL_ANSI = _SkinAwareAnsi("tool_activity", "#64B5F6")
 # Use ANSI dim+italic attributes (\x1b[2;3m) instead of a hardcoded
 # hex color so dim/thinking text inherits the terminal's default
 # foreground color and stays readable in both light and dark
@@ -11020,7 +11022,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         from agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚡")
-        _cprint(f"  ┊ {emoji} preparing {tool_name}…")
+        _cprint(f"  {_TOOL_ANSI}┊ {emoji} preparing {tool_name}…{_RST}")
 
     # ====================================================================
     # Tool progress callback (audio cues for voice mode)
@@ -11107,7 +11109,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 try:
                     from agent.display import get_cute_tool_message
                     line = get_cute_tool_message(function_name, stored_args, duration, result=kwargs.get("result"))
-                    _cprint(f"  {line}")
+                    _cprint(f"  {_TOOL_ANSI}{line}{_RST}")
                 except Exception:
                     pass
                 # First-touch onboarding: on the first tool in this process

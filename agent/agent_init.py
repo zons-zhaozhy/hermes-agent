@@ -47,6 +47,7 @@ from agent.tool_guardrails import (
     ToolCallGuardrailController,
     ToolGuardrailDecision,
 )
+from agent.deliberation_gate import DeliberationGate, DeliberationGateConfig
 from hermes_cli.config import cfg_get
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
@@ -543,6 +544,7 @@ def init_agent(
     agent._executing_tools = False
     agent._tool_guardrails = ToolCallGuardrailController()
     agent._tool_guardrail_halt_decision: ToolGuardrailDecision | None = None
+    agent._deliberation_gate = DeliberationGate()
 
     # Interrupt mechanism for breaking out of tool loops
     agent._interrupt_requested = False
@@ -1318,6 +1320,18 @@ def init_agent(
         )
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
+
+    try:
+        from agent.deliberation_gate import DeliberationGate, DeliberationGateConfig
+
+        agent._deliberation_gate = DeliberationGate(
+            DeliberationGateConfig.from_mapping(
+                _agent_cfg.get("deliberation_gate", {})
+            )
+        )
+    except Exception as _dg_err:
+        _ra().logger.warning("Deliberation gate config ignored: %s", _dg_err)
+        agent._deliberation_gate = DeliberationGate()
     # Cache only the derived auxiliary compression context override that is
     # needed later by the startup feasibility check.  Avoid exposing a
     # broad pseudo-public config object on the agent instance.

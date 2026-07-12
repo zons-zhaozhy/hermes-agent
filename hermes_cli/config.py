@@ -1409,6 +1409,15 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Deliberation gate — two-phase structural separation: reasoning phase
+    # (read-only tools only) → execution phase (all tools unlocked). On by default.
+    "deliberation_gate": {
+        "enabled": True,
+        "max_reasoning_rounds": 5,     # anti-loop: auto-unlock after N rounds
+        "min_reasoning_chars": 80,      # direct unlock: sufficient analysis text
+        "min_reflection_chars": 20,     # unlock after investigation + reflection
+    },
+
     "compression": {
         "enabled": True,
         "threshold": 0.50,            # compress when context usage exceeds this ratio.
