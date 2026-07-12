@@ -1336,8 +1336,6 @@ def init_agent(
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
 
     try:
-        from agent.deliberation_gate import DeliberationGate, DeliberationGateConfig
-
         agent._deliberation_gate = DeliberationGate(
             DeliberationGateConfig.from_mapping(
                 _agent_cfg.get("deliberation_gate", {})
