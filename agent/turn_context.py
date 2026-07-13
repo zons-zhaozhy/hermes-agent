@@ -233,7 +233,7 @@ def build_turn_context(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
-    _dg = getattr(agent, "_deliberation_gate", None)
+    _dg = getattr(agent, "_read_think_gate", None)
     if _dg is not None:
         _dg.reset_for_turn()
     _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
