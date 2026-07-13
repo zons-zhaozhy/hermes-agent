@@ -512,6 +512,23 @@ def _compute_tool_definitions(
                     }
                     break
 
+    # Append execute_code hint to read_file description when execute_code is
+    # available.  The static schema avoids hardcoding cross-tool references
+    # (AGENTS.md:917-918); this dynamic block adds the hint only when the
+    # execute_code toolset is actually present in the session.
+    if "read_file" in available_tool_names and "execute_code" in available_tool_names:
+        for i, td in enumerate(filtered_tools):
+            if td.get("function", {}).get("name") == "read_file":
+                desc = td["function"].get("description", "")
+                _exec_hint = " For programmatic file manipulation, use execute_code with open()."
+                if _exec_hint not in desc:
+                    desc += _exec_hint
+                    filtered_tools[i] = {
+                        "type": "function",
+                        "function": {**td["function"], "description": desc},
+                    }
+                break
+
     if not quiet_mode:
         if filtered_tools:
             tool_names = [t["function"]["name"] for t in filtered_tools]
