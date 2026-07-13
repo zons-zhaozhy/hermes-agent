@@ -1,4 +1,4 @@
-"""Deliberation Gate — turn 级结构性分离：推理阶段 → 执行阶段。
+"""ReadThink Gate — turn 级结构性分离：推理阶段 → 执行阶段。
 
 不是事后纠错（"你没思考，回去想"），而是结构引导（"先调查，再分析，执行权限自动解锁"）。
 
@@ -16,7 +16,7 @@
 
 与 tool_guardrails 的区别：
   - guardrails 检测"循环失败"（重复调用同一工具失败）
-  - deliberation_gate 执行"推理期/执行期分离"（先调查再动手）
+  - read_think_gate 执行"推理期/执行期分离"（先调查再动手）
 
 生命周期：per-turn，由 build_turn_context 重置。
 """
@@ -50,8 +50,8 @@ GATED_TOOL_NAMES: frozenset[str] = frozenset(
 
 
 @dataclass(frozen=True)
-class DeliberationGateConfig:
-    """config.yaml → deliberation_gate 段配置。"""
+class ReadThinkGateConfig:
+    """config.yaml → read_think_gate 段配置。"""
 
     enabled: bool = True
     # 推理阶段最大 API 调用轮数。超过后自动解锁，防死循环。
@@ -62,7 +62,7 @@ class DeliberationGateConfig:
     min_reflection_chars: int = 20
 
     @classmethod
-    def from_mapping(cls, data: Mapping[str, Any] | None) -> "DeliberationGateConfig":
+    def from_mapping(cls, data: Mapping[str, Any] | None) -> "ReadThinkGateConfig":
         if not isinstance(data, Mapping):
             return cls()
         return cls(
@@ -73,7 +73,7 @@ class DeliberationGateConfig:
         )
 
 
-class DeliberationGate:
+class ReadThinkGate:
     """Per-turn 两阶段审议门控制器。
 
     推理阶段：只读工具放行，执行工具引导调查。
@@ -85,8 +85,8 @@ class DeliberationGate:
       3. 解锁后 → 本 turn 后续全部放行
     """
 
-    def __init__(self, config: DeliberationGateConfig | None = None):
-        self.config = config or DeliberationGateConfig()
+    def __init__(self, config: ReadThinkGateConfig | None = None):
+        self.config = config or ReadThinkGateConfig()
         self.reset_for_turn()
 
     # ── Per-turn state ──────────────────────────────────────────────
@@ -127,8 +127,6 @@ class DeliberationGate:
         if not self.config.enabled or self._satisfied:
             return None
 
-        self._reasoning_rounds += 1
-
         has_mutating = any(t in GATED_TOOL_NAMES for t in tool_names)
         has_read_only = any(t not in GATED_TOOL_NAMES for t in tool_names)
         content_len = len(assistant_content or "")
@@ -143,19 +141,22 @@ class DeliberationGate:
             return None
 
         # ── 推理阶段：无门控工具 → 放行（让调查继续）───────────────
+        # 只读批次不消耗 reasoning_rounds——调查就是调查，不是"推理轮数"
         if not has_mutating:
             logger.debug(
-                "deliberation gate: reasoning round %d/%d — read-only batch, continuing",
-                self._reasoning_rounds,
-                self.config.max_reasoning_rounds,
+                "read-think gate: read-only batch — continuing (investigation done=%s)",
+                self._investigation_done,
             )
             return None
 
         # ── 推理阶段：有门控工具且未解锁 → 拦截 ─────────────────────
+        # 只有被拦截的执行尝试才计数，防止只读调查白白消耗轮数
+        self._reasoning_rounds += 1
+
         first_gated = next(t for t in tool_names if t in GATED_TOOL_NAMES)
         block_msg = self._build_block_message(first_gated, content_len)
         logger.info(
-            "deliberation gate: blocking %s (round %d/%d, content=%d, investigated=%s)",
+            "read-think gate: blocking %s (round %d/%d, content=%d, investigated=%s)",
             first_gated,
             self._reasoning_rounds,
             self.config.max_reasoning_rounds,
@@ -170,7 +171,7 @@ class DeliberationGate:
         if content_len >= self.config.min_reasoning_chars:
             self._satisfied = True
             logger.info(
-                "deliberation gate: unlocked — direct reasoning %d chars >= %d",
+                "read-think gate: unlocked — direct reasoning %d chars >= %d",
                 content_len,
                 self.config.min_reasoning_chars,
             )
@@ -180,7 +181,7 @@ class DeliberationGate:
         if self._investigation_done and content_len >= self.config.min_reflection_chars:
             self._satisfied = True
             logger.info(
-                "deliberation gate: unlocked — investigation done + reflection %d chars >= %d",
+                "read-think gate: unlocked — investigation done + reflection %d chars >= %d",
                 content_len,
                 self.config.min_reflection_chars,
             )
@@ -190,7 +191,7 @@ class DeliberationGate:
         if self._reasoning_rounds >= self.config.max_reasoning_rounds:
             self._satisfied = True
             logger.info(
-                "deliberation gate: unlocked — max reasoning rounds reached (%d)",
+                "read-think gate: unlocked — max reasoning rounds reached (%d)",
                 self.config.max_reasoning_rounds,
             )
             return True
@@ -218,7 +219,7 @@ class DeliberationGate:
             )
 
         return (
-            f"[Deliberation Gate — 推理阶段] 工具 '{tool_name}' 暂时不可用。\n\n"
+            f"[ReadThink Gate — 推理阶段] 工具 '{tool_name}' 暂时不可用。\n\n"
             f"{guide}\n\n"
             f"（推理轮数：{self._reasoning_rounds}/{self.config.max_reasoning_rounds}）"
         )
