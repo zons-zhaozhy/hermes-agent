@@ -201,27 +201,28 @@ def _global_allow_private_urls() -> bool:
     """Return True when the user has opted out of private-IP blocking.
 
     Checks (in priority order):
-    1. ``HERMES_ALLOW_PRIVATE_URLS`` env var  (``true``/``1``/``yes``)
-    2. ``security.allow_private_urls`` in config.yaml
-    3. ``browser.allow_private_urls`` in config.yaml  (legacy / backward compat)
+    1. HERMES_ALLOW_PRIVATE_URLS env var  (true/1/yes)
+    2. security.allow_private_urls in config.yaml
+    3. browser.allow_private_urls in config.yaml  (legacy / backward compat)
 
-    Result is cached for the process lifetime.
+    Env var is checked on every call — highest priority bypasses cache.
+    Config file result is cached for the process lifetime (no filesystem hit).
     """
     global _allow_private_resolved, _cached_allow_private
+
+    # 1. Env var override — checked every call (highest priority, bypasses cache)
+    env_val = os.getenv("HERMES_ALLOW_PRIVATE_URLS", "").strip().lower()
+    if env_val in {"true", "1", "yes"}:
+        return True
+    if env_val in {"false", "0", "no"}:
+        return False
+
+    # 2. Cache — env var unset, return cached config file result
     if _allow_private_resolved:
         return _cached_allow_private
 
     _allow_private_resolved = True
     _cached_allow_private = False  # safe default
-
-    # 1. Env var override (highest priority)
-    env_val = os.getenv("HERMES_ALLOW_PRIVATE_URLS", "").strip().lower()
-    if env_val in {"true", "1", "yes"}:
-        _cached_allow_private = True
-        return _cached_allow_private
-    if env_val in {"false", "0", "no"}:
-        # Explicit false — don't fall through to config
-        return _cached_allow_private
 
     # 2. Config file
     try:
