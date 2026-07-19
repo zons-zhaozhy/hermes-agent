@@ -97,6 +97,26 @@ def _r05_write_without_read(tool_name: str, args: dict, history: dict) -> str | 
 
 
 # 规则注册表
+# 只读查询类工具——不对其参数做 AVOID 关键词匹配。
+# AVOID 条目是行为警示（"不要硬编码/不要吞异常"），只对执行类工具有意义。
+# 对 search_files/read_file/web_search 等只读工具匹配就是误报。
+_READ_ONLY_TOOLS: frozenset[str] = frozenset({
+    "search_files",
+    "read_file",
+    "web_search",
+    "web_extract",
+    "browser_snapshot",
+    "browser_console",
+    "browser_back",
+    "browser_scroll",
+    "browser_get_images",
+    "session_search",
+    "skill_view",
+    "skills_list",
+    "memory",
+    "vision_analyze",
+})
+
 _RULES = [
     ("R01", "medium", _r01_read_repeat),
     ("R02", "high", _r02_patch_repeat),
@@ -224,13 +244,19 @@ class SelfCheckManager:
                 logger.warning("SelfCheck: rule %s check raised: %s", rule_id, e)
 
         # 2. AVOID 关键词匹配（模糊匹配，需重合度）
-        tool_desc = (tool_name + " " + json.dumps(args, ensure_ascii=False)).lower()
-        for keywords, item, source in self._avoid_entries:
-            kw_parts = keywords.split()
-            if len(kw_parts) >= 3:
-                matches = sum(1 for kw in kw_parts if kw in tool_desc)
-                if matches >= 2:
-                    warnings.append("\U0001f4cb [%s] \U0001f4a1 %s" % (source, item))
+        # 只读查询类工具跳过——它们的参数是搜索词不是行为，匹配 AVOID 是误报
+        if tool_name not in _READ_ONLY_TOOLS:
+            try:
+                tool_desc = (tool_name + " " + json.dumps(args, ensure_ascii=False)).lower()
+            except (TypeError, ValueError) as e:
+                logger.warning("SelfCheck: json.dumps(args) failed for %s: %s", tool_name, e)
+                tool_desc = tool_name.lower()
+            for keywords, item, source in self._avoid_entries:
+                kw_parts = keywords.split()
+                if len(kw_parts) >= 3:
+                    matches = sum(1 for kw in kw_parts if kw in tool_desc)
+                    if matches >= 2:
+                        warnings.append("\U0001f4cb [%s] \U0001f4a1 %s" % (source, item))
 
         if warnings:
             return "[SelfCheck]\n" + "\n".join(warnings)
