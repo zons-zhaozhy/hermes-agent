@@ -31,20 +31,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
-import subprocess
-import sys
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
-
-# OntoX 集成——延迟导入，避免循环依赖
-_ontox_imported = False
-_ontox_draft_contract = None
-_ontox_preflight_check = None
-_ontox_get_ecosystem = None
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +57,7 @@ DEFAULT_JUDGE_TIMEOUT = 30.0
 # specifically constrained setups.
 DEFAULT_JUDGE_MAX_TOKENS = 4096
 # Cap how much of the last response + recent messages we send to the judge.
-_JUDGE_RESPONSE_SNIPPET_CHARS = 8000
+_JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 # After this many consecutive judge *parse* failures (empty output / non-JSON),
 # the loop auto-pauses and points the user at the goal_judge config. API /
 # transport errors do NOT count toward this — those are transient. This guards
@@ -78,16 +69,11 @@ DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
 
 
 CONTINUATION_PROMPT_TEMPLATE = (
-    '[继续执行目标]\n'
-    '目标: {goal}\n\n'
-    '继续推进。自主决策，自主执行，不要停下来等待。\n'
-    '- 遇到技术问题：自己排查修复，不要请示。\n'
-    '- 遇到缺失信息：做合理假设并继续，在最终报告中列出所有假设。\n'
-    '- 遇到不可逆操作（DROP、TRUNCATE、删数据、推送代码）：暂停并说明，这是唯一需要暂停的情况。\n'
-    '- 一轮做不完就汇报进度后继续下一轮，不要声称完成然后收工。\n'
-    '- 只有目标彻底完成、产出了可验证的结果时才停下来。\n'
-    '- 每轮结束时如果工作有实质进展，附上实际的命令输出（curl/grep/npm test 等的终端输出）——不止是「✅」标记。\n'
-    '- 声称目标完成时，每个关键断言必须附验证证据。例如：「N个场景品控门控阻断」需列出至少一个场景的curl验证输出；「产物可访问」需提供实际curl输出或文件路径。「全绿」「全部通过」等无具体输出的总结不应出现。'
+    "[Continuing toward your standing goal]\n"
+    "Goal: {goal}\n\n"
+    "Continue working toward this goal. Take the next concrete step. "
+    "If you believe the goal is complete, state so explicitly and stop. "
+    "If you are blocked and need input from the user, say so clearly and stop."
 )
 
 # Used when the goal carries a structured completion contract. The contract
@@ -95,144 +81,71 @@ CONTINUATION_PROMPT_TEMPLATE = (
 # to break, what's in scope, and when to stop and ask — so it targets the
 # verification surface instead of declaring victory loosely.
 CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE = (
-    '[继续执行目标]\n'
-    '目标: {goal}\n\n'
-    '完成合同:\n'
-    '{contract_block}\n\n'
-    '继续推进，达成上述结果。自主执行下一步。\n'
-    '遵守所述边界，不违反约束条件。\n'
-    '声称目标完成前，必须满足验证条件，并展示具体证据（命令输出、文件内容、测试结果）。\n'
-    '如果触发了停止条件或因其他原因受阻需要用户输入，暂停并说明。'
+    "[Continuing toward your standing goal]\n"
+    "Goal: {goal}\n\n"
+    "Completion contract:\n"
+    "{contract_block}\n\n"
+    "Continue working toward the outcome above. Take the next concrete step. "
+    "Stay within the stated boundaries and do not violate the constraints. "
+    "Before claiming the goal is done, satisfy the Verification criterion and "
+    "show the concrete evidence (command output, file contents, test result). "
+    "If you hit the stated stop condition or are otherwise blocked and need "
+    "user input, say so clearly and stop."
 )
-
-# ──────────────────────────────────────────────────────────────────────
-# OntoX 生态约束 — /goal-ontox 模式下注入
-# ──────────────────────────────────────────────────────────────────────
-
-ONTOX_ECOSYSTEM_BOUNDARY = (
-    '[OntoX 生态约束 — 你只能在以下底座能力范围内编码]\n'
-    '\n'
-    'OntoX 五驱能力清单（你的全部可用工具箱）：\n'
-    '\n'
-    '1. OMS（元数据建模引擎）— 数据建模与零代码 CRUD\n'
-    '   - 对象类型元数据定义 + 自动 CRUD 页面\n'
-    '   - Browser API: POST/GET/PUT/DELETE {OMS_URL}/oms/api/v1/admin/oms/browser/{type}\n'
-    '   - 状态机: POST {OMS_URL}/oms/api/v1/admin/oms/state-machine/{name}/fire\n'
-    '   - 批量查询: POST {OMS_URL}/oms/api/v1/admin/oms/browser/query\n'
-    '\n'
-    '2. Cortex（AI 理解引擎）— AIGC 生成 + LLM 推理\n'
-    '   - 文本生成: POST {CORTEX_URL}/cortex/api/v1/internal/aigc/text\n'
-    '   - 图像生成: POST {CORTEX_URL}/cortex/api/v1/internal/aigc/image\n'
-    '   - 视频生成: POST {CORTEX_URL}/cortex/api/v1/internal/aigc/video\n'
-    '   - 质量评分: POST {CORTEX_URL}/cortex/api/v1/internal/aigc/quality\n'
-    '   - 安全审核: POST {CORTEX_URL}/cortex/api/v1/internal/aigc/safety\n'
-    '   - 增强端点: /dedup /keyword_extract /translate /video/extend /video/concat 等 19 个\n'
-    '\n'
-    '3. Loom（编排引擎）— YAML DAG 工作流执行\n'
-    '   - 异步执行: POST {LOOM_URL}/loom/api/v1/analyze/async\n'
-    '   - 进度轮询: GET {LOOM_URL}/loom/api/v1/analyze/status/{task_id}\n'
-    '   - 场景 YAML 放 qfwy 仓库 scenarios/ 目录，部署时复制到 Loom\n'
-    '   - http_call Step 调 Cortex + 写回 OMS\n'
-    '   - quality_gate 品控门控 + condition_branch 条件分支\n'
-    '\n'
-    '4. DBChat（数据查询引擎）— NL2SQL 自然语言查库\n'
-    '   - Chat API: POST {DBCHAT_URL}/dbchat/api/v1/chat\n'
-    '\n'
-    '5. Auth（认证中心）— 统一 JWT 签发与验证\n'
-    '   - 登录: POST {AUTH_URL}/auth/api/v1/login\n'
-    '   - 五驱共享 JWT_SECRET 验签\n'
-    '\n'
-    '前端技术栈：Vue 3 + TypeScript + Vite + Element Plus\n'
-    '\n'
-    '禁止事项（绝对不得违反）：\n'
-    '- 禁止创建新的 Java/Python/Go 后端服务——所有后端能力由五驱提供\n'
-    '- 禁止直连第三方 AI API（OpenAI/DeepSeek/GLM 等）——必须通过 Cortex 中转\n'
-    '- 禁止手搓标准 CRUD 页面（表格/表单/筛选/分页）——必须走 OMS 元数据驱动\n'
-    '- 禁止在 qfwy 仓库写 Java/Python 后端代码——只能写前端 Vue 页面 + Loom 场景 YAML\n'
-    '- 禁止在前端直连 Cortex AIGC API——生成请求必须通过 Loom /analyze/async 编排\n'
-    '- 供应商 URL/API Key/模型名零硬编码——由 Cortex config.py 管理\n'
-    '\n'
-    '决策判断表（不确定用哪个驱动时参考）：\n'
-    '| 需求 | 正确做法 |\n'
-    '|------|---------|\n'
-    '| 标准增删改查 | OMS 元数据 CRUD（零代码）|\n'
-    '| 列表/详情/筛选排序 | OMS Browser API |\n'
-    '| 状态流转 | OMS 状态机 |\n'
-    '| AI 生成（文案/图像/视频）| Loom 场景 → http_call → Cortex /aigc/* |\n'
-    '| 质量评分/安全审核 | Loom 场景 → http_call → Cortex /aigc/quality /safety |\n'
-    '| 工作流编排 | Loom YAML DAG（depends_on 拓扑执行）|\n'
-    '| 自然语言查数据 | DBChat NL2SQL |\n'
-    '| 用户登录/权限 | Auth 中心 JWT |\n'
-    '| 视频编辑器/画布 | 手搓前端 Vue 组件（Loom 覆盖不了的交互 UI）|\n'
-    '\n'
-    '架构原则：\n'
-    '- OntoX 底座能力不足时 → 增强底座（补 Cortex/Loom 端点），不在 qfwy 造后端\n'
-    '- 业务编排 → Loom 场景 YAML，前端调 Loom API，不硬编码 async/await 链\n'
-    '- 数据写入 → Loom http_call 写回 OMS Browser API，结果不入库 = 丢失\n'
-    '- 品控门控 → Loom quality_gate Step（服务端真正阻断，不依赖前端 if-else）\n'
-)
-
-
 
 # Used when the user has added one or more /subgoal criteria. Surfaced
 # to the agent verbatim so it sees what to target on the next turn,
 # and surfaced to the judge so the verdict considers them too.
 CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE = (
-    '[继续执行目标]\n'
-    '目标: {goal}\n\n'
-    '用户追加的验收标准:\n'
-    '{subgoals_block}\n\n'
-    '继续推进，同时满足原始目标和所有验收标准。自主决策，自主执行。\n'
-    '- 遇到技术问题：自己排查修复，不要请示。\n'
-    '- 遇到缺失信息：做合理假设并继续，在最终报告中列出所有假设。\n'
-    '- 遇到不可逆操作（DROP、TRUNCATE、删数据、推送代码）：暂停并说明，这是唯一需要暂停的情况。\n'
-    '- 一轮做不完就汇报进度后继续下一轮，不要声称完成然后收工。\n'
-    '- 只有目标与所有验收标准全部满足、产出可验证结果时才停下来。'
+    "[Continuing toward your standing goal]\n"
+    "Goal: {goal}\n\n"
+    "Additional criteria the user added mid-loop:\n"
+    "{subgoals_block}\n\n"
+    "Continue working toward the goal AND all additional criteria. Take "
+    "the next concrete step. If you believe the goal and every "
+    "additional criterion are complete, state so explicitly and stop. "
+    "If you are blocked and need input from the user, say so clearly "
+    "and stop."
 )
 
 
 JUDGE_SYSTEM_PROMPT = (
-    '你是严格的目标评审员，判断自主 agent 是否真正完成了用户的目标。'
-    '你会收到目标文本和 agent 的最新响应片段，以及当前运行的后台进程列表。做出三选一判定。\n\n'
-    '=== 判定为 DONE 的条件（必须全部满足） ===\n'
-    '1. 交付物已产出且有可验证的证据（文件路径、命令输出、测试结果、具体数据等），'
-    '不能只有笼统描述（如「已完成」「改好了」「部署成功」）。\n'
-    '2. 目标的每一项要求都被逐一回应，不存在「留到后续」「待完善」「下一步再处理」等未完成项。\n'
-    '3. 响应中无实质性错误或半成品（空的 placeholder 文件、未通过的测试、TODO 注释等）。\n'
-    '4. 警惕伪证据——以下形式不算可验证证据，出现时严格判定为 CONTINUE：\n'
-    '   a) 大量「✅」「已完成」「全部通过」等标记性文字但没有附上任何命令的实际终端输出\n'
-    '   b) 「N个场景」「N项检查」等批量数字声明但没有逐项列出验证过程（N>5 时必须至少抽样列出具体验证命令和输出）\n'
-    '   c) 「E2E completed Ns」但没有显示每步执行的耗时、HTTP状态码、审计步骤数\n'
-    '   d) 「测试全绿」「构建通过」等结论性声明但没有实际的测试/构建输出片段\n'
-    '   如果 agent 的响应中大部分"证据"是上述伪证据形式，判定为 CONTINUE——证据不足以确认完成。\n\n'
-    '=== 判定为 WAIT 的条件 — 目标未完成，但下一步是等待异步工作完成而非继续操作 ===\n'
-    '仅在 agent 的进度确实被某个自主运行的事物阻塞时选择 WAIT：\n'
-    '- 下方列出的某个后台进程仍在运行，且 agent 明确在等待其结果（如 CI 轮询、构建、'
-    '测试、部署）。如果进程有 session id，在 ``wait_on_session`` 中返回——它会在进程退出'
-    '或 watch_patterns 触发时释放。否则在 ``wait_on_pid`` 中返回其 pid（仅在退出时释放）。\n'
-    '- agent 表示自己被限速/退避/必须等待固定时间——在 ``wait_for_seconds`` 中返回秒数。\n'
-    '选择 WAIT 会暂停循环而不消耗一轮；当 pid 退出或时间到达时自动恢复。'
-    '不要仅仅因为还有工作要做就选 WAIT——只有当现在重新推进纯粹是白忙活时才选。\n\n'
-    '=== 判定为 CONTINUE 的情况（出现任意一条即判定未完成） ===\n'
-    '1. agent 说「需要用户确认」「需要用户输入」「请用户决定」——'
-    '除非明确涉及不可逆操作，否则 agent 应自主决策，不应停工等待。\n'
-    '2. agent 说「遇到阻塞」，但该阻塞可通过技术手段自行解决（查文档、换方案、重试、读配置等）。\n'
-    '3. agent 做了一部分工作但还有未完成的子任务或待验证的步骤。\n'
-    '4. agent 给出了方案或计划但没有实际执行——描述不等于完成。\n'
-    '5. agent 声称完成但未提供具体可验证的证据。\n'
-    '6. agent 在响应末尾说「等待用户指示」「请用户确认」等放弃继续的信号。\n\n'
-    '=== 特殊情况 ===\n'
-    '唯一因「阻塞」判定为 DONE 的场景：agent 遇到真正的不可逆操作'
-    '（如 DROP TABLE、TRUNCATE、删除生产数据、git push --force、ALTER TABLE 删列），'
-    '明确列出具体操作内容、影响范围，并等待用户批准。'
-    '除此之外，所有「阻塞」都应判定为 CONTINUE。\n\n'
-    '只回复一行 JSON，不要输出任何其他内容。格式：\n'
-    '{"verdict": "done", "reason": "<一句话理由>"}\n'
-    '{"verdict": "continue", "reason": "<一句话理由>"}\n'
-    '{"verdict": "wait", "wait_on_session": "<id>", "reason": "<一句话理由>"}\n'
-    '{"verdict": "wait", "wait_on_pid": <int>, "reason": "<一句话理由>"}\n'
-    '{"verdict": "wait", "wait_for_seconds": <int>, "reason": "<一句话理由>"}\n'
-    '旧格式 {"done": <true|false>, "reason": "..."} 仍然兼容（true=done, false=continue）。'
+    "You are a strict judge evaluating whether an autonomous agent has "
+    "achieved a user's stated goal. You receive the goal text, the agent's "
+    "most recent response, and — when present — a list of background "
+    "processes the agent has running. Decide one of three verdicts.\n\n"
+    "DONE — the goal is fully satisfied:\n"
+    "- The response explicitly confirms the goal was completed, OR\n"
+    "- The response clearly shows the final deliverable was produced, OR\n"
+    "- The response explains the goal is unachievable / blocked / needs "
+    "user input (treat this as DONE with reason describing the block).\n\n"
+    "WAIT — the goal is NOT done, but the next step is to wait for async "
+    "work to finish rather than act again. Choose this ONLY when the agent's "
+    "progress is genuinely gated on something running on its own:\n"
+    "- A background process listed below is still running AND the response "
+    "shows the agent is waiting on its result (e.g. a CI poller, build, "
+    "test run, deploy). If the process has a session id, return it in "
+    "``wait_on_session`` — that releases when the process exits OR its "
+    "watch_patterns trigger fires (use this for a long-lived watcher that "
+    "signals mid-run and may never exit). Otherwise return its pid in "
+    "``wait_on_pid`` (releases on exit only).\n"
+    "- The agent says it is rate-limited / backing off / must wait a fixed "
+    "period — return seconds in ``wait_for_seconds``.\n"
+    "Picking WAIT parks the loop without burning a turn; it resumes "
+    "automatically when the pid exits or the time elapses. Do NOT pick WAIT "
+    "just because work remains — only when re-poking now would be pure "
+    "busy-work because the agent can't progress until the async thing "
+    "finishes.\n\n"
+    "CONTINUE — not done, and there is a concrete next step the agent can "
+    "take right now. This is the default when in doubt.\n\n"
+    "Reply ONLY with a single JSON object on one line. Shapes:\n"
+    '{"verdict": "done", "reason": "<one sentence>"}\n'
+    '{"verdict": "continue", "reason": "<one sentence>"}\n'
+    '{"verdict": "wait", "wait_on_session": "<id>", "reason": "<one sentence>"}\n'
+    '{"verdict": "wait", "wait_on_pid": <int>, "reason": "<one sentence>"}\n'
+    '{"verdict": "wait", "wait_for_seconds": <int>, "reason": "<one sentence>"}\n'
+    "The legacy shape {\"done\": <true|false>, \"reason\": \"...\"} is still "
+    "accepted (true=done, false=continue)."
 )
 
 
@@ -240,30 +153,37 @@ JUDGE_SYSTEM_PROMPT = (
 # running. Gives the judge the context it needs to decide WAIT vs CONTINUE
 # (and which pid to wait on) without it having to probe anything itself.
 JUDGE_BACKGROUND_BLOCK_TEMPLATE = (
-    "Agent 当前运行的后台进程（可能在等待其中某一个）:\n{background_lines}\n\n"
+    "Background processes the agent currently has running (it may be waiting "
+    "on one of these):\n{background_lines}\n\n"
 )
 
 
 JUDGE_USER_PROMPT_TEMPLATE = (
-    "目标:\n{goal}\n\n"
-    "Agent 最新响应:\n{response}\n\n"
+    "Goal:\n{goal}\n\n"
+    "Agent's most recent response:\n{response}\n\n"
     "{background_block}"
-    "当前时间: {current_time}\n\n"
-    "目标是否已完成 — done、continue 还是 wait？"
+    "Current time: {current_time}\n\n"
+    "Is the goal satisfied — done, continue, or wait?"
 )
 
 # Used when the user has added /subgoal criteria. The judge must
 # evaluate ALL of them being met, not just the original goal.
 JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
-    "目标:\n{goal}\n\n"
-    "用户追加的验收标准（全部满足才算 DONE）:\n{subgoals_block}\n\n"
-    "Agent 最新响应:\n{response}\n\n"
+    "Goal:\n{goal}\n\n"
+    "Additional criteria the user added mid-loop (all must also be "
+    "satisfied for the goal to be DONE):\n{subgoals_block}\n\n"
+    "Agent's most recent response:\n{response}\n\n"
     "{background_block}"
-    "当前时间: {current_time}\n\n"
-    "逐条检查：在响应中找到每条验收标准的具体满足证据（文件内容、命令输出、"
-    "测试结果等），不接受「所有要求已满足」「看起来完成了」等笼统说法。"
-    "如果任意一条标准缺少具体证据，判定为 CONTINUE（如果被后台进程阻塞则判 WAIT）。\n\n"
-    "目标与所有验收标准是否全部完成 — done、continue 还是 wait？"
+    "Current time: {current_time}\n\n"
+    "Decision: For each numbered criterion above, find concrete "
+    "evidence in the agent's response that the criterion is "
+    "satisfied. Do not accept generic phrases like 'all requirements "
+    "met' or 'implying it was done' — require specific evidence (a "
+    "file contents excerpt, an output line, a command result). If "
+    "ANY criterion lacks specific evidence in the response, the goal "
+    "is NOT done — return CONTINUE (or WAIT if blocked on a listed "
+    "background process).\n\n"
+    "Is the goal AND every additional criterion satisfied?"
 )
 
 
@@ -271,22 +191,27 @@ JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
 # decides DONE strictly against the Verification criterion and refuses to
 # accept completion when a constraint was violated.
 JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE = (
-    "目标:\n{goal}\n\n"
-    "完成合同（done 的权威定义）:\n"
+    "Goal:\n{goal}\n\n"
+    "Completion contract (the authoritative definition of done):\n"
     "{contract_block}\n\n"
-    "Agent 最新响应:\n{response}\n\n"
+    "Agent's most recent response:\n{response}\n\n"
     "{background_block}"
-    "当前时间: {current_time}\n\n"
-    "判定规则:\n"
-    "- 仅当验证条件满足且响应中有具体证据（命令结果、文件内容、测试/基准输出）时，"
-    "目标才算 DONE——不接受「已完成」「所有测试通过」等空洞声明。\n"
-    "- 如果违反了任何约束条件，目标未完成 — CONTINUE。\n"
-    "- 如果 agent 正在等待后台进程完成验证（如 CI 仍在运行），返回 WAIT——"
-    "现在重新推进只会白忙活。\n"
-    "- 如果响应表明工作受阻/无法完成/需要用户输入（如触发了停止条件），"
-    "判定为 DONE 并说明阻塞原因。\n"
-    "- 否则目标未完成 — CONTINUE。\n\n"
-    "根据完成合同，目标是否已完成 — done、continue 还是 wait？"
+    "Current time: {current_time}\n\n"
+    "Decision rules:\n"
+    "- The goal is DONE only when the Verification criterion is satisfied AND "
+    "the response shows concrete evidence of it (a command result, file "
+    "contents excerpt, test/benchmark output) — not a claim like 'done' or "
+    "'all tests pass' without evidence.\n"
+    "- If any stated Constraint was violated, the goal is NOT done — CONTINUE.\n"
+    "- If the response shows the agent is waiting on a listed background "
+    "process to satisfy the Verification criterion (e.g. CI is the "
+    "verification and it's still running), return WAIT on that process "
+    "instead of re-poking — re-poking now would be pure busy-work.\n"
+    "- If the response explains the work is blocked / unachievable / needs "
+    "user input (e.g. the stated Stop condition was hit), treat it as DONE "
+    "with the reason describing the block.\n"
+    "- Otherwise the goal is NOT done — CONTINUE.\n\n"
+    "Is the goal satisfied per its completion contract — done, continue, or wait?"
 )
 
 
@@ -508,7 +433,6 @@ class GoalState:
     # constraints / boundaries / stop_when). Empty by default; a goal with
     # no contract behaves exactly like the original free-form goal.
     contract: GoalContract = field(default_factory=GoalContract)
-    ontox_mode: bool = False  # /goal-ontox 模式——注入 OntoX 生态约束
 
     def to_json(self) -> str:
         data = asdict(self)
@@ -540,7 +464,6 @@ class GoalState:
             waiting_reason=data.get("waiting_reason"),
             waiting_since=float(data.get("waiting_since", 0.0) or 0.0),
             contract=GoalContract.from_dict(data.get("contract")),
-            ontox_mode=bool(data.get("ontox_mode", False)),
         )
 
     # --- contract helpers -------------------------------------------------
@@ -910,166 +833,6 @@ def _render_background_block(background_processes: Optional[List[Dict[str, Any]]
     return JUDGE_BACKGROUND_BLOCK_TEMPLATE.format(background_lines="\n".join(lines))
 
 
-def _pre_judge_confidence(last_response: str, *, cwd: str = "") -> Tuple[bool, str, bool]:
-    """扫描 Agent 响应 + 独立执行验证，返回 (可信任, 原因, 硬阻断)。
-
-    在调 Judge LLM 之前用纯文本规则+文件系统+命令重放验证。
-    不依赖模型判断力。检测六类虚假声明。
-
-    返回值:
-      (True, "", False)   — 可信任，放行
-      (False, reason, False) — 可疑，注入警告到 Judge prompt（advisory）
-      (False, reason, True)  — 硬证据造假，直接 CONTINUE 不调 Judge
-    """
-
-    check_count = last_response.count('\u2705')  # ✅
-
-    has_cmd_output = bool(re.search(  # noqa: 多模式正则匹配验证证据，工具本质需要
-        r'(curl\s+\S+|grep\s|npm\s+test|pytest|docker\s+exec|HTTP/\d|exit.*code|'
-        r'rows?\s+\d+|FAILED|PASSED|Traceback|Error:.*\n|'
-        r'pip\s+install|python3\s+\S+\.py|'
-        r'\d+\s*(?:阻断|警告|error|fail|warn))',
-        last_response
-    ))
-    has_actual_data = bool(re.search(  # noqa: 多模式正则匹配验证证据，工具本质需要
-        r'(http_status|status_code|elapsed|response\.json|'
-        r'"score"\s*:\s*\d+|"passed"\s*:\s*(?:true|false)|'
-        r'output_text|output_url|task_id.*qfwy|'
-        r'真实执行|加权平均|统计|命中率)',
-        last_response
-    ))
-    has_detail_list = bool(re.search(  # noqa: Pre-Judge 多模式列表标记匹配，验证引擎本质需要
-        r'(\n\s*[✓✔✗✘●○◆◇▪▸►]\s|'
-        r'\n\s*[-*]\s|'
-        r'\n\s*\d+[.)]\s)',
-        last_response
-    ))
-
-    # 1. 全 ✅ 标记但无命令输出 (advisory)
-    if check_count > 3 and not has_cmd_output and not has_actual_data:
-        return False, (
-            f"响应含 {check_count} 个 ✅ 标记但无命令输出或实际数据——疑似未验证声明"
-        ), False
-
-    # 2. 检测 "全绿""全部通过""所有测试通过" 但无测试输出片段 (advisory)
-    blanket_patterns = [r'全绿', r'全部通过', r'所有测试.*通过', r'all.*pass']
-    for pat in blanket_patterns:
-        if re.search(pat, last_response, re.IGNORECASE):  # noqa: 动态模式列表匹配，验证引擎本质需要
-            if not has_cmd_output and check_count >= 1:
-                return False, '响应声称「全绿/全部通过」但无测试输出片段——证据不足', False
-
-    # 3. 检测 "N/N 通过" 等数字声明（N>=3）但无详细列表 (advisory)
-    fraction_match = re.search(  # noqa: Pre-Judge N/N 数字声明提取，验证引擎本质需要
-        r'\b(\d+)/(\d+)\s*(?:通过|成功|pass|ok)\b', last_response, re.IGNORECASE
-    )
-    if fraction_match:
-        numer = int(fraction_match.group(1))
-        if numer >= 3 and not has_detail_list:
-            return False, (
-                f"响应声称「{fraction_match.group()}」但无逐项详细列表——"
-                f"疑似笼统总结"
-            ), False
-
-    # 4. 声称生成文件但实际不存在 (硬阻断——独立验证)
-    claimed_files = _extract_claimed_files(last_response)
-    for fpath in claimed_files:
-        if not os.path.exists(fpath):
-            return False, f"声称生成的文件不存在: {fpath}", True
-
-    # 5. "validate/test/run 通过" 但无对应工具输出 (advisory)
-    tool_claim_patterns = [
-        (r'validate\s*通过|validate\s*pass', 'validate'),
-        (r'test\S*\s*通过|test\S*\s*pass|测试\s*通过', 'test'),
-        (r'run\s*成功|run\s*succe|跑通|流程.*完成', 'run'),
-        (r'编译\s*通过|compile\s*pass', 'compile'),
-    ]
-    for pattern, tool_name in tool_claim_patterns:
-        m = re.search(pattern, last_response, re.IGNORECASE)  # noqa: 动态模式列表匹配，验证引擎本质需要
-        if m and not has_cmd_output:
-            return False, (
-                f"响应声称「{tool_name} 通过」但无实际命令输出或量化的统计数据——"
-                f"疑似口头确认"
-            ), False
-
-    # 6. 命令重放验证 (硬阻断——独立执行)
-    cmd_mismatches = _verify_claimed_commands(last_response, cwd=cwd)
-    if cmd_mismatches:
-        return False, cmd_mismatches, True
-
-    return True, "", False
-
-
-def _verify_claimed_commands(text: str, *, cwd: str = "") -> str:
-    """独立执行 Agent 声称运行过的命令，对比真实 exit code。
-
-    不是看 Agent 回复中有没有'exit code: 0'这几个字，
-    而是真的重新跑一遍命令，对比实际 exit code 是否为 0。
-
-    cwd: 命令执行的工作目录。默认当前目录。
-    """
-    commands = _extract_executed_commands(text)
-    if not commands:
-        return ""
-
-    mismatches = []
-    for cmd in commands[:2]:  # 最多验证 2 个命令
-        try:
-            r = subprocess.run(
-                cmd, shell=True, capture_output=True,
-                timeout=5, text=True, cwd=cwd or None,  # 5s 超时
-            )
-            if r.returncode != 0:
-                stderr_tail = r.stderr[-200:] if r.stderr else "(无stderr)"
-                mismatches.append(
-                    f"声称通过的「{cmd}」实际 exit={r.returncode}: {stderr_tail[:120]}"
-                )
-        except subprocess.TimeoutExpired:
-            logger.warning("命令重放超时(5s): %s", cmd)
-        except OSError:
-            logger.warning("命令不可执行: %s", cmd)
-
-    if mismatches:
-        return "命令重放验证失败: " + "; ".join(mismatches)
-    return ""
-
-
-def _extract_executed_commands(text: str) -> list:
-    """从 Agent 回复中提取可重放执行的具体命令行"""
-    commands = []
-    cmd_patterns = [
-        r'(loom\s+(?:validate|run)\s+[\w./-]+(?:\.yaml)?)',
-        r'(pytest\s+[\w./-]+)',
-        r'(npm\s+(?:run|test|build)\s+[\w-]*)',
-        r'(pip\s+install\s+[\w\[\].-]+)',
-        r'(python3?\s+(?:-m\s+)?[\w./-]+\.py[\w\s./-]*)',
-        r'(make\s+[\w-]+)',
-        r'(go\s+(?:test|build|run)\s+[\w./-]*)',
-        r'(cargo\s+(?:test|build|check)\s*)',
-        r'(docker\s+(?:build|compose)\s+[\w./-]*)',
-    ]
-    for pat in cmd_patterns:
-        for m in re.finditer(pat, text):  # noqa: 命令行模式提取，验证引擎本质需要
-            cmd = m.group(1).strip()
-            if len(cmd) >= 8:  # 过滤太短的误匹配（如 "go run" 6字符）
-                commands.append(cmd)
-    return list(dict.fromkeys(commands))  # 去重保序
-
-
-def _extract_claimed_files(text: str) -> list:
-    """从 Agent 响应中提取声称生成/写入的绝对文件路径"""
-    claimed = []
-    patterns = [
-        r'(?:生成到|生成在|生成|写入到|写入|创建|输出到|保存到|保存在|saved\s+to|wrote\s+to|written\s+to)\s+[\'"`]?([/\w.-]+\.\w+)[\'\"`]?',
-        r'文件[：:]\s*[\'"`]?([/\w.-]+\.\w+)',
-    ]
-    for pat in patterns:
-        for m in re.finditer(pat, text):  # noqa: 文件路径提取，验证引擎本质需要
-            path = m.group(1)
-            if path.startswith('/') and '.' in path.rsplit('/', 1)[-1]:
-                claimed.append(path)
-    return list(set(claimed))
-
-
 def judge_goal(
     goal: str,
     last_response: str,
@@ -1078,7 +841,6 @@ def judge_goal(
     subgoals: Optional[List[str]] = None,
     background_processes: Optional[List[Dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
-    ontox_mode: bool = False,
 ) -> Tuple[str, str, bool, Optional[Dict[str, Any]]]:
     """Ask the auxiliary model whether the goal is satisfied.
 
@@ -1116,41 +878,10 @@ def judge_goal(
         return "continue", "empty response (nothing to evaluate)", False, None
 
     try:
-        from agent.auxiliary_client import get_auxiliary_extra_body, get_text_auxiliary_client
+        from agent.auxiliary_client import call_llm
     except Exception as exc:
         logger.debug("goal judge: auxiliary client import failed: %s", exc)
         return "continue", "auxiliary client unavailable", False, None
-
-    try:
-        client, model = get_text_auxiliary_client("goal_judge")
-    except Exception as exc:
-        logger.debug("goal judge: get_text_auxiliary_client failed: %s", exc)
-        return "continue", "auxiliary client unavailable", False, None
-
-    if client is None or not model:
-        return "continue", "no auxiliary client configured", False, None
-
-    # Maker≠Grader 自动保护：主模型与 Judge 同厂商时，尝试切到 cross-review 厂商
-    try:
-        from agent.config_loader import get_active_model_config
-        main_cfg = get_active_model_config()
-        main_provider = (main_cfg.get("provider") or "").lower() if main_cfg else ""
-        judge_provider = ""
-        try:
-            from hermes_config.runtime import get_config_snapshot
-            snap = get_config_snapshot()
-            aux = snap.get("auxiliary", {})
-            judge_provider = (aux.get("goal_judge", {}).get("provider", "") or "").lower()
-        except Exception as _e:
-            logger.warning("goal: judge provider check failed: %s", _e, exc_info=True)
-        if main_provider and judge_provider and main_provider == judge_provider:
-            logger.warning(
-                "Maker=Grader violation: main(%s) == judge(%s). "
-                "Consider /model to a different provider or set goal_judge.provider differently.",
-                main_provider, judge_provider
-            )
-    except Exception as _e:
-        logger.warning("goal: Maker!=Grader check failed: %s", _e, exc_info=True)
 
     # Build the prompt. Priority: contract > subgoals > plain. When both a
     # contract and subgoals exist, the subgoals are appended into the
@@ -1160,92 +891,6 @@ def judge_goal(
     background_block = _render_background_block(background_processes)
     current_time = datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
-    # ═══ 验证管道（在 Judge 之前运行） ═══
-    # 所有 /goal 项目：BUILD + TEST + E2E（确定性门控）
-    # OntoX 项目额外：COMPLIANCE + CROSS-REVIEW
-    pipeline_evidence = ""
-    project_root_for_build = os.getcwd()
-
-    # 1. 尝试加载 ontox 管道模块并发现在项目配置（对所有项目生效）
-    _ensure_ontox_imports()  # 不抛异常——加载失败跳过
-    if _ontox_imported:
-        try:
-            from ontox_verification_pipeline import (
-                run_verification_pipeline, _auto_detect_project, _gate_build, _gate_test,
-            )
-
-            project_config = _auto_detect_project(goal, os.getcwd())
-            if project_config:
-                project_root_for_build = project_config.get("root", project_root_for_build)
-
-                # 2. BUILD gate（所有项目）
-                bg = _gate_build(project_config)
-                if not bg.passed:
-                    return ("continue",
-                            f"BUILD 失败: {bg.error or bg.output}", False, None)
-
-                # 3. TEST gate（所有项目——如果有配置）
-                tg = _gate_test(project_config)
-                if not tg.passed:
-                    return ("continue",
-                            f"TEST 失败: {tg.error or tg.output}", False, None)
-
-                pipeline_evidence = f"BUILD: {bg.summary()}\nTEST: {tg.summary()}"
-
-        except Exception as e:
-            logger.warning("通用验证管道错误(fail-open): %s", e, exc_info=True)
-
-    # 4. OntoX 专用：完整管道（BUILD+TEST+E2E+COMPLIANCE+CROSS-REVIEW）
-    if ontox_mode and contract is not None and not contract.is_empty():
-        try:
-            if _ontox_imported:
-                from ontox_verification_pipeline import (
-                    run_verification_pipeline, _auto_detect_project,
-                )
-
-                # 自动获取 git diff 作为 COMPLIANCE 扫描文本（根因修复：不扫自然语言）
-                git_diff_text = ""
-                try:
-                    git_diff_text = subprocess.check_output(
-                        ["git", "diff", "--no-color"], cwd=os.getcwd(),
-                        stderr=subprocess.DEVNULL, timeout=10, text=True,
-                    )
-                except Exception:
-                    logger.warning("获取 git diff 失败，非 git 目录正常")
-
-                # 自动检测项目配置（不依赖 pipeline_projects.yaml 手工维护）
-                project_config = _auto_detect_project(goal, os.getcwd())
-
-                pipeline = run_verification_pipeline(
-                    agent_response=last_response,
-                    goal=goal,
-                    contract_verification=contract.verification,
-                    project=project_config,
-                    compliance_mode="git_diff",
-                    compliance_text=git_diff_text,
-                    enable_cross_review=False,  # 默认关闭交叉审查，避免额外 API 调用
-                    enable_build_test=False,     # 已在通用管道中跑过
-                    enable_e2e=True,
-                )
-                if not pipeline.all_passed:
-                    logger.warning(
-                        "OntoX pipeline FAILED (%d/%d gates): %s",
-                        pipeline.passed_count, len(pipeline.gates),
-                        [g.name for g in pipeline.failed_gates]
-                    )
-                    return (
-                        "continue",
-                        f"验证管道失败 ({pipeline.passed_count}/{len(pipeline.gates)}): "
-                        + "; ".join(g.name for g in pipeline.failed_gates),
-                        False, None
-                    )
-                # 合并通用管道 + OntoX 管道证据
-                pipeline_evidence = pipeline_evidence + "\n" + pipeline.evidence if pipeline_evidence else pipeline.evidence
-                logger.info("OntoX pipeline PASSED: %d/%d gates",
-                           pipeline.passed_count, len(pipeline.gates))
-        except Exception as e:
-            logger.warning("OntoX pipeline error (fail-open): %s", e, exc_info=True)
-
     if contract is not None and not contract.is_empty():
         contract_block = contract.render_block()
         if clean_subgoals:
@@ -1254,9 +899,6 @@ def judge_goal(
                 for i, text in enumerate(clean_subgoals, start=1)
             )
             contract_block = f"{contract_block}\n{extra}"
-        # 如果管道通过，附加证据到 judge prompt
-        if pipeline_evidence:
-            contract_block = f"{contract_block}\n\n验证管道结果:\n{pipeline_evidence}"
         prompt = JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE.format(
             goal=_truncate(goal, 2000),
             contract_block=_truncate(contract_block, 2500),
@@ -1283,31 +925,12 @@ def judge_goal(
             current_time=current_time,
         )
 
-    # 预判 Agent 响应证据质量，低置信度时在 prompt 中注入警告
-    # 不依赖 Judge 模型判断力——代码层直接扫描文本模式 + 命令重放验证
-    # 提取项目根目录用于命令重放（优先用 ontox 自动检测的 root）
-    project_root = os.getcwd()
     try:
-        from ontox_verification_pipeline import _auto_detect_project
-        cfg = _auto_detect_project(goal, project_root)
-        if cfg and cfg.get("root"):
-            project_root = cfg["root"]
-    except Exception as e:
-        logger.warning("_auto_detect_project 失败，回退到 cwd", exc_info=True)
-
-    has_evidence, evidence_note, hard_block = _pre_judge_confidence(last_response, cwd=project_root)
-    if hard_block:
-        # 文件不存在或命令重放失败——硬证据造假，直接 CONTINUE 不调 Judge
-        return ("continue", f"硬证据验证失败: {evidence_note}", False, None)
-    if not has_evidence:
-        prompt += (
-            f"\n\n⚠️ 预检警告：Agent 响应的证据质量可疑——{evidence_note}。"
-            "请严格审查，优先判定为 CONTINUE。"
-        )
-
-    try:
-        resp = client.chat.completions.create(
-            model=model,
+        # Route through call_llm so auxiliary.goal_judge.* config
+        # (provider/model/base_url, extra_body, reasoning_effort, retries)
+        # all apply — the direct-create path dropped extra_body (#35566).
+        resp = call_llm(
+            task="goal_judge",
             messages=[
                 {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
@@ -1315,7 +938,6 @@ def judge_goal(
             temperature=0,
             max_tokens=_goal_judge_max_tokens(),
             timeout=timeout,
-            extra_body=get_auxiliary_extra_body() or None,
         )
     except Exception as exc:
         logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
@@ -1370,23 +992,15 @@ def draft_contract(objective: str, *, timeout: float = DEFAULT_JUDGE_TIMEOUT) ->
         return None
 
     try:
-        from agent.auxiliary_client import get_auxiliary_extra_body, get_text_auxiliary_client
+        from agent.auxiliary_client import call_llm
     except Exception as exc:
         logger.debug("goal draft: auxiliary client import failed: %s", exc)
         return None
 
     try:
-        client, model = get_text_auxiliary_client("goal_judge")
-    except Exception as exc:
-        logger.debug("goal draft: get_text_auxiliary_client failed: %s", exc)
-        return None
-
-    if client is None or not model:
-        return None
-
-    try:
-        resp = client.chat.completions.create(
-            model=model,
+        # Route through call_llm — same #35566 fix as the judge call above.
+        resp = call_llm(
+            task="goal_judge",
             messages=[
                 {"role": "system", "content": DRAFT_CONTRACT_SYSTEM_PROMPT},
                 {"role": "user", "content": f"Objective:\n{_truncate(objective, 4000)}"},
@@ -1394,7 +1008,6 @@ def draft_contract(objective: str, *, timeout: float = DEFAULT_JUDGE_TIMEOUT) ->
             temperature=0,
             max_tokens=_goal_judge_max_tokens(),
             timeout=timeout,
-            extra_body=get_auxiliary_extra_body() or None,
         )
     except Exception as exc:
         logger.info("goal draft: API call failed (%s)", exc)
@@ -1443,34 +1056,6 @@ def _extract_json_object(raw: str) -> Optional[Dict[str, Any]]:
 # ──────────────────────────────────────────────────────────────────────
 # GoalManager — the orchestration surface CLI + gateway talk to
 # ──────────────────────────────────────────────────────────────────────
-
-
-def _ensure_ontox_imports():
-    """延迟导入 OntoX 模块——只在 /goal-ontox 使用时加载"""
-    global _ontox_imported, _ontox_draft_contract, _ontox_preflight_check, _ontox_get_ecosystem
-    if _ontox_imported:
-        return True
-    try:
-        ontox_refs = os.path.expanduser(
-            "~/.hermes/skills/autonomous-ai-agents/hermes-agent/references"
-        )
-        # 加入 references 目录自身（直接 import 文件名）
-        if ontox_refs not in sys.path:
-            sys.path.insert(0, ontox_refs)
-        # 也加入父目录（支持 from references.xxx import 格式）
-        ontox_parent = os.path.dirname(ontox_refs)
-        if ontox_parent not in sys.path:
-            sys.path.insert(0, ontox_parent)
-        from ontox_capability_registry import get_ecosystem as _ge
-        from ontox_contract_drafter import draft_contract as _dc, preflight_check as _pc
-        _ontox_get_ecosystem = _ge
-        _ontox_draft_contract = _dc
-        _ontox_preflight_check = _pc
-        _ontox_imported = True
-        return True
-    except ImportError as e:
-        logger.warning("OntoX imports failed: %s — ontox_mode degraded to static boundary", e)
-        return False
 
 
 class GoalManager:
@@ -1543,14 +1128,6 @@ class GoalManager:
         goal = (goal or "").strip()
         if not goal:
             raise ValueError("goal text is empty")
-        # 自动检测 OntoX 标记 → 激活生态约束模式
-        # 支持: [ontox] / ontox: / @ontox / 【ontox】
-        ontox_mode = False
-        for prefix in ("[ontox]", "[OntoX]", "ontox:", "@ontox", "【ontox】"):
-            if goal.lower().startswith(prefix.lower()):
-                ontox_mode = True
-                goal = goal[len(prefix):].strip()
-                break
         state = GoalState(
             goal=goal,
             status="active",
@@ -1559,64 +1136,10 @@ class GoalManager:
             created_at=time.time(),
             last_turn_at=0.0,
             contract=contract if contract is not None else GoalContract(),
-            ontox_mode=ontox_mode,
         )
-        # [ontox] 前缀激活时，如果未显式传入 contract，自动起草合同
-        if ontox_mode and (contract is None or contract.is_empty()):
-            if _ensure_ontox_imports() and _ontox_draft_contract:
-                try:
-                    eco = _ontox_get_ecosystem()
-                    draft = _ontox_draft_contract(goal, eco=eco)
-                    state.contract = GoalContract(
-                        outcome=draft.get("outcome", ""),
-                        verification=draft.get("verification", ""),
-                        constraints=draft.get("constraints", ""),
-                        boundaries=draft.get("boundaries", ""),
-                        stop_when=draft.get("stop_when", ""),
-                    )
-                except Exception as e:
-                    logger.warning("OntoX auto-contract draft failed: %s", e, exc_info=True)
         self._state = state
         save_goal(self.session_id, state)
         return state
-
-    def set_ontox(self, goal: str, *, max_turns: Optional[int] = None) -> GoalState:
-        """Set a goal with OntoX ecosystem constraints enabled.
-
-        Automatically drafts a GoalContract by analyzing the goal against
-        the OntoX capability registry, generating concrete verification
-        commands. If contract drafting fails, falls back to static boundary.
-        """
-        # 尝试智能起草合同
-        contract = GoalContract()
-        preflight_result = None
-        if _ensure_ontox_imports() and _ontox_draft_contract:
-            try:
-                eco = _ontox_get_ecosystem()
-                preflight_result = _ontox_preflight_check(goal, eco=eco)
-                draft = _ontox_draft_contract(goal, eco=eco)
-                contract = GoalContract(
-                    outcome=draft.get("outcome", ""),
-                    verification=draft.get("verification", ""),
-                    constraints=draft.get("constraints", ""),
-                    boundaries=draft.get("boundaries", ""),
-                    stop_when=draft.get("stop_when", ""),
-                )
-                if draft.get("warnings"):
-                    logger.info("OntoX contract warnings: %s", draft["warnings"])
-            except Exception as e:
-                logger.warning("OntoX contract draft failed: %s", e, exc_info=True)
-
-        state = self.set(goal, max_turns=max_turns, contract=contract)
-        state.ontox_mode = True
-        save_goal(self.session_id, state)
-        return state
-
-    def ontox_preflight(self, goal: str) -> Optional[dict]:
-        """运行预检——分析目标能否通过 OntoX 实现"""
-        if _ensure_ontox_imports() and _ontox_preflight_check:
-            return _ontox_preflight_check(goal)
-        return None
 
     def set_contract(self, contract: GoalContract) -> Optional[GoalState]:
         """Attach or replace the completion contract on the active goal.
@@ -1908,7 +1431,6 @@ class GoalManager:
             subgoals=state.subgoals or None,
             background_processes=background_processes,
             contract=state.contract if state.has_contract() else None,
-            ontox_mode=state.ontox_mode,
         )
         state.last_verdict = verdict
         state.last_reason = reason
@@ -2022,39 +1544,6 @@ class GoalManager:
         # Contract takes priority: it carries the verification surface and
         # constraints the agent must target. Subgoals fold in as extra
         # criteria appended to the contract block.
-        if self._state.ontox_mode:
-            # OntoX 模式：智能合同优先，静态边界降级
-            if self._state.has_contract():
-                contract_block = self._state.contract.render_block()
-                # 附加能力注册表摘要
-                if _ensure_ontox_imports() and _ontox_get_ecosystem:
-                    try:
-                        eco = _ontox_get_ecosystem()
-                        running = [s.name for s in eco.services if s.running]
-                        contract_block += (
-                            f"\\n当前运行服务: {', '.join(running) if running else '仅PG+Redis'}"
-                        )
-                    except Exception as _e:
-                        logger.warning("goal: running services detection failed: %s", _e, exc_info=True)
-                if self._state.subgoals:
-                    extra = "\\n".join(
-                        f"- Extra criterion {i}: {text}"
-                        for i, text in enumerate(self._state.subgoals, start=1)
-                    )
-                    contract_block = f"{contract_block}\\n{extra}"
-                return CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE.format(
-                    goal=self._state.goal,
-                    contract_block=contract_block,
-                )
-            # 降级：用静态边界
-            ontox_goal = f"{self._state.goal}\\n\\n{ONTOX_ECOSYSTEM_BOUNDARY}"
-            if self._state.subgoals:
-                return CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
-                    goal=ontox_goal,
-                    subgoals_block=self._state.render_subgoals_block(),
-                )
-            return CONTINUATION_PROMPT_TEMPLATE.format(goal=ontox_goal)
-
         if self._state.has_contract():
             contract_block = self._state.contract.render_block()
             if self._state.subgoals:

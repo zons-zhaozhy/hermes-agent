@@ -22,10 +22,24 @@ keep the exact logger name (``"agent.conversation_loop"``).
 
 from __future__ import annotations
 
-import json
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.message_content import flatten_message_text
+
+
+def _is_pure_tool_call_tail(msg: dict) -> bool:
+    """An assistant row with ``tool_calls`` but no visible text content of its own.
+
+    Such a row satisfies the role check (``tail role == "assistant"``) while
+    carrying none of the delivered answer — see the #43849/#44100 invariant
+    block in :func:`finalize_turn`. Uses :func:`flatten_message_text` so that
+    multimodal (list-type) content is evaluated by its text parts, not just
+    its type.
+    """
+    if not msg.get("tool_calls"):
+        return False
+    return not flatten_message_text(msg.get("content")).strip()
 
 
 def finalize_turn(
@@ -210,63 +224,58 @@ def finalize_turn(
             from agent.message_sanitization import close_interrupted_tool_sequence
             close_interrupted_tool_sequence(messages, final_response)
 
+        # Some recovery/fallback paths return a real final_response without
+        # adding a closing assistant message to the transcript (e.g. the
+        # partial-stream and prior-turn-content recovery ``break`` sites in
+        # ``conversation_loop``). If persisted as-is, the durable session can
+        # end at a tool/user message even though the caller — and the gateway
+        # platform — already saw a completed assistant response. The next turn
+        # then replays a user-only backlog and the model re-answers every
+        # "unanswered" message. Close the durable turn at the source, at the
+        # single chokepoint every recovery ``break`` flows through, so the
+        # invariant "delivered final_response ⇒ assistant row in transcript"
+        # holds regardless of which path produced it. (#43849 / #44100)
+        if final_response and not interrupted:
+            try:
+                _tail = messages[-1] if messages else None
+            except Exception:
+                _tail = None
+            _tail_role = _tail.get("role") if isinstance(_tail, dict) else None
+            if _tail_role != "assistant":
+                messages.append({"role": "assistant", "content": final_response})
+            elif isinstance(_tail, dict) and _is_pure_tool_call_tail(_tail):
+                # The tail IS an assistant row, but a *pure tool-call turn*:
+                # tool_calls with no text of its own. The role check alone
+                # leaves the #43849/#44100 invariant unmet — the user saw a
+                # response that never reached the transcript, and the next turn
+                # replays the user backlog and re-answers it (the very symptom
+                # this block was added for). Fill that row's empty content
+                # instead of appending, so the durable turn ends with the answer
+                # without disturbing the tool-call structure or creating an
+                # assistant→assistant pair.
+                _tail["content"] = final_response
+                # The row may have already been flushed to SQLite by the
+                # incremental tool-call persist (conversation_loop.py:4990),
+                # which stamps ``_DB_PERSISTED_MARKER`` so subsequent flushes
+                # skip it. Pop the marker so the next ``_persist_session``
+                # re-writes the filled content to the durable store —
+                # otherwise ``/resume`` reloads ``content=""`` and the bug
+                # resurfaces cross-session.
+                _tail.pop("_db_persisted", None)
+
+        # The model has completed its request, so replace API-local
+        # voice/model/skill guidance with the clean user input before writing the
+        # final durable snapshot and returning the continuation history. Earlier
+        # turn-start flushes use the DB-only override because their messages are
+        # still needed for the API request; this finalizer runs after that request
+        # is complete (#48677 / #63766).
+        _apply_override = getattr(agent, "_apply_persist_user_message_override", None)
+        if callable(_apply_override):
+            _apply_override(messages)
         agent._persist_session(messages, conversation_history)
     except Exception as _persist_err:
         _cleanup_errors.append(f"persist_session: {_persist_err}")
         logger.error("finalize_turn: _persist_session failed: %s", _persist_err, exc_info=True)
-
-    # ── Declare-done gate (core interaction paths) ──────────────────
-    # 确定性硬门控：改了核心交互路径文件（cli.py / run_agent.py / gateway/run.py
-    # / model_tools.py / toolsets.py）但本轮没有 terminal 工具调用 → 追加 ⚠️ footer。
-    # 不依赖 LLM，不破坏缓存（只追加到 final_response，不改 messages 历史）。
-    # 复刻 file-mutation verifier footer 模式（上方第 253 行）。
-    if final_response and not interrupted:
-        try:
-            _edited = getattr(agent, "_turn_file_mutation_paths", None) or set()
-            _CORE_PATHS = {
-                "cli.py", "run_agent.py", "model_tools.py", "toolsets.py",
-            }
-            _CORE_DIR_PREFIXES = ("gateway/run.py", "gateway/session.py")
-            _touched_core = any(
-                p.endswith(tuple(_CORE_PATHS))
-                or any(p.replace("\\", "/").endswith(d) for d in _CORE_DIR_PREFIXES)
-                for p in _edited
-            )
-            if _touched_core:
-                # 检查本轮是否有 terminal 工具调用
-                _has_terminal = False
-                for _m in messages:
-                    if _m.get("role") == "assistant" and _m.get("tool_calls"):
-                        for _tc in (_m["tool_calls"] if isinstance(_m["tool_calls"], list) else []):
-                            _name = ""
-                            if isinstance(_tc, dict):
-                                _name = _tc.get("function", {}).get("name", "")
-                            if _name in ("terminal", "run_command", "shell"):
-                                _has_terminal = True
-                                break
-                    if _has_terminal:
-                        break
-                if not _has_terminal:
-                    _core_files = sorted(
-                        p for p in _edited
-                        if p.endswith(tuple(_CORE_PATHS))
-                        or any(p.replace("\\", "/").endswith(d) for d in _CORE_DIR_PREFIXES)
-                    )
-                    _files_str = ", ".join(f"`{p}`" for p in _core_files[:3])
-                    _gate_footer = (
-                        "\n\n⚠️ **Declare-done gate**: 本轮修改了核心交互路径文件"
-                        f"（{_files_str}），但没有 terminal 工具调用。"
-                        " import 通过 ≠ 真实入口可用。请在真实环境实际执行一次"
-                        "（敲命令 / curl 路由 / 跑子命令），再声称完成。"
-                    )
-                    final_response = final_response.rstrip() + _gate_footer
-                    logger.warning(
-                        "declare-done gate triggered: core path files edited (%s) "
-                        "but no terminal calls this turn",
-                        _files_str,
-                    )
-        except Exception as _gate_err:
-            logger.warning("declare-done gate failed: %s", _gate_err, exc_info=True)
 
     # ── Turn-exit diagnostic log ─────────────────────────────────────
     # Always logged at INFO so agent.log captures WHY every turn ended.
@@ -484,6 +493,11 @@ def finalize_turn(
         "estimated_cost_usd": agent.session_estimated_cost_usd,
         "cost_status": agent.session_cost_status,
         "cost_source": agent.session_cost_source,
+        # Requested service tier (from request_overrides.extra_body), for
+        # billing audits by callers like `hermes -z --usage-file`.
+        "service_tier": (
+            (getattr(agent, "request_overrides", {}) or {}).get("extra_body") or {}
+        ).get("service_tier"),
         "session_id": agent.session_id,
     }
     if agent._tool_guardrail_halt_decision is not None:
@@ -538,61 +552,6 @@ def finalize_turn(
             )
         except Exception:
             pass  # Background review is best-effort
-
-    # ── Quality audit (every turn) ────────────────────────────────────
-    # Auxiliary-LLM evaluation of the assistant response.
-    # Runs in a daemon thread — non-blocking, best-effort, zero latency.
-    # Results written to ~/.hermes/state/quality_audit.jsonl.
-    # View at any time with /audit command.
-    if final_response and not interrupted:
-        try:
-            from agent.quality_auditor import fire_quality_audit
-            fire_quality_audit(
-                user_message=original_user_message,
-                assistant_response=final_response,
-                session_id=getattr(agent, 'session_id', '') or '',
-                model=getattr(agent, 'model', '') or '',
-                tool_call_count=api_call_count,
-                tool_names=list(getattr(agent, 'valid_tool_names', []) or []),
-            )
-        except Exception as _audit_err:
-            logger.warning("Quality audit failed: %s", _audit_err, exc_info=True)
-
-    # ── Session quality summary ──────────────────────────────────────
-    # Lightweight quality feedback stored as session meta.  The review
-    # fork (above) updates skills; this stores a compact outcome signal
-    # that future sessions can retrieve via session_search to see "last
-    # time I did X, it failed/succeeded".
-    try:
-        _session_db = getattr(agent, "_session_db", None)
-        if _session_db and agent.session_id:
-            # Read existing summary, merge in latest turn data.
-            _existing = _session_db.get_meta("_quality_summary")
-            _summary: dict = {}
-            if _existing:
-                try:
-                    _summary = json.loads(_existing)
-                except (json.JSONDecodeError, TypeError):
-                    _summary = {}
-            _summary["last_turn_completed"] = completed
-            _summary["last_turn_exit_reason"] = str(_turn_exit_reason)
-            _summary["last_turn_api_calls"] = api_call_count
-            _summary["last_turn_tool_turns"] = _turn_tool_count
-            _summary["last_turn_interrupted"] = interrupted
-            # Running totals
-            _prev_calls = _summary.get("total_api_calls", 0)
-            _prev_turns = _summary.get("total_tool_turns", 0)
-            _summary["total_api_calls"] = _prev_calls + api_call_count
-            _summary["total_tool_turns"] = _prev_turns + _turn_tool_count
-            _summary["total_turns"] = _summary.get("total_turns", 0) + 1
-            # Track consecutive failures
-            if completed:
-                _summary["consecutive_failures"] = 0
-            else:
-                _summary["consecutive_failures"] = _summary.get("consecutive_failures", 0) + 1
-            _session_db.set_meta("_quality_summary", json.dumps(_summary))
-    except Exception:
-        logger.warning("Failed to store quality summary", exc_info=True)
 
     # Note: Memory provider on_session_end() + shutdown_all() are NOT
     # called here — run_conversation() is called once per user message in
