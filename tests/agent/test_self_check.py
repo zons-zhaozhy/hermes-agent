@@ -71,13 +71,13 @@ class TestRuleFunctions:
         assert result is None
 
     def test_r05_write_without_read(self):
-        history = {"_all_read": set()}
+        history = {"_all_touched_before_update": set()}
         result = _r05_write_without_read("write_file", {"path": "/tmp/new.py"}, history)
         assert result is not None
         assert "尚未读取" in result or "read_file" in result
 
     def test_r05_no_match_already_read(self):
-        history = {"_all_read": {"/tmp/existing.py"}}
+        history = {"_all_touched_before_update": {"/tmp/existing.py"}}
         result = _r05_write_without_read("write_file", {"path": "/tmp/existing.py"}, history)
         assert result is None
 
@@ -639,3 +639,36 @@ class TestR14ResultIgnored:
         result = mgr.check_response("完成。")
         has_r14 = result and "[R14]" in result
         assert not has_r14
+
+
+# ── Self-audit: canary testing for all rules ──────────────────────
+
+
+class TestSelfAudit:
+    """audit() should verify every rule is alive via canary tests."""
+
+    def test_all_rules_alive(self):
+        mgr = SelfCheckManager()
+        report = mgr.audit()
+        assert report["broken"] == 0, (
+            "Broken rules detected: %s" % {
+                k: v for k, v in report["status"].items() if v != "alive"
+            }
+        )
+        assert report["alive"] == report["total"]
+        assert report["total"] >= 14  # at least 14 rules
+
+    def test_audit_detects_broken_rule(self):
+        """Simulate a broken rule by testing with empty canary."""
+        mgr = SelfCheckManager()
+        # Temporarily corrupt R07 patterns to simulate breakage
+        import agent.self_check as sc_mod
+        original = sc_mod._R07_SPECULATION_PATTERNS[:]
+        sc_mod._R07_SPECULATION_PATTERNS = [
+            (sc_mod.re.compile(r"THIS_WILL_NEVER_MATCH_ANYTHING"), "broken")
+        ]
+        try:
+            report = mgr.audit()
+            assert report["status"].get("R07") == "broken"
+        finally:
+            sc_mod._R07_SPECULATION_PATTERNS = original

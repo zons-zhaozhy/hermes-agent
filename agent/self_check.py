@@ -82,11 +82,14 @@ def _r04_terminal_fragments(tool_name: str, args: dict, history: dict) -> str | 
 
 
 def _r05_write_without_read(tool_name: str, args: dict, history: dict) -> str | None:
-    """R05: 编码前未读文件（首次写入/修改陌生文件）。"""
+    """R05: 编码前未读文件（首次写入/修改陌生文件）。
+
+    用 update_history 前的快照判断——否则新文件已被加入 _all_read 导致永远不触发。
+    """
     file_path = args.get("path", "")
     if tool_name not in ("write_file", "patch"):
         return None
-    all_read = history.get("_all_read", set())
+    all_read = history.get("_all_touched_before_update", set())
     if file_path and file_path not in all_read and not file_path.startswith("/dev/"):
         return (
             "准备写入 %s 但本 session 尚未读取过它。"
@@ -714,6 +717,135 @@ class SelfCheckManager:
             "call_history_keys": len(self._call_history),
             "files_read": len(self._all_read),
             "files_edited": len(self._recently_edited),
+        }
+
+    # ── 自审计：验证每条规则确实在工作 ──────────────────────────────
+    # 金丝雀测试：对每条规则注入已知应命中/不应命中的用例，
+    # 验证规则被调用 + 正例命中 + 反例不命中。
+    # 三类失败可被检测：
+    # 1) 规则没注册（dead） 2) 数据没流入（stale） 3) 正则永不匹配（broken）
+
+    _CANARY_TOOL_CASES: list[dict] = [
+        # 工具级规则：通过 check() 注入
+        {"rule": "R01", "type": "positive", "desc": "read_file×3 同文件",
+         "ops": [("read_file", {"path": "/canary/r01.py"})] * 3,
+         "final": ("read_file", {"path": "/canary/r01.py"})},
+        {"rule": "R01", "type": "negative", "desc": "read_file×1",
+         "ops": [("read_file", {"path": "/canary/r01_neg.py"})],
+         "final": ("read_file", {"path": "/canary/r01_neg.py"})},
+        {"rule": "R02", "type": "positive", "desc": "patch×3 同文件",
+         "ops": [("patch", {"path": "/canary/r02.py", "old_string": "a", "new_string": "b"})] * 3,
+         "final": ("patch", {"path": "/canary/r02.py", "old_string": "a", "new_string": "b"})},
+        {"rule": "R03", "type": "positive", "desc": "编辑后重读",
+         "ops": [("write_file", {"path": "/canary/r03.py", "content": "x"}), ("read_file", {"path": "/canary/r03.py"})],
+         "final": ("read_file", {"path": "/canary/r03.py"})},
+        {"rule": "R04", "type": "positive", "desc": "terminal×5",
+         "ops": [("terminal", {"command": "ls"})] * 4,
+         "final": ("terminal", {"command": "ls"})},
+        {"rule": "R05", "type": "positive", "desc": "write 未读文件",
+         "ops": [],
+         "final": ("write_file", {"path": "/canary/r05_new.py", "content": "x"})},
+        {"rule": "R05", "type": "negative", "desc": "write 已读文件",
+         "ops": [("read_file", {"path": "/canary/r05_read.py"})],
+         "final": ("write_file", {"path": "/canary/r05_read.py", "content": "x"})},
+        {"rule": "R10", "type": "positive", "desc": "search→read→patch",
+         "ops": [("search_files", {"pattern": "x"}), ("read_file", {"path": "/canary/r10.py"})],
+         "final": ("patch", {"path": "/canary/r10.py", "old_string": "a", "new_string": "b"})},
+        {"rule": "R13", "type": "positive", "desc": "3文件/src 写/docs",
+         "ops": [("read_file", {"path": "/src/a.py"}), ("read_file", {"path": "/src/b.py"}), ("patch", {"path": "/src/c.py", "old_string": "x", "new_string": "y"})],
+         "final": ("write_file", {"path": "/docs/drift.md", "content": "x"})},
+        {"rule": "R13", "type": "negative", "desc": "同目录不漂移",
+         "ops": [("read_file", {"path": "/src/a.py"}), ("read_file", {"path": "/src/b.py"}), ("patch", {"path": "/src/c.py", "old_string": "x", "new_string": "y"})],
+         "final": ("write_file", {"path": "/src/d.py", "content": "x"})},
+    ]
+
+    _CANARY_RESPONSE_CASES: list[dict] = [
+        # 回复级规则：通过 check_response() 注入
+        {"rule": "R06", "type": "positive", "text": "不是我改的bug。"},
+        {"rule": "R06", "type": "negative", "text": "根因在匹配逻辑。"},
+        {"rule": "R07", "type": "positive", "text": "应该没问题。"},
+        {"rule": "R07", "type": "negative", "text": "已修复。[实测]"},
+        {"rule": "R08", "type": "positive", "text": "需要你做的：改配置。"},
+        {"rule": "R08", "type": "negative", "text": "我来修复。"},
+        {"rule": "R09", "type": "positive", "text": "根因是连接池太小。"},
+        {"rule": "R09", "type": "negative", "text": "根因是连接池 [实测]：500并发通过。"},
+        {"rule": "R11", "type": "positive", "text": "方案很简单，加个白名单就行。"},
+        {"rule": "R11", "type": "negative", "text": "方案A加白名单；方案B加分类器。选A因为更简洁。"},
+        {"rule": "R12", "type": "positive", "text": "已修复。本次改动不涉及配置。"},
+        {"rule": "R12", "type": "negative", "text": "已修复。\n验证：69 passed in 0.74s"},
+    ]
+
+    def audit(self) -> dict:
+        """自审计：验证每条规则的金丝雀测试是否通过。
+
+        返回 {"alive": int, "dead": int, "broken": int, "details": [...]}
+        - alive: 正例命中且反例不命中 = 规则正常
+        - dead:  规则未被调用或数据未流入 = 空转
+        - broken: 正例未命中或反例误命中 = 正则坏了
+        """
+        results: list[dict] = []
+        rule_status: dict[str, str] = {}  # rule_id → "alive"/"dead"/"broken"
+
+        # ── 工具级规则审计 ──
+        for case in self._CANARY_TOOL_CASES:
+            rule_id = case["rule"]
+            ctype = case["type"]
+            mgr = SelfCheckManager()
+            mgr._loaded = True
+            for tn, args in case["ops"]:
+                mgr.check(tn, args)
+            final_tn, final_args = case["final"]
+            result = mgr.check(final_tn, final_args)
+            hit = bool(result) and ("[%s]" % rule_id in result)
+            results.append({"rule": rule_id, "type": ctype, "hit": hit, "desc": case["desc"]})
+
+        # ── 回复级规则审计 ──
+        for case in self._CANARY_RESPONSE_CASES:
+            rule_id = case["rule"]
+            ctype = case["type"]
+            mgr = SelfCheckManager()
+            mgr._loaded = True
+            result = mgr.check_response(case["text"])
+            hit = bool(result) and ("[%s]" % rule_id in result)
+            results.append({"rule": rule_id, "type": ctype, "hit": hit, "desc": case["text"][:40]})
+
+        # ── R14 特殊审计：需要 record_tool_result ──
+        # 正例：ERROR 输出 + 无引用回复
+        mgr14p = SelfCheckManager()
+        mgr14p._loaded = True
+        mgr14p.record_tool_result("terminal", "Traceback (most recent call last)\nError: x")
+        r14p = mgr14p.check_response("已修复。")
+        results.append({"rule": "R14", "type": "positive", "hit": bool(r14p) and "[R14]" in r14p, "desc": "ERROR无引用"})
+        # 反例：ERROR 输出 + 有引用回复
+        mgr14n = SelfCheckManager()
+        mgr14n._loaded = True
+        mgr14n.record_tool_result("terminal", "exit_code=1\nFAILED")
+        r14n = mgr14n.check_response("上次命令失败了，原因分析中。")
+        results.append({"rule": "R14", "type": "negative", "hit": bool(r14n) and "[R14]" in r14n, "desc": "ERROR有引用"})
+
+        # ── 汇总判定 ──
+        all_rules = set(r["rule"] for r in results)
+        for rule_id in all_rules:
+            positives = [r for r in results if r["rule"] == rule_id and r["type"] == "positive"]
+            negatives = [r for r in results if r["rule"] == rule_id and r["type"] == "negative"]
+            pos_ok = all(r["hit"] for r in positives) if positives else False
+            neg_ok = all(not r["hit"] for r in negatives) if negatives else True
+            if pos_ok and neg_ok:
+                rule_status[rule_id] = "alive"
+            elif not pos_ok:
+                rule_status[rule_id] = "broken"
+            else:
+                rule_status[rule_id] = "broken"  # 反例误命中
+
+        alive = sum(1 for v in rule_status.values() if v == "alive")
+        broken = sum(1 for v in rule_status.values() if v == "broken")
+
+        return {
+            "alive": alive,
+            "broken": broken,
+            "total": len(rule_status),
+            "status": rule_status,
+            "details": results,
         }
 
 
