@@ -235,28 +235,125 @@ _CHAIN_TRIGGER_SEQUENCES: list[tuple[tuple[str, ...], str]] = [
         ("search_files", "read_file", "patch"),
         "工具链——检测到 search→read→patch 三次往返，合并为 execute_code 一步跑完",
     ),
+    (
+        ("search_files", "read_file", "write_file"),
+        "工具链——检测到 search→read→write 三次往返，合并为 execute_code 一步跑完",
+    ),
+    (
+        ("read_file", "patch", "terminal"),
+        "工具链——读→改→验证可合并为 execute_code 一次性跑完",
+    ),
+    (
+        ("read_file", "write_file", "terminal"),
+        "工具链——读→写→验证可合并为 execute_code 一次性跑完",
+    ),
 ]
 
 
 def _r10_chain_route(tool_name: str, _args: dict, history: dict) -> str | None:
     """R10: 链式工具路由。检测工具调用链并提示合并。
 
-    通过 history["_recent_tools"] 追踪最近 N 次工具调用，
-    匹配预定义链式模式后注入 execute_code 提示。
+    两类检测：
+    1. 预定义序列匹配（search→read→patch 等）——exact match
+    2. 连续 terminal 碎片化（≥3 个 terminal）——计数 match
     """
     recent: list[str] = history.get("_recent_tools", [])  # type: ignore[assignment]
     if len(recent) < 3:
         return None
 
+    # 检测 1：预定义序列匹配
     for sequence, hint in _CHAIN_TRIGGER_SEQUENCES:
         seq_len = len(sequence)
         if len(recent) < seq_len:
             continue
-        # 检查最近 seq_len 个调用是否匹配序列
         window = recent[-seq_len:]
         if tuple(window) == sequence[:seq_len]:
             return hint
 
+    # 检测 2：连续 3+ terminal 调用（碎片化 shell 替代品）
+    terminal_streak = 0
+    for t in reversed(recent):
+        if t == "terminal":
+            terminal_streak += 1
+        else:
+            break
+    if terminal_streak >= 3:
+        return (
+            "工具链——连续 %d 次 terminal 调用，合并为 execute_code 一次性脚本更快更可控"
+            % terminal_streak
+        )
+
+    return None
+
+
+# ── R13: 任务漂移——写入与已操作文件零目录重叠 ────────────────────
+# 检测模式：write_file/patch 写入的文件路径与 session 中已读取/编辑的
+# 文件零目录重叠 → 大概率是不相关的额外改动（drive-by edit）。
+def _r13_task_drift(tool_name: str, args: dict, history: dict) -> str | None:
+    """R13: 任务漂移检测。
+
+    逻辑：写入文件的目录（parent dir）与所有已操作文件（update 前快照）
+    零交集 → 任务漂移信号。排除首次写入（没有历史时不触发）。
+    """
+    if tool_name not in ("write_file", "patch"):
+        return None
+
+    file_path = args.get("path", "")
+    if not file_path or file_path.startswith("/dev/"):
+        return None
+
+    # 用 update_history 前的快照——避免新文件已被加入集合导致漏检
+    all_touched = history.get("_all_touched_before_update", set())
+    if len(all_touched) < 3:
+        return None
+
+    if file_path in all_touched:
+        return None
+
+    from pathlib import PurePosixPath
+    new_dir = str(PurePosixPath(file_path).parent)
+
+    overlap = any(
+        str(PurePosixPath(f).parent) == new_dir
+        for f in all_touched
+        if f and f != file_path
+    )
+    if overlap:
+        return None  # 同目录 → 相关
+
+    return (
+        "任务漂移——写入 %s 与本次 session 已操作的文件零目录重叠。"
+        "检查这是否是 drive-by edit：每行 git diff 必须能回答'用户要求改的吗'"
+        % file_path
+    )
+
+
+# ── R14: 操作结果忽略——工具输出含错误但回复无引用 ─────────────────
+# 检测模式：上次工具输出含 ERROR/FAILED/Traceback 但 assistant 回复
+# 中没有任何对该错误的引用（"错误"/"失败"/"失败原因"等）。
+_R14_ERROR_SIGNALS: list[re.Pattern] = [
+    re.compile(r"Traceback\s*\(most recent call last\)", re.I),
+    re.compile(r"\bERROR\b.*[:：]", re.I),
+    re.compile(r"\bFAILED\b", re.I),
+    re.compile(r"\bError:\s", re.I),
+    re.compile(r"exit_code\s*[=:]\s*[1-9]"),
+]
+
+_R14_ACK_PATTERNS: re.Pattern = re.compile(
+    r"错误|失败|异常|报错|exit.?code|错误码|error|failed|traceback|stack.?trace|出错|没通过|不通过|崩溃",
+    re.I,
+)
+
+
+def _r14_result_ignored(tool_name: str, args: dict, history: dict) -> str | None:
+    """R14: 操作结果忽略检测。
+
+    逻辑：history["_last_tool_output"] 含错误信号，但当前 assistant_content
+    中没有引用该错误 → 忽略了错误结果。
+
+    注：此规则在 check_response() 中调用（需要 assistant_content），
+    但放这里作为函数文档。工具级 check() 中不做检测。
+    """
     return None
 
 
@@ -289,10 +386,11 @@ _RULES = [
     ("R04", "low", _r04_terminal_fragments),
     ("R05", "medium", _r05_write_without_read),
     ("R10", "medium", _r10_chain_route),
+    ("R13", "medium", _r13_task_drift),
 ]
-# 回复级规则（R06-R09, R11-R12）：在 check_response() 中专有路径处理，
+# 回复级规则（R06-R09, R11-R12, R14）：在 check_response() 中专有路径处理，
 # 不走 check() 的 _RULES 循环——下面注释仅作文档用。
-_RESPONSE_RULE_IDS: frozenset[str] = frozenset({"R06", "R07", "R08", "R09", "R11", "R12"})
+_RESPONSE_RULE_IDS: frozenset[str] = frozenset({"R06", "R07", "R08", "R09", "R11", "R12", "R14"})
 
 _SEVERITY_EMOJI = {"high": "\U0001f534", "medium": "\U0001f7e1", "low": "\U0001f7e2"}
 _SEVERITY_EMOJI["high"] = "\U0001f534"  # 🔴
@@ -320,6 +418,9 @@ class SelfCheckManager:
         self._rule_fire_count: dict[str, int] = {}  # rule_id → 连续命中次数
         self._rule_last_turn: set[str] = set()  # 上一轮命中的规则
         self._feynman_triggered: set[str] = set()  # 已触发学习的规则(去重)
+        # R13/R14：需要外部调用 record_tool_result() 传入工具输出
+        self._last_tool_output: str = ""  # 最近一次工具输出文本
+        self._all_touched_before_update: set[str] = set()  # update_history 前快照
 
     # ── 加载 ────────────────────────────────────────────────────────
 
@@ -403,6 +504,10 @@ class SelfCheckManager:
         """
         if not self._loaded:
             self.load()
+
+        # R13 需要在 update_history 前做快照——否则新文件已被加入 all_read
+        self._all_touched_before_update = (self._all_read | self._recently_edited).copy()
+        self._call_history["_all_touched_before_update"] = self._all_touched_before_update  # type: ignore[index]
 
         self._update_history(tool_name, args)
         warnings: list[str] = []
@@ -492,6 +597,16 @@ class SelfCheckManager:
         r12_warning = _r12_verify_position(assistant_content, _has_evidence)
         if r12_warning:
             warnings.append("\U0001f7e1 [R12] %s" % r12_warning)
+        # R14: 操作结果忽略——上次工具输出含错误信号但回复无引用
+        if self._last_tool_output:
+            has_error = any(p.search(self._last_tool_output) for p in _R14_ERROR_SIGNALS)
+            if has_error:
+                acknowledges = bool(_R14_ACK_PATTERNS.search(assistant_content))
+                if not acknowledges:
+                    warnings.append(
+                        "\U0001f534 [R14] 操作结果忽略——上次工具输出含 ERROR/FAILED/Traceback，"
+                        "但回复中没有任何对该错误的引用。必须分析错误原因再继续"
+                    )
 
         if warnings:
             # ── 闭环修正引擎升级逻辑 ─────────────────────────────────
@@ -513,7 +628,18 @@ class SelfCheckManager:
         "R09": "修正动作：补充证据——贴 terminal output / 测试结果 / 日志摘录，或加 [实测] 标签",
         "R11": "修正动作：补充替代方案——至少列出方案A/B并对比优劣后再选",
         "R12": "修正动作：将验证证据移到回复结尾——decision-framework 要求验证是最后一步",
+        "R14": "修正动作：引用上次工具输出中的错误信息并分析原因，不要忽略错误结果",
     }
+
+    def record_tool_result(self, tool_name: str, tool_output: str) -> None:
+        """R14 支撑：记录最近一次工具输出文本，供 check_response() 做错误引用检测。
+
+        由 tool_executor 在工具执行完成后调用。
+        """
+        if not tool_output:
+            return
+        # 只保留最近一次，截断到 4000 字符防止内存膨胀
+        self._last_tool_output = str(tool_output)[:4000]
 
     def _update_rule_fire_counts(self, warnings: list[str]) -> None:
         """从警告中提取规则ID，更新连续命中计数。"""

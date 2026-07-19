@@ -8,6 +8,8 @@ from agent.self_check import (
     _r03_read_after_edit,
     _r04_terminal_fragments,
     _r05_write_without_read,
+    _r10_chain_route,
+    _r13_task_drift,
     get_self_check,
     set_self_check,
     _has_evidence,
@@ -544,3 +546,96 @@ class TestClosedLoopCorrection:
         mgr.check_response("根因分析中。[实测]")  # clean → reset
         result = mgr.check_response("不是我改的 bug。")  # restart from 1
         assert "⚙" not in (result or "")  # no correction since count=1
+
+
+# ── R10 extended: more sub-chains ─────────────────────────────────
+
+
+class TestR10ExtendedChains:
+    """R10 should detect additional chain patterns."""
+
+    def test_terminal_streak_3(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        mgr._update_history("terminal", {"command": "ls"})
+        mgr._update_history("terminal", {"command": "pwd"})
+        result = mgr._update_history("terminal", {"command": "whoami"})
+        # Need to call check() for R10 to fire
+        mgr._call_history["_recent_tools"] = mgr._recent_tools
+        result = mgr.check("terminal", {"command": "date"})
+        assert "[R10]" in (result or "")
+        assert "terminal" in result.lower()
+
+    def test_search_read_write_chain(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        mgr._update_history("search_files", {"pattern": "test"})
+        mgr._update_history("read_file", {"path": "/tmp/a.py"})
+        result = mgr.check("write_file", {"path": "/tmp/a.py"})
+        assert "[R10]" in (result or "")
+
+
+# ── R13: task drift detection ────────────────────────────────────
+
+
+class TestR13TaskDrift:
+    """R13 should flag writes to unrelated directories."""
+
+    def test_drift_detected(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        mgr._update_history("read_file", {"path": "/src/a.py"})
+        mgr._update_history("read_file", {"path": "/src/b.py"})
+        mgr._update_history("patch", {"path": "/src/c.py"})
+        result = mgr.check("write_file", {"path": "/docs/manual.md"})
+        assert result is not None
+        assert "[R13]" in result
+
+    def test_same_directory_no_drift(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        mgr._update_history("read_file", {"path": "/src/a.py"})
+        mgr._update_history("read_file", {"path": "/src/b.py"})
+        mgr._update_history("patch", {"path": "/src/c.py"})
+        result = mgr.check("write_file", {"path": "/src/d.py"})
+        has_r13 = result and "[R13]" in result
+        assert not has_r13
+
+    def test_few_files_no_drift(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        mgr._update_history("read_file", {"path": "/src/a.py"})
+        result = mgr.check("write_file", {"path": "/docs/x.md"})
+        has_r13 = result and "[R13]" in result
+        assert not has_r13
+
+
+# ── R14: tool result ignored ─────────────────────────────────────
+
+
+class TestR14ResultIgnored:
+    """R14 should flag when tool output has errors but response ignores them."""
+
+    def test_error_ignored(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        mgr.record_tool_result("terminal", "Traceback (most recent call last)\nError: x")
+        result = mgr.check_response("已修复，测试通过。")
+        assert result is not None
+        assert "[R14]" in result
+
+    def test_error_acknowledged(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        mgr.record_tool_result("terminal", "exit_code=1\nFAILED: test")
+        result = mgr.check_response("上次命令失败了，分析原因是路径不对。")
+        has_r14 = result and "[R14]" in result
+        assert not has_r14
+
+    def test_no_error_no_trigger(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        mgr.record_tool_result("terminal", "All tests passed")
+        result = mgr.check_response("完成。")
+        has_r14 = result and "[R14]" in result
+        assert not has_r14
