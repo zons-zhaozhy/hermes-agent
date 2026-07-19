@@ -590,6 +590,30 @@ def init_agent(
     agent._self_check = SelfCheckManager()
     set_self_check(agent._self_check)
 
+    # ── SelfCheck 启动时自审计：验证所有规则活性 ──
+    # 金丝雀测试——每条规则注入已知正例+反例，检测 dead/stale/broken。
+    # 如果有规则坏了，记 warning 但不阻断启动（fail-open，不搞死 agent）。
+    import logging as _sc_logging
+    _audit_logger = _sc_logging.getLogger("agent.self_check")
+    try:
+        report = agent._self_check.audit()
+        if report["broken"] > 0:
+            broken_ids = [k for k, v in report["status"].items() if v != "alive"]
+            _audit_logger.warning(
+                "SelfCheck audit: %d/%d rules broken [%s] — rules may be silently inactive",
+                report["broken"], report["total"], ", ".join(broken_ids),
+            )
+        else:
+            _audit_logger.info(
+                "SelfCheck audit: %d/%d rules alive",
+                report["alive"], report["total"],
+            )
+    except Exception:
+        _audit_logger.warning(
+            "SelfCheck audit failed at startup — continuing without audit",
+            exc_info=True,
+        )
+
     # Interrupt mechanism for breaking out of tool loops
     agent._interrupt_requested = False
     agent._interrupt_message = None  # Optional message that triggered interrupt
