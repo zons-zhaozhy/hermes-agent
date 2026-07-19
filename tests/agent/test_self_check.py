@@ -82,6 +82,59 @@ class TestRuleFunctions:
         assert result is None
 
 
+class TestIntegrationCheckPipeline:
+    """集成路径测试——走 check()/check_response() 完整管道，不手工构造 history。
+
+    单元测试用手工 history dict 绕过 check() 的真实流程，
+    R05 静默失效正是这种盲区——单元测试绿但真实路径空转。
+    这组测试补上集成路径覆盖。
+    """
+
+    def test_r05_fires_through_check_pipeline(self):
+        """R05 通过 check() 真实管道应命中——首次写入未读文件。"""
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check("write_file", {"path": "/tmp/integration_r05.py", "content": "x"})
+        assert result is not None, "R05 应通过 check() 管道命中"
+        assert "[R05]" in result
+
+    def test_r05_no_fire_through_check_pipeline(self):
+        """R05 通过 check() 真实管道不应命中——先读再写。"""
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        mgr.check("read_file", {"path": "/tmp/integration_r05_read.py"})
+        result = mgr.check("write_file", {"path": "/tmp/integration_r05_read.py", "content": "x"})
+        assert not result or "[R05]" not in result
+
+    def test_r13_fires_through_check_pipeline(self):
+        """R13 任务漂移通过 check() 真实管道应命中。"""
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        mgr.check("read_file", {"path": "/src/a.py"})
+        mgr.check("read_file", {"path": "/src/b.py"})
+        mgr.check("patch", {"path": "/src/c.py", "old_string": "x", "new_string": "y"})
+        result = mgr.check("write_file", {"path": "/docs/drift.md", "content": "x"})
+        assert result is not None, "R13 应通过 check() 管道命中"
+        assert "[R13]" in result
+
+    def test_r14_fires_through_response_pipeline(self):
+        """R14 操作结果忽略通过 check_response() 真实管道应命中。"""
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        mgr.record_tool_result("terminal", "Traceback (most recent call last)\nError: x")
+        result = mgr.check_response("已修复，测试通过。")
+        assert result is not None, "R14 应通过 check_response() 管道命中"
+        assert "[R14]" in result
+
+    def test_r07_fires_through_response_pipeline(self):
+        """R07 第一性原理通过 check_response() 真实管道应命中。"""
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("应该没问题。")
+        assert result is not None, "R07 应通过 check_response() 管道命中"
+        assert "[R07]" in result
+
+
 class TestSelfCheckManager:
     """Test the full SelfCheckManager pipeline."""
 
