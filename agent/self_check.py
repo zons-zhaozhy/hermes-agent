@@ -137,12 +137,56 @@ _R08_USER_BLAME_PATTERNS: list[tuple[re.Pattern, str]] = [
 
 
 # ── R09: 验证驱动——声称结论缺少证据标注 ──────────────────────────
-# 检测断言式结论未搭配证据来源标注。
-# 触发模式：声称某种状态/事实，但不跟任何 [实测]/[文档]/[推断]/[未查证] 标签。
+# 启发式证据分类器：不依赖大模型，用多个结构信号判断文本是否含验证证据。
+# 设计原则：证据有 3 个维度 — ①显式标签 [实测]/[文档]/[推断]
+# ②数据密度（数字+单位+结果）③外部引用（文件行号/日志时间戳/异常堆栈）
+
+def _has_evidence(content: str) -> bool:
+    """启发式判断段落是否包含可验证的证据。纯 Python，零依赖，毫秒级。"""
+    # 1. 显式标签
+    if re.search(r"\[实测\]|\[文档\]|\[推断\]", content):
+        return True
+
+    # 2. 测试/运行结果：N/N 通过、exit_code、状态码
+    if re.search(r"\d+/\d+\s*(通过|pass|ok|green|passed)", content, re.I):
+        return True
+    if re.search(r"(exit.?code|返回码|status.?code)\s*[=:]\s*\d+", content, re.I):
+        return True
+    if re.search(r"(passed|failed|skipped|error)\s*[=:]\s*\d+", content, re.I):
+        return True
+    if re.search(r"\d+\s*(通过|失败|跳过|pass|fail|skip)", content, re.I):
+        return True
+
+    # 3. 文件引用：path/to/file.py:行号
+    if re.search(r"[/\w]+\.(py|java|go|ts|tsx|js|rs|yaml|yml|sql):\d+", content):
+        return True
+
+    # 4. 日志/终端输出：时间戳、traceback、stdout/stderr
+    if re.search(r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}", content):
+        return True
+    if re.search(r"Traceback\s*\(most recent call last\)", content, re.I):
+        return True
+    if re.search(r"(stdout|stderr|output)\s*:", content, re.I):
+        return True
+
+    # 5. 数量级数据：数字+单位，暗示实测
+    if re.search(r"\d+\s*(个|条|次|行|s|ms|MB|KB|并发|qps|tps)", content):
+        return True
+    if re.search(r"\d+\s*(files|tests|errors|matches|results|records)", content, re.I):
+        return True
+
+    # 6. 文件/路径存在性声明
+    if re.search(r"[/\w]+\s*(存在|不存在|已创建|已删除|is\s+at|located\s+at)", content):
+        return True
+
+    return False
+
+
+# R09 模式：只检测"声称"的句子，实际判断由 _has_evidence 完成
 _R09_EVIDENCE_PATTERNS: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"(根因|原因)(是|在于|出在)(?!.{0,40}\[实测|文档|推断\]).{0,40}[。，\n]"), r"验证驱动——声称根因但没有 [实测] [文档] [推断] 证据标注"),
-    (re.compile(r"(已经|已)(修复|解决|完成|搞定)(?!.*\d+.*通过).{0,30}[。，\n]"), r"验证驱动——声称完成但没有验证证据（测试输出/日志/文件内容）"),
-    (re.compile(r"(确认|确定|保证|肯定|绝对)(?!.{0,40}\[实测|文档|推断\]).{0,40}[。，\n]"), r"验证驱动——断言确认但没有 [实测] 证据，加一句验证命令"),
+    (re.compile(r"(根因|原因)(是|在于|出在).{0,60}[。，\n]"), r"验证驱动——声称根因但没有验证证据（测试输出/日志/文件内容）"),
+    (re.compile(r"(已经|已)(修复|解决|完成|搞定).{0,40}[。，\n]"), r"验证驱动——声称完成但没有验证证据（测试输出/日志/文件内容）"),
+    (re.compile(r"(确认|确定|保证|肯定|绝对).{0,40}[。，\n]"), r"验证驱动——断言确认但没有 [实测] 证据，加一句验证命令"),
 ]
 
 
@@ -400,10 +444,17 @@ class SelfCheckManager:
         for pattern, hint in _R08_USER_BLAME_PATTERNS:
             if pattern.search(assistant_content):
                 warnings.append("\U0001f534 [R08] %s" % hint)
-        # R09: 验证驱动——缺证据
+        # R09: 验证驱动——缺证据（匹配整段文本，用 _has_evidence 判断）
         for pattern, hint in _R09_EVIDENCE_PATTERNS:
-            if pattern.search(assistant_content):
-                warnings.append("\U0001f7e1 [R09] %s" % hint)
+            match = pattern.search(assistant_content)
+            if match:
+                # 检查匹配到的句子所在上下文是否含证据
+                # 取匹配位置前后各 200 字符做证据检测
+                start = max(0, match.start() - 200)
+                end = min(len(assistant_content), match.end() + 200)
+                evidence_context = assistant_content[start:end]
+                if not _has_evidence(evidence_context):
+                    warnings.append("\U0001f7e1 [R09] %s" % hint)
 
         if warnings:
             return "[SelfCheck]\n" + "\n".join(warnings)

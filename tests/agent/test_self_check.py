@@ -10,6 +10,7 @@ from agent.self_check import (
     _r05_write_without_read,
     get_self_check,
     set_self_check,
+    _has_evidence,
 )
 
 
@@ -393,3 +394,36 @@ class TestR10ChainRoute:
         result = mgr.check("patch", {"path": "/tmp/a.py"})
         assert result is not None
         assert "[R10]" in result
+
+
+# ── _has_evidence heuristic classifier ─────────────────────────────
+
+
+class TestHasEvidence:
+    """Heuristic evidence classifier should detect verifiable data."""
+
+    def test_test_results(self):
+        assert _has_evidence("69 passed in 0.74s")
+        assert _has_evidence("3 tests passed=3 failed=0")
+        assert _has_evidence("exit_code=0")
+
+    def test_file_references(self):
+        assert _has_evidence("self_check.py:227")
+        assert _has_evidence("/Users/stan/code/x.py:15")
+
+    def test_log_timestamps(self):
+        assert _has_evidence("2026-07-20 15:30:00 INFO connection established")
+        assert _has_evidence("Traceback (most recent call last)")
+
+    def test_explicit_tags(self):
+        assert _has_evidence("根因是配置问题 [实测]")
+        assert _has_evidence("[文档] 详见 README.md")
+
+    def test_quantified_data(self):
+        assert _has_evidence("85个文件，3处错误")
+        assert _has_evidence("500并发零超时")
+
+    def test_no_evidence(self):
+        assert not _has_evidence("应该没问题了吧")
+        assert not _has_evidence("root cause is the config setting")
+        assert not _has_evidence("")
