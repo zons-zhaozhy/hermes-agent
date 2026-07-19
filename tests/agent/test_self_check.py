@@ -304,7 +304,19 @@ class TestR08UserDelegation:
         mgr = SelfCheckManager()
         mgr._loaded = True
         result = mgr.check_response("已修复，测试 50/50 通过。")
+        # R09 negative lookahead (?!.*\d+.*通过) should skip this
         assert result is None
+
+    def test_r08_clean_but_r09_legitimate(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        # "已修复" without evidence triggers R09 legitimately
+        result = mgr.check_response("已修复 self_check.py 的 AVOID 匹配逻辑。不需要用户操作。")
+        # R08 should NOT fire (no user delegation)
+        assert result is not None
+        assert "[R08]" not in result
+        # R09 should fire ("已修复" without evidence)
+        assert "[R09]" in result
 
 
 # ── R09: evidence-driven detection ───────────────────────────────────
