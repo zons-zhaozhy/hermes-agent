@@ -100,7 +100,7 @@ def _r05_write_without_read(tool_name: str, args: dict, history: dict) -> str | 
 # 检测 assistant 回复中把问题归因于他人/历史代码的推责语言。
 # 这些表述是行为层面的自我开脱，不是技术分析。
 _BLAME_PATTERNS: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"不是我(这次|的)?(改的|改出来的|写的|弄的|引入的)"), r"不推责——视野内破损即责任，不说归属"),
+    (re.compile(r"不是我(这次|的)?(改的|改出来的|写的|弄的|引入的|代码)"), r"不推责——视野内破损即责任，不说归属"),
     (re.compile(r"这是(上游|历史|之前|其他人|别的).{0,20}的(问题|代码|改动|bug)"), r"不推责——追究来源不如直接修复"),
     (re.compile(r"不属于本[次轮个](修改|改动|修复|任务)"), r"不推责——看到就修，不区分范围"),
     (re.compile(r"这个是.*留[下存]的|(从以前|旧版本|版本)就有的"), r"不推责——历史债务也是债，当场清"),
@@ -342,6 +342,10 @@ class SelfCheckManager:
         self._recently_edited: set[str] = set()
         self._recent_tools: list[str] = []  # 最近 N 个工具调用名链
         self._loaded = False
+        # 闭环修正引擎：钱学森控制论——测量必须驱动修正
+        self._rule_fire_count: dict[str, int] = {}  # rule_id → 连续命中次数
+        self._rule_last_turn: set[str] = set()  # 上一轮命中的规则
+        self._feynman_triggered: set[str] = set()  # 已触发学习的规则(去重)
 
     # ── 加载 ────────────────────────────────────────────────────────
 
@@ -508,8 +512,63 @@ class SelfCheckManager:
             warnings.append("\U0001f7e1 [R12] %s" % r12_warning)
 
         if warnings:
+            # ── 闭环修正引擎升级逻辑 ─────────────────────────────────
+            self._update_rule_fire_counts(warnings)
+            self._inject_corrections(warnings)
             return "[SelfCheck]\n" + "\n".join(warnings)
+        else:
+            # 本轮无命中 → 重置命中计数（连续命中需要持续性）
+            self._rule_fire_count.clear()
         return None
+
+    # ── 闭环修正引擎方法 ───────────────────────────────────────────
+
+    # 每条规则对应的强制修正指令（钱学森闭环：测量→修正）
+    _CORRECTION_DIRECTIVES: dict[str, str] = {
+        "R06": "修正动作：删除归属描述，只陈述技术事实不涉及谁改的",
+        "R07": "修正动作：用 [实测] 或 [文档] 替换推断词（应该/大概/一般），或标注 [推断] 并补验证",
+        "R08": "修正动作：删除请求句，替换为自己执行的方案——不说'需要你做的'，说'我来做'",
+        "R09": "修正动作：补充证据——贴 terminal output / 测试结果 / 日志摘录，或加 [实测] 标签",
+        "R11": "修正动作：补充替代方案——至少列出方案A/B并对比优劣后再选",
+        "R12": "修正动作：将验证证据移到回复结尾——decision-framework 要求验证是最后一步",
+    }
+
+    def _update_rule_fire_counts(self, warnings: list[str]) -> None:
+        """从警告中提取规则ID，更新连续命中计数。"""
+        current_rules: set[str] = set()
+        for w in warnings:
+            for rule_id in self._CORRECTION_DIRECTIVES:
+                if "[%s]" % rule_id in w:
+                    current_rules.add(rule_id)
+                    self._rule_fire_count[rule_id] = self._rule_fire_count.get(rule_id, 0) + 1
+
+        # 上一轮命中但本轮未命中 → 重置（不再连续）
+        for rule_id in self._rule_last_turn - current_rules:
+            if rule_id in self._rule_fire_count:
+                del self._rule_fire_count[rule_id]
+        self._rule_last_turn = current_rules
+
+    def _inject_corrections(self, warnings: list[str]) -> None:
+        """按控制论闭环原则升级警告：命中1次=警告，2次=警告+修正建议，3次=触发费曼学习。"""
+        for i, w in enumerate(warnings):
+            for rule_id, directive in self._CORRECTION_DIRECTIVES.items():
+                if "[%s]" % rule_id not in w:
+                    continue
+                count = self._rule_fire_count.get(rule_id, 0)
+
+                # 第 2 次命中 → 加修正建议
+                if count == 2:
+                    warnings[i] = w + "\n  \u2699 [%s] %s（第%d次）" % (rule_id, directive, count)
+
+                # 第 3 次命中 → 触发费曼学习循环（第 3 层自动触发）
+                if count >= 3 and rule_id not in self._feynman_triggered:
+                    self._feynman_triggered.add(rule_id)
+                    warnings[i] = (
+                        w + "\n  \u2699 [%s] %s（第%d次）\n"
+                        "  \U0001f9e0 [Feynman] 同类规则连续命中%d次→触发费曼学习循环：\n"
+                        "    ① 写出你对'%s'的理解 ② 用自己的话解释为什么反复触发\n"
+                        "    ③ 找知识缺口 ④ 重构理解并写入 memory"
+                    ) % (rule_id, directive, count, count, rule_id)
 
     def _update_history(self, tool_name: str, args: dict) -> None:
         """更新调用计数器。"""

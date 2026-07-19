@@ -491,3 +491,56 @@ class TestR12VerificationPosition:
         result = mgr.check_response("还需要进一步分析连接池的行为。")
         has_r12 = result and "[R12]" in result
         assert not has_r12
+
+
+# ── 闭环修正引擎 + 费曼自动触发 ────────────────────────────────────
+# 钱学森控制论：测量必须驱动修正，同类错误 ≥3 次 → 费曼学习
+
+
+class TestClosedLoopCorrection:
+    """警告→修正→费曼学习 三层升级. """
+
+    def test_first_hit_warning_only(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("不是我改出来的 bug。")
+        assert result is not None
+        assert "[R06]" in result
+        assert "⚙" not in result  # 第一次仅警告
+
+    def test_second_hit_adds_correction(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        mgr.check_response("不是我改的 bug。")  # 1st
+        result = mgr.check_response("不是我写的问题。")  # 2nd
+        assert "[R06]" in result
+        assert "⚙" in result
+        assert "第2次" in result
+
+    def test_third_hit_triggers_feynman(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        mgr.check_response("不是我改的 bug。")
+        mgr.check_response("不是我写的问题。")
+        result = mgr.check_response("不是我弄的 bug。")
+        assert "🧠" in result
+        assert "Feynman" in result
+        assert "费曼学习循环" in result
+
+    def test_feynman_triggers_once_per_rule(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        mgr.check_response("不是我改的 bug。")
+        mgr.check_response("不是我写的问题。")
+        mgr.check_response("不是我弄的 bug。")  # triggers Feynman
+        result = mgr.check_response("不是我引入的 bug。")  # 4th - no repeat
+        assert "Feynman" not in (result or "")
+
+    def test_clean_turn_resets_count(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        mgr.check_response("不是我改的 bug。")  # 1st
+        mgr.check_response("不是我写的问题。")  # 2nd, ⚙
+        mgr.check_response("根因分析中。[实测]")  # clean → reset
+        result = mgr.check_response("不是我改的 bug。")  # restart from 1
+        assert "⚙" not in (result or "")  # no correction since count=1
