@@ -981,6 +981,14 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
                 logging.debug(f"Tool result ({len(function_result)} chars): {function_result}")
 
+            # ── SelfCheck R14: record tool output for error-ignored detection ──
+            try:
+                sc_mgr = get_self_check()
+                if sc_mgr is not None and function_result:
+                    sc_mgr.record_tool_result(function_name, function_result)
+            except Exception:
+                logging.debug("SelfCheck record_tool_result skipped", exc_info=True)
+
         # Print cute message per tool
         if agent._should_emit_quiet_tool_messages():
             cute_msg = _get_cute_tool_message_impl(name, args, tool_duration, result=function_result)
@@ -1722,6 +1730,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
             _log_result = _multimodal_text_summary(function_result)
             logging.debug(f"Tool result ({len(_log_result)} chars): {_log_result}")
+
+        # ── SelfCheck R14: record tool output for error-ignored detection ──
+        try:
+            sc_mgr = get_self_check()
+            if sc_mgr is not None and function_result:
+                sc_mgr.record_tool_result(function_name, function_result)
+        except Exception:
+            logging.debug("SelfCheck record_tool_result skipped", exc_info=True)
 
         if not _execution_blocked and agent.tool_complete_callback:
             try:
