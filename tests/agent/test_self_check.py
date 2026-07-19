@@ -165,3 +165,49 @@ name: test-skill
         s = mgr.stats()
         assert s["files_read"] == 1
         assert s["files_edited"] == 1
+
+
+# ── R06: blame-shift detection ───────────────────────────────────────
+
+
+class TestR06BlameShift:
+    """check_response should detect blame-shifting language in assistant text."""
+
+    def test_detects_blame_attribution(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("这不是我改出来的，是之前的代码就有的")
+        assert result is not None
+        assert "[R06]" in result
+
+    def test_detects_upstream_blame(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("这是上游的问题，不是我这次引入的")
+        assert result is not None
+        assert "[R06]" in result
+
+    def test_detects_out_of_scope(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("这个问题不属于本次修改范围")
+        assert result is not None
+        assert "[R06]" in result
+
+    def test_clean_text_passes(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("发现根因是 self_check.py 第 227 行的类型错位")
+        assert result is None
+
+    def test_clean_analysis_passes(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("问题在于 AVOID 匹配对只读工具做了关键词搜索，产生误报。修复方案是加白名单。")
+        assert result is None
+
+    def test_none_content(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        assert mgr.check_response(None) is None
+        assert mgr.check_response("") is None

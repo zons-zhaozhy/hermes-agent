@@ -96,6 +96,26 @@ def _r05_write_without_read(tool_name: str, args: dict, history: dict) -> str | 
     return None
 
 
+# ── R06: 推责/归属语言检测 ─────────────────────────────────────────
+# 检测 assistant 回复中把问题归因于他人/历史代码的推责语言。
+# 这些表述是行为层面的自我开脱，不是技术分析。
+_BLAME_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"不是我改的|不是我改出来的|不是这次(改动|变更|修改)"), r"不推责——视野内破损即责任，不说归属"),
+    (re.compile(r"这是(上游|历史|之前|其他人|别的)的(问题|代码|改动|bug)"), r"不推责——追究来源不如直接修复"),
+    (re.compile(r"不属于本[次轮个](修改|改动|修复|任务)"), r"不推责——看到就修，不区分范围"),
+    (re.compile(r"这个是.*留[下存]的|(从以前|旧版本|版本)就有的"), r"不推责——历史债务也是债，当场清"),
+]
+
+
+def _r06_blame_shift(_tool_name: str, _args: dict, _history: dict) -> str | None:
+    """R06: 推责/归属语言。由 check_response 驱动，工具参数忽略。
+
+    注：此规则通过 check_response() 接收 assistant_content 参数，
+    不在 check() 中触发（check 只有一个工具调用上下文）。
+    """
+    return None  # 不作为工具级规则，走 check_response 专用路径
+
+
 # 规则注册表
 # 只读查询类工具——不对其参数做 AVOID 关键词匹配。
 # AVOID 条目是行为警示（"不要硬编码/不要吞异常"），只对执行类工具有意义。
@@ -123,6 +143,7 @@ _RULES = [
     ("R03", "medium", _r03_read_after_edit),
     ("R04", "low", _r04_terminal_fragments),
     ("R05", "medium", _r05_write_without_read),
+    ("R06", "high", _r06_blame_shift),
 ]
 
 _SEVERITY_EMOJI = {"high": "\U0001f534", "medium": "\U0001f7e1", "low": "\U0001f7e2"}
@@ -257,6 +278,28 @@ class SelfCheckManager:
                     matches = sum(1 for kw in kw_parts if kw in tool_desc)
                     if matches >= 2:
                         warnings.append("\U0001f4cb [%s] \U0001f4a1 %s" % (source, item))
+
+        if warnings:
+            return "[SelfCheck]\n" + "\n".join(warnings)
+        return None
+
+    def check_response(self, assistant_content: str | None) -> str | None:
+        """检查 assistant 回复文本是否包含推责/归属语言。
+
+        与 check() 不同：check() 检查工具调用参数，check_response() 检查回复文本。
+        在 tool_executor 中，对每个 assistant_message 先调 check_response()，
+        再对每个 tool_call 调 check()。
+
+        Returns:
+            None if clean, or a warning string to prepend to the first tool result.
+        """
+        if not assistant_content:
+            return None
+
+        warnings: list[str] = []
+        for pattern, hint in _BLAME_PATTERNS:
+            if pattern.search(assistant_content):
+                warnings.append("\U0001f534 [R06] %s" % hint)
 
         if warnings:
             return "[SelfCheck]\n" + "\n".join(warnings)

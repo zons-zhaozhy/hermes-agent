@@ -371,6 +371,17 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         logger.warning("ReadThinkGate check_batch failed (concurrent path)", exc_info=True)
         # failsafe: gate crash never blocks execution
 
+    # ── Self-check: response-level blame-shift detection ──────────────
+    _response_self_check: str | None = None
+    try:
+        sc_mgr = get_self_check()
+        if sc_mgr is not None:
+            _response_self_check = sc_mgr.check_response(
+                getattr(assistant_message, "content", None)
+            )
+    except Exception:
+        logger.warning("SelfCheck check_response failed (concurrent path)", exc_info=True)
+
     # ── Parse args + pre-execution bookkeeping ───────────────────────
     parsed_calls = []  # list of (tool_call, function_name, function_args, middleware_trace, block_result, blocked_by_guardrail, self_check_warning)
     for tool_call in tool_calls:
@@ -675,6 +686,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             duration = time.time() - start
             is_error, _ = _detect_tool_failure(function_name, result)
             # ── Self-check warning injection ──
+            if index == 0 and _response_self_check and result is not None:
+                result = _response_self_check + "\n\n" + result
             if self_check_warning and result is not None:
                 result = self_check_warning + "\n\n" + result
             if is_error:
@@ -1089,6 +1102,17 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     except Exception:
         logger.warning("ReadThinkGate check_batch failed (sequential path)", exc_info=True)
         # failsafe: gate crash never blocks execution
+
+    # ── Self-check: response-level blame-shift detection ──────────────
+    _response_self_check: str | None = None
+    try:
+        sc_mgr = get_self_check()
+        if sc_mgr is not None:
+            _response_self_check = sc_mgr.check_response(
+                getattr(assistant_message, "content", None)
+            )
+    except Exception:
+        logger.warning("SelfCheck check_response failed (sequential path)", exc_info=True)
 
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
         # SAFETY: check interrupt BEFORE starting each tool.
@@ -1725,6 +1749,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
+
+        # ── Self-check: response-level blame-shift injection (first tool only) ──
+        if i == 1 and _response_self_check and isinstance(_tool_content, str):
+            _tool_content = _response_self_check + "\n\n" + _tool_content
+
         tool_message = make_tool_result_message(function_name, _tool_content, tool_call.id)
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
