@@ -116,6 +116,91 @@ def _r06_blame_shift(_tool_name: str, _args: dict, _history: dict) -> str | None
     return None  # 不作为工具级规则，走 check_response 专用路径
 
 
+# ── R07: 第一性原理——跳结论/凭推断/没分析就动手 ──────────────────
+# 检测 speculative language + 跳分析直接给方案。
+_R07_SPECULATION_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"应该(是|可以|没问题)|大概(是|没问题)|一般来说|正常情况下|大概率"), r"第一性原理——'应该/大概/一般来说'是推断不是验证，加 [实测] 或 [文档] 标注"),
+    (re.compile(r"(直接|简单|快速).{0,10}(修复|改|处理|解决)(一下|即可|就好)"), r"第一性原理——'直接修复'之前先拆解根因，不要跳分析就动手"),
+]
+
+
+# ── R08: 推责给用户——六类推活回用户的语句 ────────────────────────
+_R08_USER_BLAME_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"需要你做的|需用户.{0,5}(操作|执行|运行|配置)"), r"禁止推责——自己排查修复，不把活推回用户"),
+    (re.compile(r"^(要不要|是否需要|要不要我).{0,20}[？?]$", re.MULTILINE), r"禁止推责——分析清楚直接做，不问用户"),
+    (re.compile(r"请确认一下|请确认是否|请帮我确认"), r"禁止推责——自己验证，不让用户确认"),
+    (re.compile(r"我无法直接执行|不支持.{0,10}(这个|该)操作"), r"禁止推责——换一条路执行，不报告障碍"),
+    (re.compile(r"(你要|你想)我修(哪个|哪|什么|哪些)"), r"禁止推责——主动修全部，不问用户选什么"),
+    (re.compile(r"(还需|仍需|要)手动.{0,10}(操作|执行|处理|改|配|运行)"), r"禁止推责——找程序化替代方案，不把手工操作推给用户"),
+]
+
+
+# ── R09: 验证驱动——声称结论缺少证据标注 ──────────────────────────
+# 检测断言式结论未搭配证据来源标注。
+# 触发模式：声称某种状态/事实，但不跟任何 [实测]/[文档]/[推断]/[未查证] 标签。
+_R09_EVIDENCE_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"(根因|原因)(是|在于|出在).{0,40}[。，\n]"), r"验证驱动——声称根因但没有 [实测] [文档] [推断] 证据标注"),
+    (re.compile(r"(已经|已)(修复|解决|完成|搞定)(?!.*\d+.*通过).{0,30}[。，\n]"), r"验证驱动——声称完成但没有验证证据（测试输出/日志/文件内容）"),
+    (re.compile(r"(确认|确定|保证|肯定|绝对).{0,40}[。，\n]"), r"验证驱动——断言确认但没有 [实测] 证据，加一句验证命令"),
+]
+
+
+def _r07_first_principles(_tool_name: str, _args: dict, _history: dict) -> str | None:
+    """R07: 第一性原理。由 check_response 驱动。"""
+    return None
+
+
+def _r08_user_delegation(_tool_name: str, _args: dict, _history: dict) -> str | None:
+    """R08: 推责给用户。由 check_response 驱动。"""
+    return None
+
+
+def _r09_evidence_driven(_tool_name: str, _args: dict, _history: dict) -> str | None:
+    """R09: 验证驱动。由 check_response 驱动。"""
+    return None
+
+
+# ── R10: 链式工具路由——3+ 步应合并为 execute_code ──────────────────
+# 检测模式：search_files → read_file → patch/write_file/terminal 链
+_CHAIN_WINDOW: int = 4  # 看最近 N 个工具调用
+_CHAIN_TRIGGER_SEQUENCES: list[tuple[tuple[str, ...], str]] = [
+    (
+        ("search_files", "read_file", "patch", "terminal"),
+        "工具链——检测到 search→read→patch→验证 模式，走 execute_code 一次性流水线更快更省 token",
+    ),
+    (
+        ("search_files", "read_file", "write_file", "terminal"),
+        "工具链——检测到 search→read→write→验证 模式，走 execute_code 一次性流水线",
+    ),
+    (
+        ("search_files", "read_file", "patch"),
+        "工具链——检测到 search→read→patch 三次往返，合并为 execute_code 一步跑完",
+    ),
+]
+
+
+def _r10_chain_route(tool_name: str, _args: dict, history: dict) -> str | None:
+    """R10: 链式工具路由。检测工具调用链并提示合并。
+
+    通过 history["_recent_tools"] 追踪最近 N 次工具调用，
+    匹配预定义链式模式后注入 execute_code 提示。
+    """
+    recent: list[str] = history.get("_recent_tools", [])  # type: ignore[assignment]
+    if len(recent) < 3:
+        return None
+
+    for sequence, hint in _CHAIN_TRIGGER_SEQUENCES:
+        seq_len = len(sequence)
+        if len(recent) < seq_len:
+            continue
+        # 检查最近 seq_len 个调用是否匹配序列
+        window = recent[-seq_len:]
+        if tuple(window) == sequence[:seq_len]:
+            return hint
+
+    return None
+
+
 # 规则注册表
 # 只读查询类工具——不对其参数做 AVOID 关键词匹配。
 # AVOID 条目是行为警示（"不要硬编码/不要吞异常"），只对执行类工具有意义。
@@ -144,6 +229,10 @@ _RULES = [
     ("R04", "low", _r04_terminal_fragments),
     ("R05", "medium", _r05_write_without_read),
     ("R06", "high", _r06_blame_shift),
+    ("R07", "medium", _r07_first_principles),
+    ("R08", "high", _r08_user_delegation),
+    ("R09", "medium", _r09_evidence_driven),
+    ("R10", "medium", _r10_chain_route),
 ]
 
 _SEVERITY_EMOJI = {"high": "\U0001f534", "medium": "\U0001f7e1", "low": "\U0001f7e2"}
@@ -166,6 +255,7 @@ class SelfCheckManager:
         self._call_history: dict[str, int | set] = {}
         self._all_read: set[str] = set()
         self._recently_edited: set[str] = set()
+        self._recent_tools: list[str] = []  # 最近 N 个工具调用名链
         self._loaded = False
 
     # ── 加载 ────────────────────────────────────────────────────────
@@ -297,9 +387,22 @@ class SelfCheckManager:
             return None
 
         warnings: list[str] = []
+        # R06: 推责/归属
         for pattern, hint in _BLAME_PATTERNS:
             if pattern.search(assistant_content):
                 warnings.append("\U0001f534 [R06] %s" % hint)
+        # R07: 第一性原理——跳结论/凭推断
+        for pattern, hint in _R07_SPECULATION_PATTERNS:
+            if pattern.search(assistant_content):
+                warnings.append("\U0001f7e1 [R07] %s" % hint)
+        # R08: 推责给用户
+        for pattern, hint in _R08_USER_BLAME_PATTERNS:
+            if pattern.search(assistant_content):
+                warnings.append("\U0001f534 [R08] %s" % hint)
+        # R09: 验证驱动——缺证据
+        for pattern, hint in _R09_EVIDENCE_PATTERNS:
+            if pattern.search(assistant_content):
+                warnings.append("\U0001f7e1 [R09] %s" % hint)
 
         if warnings:
             return "[SelfCheck]\n" + "\n".join(warnings)
@@ -325,6 +428,12 @@ class SelfCheckManager:
         # 传递引用给检查函数
         self._call_history["_recently_edited"] = self._recently_edited  # type: ignore[index]
         self._call_history["_all_read"] = self._all_read  # type: ignore[index]
+
+        # R10 链式工具路由：追踪最近 N 个工具调用名
+        self._recent_tools.append(tool_name)
+        if len(self._recent_tools) > _CHAIN_WINDOW:
+            self._recent_tools = self._recent_tools[-_CHAIN_WINDOW:]
+        self._call_history["_recent_tools"] = self._recent_tools  # type: ignore[index]
 
     # ── 查询 ────────────────────────────────────────────────────────
 
