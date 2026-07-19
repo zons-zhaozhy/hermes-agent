@@ -427,3 +427,67 @@ class TestHasEvidence:
         assert not _has_evidence("应该没问题了吧")
         assert not _has_evidence("root cause is the config setting")
         assert not _has_evidence("")
+
+
+# ── R11: judgment stage — solution without comparison ─────────────────
+
+
+class TestR11JudgmentGate:
+    """check_response should detect single-solution without alternatives."""
+
+    def test_detects_simple_solution_claim(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("方案很简单，加个白名单就行。")
+        assert result is not None
+        assert "[R11]" in result
+
+    def test_detects_direct_fix(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("直接改那行代码就好了。")
+        assert result is not None
+        assert "[R11]" in result
+
+    def test_allows_comparison_framework(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("方案A：加白名单；方案B：加负向前瞻。方案A更精确所以选A。")
+        has_r11 = result and "[R11]" in result
+        assert not has_r11
+
+    def test_allows_straightforward_fix_description(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("修复方案是加白名单。")
+        # "方案是" alone without dismissive language should not trigger
+        has_r11 = result and "[R11]" in result
+        assert not has_r11
+
+
+# ── R12: verification position — evidence at end ─────────────────────
+
+
+class TestR12VerificationPosition:
+    """check_response should flag completion claims with evidence not at end."""
+
+    def test_detects_completion_without_end_evidence(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("已修复那个bug。本次改动不涉及配置文件。")
+        assert result is not None
+        assert "[R12]" in result
+
+    def test_allows_evidence_at_end(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("已修复 self_check.py:227。\n验证：69 passed in 0.74s")
+        has_r12 = result and "[R12]" in result
+        assert not has_r12
+
+    def test_allows_no_completion_claim(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("还需要进一步分析连接池的行为。")
+        has_r12 = result and "[R12]" in result
+        assert not has_r12

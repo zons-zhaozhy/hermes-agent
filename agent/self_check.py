@@ -190,6 +190,44 @@ _R09_EVIDENCE_PATTERNS: list[tuple[re.Pattern, str]] = [
 ]
 
 
+# ── R11: 判断阶段——给方案但没列替代方案对比 ──────────────────────
+# 决策框架要求"判断"阶段输出多方案对比（方案A/B/C + 优劣分析），
+# 直接跳到"修复方案是X"而没有任何对比框架 = 跳过判断。
+_R11_JUDGMENT_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"(方案|做法|方法)\s*(很简单|就是简单|没什么|非常容易)"), r"判断阶段——'方案很简单'=跳过了复杂性分析，decision-framework 要求先列替代方案再选"),
+    (re.compile(r"(直接|只要|仅仅|简单)(改|修复|用|换|替换|写).{0,20}(就行|就好|即可|可以)"), r"判断阶段——直接跳到实施没有分析路径，先列2-3种替代方案再选"),
+]
+
+
+# ── R12: 验证阶段——声称完成但验证证据不在结尾 ────────────────────
+# 决策框架要求"验证"是最后阶段。如果回复声称完成但验证证据
+# 不在结尾附近，说明框架流程被破坏（先声称再事后验证）。
+def _r12_verify_position(assistant_content: str, _has_evidence_fn=None) -> str | None:
+    """R12: 验证阶段位置检测——两阶段逻辑。
+
+    阶段①：全文任一句子声称完成（"完成/搞定/done/已修复"）
+    阶段②：证据不在结尾附近
+    两个都成立 → 验证流程被破坏（宣告和验证脱节）
+    """
+    if not assistant_content:
+        return None
+
+    # 阶段①：全局扫描——全文任一句子声称完成？
+    if not re.search(r"(完成|搞定|done|fixed|resolved|已修复|已解决)", assistant_content, re.I):
+        return None
+
+    # 阶段②：局部检查——结尾是否有验证证据？
+    sentences = [s.strip() for s in re.split(r"[。\n]", assistant_content) if s.strip()]
+    if not sentences:
+        return None
+
+    end_chunk = " ".join(sentences[-2:])
+    if _has_evidence_fn and _has_evidence_fn(end_chunk):
+        return None  # 验证在结尾，正确
+
+    return "验证阶段——声称完成但验证证据不在结尾，decision-framework 要求验证是最后一步"
+
+
 def _r07_first_principles(_tool_name: str, _args: dict, _history: dict) -> str | None:
     """R07: 第一性原理。由 check_response 驱动。"""
     return None
@@ -278,6 +316,8 @@ _RULES = [
     ("R08", "high", _r08_user_delegation),
     ("R09", "medium", _r09_evidence_driven),
     ("R10", "medium", _r10_chain_route),
+    ("R11", "medium", _r07_first_principles),  # placeholder — response-level only
+    ("R12", "medium", _r09_evidence_driven),   # placeholder — uses custom fn
 ]
 
 _SEVERITY_EMOJI = {"high": "\U0001f534", "medium": "\U0001f7e1", "low": "\U0001f7e2"}
@@ -455,6 +495,17 @@ class SelfCheckManager:
                 evidence_context = assistant_content[start:end]
                 if not _has_evidence(evidence_context):
                     warnings.append("\U0001f7e1 [R09] %s" % hint)
+        # R11: 判断阶段——给方案但没列替代方案对比
+        for pattern, hint in _R11_JUDGMENT_PATTERNS:
+            if pattern.search(assistant_content):
+                # 检查整段文本是否有对比框架（方案A/B、①/②、对比/替代/权衡）
+                has_comparison = bool(re.search(r"方案\s*[A-Za-z①②③]|①|②|③|\bvs\b|比较|权衡|对比|另一个|替代方案|哪个更好", assistant_content, re.I))
+                if not has_comparison:
+                    warnings.append("\U0001f7e1 [R11] %s" % hint)
+        # R12: 验证阶段——声称完成但验证证据不在结尾
+        r12_warning = _r12_verify_position(assistant_content, _has_evidence)
+        if r12_warning:
+            warnings.append("\U0001f7e1 [R12] %s" % r12_warning)
 
         if warnings:
             return "[SelfCheck]\n" + "\n".join(warnings)
