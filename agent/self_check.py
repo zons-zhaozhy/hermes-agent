@@ -103,18 +103,9 @@ _BLAME_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"不是我(这次|的)?(改的|改出来的|写的|弄的|引入的|代码)"), r"不推责——视野内破损即责任，不说归属"),
     (re.compile(r"这是(上游|历史|之前|其他人|别的).{0,20}的(问题|代码|改动|bug)"), r"不推责——追究来源不如直接修复"),
     (re.compile(r"不属于本[次轮个](修改|改动|修复|任务)"), r"不推责——看到就修，不区分范围"),
-    (re.compile(r"这个是.*留[下存]的|(从以前|旧版本|版本)就有的"), r"不推责——历史债务也是债，当场清"),
+    (re.compile(r"这个是.{0,200}留[下存]的|(从以前|旧版本|版本)就有的"), r"不推责——历史债务也是债，当场清"),
     (re.compile(r"不是这次(改动|变更|修改|改的)"), r"不推责——视野内破损即责任，不说归属"),
 ]
-
-
-def _r06_blame_shift(_tool_name: str, _args: dict, _history: dict) -> str | None:
-    """R06: 推责/归属语言。由 check_response 驱动，工具参数忽略。
-
-    注：此规则通过 check_response() 接收 assistant_content 参数，
-    不在 check() 中触发（check 只有一个工具调用上下文）。
-    """
-    return None  # 不作为工具级规则，走 check_response 专用路径
 
 
 # ── R07: 第一性原理——跳结论/凭推断/没分析就动手 ──────────────────
@@ -228,21 +219,6 @@ def _r12_verify_position(assistant_content: str, _has_evidence_fn=None) -> str |
     return "验证阶段——声称完成但验证证据不在结尾，decision-framework 要求验证是最后一步"
 
 
-def _r07_first_principles(_tool_name: str, _args: dict, _history: dict) -> str | None:
-    """R07: 第一性原理。由 check_response 驱动。"""
-    return None
-
-
-def _r08_user_delegation(_tool_name: str, _args: dict, _history: dict) -> str | None:
-    """R08: 推责给用户。由 check_response 驱动。"""
-    return None
-
-
-def _r09_evidence_driven(_tool_name: str, _args: dict, _history: dict) -> str | None:
-    """R09: 验证驱动。由 check_response 驱动。"""
-    return None
-
-
 # ── R10: 链式工具路由——3+ 步应合并为 execute_code ──────────────────
 # 检测模式：search_files → read_file → patch/write_file/terminal 链
 _CHAIN_WINDOW: int = 4  # 看最近 N 个工具调用
@@ -306,19 +282,17 @@ _READ_ONLY_TOOLS: frozenset[str] = frozenset({
 })
 
 _RULES = [
+    # ── 工具级规则：check() 中调用 ──
     ("R01", "medium", _r01_read_repeat),
     ("R02", "high", _r02_patch_repeat),
     ("R03", "medium", _r03_read_after_edit),
     ("R04", "low", _r04_terminal_fragments),
     ("R05", "medium", _r05_write_without_read),
-    ("R06", "high", _r06_blame_shift),
-    ("R07", "medium", _r07_first_principles),
-    ("R08", "high", _r08_user_delegation),
-    ("R09", "medium", _r09_evidence_driven),
     ("R10", "medium", _r10_chain_route),
-    ("R11", "medium", _r07_first_principles),  # placeholder — response-level only
-    ("R12", "medium", _r09_evidence_driven),   # placeholder — uses custom fn
 ]
+# 回复级规则（R06-R09, R11-R12）：在 check_response() 中专有路径处理，
+# 不走 check() 的 _RULES 循环——下面注释仅作文档用。
+_RESPONSE_RULE_IDS: frozenset[str] = frozenset({"R06", "R07", "R08", "R09", "R11", "R12"})
 
 _SEVERITY_EMOJI = {"high": "\U0001f534", "medium": "\U0001f7e1", "low": "\U0001f7e2"}
 _SEVERITY_EMOJI["high"] = "\U0001f534"  # 🔴
@@ -475,6 +449,14 @@ class SelfCheckManager:
         if not assistant_content:
             return None
 
+        try:
+            return self._do_check_response(assistant_content)
+        except Exception:
+            logger.exception("SelfCheck: check_response raised — returning None")
+            return None
+
+    def _do_check_response(self, assistant_content: str) -> str | None:
+        """check_response 的核心逻辑。包裹在 try/except 中防止单点崩溃。"""
         warnings: list[str] = []
         # R06: 推责/归属
         for pattern, hint in _BLAME_PATTERNS:
