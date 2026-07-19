@@ -6,9 +6,9 @@ round-based anti-loop, config parsing, tool classification.
 
 import pytest
 
-from agent.deliberation_gate import (
-    DeliberationGate,
-    DeliberationGateConfig,
+from agent.read_think_gate import (
+    ReadThinkGate,
+    ReadThinkGateConfig,
     GATED_TOOL_NAMES,
 )
 
@@ -16,20 +16,20 @@ from agent.deliberation_gate import (
 # ── Config ──────────────────────────────────────────────────────────
 
 
-class TestDeliberationGateConfig:
+class TestReadThinkGateConfig:
     def test_default_config(self):
-        c = DeliberationGateConfig()
+        c = ReadThinkGateConfig()
         assert c.enabled is True
         assert c.max_reasoning_rounds == 5
         assert c.min_reasoning_chars == 80
         assert c.min_reflection_chars == 20
 
     def test_from_mapping_empty(self):
-        c = DeliberationGateConfig.from_mapping(None)
+        c = ReadThinkGateConfig.from_mapping(None)
         assert c.enabled is True
 
     def test_from_mapping_partial(self):
-        c = DeliberationGateConfig.from_mapping(
+        c = ReadThinkGateConfig.from_mapping(
             {"enabled": False, "max_reasoning_rounds": 3}
         )
         assert c.enabled is False
@@ -37,7 +37,7 @@ class TestDeliberationGateConfig:
         assert c.min_reasoning_chars == 80  # default
 
     def test_from_mapping_invalid(self):
-        c = DeliberationGateConfig.from_mapping(
+        c = ReadThinkGateConfig.from_mapping(
             {"max_reasoning_rounds": -1, "min_reasoning_chars": 0}
         )
         assert c.max_reasoning_rounds == 5  # clamped
@@ -52,7 +52,7 @@ class TestPhaseState:
 
     @pytest.fixture(autouse=True)
     def _setup(self):
-        self.gate = DeliberationGate()
+        self.gate = ReadThinkGate()
 
     def test_starts_in_reasoning_phase(self):
         assert self.gate.phase == "reasoning"
@@ -80,7 +80,7 @@ class TestUnlockConditions:
 
     @pytest.fixture(autouse=True)
     def _setup(self):
-        self.gate = DeliberationGate()
+        self.gate = ReadThinkGate()
 
     # ── Direct reasoning ─────────────────────────────────────────────
 
@@ -89,7 +89,7 @@ class TestUnlockConditions:
         result = self.gate.check_batch("x" * 80, ["terminal"])
         assert result is None
         assert self.gate.phase == "execution"
-        assert self.gate._reasoning_rounds == 1
+        assert self.gate._reasoning_rounds == 0  # direct reasoning doesn't consume a round
 
     def test_direct_reasoning_allows_tools(self):
         self.gate.check_batch("x" * 80, ["terminal"])
@@ -134,16 +134,16 @@ class TestUnlockConditions:
     # ── Anti-loop: timeout ──────────────────────────────────────────
 
     def test_max_rounds_auto_unlock(self):
-        """After 5 reasoning rounds, auto-unlock even without investigation."""
-        for i in range(5):
+        """After max_reasoning_rounds blocked calls, the next call auto-unlocks."""
+        # 先消耗 max_reasoning_rounds 次被拦截的调用，第 N+1 次才触发自动解锁
+        for i in range(self.gate.config.max_reasoning_rounds):
             result = self.gate.check_batch("", ["terminal"])
-            if i < 4:
-                assert result is not None  # blocked
-                assert self.gate.phase == "reasoning"
-            else:
-                # Round 5: auto-unlock
-                assert result is None
-                assert self.gate.phase == "execution"
+            assert result is not None  # blocked
+            assert self.gate.phase == "reasoning"
+        # Next call: auto-unlock (counter >= max)
+        result = self.gate.check_batch("", ["terminal"])
+        assert result is None
+        assert self.gate.phase == "execution"
 
 
 # ── Block message quality ──────────────────────────────────────────
@@ -154,7 +154,7 @@ class TestBlockMessage:
 
     @pytest.fixture(autouse=True)
     def _setup(self):
-        self.gate = DeliberationGate()
+        self.gate = ReadThinkGate()
 
     def test_no_investigation_message_guides_to_search(self):
         result = self.gate.check_batch("", ["terminal"])
@@ -175,7 +175,7 @@ class TestBlockMessage:
 
 class TestDisabled:
     def test_disabled_passes_mutating_without_content(self):
-        gate = DeliberationGate(DeliberationGateConfig(enabled=False))
+        gate = ReadThinkGate(ReadThinkGateConfig(enabled=False))
         result = gate.check_batch("", ["terminal", "write_file"])
         assert result is None
 
@@ -203,7 +203,7 @@ class TestGatedToolNames:
 class TestMixedBatches:
     @pytest.fixture(autouse=True)
     def _setup(self):
-        self.gate = DeliberationGate()
+        self.gate = ReadThinkGate()
 
     def test_mixed_batch_marks_investigation(self):
         """Batch has both read and write tools → marks investigation, blocks write."""
@@ -226,7 +226,7 @@ class TestTurnLifecycle:
 
     @pytest.fixture(autouse=True)
     def _setup(self):
-        self.gate = DeliberationGate()
+        self.gate = ReadThinkGate()
 
     def test_full_reasoning_to_execution_cycle(self):
         """Round 1: investigate → Round 2: reflect+mutate → Round 3: free."""
@@ -269,9 +269,9 @@ class TestTurnLifecycle:
         wrapped = json.dumps({"error": msg}, ensure_ascii=False)
         parsed = json.loads(wrapped)
 
-        # Should be: {"error": "[Deliberation Gate] ..."}
-        assert "Deliberation Gate" in parsed["error"]
-        # NOT: {"error": "{\"deliberation_gate\": ...}"}
+        # Should be: {"error": "[ReadThink Gate — 推理阶段] ..."}
+        assert "ReadThink Gate" in parsed["error"]
+        # NOT: {"error": "{\"read_think_gate\": ...}"}
         assert "deliberation_gate" not in str(parsed)
 
     def test_concurrent_path_block_message_works(self):
