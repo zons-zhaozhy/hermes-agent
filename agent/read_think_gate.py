@@ -63,6 +63,10 @@ class ReadThinkGateConfig:
     # 调查后无条件解锁：完成调查后，即使 content 极短也放行。
     # 避免模型"做了调查但回复简短"被反复拦截。
     unlock_after_investigation: bool = True
+    # 完成调查所需的最低只读工具调用次数。
+    # 1=调过一次只读工具就算完成调查（默认，适合简单任务）
+    # 2-3=复杂任务需要多次调查才算充分
+    min_read_only_calls: int = 1
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> "ReadThinkGateConfig":
@@ -74,6 +78,7 @@ class ReadThinkGateConfig:
             min_reasoning_chars=_positive_int(data.get("min_reasoning_chars"), 80),
             min_reflection_chars=_positive_int(data.get("min_reflection_chars"), 20),
             unlock_after_investigation=_as_bool(data.get("unlock_after_investigation"), True),
+            min_read_only_calls=_positive_int(data.get("min_read_only_calls"), 1),
         )
 
 
@@ -99,7 +104,12 @@ class ReadThinkGate:
         """每轮开始时重置——回到推理阶段。"""
         self._satisfied: bool = False
         self._reasoning_rounds: int = 0
-        self._investigation_done: bool = False
+        self._read_only_count: int = 0
+
+    @property
+    def _investigation_done(self) -> bool:
+        """调查是否达标——只读调用次数 >= min_read_only_calls。"""
+        return self._read_only_count >= self.config.min_read_only_calls
 
     @property
     def is_satisfied(self) -> bool:
@@ -135,9 +145,9 @@ class ReadThinkGate:
         has_read_only = any(t not in GATED_TOOL_NAMES for t in tool_names)
         content_len = len(assistant_content or "")
 
-        # 标记调查进度——只要调用了只读工具就算
+        # 标记调查进度——累计只读工具调用次数
         if has_read_only:
-            self._investigation_done = True
+            self._read_only_count += 1
 
         # ── 解锁判定 ────────────────────────────────────────────────
 
@@ -220,14 +230,24 @@ class ReadThinkGate:
 
     def _build_block_message(self, tool_name: str, content_len: int) -> str:
         """生成引导性拦截消息——告诉 agent 要做什么，不只是禁什么。"""
+        remaining = self.config.min_read_only_calls - self._read_only_count
         if not self._investigation_done:
-            guide = (
-                "你还没有做任何调查。请先用只读工具收集相关信息：\n"
-                "  · search_files — 搜索代码库\n"
-                "  · read_file — 阅读相关文件\n"
-                "  · web_search — 搜索技术文档\n"
-                "完成调查后，总结你的发现和分析，执行工具将自动解锁。"
-            )
+            if self._read_only_count == 0:
+                guide = (
+                    "你还没有做任何调查。请先用只读工具收集相关信息：\n"
+                    "  · search_files — 搜索代码库\n"
+                    "  · read_file — 阅读相关文件\n"
+                    "  · web_search — 搜索技术文档\n"
+                    f"至少 {self.config.min_read_only_calls} 次只读调查后，执行工具将自动解锁。"
+                )
+            else:
+                guide = (
+                    f"调查次数不足（{self._read_only_count}/{self.config.min_read_only_calls}）。\n"
+                    f"还需要 {remaining} 次只读调查：\n"
+                    "  · search_files — 搜索代码库\n"
+                    "  · read_file — 阅读相关文件\n"
+                    "  · web_search — 搜索技术文档"
+                )
         else:
             guide = (
                 "你已经完成了调查，但还没有给出分析。\n"

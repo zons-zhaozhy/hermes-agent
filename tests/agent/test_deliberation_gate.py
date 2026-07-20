@@ -306,3 +306,58 @@ class TestTurnLifecycle:
         assert "terminal" in msg
         # Gate should still track investigation (read_file was in the batch)
         assert gate._investigation_done is True
+
+
+# ── min_read_only_calls config ──────────────────────────────────────
+
+
+class TestMinReadOnlyCalls:
+    """Verify that min_read_only_calls controls how many reads are required."""
+
+    def test_default_one_call_suffices(self):
+        """Default min_read_only_calls=1: one read unlocks."""
+        gate = ReadThinkGate()
+        gate.check_batch("", ["read_file"])
+        assert gate._investigation_done is True
+
+    def test_two_calls_required(self):
+        """min_read_only_calls=2: one read is not enough."""
+        gate = ReadThinkGate(ReadThinkGateConfig(min_read_only_calls=2))
+        gate.check_batch("", ["read_file"])
+        assert gate._investigation_done is False
+        gate.check_batch("", ["search_files"])
+        assert gate._investigation_done is True
+
+    def test_three_calls_required(self):
+        """min_read_only_calls=3."""
+        gate = ReadThinkGate(ReadThinkGateConfig(min_read_only_calls=3))
+        gate.check_batch("", ["read_file"])
+        gate.check_batch("", ["search_files"])
+        assert gate._investigation_done is False
+        gate.check_batch("", ["web_search"])
+        assert gate._investigation_done is True
+
+    def test_two_calls_blocks_then_unlocks(self):
+        """With min_read_only_calls=2, terminal is blocked after 1 read, unlocked after 2."""
+        gate = ReadThinkGate(ReadThinkGateConfig(min_read_only_calls=2))
+        # First read
+        gate.check_batch("", ["read_file"])
+        # terminal still blocked
+        result = gate.check_batch("", ["terminal"])
+        assert result is not None
+        assert gate.phase == "reasoning"
+        # Second read
+        gate.check_batch("", ["search_files"])
+        # Now terminal unlocked
+        result = gate.check_batch("", ["terminal"])
+        assert result is None
+        assert gate.phase == "execution"
+
+    def test_block_message_shows_remaining(self):
+        """Block message tells agent how many more reads are needed."""
+        gate = ReadThinkGate(ReadThinkGateConfig(min_read_only_calls=3))
+        gate.check_batch("", ["read_file"])  # 1/3
+        gate.check_batch("", ["search_files"])  # 2/3
+        result = gate.check_batch("", ["terminal"])
+        assert result is not None
+        assert "1" in result  # "还需要 1 次"
