@@ -106,30 +106,39 @@ class TestUnlockConditions:
     # ── Investigation + reflection ───────────────────────────────────
 
     def test_investigation_then_reflection_unlocks(self):
-        """Step through: read-only → blocked mutating → investigation+reflection."""
         # Round 1: read-only tools (investigation)
         r1 = self.gate.check_batch("", ["read_file", "search_files"])
         assert r1 is None  # pass through
         assert self.gate._investigation_done is True
-        assert self.gate.phase == "reasoning"  # still in reasoning
+        assert self.gate.phase == "execution"  # unlocked — investigation done
 
         # Round 2: mutating tool with reflection → unlocks
         r2 = self.gate.check_batch("x" * 25, ["terminal"])
         assert r2 is None  # investigation done + 25 >= 20 → unlock
         assert self.gate.phase == "execution"
 
-    def test_investigation_without_reflection_blocked(self):
+    def test_investigation_without_reflection_unlocks(self):
+        """调查后无条件解锁——unlock_after_investigation=True (default)."""
         self.gate.check_batch("", ["read_file"])  # investigate
         # Try to mutate with NO reflection
         result = self.gate.check_batch("", ["terminal"])
-        assert result is not None  # still blocked — need reflection
-        assert self.gate.phase == "reasoning"
+        assert result is None  # unlocked — investigation done is sufficient
+        assert self.gate.phase == "execution"
 
-    def test_investigation_with_insufficient_reflection_blocked(self):
+    def test_investigation_unlock_can_be_disabled(self):
+        """unlock_after_investigation=False → 调查后仍需反射文本."""
+        gate = ReadThinkGate(ReadThinkGateConfig(unlock_after_investigation=False))
+        gate.check_batch("", ["read_file"])  # investigate
+        result = gate.check_batch("", ["terminal"])  # no reflection
+        assert result is not None  # blocked — need reflection
+        assert gate.phase == "reasoning"
+
+    def test_investigation_with_insufficient_reflection_unlocks(self):
+        """调查后无条件解锁——即使 content < min_reflection_chars 也放行."""
         self.gate.check_batch("", ["read_file"])  # investigate
         result = self.gate.check_batch("OK", ["terminal"])  # 2 chars < 20
-        assert result is not None
-        assert self.gate.phase == "reasoning"
+        assert result is None  # unlocked — investigation done is sufficient
+        assert self.gate.phase == "execution"
 
     # ── Anti-loop: timeout ──────────────────────────────────────────
 
@@ -164,8 +173,11 @@ class TestBlockMessage:
         assert "web_search" in result
 
     def test_investigation_done_message_asks_for_reflection(self):
-        self.gate.check_batch("", ["read_file"])
-        result = self.gate.check_batch("", ["terminal"])
+        """With unlock_after_investigation=True (default), investigation unlocks immediately.
+        To test the 'needs reflection' message, disable unconditional unlock."""
+        gate = ReadThinkGate(ReadThinkGateConfig(unlock_after_investigation=False))
+        gate.check_batch("", ["read_file"])
+        result = gate.check_batch("", ["terminal"])
         assert result is not None
         assert "问题本质" in result
 
@@ -206,16 +218,19 @@ class TestMixedBatches:
         self.gate = ReadThinkGate()
 
     def test_mixed_batch_marks_investigation(self):
-        """Batch has both read and write tools → marks investigation, blocks write."""
-        result = self.gate.check_batch("", ["read_file", "terminal"])
+        """Batch has both read and write tools → marks investigation.
+        With unlock_after_investigation=True (default), investigation unlocks immediately.
+        To test blocking with mixed batch, disable unconditional unlock."""
+        gate = ReadThinkGate(ReadThinkGateConfig(unlock_after_investigation=False))
+        result = gate.check_batch("", ["read_file", "terminal"])
         assert result is not None  # terminal blocked
-        assert self.gate._investigation_done is True  # but read_file counted
+        assert gate._investigation_done is True  # but read_file counted
 
     def test_pure_read_batch_does_not_block(self):
         result = self.gate.check_batch(None, ["read_file", "search_files"])
         assert result is None
         assert self.gate._investigation_done is True
-        assert self.gate.phase == "reasoning"  # not auto-unlocked, just continue
+        assert self.gate.phase == "execution"  # investigation done → unlocked
 
 
 # ── Turn lifecycle simulation (mirrors tool_executor path) ───────────
@@ -229,7 +244,7 @@ class TestTurnLifecycle:
         self.gate = ReadThinkGate()
 
     def test_full_reasoning_to_execution_cycle(self):
-        """Round 1: investigate → Round 2: reflect+mutate → Round 3: free."""
+        """Round 1: investigate → Round 2: unlocked (investigation done)."""
         assert self.gate.phase == "reasoning"
         assert self.gate._investigation_done is False
 
@@ -237,17 +252,23 @@ class TestTurnLifecycle:
         r1 = self.gate.check_batch("", ["read_file", "search_files"])
         assert r1 is None  # allowed
         assert self.gate._investigation_done is True
-        assert self.gate.phase == "reasoning"  # still reasoning
+        assert self.gate.phase == "execution"  # investigation done → unlocked
 
-        # Round 2: LLM tries to write without analysis → blocked
+        # Round 2: investigation done → unlocked unconditionally
         r2 = self.gate.check_batch("", ["write_file"])
-        assert r2 is not None  # blocked — need reflection
-        assert "已经完成了调查" in r2  # guidance message acknowledges investigation
-
-        # Round 3: LLM reflects + tries again → unlocked
-        r3 = self.gate.check_batch("Found auth bug in login handler.", ["write_file"])
-        assert r3 is None  # unlocked — investigation + reflection
+        assert r2 is None  # unlocked — investigation done
         assert self.gate.phase == "execution"
+
+    def test_full_cycle_strict_mode(self):
+        """With unlock_after_investigation=False: investigate → blocked → reflect → unlocked."""
+        gate = ReadThinkGate(ReadThinkGateConfig(unlock_after_investigation=False))
+        gate.check_batch("", ["read_file", "search_files"])
+        r2 = gate.check_batch("", ["write_file"])
+        assert r2 is not None  # blocked — need reflection
+        assert "已经完成了调查" in r2
+        r3 = gate.check_batch("Found auth bug in login handler.", ["write_file"])
+        assert r3 is None  # unlocked — investigation + reflection
+        assert gate.phase == "execution"
 
     def test_direct_reasoning_skips_investigation(self):
         """If LLM provides analysis upfront, skip directly to execution."""
@@ -275,11 +296,13 @@ class TestTurnLifecycle:
         assert "deliberation_gate" not in str(parsed)
 
     def test_concurrent_path_block_message_works(self):
-        """Gate returns correct format for concurrent path block injection."""
-        msg = self.gate.check_batch("", ["read_file", "terminal"])
+        """Gate returns correct format for concurrent path block injection.
+        With default config, investigation unlocks immediately, so use strict mode."""
+        gate = ReadThinkGate(ReadThinkGateConfig(unlock_after_investigation=False))
+        msg = gate.check_batch("", ["read_file", "terminal"])
 
         # Used as: elif _gate_block and func in GATED_TOOL_NAMES: block_result = _gate_block
         assert msg is not None
         assert "terminal" in msg
         # Gate should still track investigation (read_file was in the batch)
-        assert self.gate._investigation_done is True
+        assert gate._investigation_done is True

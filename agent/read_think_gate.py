@@ -60,6 +60,9 @@ class ReadThinkGateConfig:
     min_reasoning_chars: int = 80
     # 调查后解锁：完成至少一次只读工具调用 + content 达到此值即可。
     min_reflection_chars: int = 20
+    # 调查后无条件解锁：完成调查后，即使 content 极短也放行。
+    # 避免模型"做了调查但回复简短"被反复拦截。
+    unlock_after_investigation: bool = True
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> "ReadThinkGateConfig":
@@ -70,6 +73,7 @@ class ReadThinkGateConfig:
             max_reasoning_rounds=_positive_int(data.get("max_reasoning_rounds"), 5),
             min_reasoning_chars=_positive_int(data.get("min_reasoning_chars"), 80),
             min_reflection_chars=_positive_int(data.get("min_reflection_chars"), 20),
+            unlock_after_investigation=_as_bool(data.get("unlock_after_investigation"), True),
         )
 
 
@@ -166,7 +170,14 @@ class ReadThinkGate:
         return _make_synthetic_result(first_gated, block_msg, content_len)
 
     def _try_unlock(self, content_len: int) -> bool:
-        """尝试解锁。返回 True 如果状态已变为 satisfied。"""
+        """尝试解锁。返回 True 如果状态已变为 satisfied。
+
+        解锁优先级（任一满足即解锁）：
+        1. 直接充分推理：content >= min_reasoning_chars
+        2. 调查后反射：调查完成 + content >= min_reflection_chars
+        3. 调查后无条件：调查完成即解锁（unlock_after_investigation=True 时）
+        4. 推理轮数耗尽：强制解锁防死循环
+        """
         # 条件1：直接充分推理
         if content_len >= self.config.min_reasoning_chars:
             self._satisfied = True
@@ -187,7 +198,16 @@ class ReadThinkGate:
             )
             return True
 
-        # 条件3：推理轮数耗尽 → 强制解锁
+        # 条件3：调查后无条件解锁——避免"做了调查但回复简短"被反复拦截
+        if self._investigation_done and self.config.unlock_after_investigation:
+            self._satisfied = True
+            logger.info(
+                "read-think gate: unlocked — investigation done (unconditional, content=%d)",
+                content_len,
+            )
+            return True
+
+        # 条件4：推理轮数耗尽 → 强制解锁
         if self._reasoning_rounds >= self.config.max_reasoning_rounds:
             self._satisfied = True
             logger.info(
