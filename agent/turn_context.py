@@ -265,6 +265,25 @@ class TurnContext:
     ext_prefetch_cache: str = ""
 
 
+def _extract_user_message_text(user_message: Any) -> str | None:
+    """从 user_message 中提取纯文本内容，用于复杂度检测。"""
+    if user_message is None:
+        return None
+    if isinstance(user_message, str):
+        return user_message
+    if isinstance(user_message, dict):
+        content = user_message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(str(item.get("text", "")))
+            return " ".join(parts) if parts else None
+    return str(user_message)
+
+
 def build_turn_context(
     agent,
     user_message: Any,
@@ -351,7 +370,7 @@ def build_turn_context(
                 if has_registered_mcp_tools():
                     refresh_agent_mcp_tools(agent, quiet_mode=True)
     except Exception:
-        logger.debug("between-turns MCP tool refresh skipped", exc_info=True)
+        logger.warning("between-turns MCP tool refresh skipped", exc_info=True)
 
     # Sanitize surrogate characters from user input.
     if isinstance(user_message, str):
@@ -392,7 +411,10 @@ def build_turn_context(
     agent._tool_guardrail_halt_decision = None
     _dg = getattr(agent, "_read_think_gate", None)
     if _dg is not None:
-        _dg.reset_for_turn()
+        _dg.reset_for_turn(
+            _extract_user_message_text(user_message),
+            conversation_history,
+        )
     _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
     if callable(_reset_consol):
         _reset_consol()

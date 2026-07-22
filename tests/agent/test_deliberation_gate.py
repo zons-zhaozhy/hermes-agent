@@ -179,7 +179,7 @@ class TestBlockMessage:
         gate.check_batch("", ["read_file"])
         result = gate.check_batch("", ["terminal"])
         assert result is not None
-        assert "问题本质" in result
+        assert "现状全貌" in result
 
 
 # ── Disabled gate ───────────────────────────────────────────────────
@@ -265,7 +265,7 @@ class TestTurnLifecycle:
         gate.check_batch("", ["read_file", "search_files"])
         r2 = gate.check_batch("", ["write_file"])
         assert r2 is not None  # blocked — need reflection
-        assert "已经完成了调查" in r2
+        assert "调查已完成" in r2
         r3 = gate.check_batch("Found auth bug in login handler.", ["write_file"])
         assert r3 is None  # unlocked — investigation + reflection
         assert gate.phase == "execution"
