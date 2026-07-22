@@ -18,18 +18,20 @@ from pathlib import Path
 
 SKILLS_ROOT = Path.home() / ".hermes" / "skills"
 
-# Patterns that indicate red lines / hard rules / prohibitions
+# Patterns that indicate red lines / hard rules / prohibitions.
+# Conservative — only match explicit rule markers, not prose.
 _PATTERNS = [
     (r"⛔\s*(.+?)(?:\n|$)", "critical"),
     (r"禁止[：:]\s*(.+?)(?:\n|$)", "prohibit"),
     (r"不允许[：:]\s*(.+?)(?:\n|$)", "prohibit"),
     (r"绝[对不]允许[：:，,]?\s*(.+?)(?:\n|$)", "prohibit"),
-    (r"绝不[：:，,]?\s*(.+?)(?:\n|$)", "prohibit"),
     (r"铁律[：:]\s*(.+?)(?:\n|$)", "iron_rule"),
     (r"红线[：:]\s*(.+?)(?:\n|$)", "red_line"),
     (r"零容忍[：:]\s*(.+?)(?:\n|$)", "zero_tolerance"),
-    (r"必须[：:]\s*(.+?)(?:\n|$)", "must"),
-    (r"❌\s*(.+?)(?:\n|$)", "forbidden"),
+    # ❌ only counts as a rule when followed by an action verb
+    (r"^❌\s*(?:错误|反例|不要|禁|不|错|坏)[：:，,]?\s*(.+?)(?:\n|$)", "forbidden"),
+    # ✅ positive counterpart — informational, not counted as violation
+    (r"^✅\s*(.+?)(?:\n|$)", "positive"),
 ]
 
 
@@ -42,7 +44,7 @@ def scan_file(file_path: Path) -> list[dict]:
 
     results = []
     for pattern, category in _PATTERNS:
-        for m in re.finditer(pattern, content):
+        for m in re.finditer(pattern, content, re.MULTILINE):
             text = m.group(1).strip()
             if len(text) < 5:
                 continue

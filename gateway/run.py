@@ -12166,7 +12166,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             f'[IMPORTANT: The "{_display_name}" skill is auto-loaded. '
                             f"Follow its instructions for this session.]"
                         )
-                        _part = _build_skill_message(_loaded_skill, _skill_dir, _note)
+                        _part = _build_skill_message(_loaded_skill, _skill_dir, _note, critical_only=True)
                         if _part:
                             _combined_parts.append(_part)
                             _loaded_names.append(_sname)

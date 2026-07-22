@@ -1,0 +1,8 @@
+name: pipeline-guard
+version: "1.0.0"
+description: "Code-level stage gate for feature-dev-pipeline skill — blocks write tools before phase 4, blocks 'done' claims before phase 5 verification."
+author: stan
+kind: standalone
+hooks:
+  - pre_tool_call
+  - pre_verify
