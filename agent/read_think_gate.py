@@ -362,6 +362,7 @@ class ReadThinkGate:
         self._reasoning_rounds: int = 0
         self._read_only_count: int = 0
         self._active_complexity: str = "normal"
+        self._files_read: set[str] = set()  # 本 turn 读取的文件路径
 
         if self.config.complexity_adaptive:
             history_summary = ""
@@ -393,8 +394,8 @@ class ReadThinkGate:
 
     @property
     def _investigation_done(self) -> bool:
-        """调查是否达标——只读调用次数 >= 当前复杂度要求的次数。"""
-        return self._read_only_count >= self._active_profile.min_read_only_calls
+        """调查是否达标——至少做了 1 次只读调查。"""
+        return self._read_only_count >= 1
 
     @property
     def is_satisfied(self) -> bool:
@@ -412,66 +413,102 @@ class ReadThinkGate:
         self,
         assistant_content: str | None,
         tool_names: list[str],
+        tool_args: list[dict] | None = None,
     ) -> str | None:
         """批量门控检查——同一 assistant_message 只调一次。
 
         Args:
             assistant_content: 当前 assistant_message 的 content 文本
             tool_names: 当前批次所有工具名
+            tool_args: 每个工具的 args dict（可选，用于 write-target 覆盖率验证）
 
         Returns:
             拦截消息（JSON error string），放行时返回 None
         """
+        # 文件追踪必须在所有 early return 之前——
+        # 即使 gate 已解锁，read_file 的路径仍需记录。
+        if tool_args:
+            for tn, ta in zip(tool_names, tool_args):
+                if tn == "read_file" and isinstance(ta, dict):
+                    rp = ta.get("path", "")
+                    if rp:
+                        self._files_read.add(rp)
+
         if not self.config.enabled or self._satisfied:
             return None
 
         has_mutating = any(t in GATED_TOOL_NAMES for t in tool_names)
         has_read_only = any(t not in GATED_TOOL_NAMES for t in tool_names)
-        content_len = len(assistant_content or "")
+        content_text = assistant_content or ""
+        content_len = len(content_text)
 
         if has_read_only:
             self._read_only_count += 1
 
-        if self._try_unlock(content_len):
+        if self._try_unlock(content_len, content_text):
             return None
 
         if not has_mutating:
             logger.debug(
-                "read-think gate: read-only batch — continuing (investigation %d/%d complexity=%s)",
+                "read-think gate: read-only batch — continuing (investigation %d complexity=%s)",
                 self._read_only_count,
-                self._active_profile.min_read_only_calls,
                 self._active_complexity,
             )
             return None
+
+        # write-target 覆盖率验证：
+        # 严格模式（unlock_after_investigation=False）下，这是真正的 gate。
+        # 要改的文件读过 → 放行（比"读了 N 个文件"科学）。
+        # 要改的文件没读过 → 拦截。
+        if tool_args and not self.config.unlock_after_investigation:
+            for tn, ta in zip(tool_names, tool_args):
+                if tn in ("write_file", "patch") and isinstance(ta, dict):
+                    wp = ta.get("path", "")
+                    if wp:
+                        if wp in self._files_read:
+                            # write target 已读 → 放行
+                            self._satisfied = True
+                            logger.info(
+                                "read-think gate: unlocked — write target %s was read before edit",
+                                wp,
+                            )
+                            return None
+                        else:
+                            # write target 未读 → 拦截
+                            self._reasoning_rounds += 1
+                            block_msg = self._build_block_message(tn, content_len)
+                            logger.info(
+                                "read-think gate: blocking %s — write target %s not read (round %d/%d)",
+                                tn, wp, self._reasoning_rounds,
+                                self._active_profile.max_reasoning_rounds,
+                            )
+                            return _make_synthetic_result(tn, block_msg, content_len)
 
         self._reasoning_rounds += 1
 
         first_gated = next(t for t in tool_names if t in GATED_TOOL_NAMES)
         block_msg = self._build_block_message(first_gated, content_len)
         logger.info(
-            "read-think gate: blocking %s (round %d/%d, content=%d, investigated=%d/%d, complexity=%s)",
+            "read-think gate: blocking %s (round %d/%d, content=%d, investigated=%d, complexity=%s)",
             first_gated,
             self._reasoning_rounds,
             self._active_profile.max_reasoning_rounds,
             content_len,
             self._read_only_count,
-            self._active_profile.min_read_only_calls,
             self._active_complexity,
         )
         return _make_synthetic_result(first_gated, block_msg, content_len)
 
-    def _try_unlock(self, content_len: int) -> bool:
+    def _try_unlock(self, content_len: int, content: str = "") -> bool:
         """尝试解锁。返回 True 如果状态已变为 satisfied。
 
-        解锁优先级（任一满足即解锁）：
-        1. 直接充分推理：content >= 当前复杂度 min_reasoning_chars
-        2. 调查后反射：调查完成 + content >= 当前复杂度 min_reflection_chars
-        3. 调查后无条件解锁（unlock_after_investigation=True 时）
-        4. 推理轮数耗尽：强制解锁防死循环
+        unlock_after_investigation=True（默认）: 读了 1 个文件就放行。
+        unlock_after_investigation=False（严格模式）: 不自动解锁，只靠充分推理或轮数耗尽。
+          严格模式下，write-target 覆盖率检查在 check_batch 中执行。
         """
         profile = self._active_profile
 
-        # 条件1：直接充分推理
+        # 条件1：充分推理——内容足够长，直接放行
         if content_len >= profile.min_reasoning_chars:
             self._satisfied = True
             logger.info(
@@ -480,26 +517,16 @@ class ReadThinkGate:
             )
             return True
 
-        # 条件2：调查完成 + 简要反思
-        if self._investigation_done and content_len >= profile.min_reflection_chars:
-            self._satisfied = True
-            logger.info(
-                "read-think gate: unlocked — investigation done (%d/%d reads) + reflection %d chars >= %d (complexity=%s)",
-                self._read_only_count, profile.min_read_only_calls,
-                content_len, profile.min_reflection_chars, self._active_complexity,
-            )
-            return True
-
-        # 条件3：调查后无条件解锁——避免"做了调查但回复简短"被反复拦截
+        # 条件2：做过调查 + unlock_after_investigation → 放行
         if self._investigation_done and self.config.unlock_after_investigation:
             self._satisfied = True
             logger.info(
-                "read-think gate: unlocked — investigation done (unconditional, content=%d complexity=%s)",
-                content_len, self._active_complexity,
+                "read-think gate: unlocked — investigation done (%d reads, complexity=%s)",
+                self._read_only_count, self._active_complexity,
             )
             return True
 
-        # 条件4：推理轮数耗尽 → 强制解锁
+        # 条件3：推理轮数耗尽 → 强制解锁防死循环
         if self._reasoning_rounds >= profile.max_reasoning_rounds:
             self._satisfied = True
             logger.info(
@@ -511,43 +538,13 @@ class ReadThinkGate:
         return False
 
     def _build_block_message(self, tool_name: str, content_len: int) -> str:
-        """生成引导性拦截消息——告诉 agent 要做什么，不只是禁什么。"""
-        profile = self._active_profile
-        remaining = profile.min_read_only_calls - self._read_only_count
-        if not self._investigation_done:
-            if self._read_only_count == 0:
-                guide = (
-                    "你还没有做任何调查。请先用只读工具收集相关信息：\n"
-                    "  · search_files — 搜索代码库\n"
-                    "  · read_file — 阅读相关文件\n"
-                    "  · web_search — 搜索技术文档\n"
-                    f"至少 {profile.min_read_only_calls} 次只读调查后，执行工具将自动解锁。"
-                )
-            else:
-                guide = (
-                    f"调查次数不足（{self._read_only_count}/{profile.min_read_only_calls}）。\n"
-                    f"还需要 {remaining} 次只读调查：\n"
-                    "  · search_files — 搜索代码库\n"
-                    "  · read_file — 阅读相关文件\n"
-                    "  · web_search — 搜索技术文档"
-                )
-        else:
-            guide = (
-                "调查已完成，但分析不够深入。请逐条回答以下问题：\n"
-                "  1. 现状全貌：读了哪些文件？关键发现是什么？有没有同类问题？\n"
-                "  2. 方案对比：有几条可行路径？各自优劣？为什么选这条？\n"
-                "  3. 架构影响：上下游谁受影响？有没有更优雅的方式？\n"
-                "  4. 验收标准：改完怎么验证？对齐了哪些用户铁律？\n"
-                f"至少 {profile.min_reflection_chars} 字符。敷衍的空洞回答会被再次拦截。"
+        """生成拦截消息——1 行。"""
+        if self._read_only_count == 0:
+            return "[ReadThink] 先用 search_files/read_file 调查再动手。（轮 %d/%d）" % (
+                self._reasoning_rounds, self._active_profile.max_reasoning_rounds,
             )
-
-        complexity_label = {"simple": "简单", "normal": "标准", "complex": "复杂"}.get(
-            self._active_complexity, "标准"
-        )
-        return (
-            f"[ReadThink Gate — 推理阶段 · {complexity_label}任务] 工具 '{tool_name}' 暂时不可用。\n\n"
-            f"{guide}\n\n"
-            f"（推理轮数：{self._reasoning_rounds}/{profile.max_reasoning_rounds}）"
+        return "[ReadThink] 读过了但你要改的文件还没读。先 read_file 目标文件。（轮 %d/%d）" % (
+            self._reasoning_rounds, self._active_profile.max_reasoning_rounds,
         )
 
 

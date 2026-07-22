@@ -613,6 +613,15 @@ def build_skill_invocation_message(
     except Exception:
         pass  # Non-critical — skill invocation proceeds regardless
 
+    # On-demand AVOID loading: activate this skill's AVOID rules in SelfCheck
+    try:
+        from agent.self_check import get_self_check
+        sc = get_self_check()
+        if sc is not None and skill_dir:
+            sc.load_skill_on_demand(str(skill_dir), skill_name)
+    except Exception as e:
+        logger.warning("SelfCheck on-demand AVOID load failed for '%s': %s", skill_name, e)
+
     activation_note = (
         f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want '
         "you to follow its instructions. The full skill content is loaded below.]"

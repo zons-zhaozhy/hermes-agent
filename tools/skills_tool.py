@@ -1626,6 +1626,17 @@ def skill_view(
         if isinstance(metadata, dict):
             result["metadata"] = metadata
 
+        # On-demand AVOID loading: activate this skill's AVOID rules in SelfCheck.
+        # Dedup is handled inside load_skill_on_demand (skips already-loaded skills).
+        if skill_dir:
+            try:
+                from agent.self_check import get_self_check
+                _sc = get_self_check()
+                if _sc is not None:
+                    _sc.load_skill_on_demand(str(skill_dir), skill_name)
+            except Exception as e:
+                logger.warning("SelfCheck on-demand AVOID load failed for '%s': %s", skill_name, e)
+
         return json.dumps(result, ensure_ascii=False)
 
     except Exception as e:

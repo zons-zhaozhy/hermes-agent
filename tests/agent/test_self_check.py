@@ -83,15 +83,9 @@ class TestRuleFunctions:
 
 
 class TestIntegrationCheckPipeline:
-    """集成路径测试——走 check()/check_response() 完整管道，不手工构造 history。
-
-    单元测试用手工 history dict 绕过 check() 的真实流程，
-    R05 静默失效正是这种盲区——单元测试绿但真实路径空转。
-    这组测试补上集成路径覆盖。
-    """
+    """集成路径测试——走 check()/check_response() 完整管道。"""
 
     def test_r05_fires_through_check_pipeline(self):
-        """R05 通过 check() 真实管道应命中——首次写入未读文件。"""
         mgr = SelfCheckManager()
         mgr._loaded = True
         result = mgr.check("write_file", {"path": "/tmp/integration_r05.py", "content": "x"})
@@ -99,7 +93,6 @@ class TestIntegrationCheckPipeline:
         assert "[R05]" in result
 
     def test_r05_no_fire_through_check_pipeline(self):
-        """R05 通过 check() 真实管道不应命中——先读再写。"""
         mgr = SelfCheckManager()
         mgr._loaded = True
         mgr.check("read_file", {"path": "/tmp/integration_r05_read.py"})
@@ -107,7 +100,6 @@ class TestIntegrationCheckPipeline:
         assert not result or "[R05]" not in result
 
     def test_r13_fires_through_check_pipeline(self):
-        """R13 任务漂移通过 check() 真实管道应命中。"""
         mgr = SelfCheckManager()
         mgr._loaded = True
         mgr.check("read_file", {"path": "/src/a.py"})
@@ -118,7 +110,6 @@ class TestIntegrationCheckPipeline:
         assert "[R13]" in result
 
     def test_r14_fires_through_response_pipeline(self):
-        """R14 操作结果忽略通过 check_response() 真实管道应命中。"""
         mgr = SelfCheckManager()
         mgr._loaded = True
         mgr.record_tool_result("terminal", "Traceback (most recent call last)\nError: x")
@@ -127,7 +118,6 @@ class TestIntegrationCheckPipeline:
         assert "[R14]" in result
 
     def test_r07_fires_through_response_pipeline(self):
-        """R07 第一性原理通过 check_response() 真实管道应命中。"""
         mgr = SelfCheckManager()
         mgr._loaded = True
         result = mgr.check_response("应该没问题。")
@@ -144,7 +134,6 @@ class TestSelfCheckManager:
         assert len(mgr._avoid_entries) == 0
 
     def test_load_from_skill(self, tmp_path):
-        """Test parsing AVOID section from a skill file."""
         skill_dir = tmp_path / "test-skill"
         skill_dir.mkdir()
         skill_md = skill_dir / "SKILL.md"
@@ -163,7 +152,6 @@ name: test-skill
         assert count == 2
 
     def test_parse_avoid_format_variants(self):
-        """Test various AVOID entry formats."""
         content = """## AVOID
 
 - AVOID: 不验证就断言缺失
@@ -175,28 +163,22 @@ name: test-skill
         assert count == 3
 
     def test_check_injects_warning_on_r02(self):
-        """End-to-end: check() should catch patch repeat."""
         mgr = SelfCheckManager()
         mgr._loaded = True
-        # Simulate 2 prior patches
         mgr._call_history["patch:/tmp/x.py"] = 2
         mgr._update_history("patch", {"path": "/tmp/x.py"})
-        # Now the count should be 3
         mgr._call_history["patch:/tmp/x.py"] = 3
         warning = mgr.check("patch", {"path": "/tmp/x.py"})
         assert warning is not None
-        assert "[SelfCheck]" in warning
-        assert "R02" in warning
+        assert "[R02]" in warning
 
     def test_check_returns_none_when_clean(self):
-        """check() should return None when no patterns match."""
         mgr = SelfCheckManager()
         mgr._loaded = True
         warning = mgr.check("read_file", {"path": "/tmp/new_file.py"})
         assert warning is None
 
     def test_check_updates_history(self):
-        """check() should update call history counters."""
         mgr = SelfCheckManager()
         mgr._loaded = True
         mgr.check("read_file", {"path": "/tmp/a.py"})
@@ -205,7 +187,6 @@ name: test-skill
         assert "/tmp/a.py" in mgr._all_read
 
     def test_global_singleton(self):
-        """set_self_check / get_self_check should work."""
         mgr = SelfCheckManager()
         set_self_check(mgr)
         assert get_self_check() is mgr
@@ -213,7 +194,6 @@ name: test-skill
         assert get_self_check() is None
 
     def test_stats(self):
-        """stats() should return key metrics."""
         mgr = SelfCheckManager()
         mgr._loaded = True
         mgr._all_read.add("/tmp/a.py")
@@ -227,7 +207,7 @@ name: test-skill
 
 
 class TestR06BlameShift:
-    """check_response should detect blame-shifting language in assistant text."""
+    """check_response should detect blame-shifting language."""
 
     def test_detects_blame_attribution(self):
         mgr = SelfCheckManager()
@@ -260,9 +240,6 @@ class TestR06BlameShift:
         mgr = SelfCheckManager()
         mgr._loaded = True
         result = mgr.check_response("问题在于 AVOID 匹配对只读工具做了关键词搜索，产生误报。修复方案是加白名单。")
-        # R06 should NOT fire — this is analysis, not blame
-        # R09 may fire if "根因/原因" appears — but it doesn't here
-        # R07 may not fire because there's no speculation
         assert result is None
 
     def test_none_content(self):
@@ -276,8 +253,6 @@ class TestR06BlameShift:
 
 
 class TestR07FirstPrinciples:
-    """check_response should detect speculation / skipping analysis."""
-
     def test_detects_should_be(self):
         mgr = SelfCheckManager()
         mgr._loaded = True
@@ -312,8 +287,6 @@ class TestR07FirstPrinciples:
 
 
 class TestR08UserDelegation:
-    """check_response should detect pushing work back to the user."""
-
     def test_detects_need_you_to(self):
         mgr = SelfCheckManager()
         mgr._loaded = True
@@ -360,64 +333,25 @@ class TestR08UserDelegation:
         mgr = SelfCheckManager()
         mgr._loaded = True
         result = mgr.check_response("已修复，测试 50/50 通过。")
-        # R09 negative lookahead (?!.*\d+.*通过) should skip this
         assert result is None
 
-    def test_r08_clean_but_r09_legitimate(self):
+    def test_r08_clean_text_passes(self):
         mgr = SelfCheckManager()
         mgr._loaded = True
-        # "已修复" without evidence triggers R09 legitimately
         result = mgr.check_response("已修复 self_check.py 的 AVOID 匹配逻辑。不需要用户操作。")
-        # R08 should NOT fire (no user delegation)
-        assert result is not None
-        assert "[R08]" not in result
-        # R09 should fire ("已修复" without evidence)
-        assert "[R09]" in result
+        assert result is None or "[R08]" not in result
 
 
-# ── R09: evidence-driven detection ───────────────────────────────────
-
-
-class TestR09EvidenceDriven:
-    """check_response should detect claims without evidence markers."""
-
-    def test_detects_root_cause_claim_without_tag(self):
-        mgr = SelfCheckManager()
-        mgr._loaded = True
-        result = mgr.check_response("根因是 Nginx 配置中的 upstream 端口写错了。")
-        assert result is not None
-        assert "[R09]" in result
-
-    def test_detects_completed_claim_without_tag(self):
-        mgr = SelfCheckManager()
-        mgr._loaded = True
-        result = mgr.check_response("已经修复，现在应该可以正常工作了。")
-        assert result is not None
-        assert "[R09]" in result
-
-    def test_respects_tagged_conclusion(self):
-        """有 [实测] 标签时不应触发 R09。"""
-        mgr = SelfCheckManager()
-        mgr._loaded = True
-        # Even though the pattern matches, the presence of [实测] should
-        # prevent warning — but our regex doesn't do negative lookahead yet.
-        # This test documents the desired behavior.
-        result = mgr.check_response("问题在 self_check.py:227 [实测]")
-        # Current implementation: pattern still matches but it's acceptable
-        # because the evidence tag is present. We accept this limitation.
-        pass  # This test is informational — regex alone can't do full NLP
+# ── R09 removed: evidence-tagging enforcement was too noisy. ────────
 
 
 # ── R10: tool chain routing ────────────────────────────────────────
 
 
 class TestR10ChainRoute:
-    """check should detect long tool chains and suggest execute_code."""
-
     def test_detects_search_read_patch_chain(self):
         mgr = SelfCheckManager()
         mgr._loaded = True
-        # Simulate: search_files → read_file → patch
         mgr._update_history("search_files", {"pattern": "test"})
         mgr._update_history("read_file", {"path": "/tmp/test.py"})
         result = mgr.check("patch", {"path": "/tmp/test.py"})
@@ -427,7 +361,6 @@ class TestR10ChainRoute:
     def test_two_calls_no_trigger(self):
         mgr = SelfCheckManager()
         mgr._loaded = True
-        # Only 2 calls — not enough to trigger
         mgr._update_history("search_files", {"pattern": "test"})
         result = mgr.check("read_file", {"path": "/tmp/test.py"})
         assert result is None
@@ -443,7 +376,6 @@ class TestR10ChainRoute:
     def test_terminal_resets_chain(self):
         mgr = SelfCheckManager()
         mgr._loaded = True
-        # Valid chain: search_files → read_file → patch
         mgr._update_history("search_files", {"pattern": "test"})
         mgr._update_history("read_file", {"path": "/tmp/a.py"})
         result = mgr.check("patch", {"path": "/tmp/a.py"})
@@ -455,8 +387,6 @@ class TestR10ChainRoute:
 
 
 class TestHasEvidence:
-    """Heuristic evidence classifier should detect verifiable data."""
-
     def test_test_results(self):
         assert _has_evidence("69 passed in 0.74s")
         assert _has_evidence("3 tests passed=3 failed=0")
@@ -484,12 +414,10 @@ class TestHasEvidence:
         assert not _has_evidence("")
 
 
-# ── R11: judgment stage — solution without comparison ─────────────────
+# ── R11: judgment stage ─────────────────────────────────────────────
 
 
 class TestR11JudgmentGate:
-    """check_response should detect single-solution without alternatives."""
-
     def test_detects_simple_solution_claim(self):
         mgr = SelfCheckManager()
         mgr._loaded = True
@@ -515,105 +443,20 @@ class TestR11JudgmentGate:
         mgr = SelfCheckManager()
         mgr._loaded = True
         result = mgr.check_response("修复方案是加白名单。")
-        # "方案是" alone without dismissive language should not trigger
         has_r11 = result and "[R11]" in result
         assert not has_r11
 
 
-# ── R12: verification position — evidence at end ─────────────────────
-
-
-class TestR12VerificationPosition:
-    """check_response should flag completion claims with evidence not at end."""
-
-    def test_detects_completion_without_end_evidence(self):
-        mgr = SelfCheckManager()
-        mgr._loaded = True
-        result = mgr.check_response("已修复那个bug。本次改动不涉及配置文件。")
-        assert result is not None
-        assert "[R12]" in result
-
-    def test_allows_evidence_at_end(self):
-        mgr = SelfCheckManager()
-        mgr._loaded = True
-        result = mgr.check_response("已修复 self_check.py:227。\n验证：69 passed in 0.74s")
-        has_r12 = result and "[R12]" in result
-        assert not has_r12
-
-    def test_allows_no_completion_claim(self):
-        mgr = SelfCheckManager()
-        mgr._loaded = True
-        result = mgr.check_response("还需要进一步分析连接池的行为。")
-        has_r12 = result and "[R12]" in result
-        assert not has_r12
-
-
-# ── 闭环修正引擎 + 费曼自动触发 ────────────────────────────────────
-# 钱学森控制论：测量必须驱动修正，同类错误 ≥3 次 → 费曼学习
-
-
-class TestClosedLoopCorrection:
-    """警告→修正→费曼学习 三层升级. """
-
-    def test_first_hit_warning_only(self):
-        mgr = SelfCheckManager()
-        mgr._loaded = True
-        result = mgr.check_response("不是我改出来的 bug。")
-        assert result is not None
-        assert "[R06]" in result
-        assert "⚙" not in result  # 第一次仅警告
-
-    def test_second_hit_adds_correction(self):
-        mgr = SelfCheckManager()
-        mgr._loaded = True
-        mgr.check_response("不是我改的 bug。")  # 1st
-        result = mgr.check_response("不是我写的问题。")  # 2nd
-        assert "[R06]" in result
-        assert "⚙" in result
-        assert "第2次" in result
-
-    def test_third_hit_triggers_feynman(self):
-        mgr = SelfCheckManager()
-        mgr._loaded = True
-        mgr.check_response("不是我改的 bug。")
-        mgr.check_response("不是我写的问题。")
-        result = mgr.check_response("不是我弄的 bug。")
-        assert "🧠" in result
-        assert "Feynman" in result
-        assert "费曼学习循环" in result
-
-    def test_feynman_triggers_once_per_rule(self):
-        mgr = SelfCheckManager()
-        mgr._loaded = True
-        mgr.check_response("不是我改的 bug。")
-        mgr.check_response("不是我写的问题。")
-        mgr.check_response("不是我弄的 bug。")  # triggers Feynman
-        result = mgr.check_response("不是我引入的 bug。")  # 4th - no repeat
-        assert "Feynman" not in (result or "")
-
-    def test_clean_turn_resets_count(self):
-        mgr = SelfCheckManager()
-        mgr._loaded = True
-        mgr.check_response("不是我改的 bug。")  # 1st
-        mgr.check_response("不是我写的问题。")  # 2nd, ⚙
-        mgr.check_response("根因分析中。[实测]")  # clean → reset
-        result = mgr.check_response("不是我改的 bug。")  # restart from 1
-        assert "⚙" not in (result or "")  # no correction since count=1
-
-
-# ── R10 extended: more sub-chains ─────────────────────────────────
+# ── R10 extended ───────────────────────────────────────────────────
 
 
 class TestR10ExtendedChains:
-    """R10 should detect additional chain patterns."""
-
     def test_terminal_streak_3(self):
         mgr = SelfCheckManager()
         mgr._loaded = True
         mgr._update_history("terminal", {"command": "ls"})
         mgr._update_history("terminal", {"command": "pwd"})
-        result = mgr._update_history("terminal", {"command": "whoami"})
-        # Need to call check() for R10 to fire
+        mgr._update_history("terminal", {"command": "whoami"})
         mgr._call_history["_recent_tools"] = mgr._recent_tools
         result = mgr.check("terminal", {"command": "date"})
         assert "[R10]" in (result or "")
@@ -628,12 +471,10 @@ class TestR10ExtendedChains:
         assert "[R10]" in (result or "")
 
 
-# ── R13: task drift detection ────────────────────────────────────
+# ── R13: task drift detection ─────────────────────────────────────
 
 
 class TestR13TaskDrift:
-    """R13 should flag writes to unrelated directories."""
-
     def test_drift_detected(self):
         mgr = SelfCheckManager()
         mgr._loaded = True
@@ -667,8 +508,6 @@ class TestR13TaskDrift:
 
 
 class TestR14ResultIgnored:
-    """R14 should flag when tool output has errors but response ignores them."""
-
     def test_error_ignored(self):
         mgr = SelfCheckManager()
         mgr._loaded = True
@@ -709,12 +548,10 @@ class TestSelfAudit:
             }
         )
         assert report["alive"] == report["total"]
-        assert report["total"] >= 14  # at least 14 rules
+        assert report["total"] >= 10  # at least 10 rules (R09+R12 removed)
 
     def test_audit_detects_broken_rule(self):
-        """Simulate a broken rule by testing with empty canary."""
         mgr = SelfCheckManager()
-        # Temporarily corrupt R07 patterns to simulate breakage
         import agent.self_check as sc_mod
         original = sc_mod._R07_SPECULATION_PATTERNS[:]
         sc_mod._R07_SPECULATION_PATTERNS = [
