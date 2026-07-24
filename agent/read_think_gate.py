@@ -139,6 +139,89 @@ complex: 重构架构、系统设计、从零搭建、多服务联调、大规�
 _CLASSIFY_MAX_TOKENS = 50
 
 
+# ── LLM-as-Judge: 调查质量评估 ──────────────────────────────────────
+
+_JUDGE_PROMPT = """你是一个代码调查质量评审员。评估 agent 的调查分析是否充分——不是数次数，而是评估理解深度。
+
+任务描述：
+{task}
+
+agent 要执行的工具：{tool}
+调查中读取的文件：
+{files_read}
+
+agent 的分析内容：
+---
+{analysis}
+---
+
+逐条评估（每条 PASS 或 FAIL）：
+
+A. 代码理解：是否说明了目标代码当前的逻辑？（引用了具体函数/行号/数据流）
+B. 关系分析：是否识别了与目标代码有关系的既有程序？（调用方、被依赖方、同类实现）
+C. 既有模式：是否检查了项目中是否已有等价实现？是否说明了既有程序是怎么做类似事情的？
+D. 方案评估：是否论证了即将采取的做法是最优的？是否考虑过替代方案？
+
+判定规则：
+- 4 条全 PASS → APPROVED
+- 有任何 FAIL → NEEDS_MORE_WORK
+- 分析内容为空或只有意图陈述 → NEEDS_MORE_WORK
+
+只回答 APPROVED 或 NEEDS_MORE_WORK。在 NEEDS_MORE_WORK 后用一句话说明缺了什么。"""
+
+_JUDGE_MAX_TOKENS = 200
+
+
+def _judge_investigation(
+    task: str,
+    tool: str,
+    files_read: set[str],
+    analysis: str,
+) -> tuple[bool, str]:
+    """用 LLM 评估调查质量。
+
+    Returns:
+        (approved, feedback) — approved=True 时 feedback 为空。
+    """
+    try:
+        from agent.auxiliary_client import get_text_auxiliary_client
+
+        client, model = get_text_auxiliary_client("investigation_judge")
+        if client is None or not model:
+            logger.debug("read-think gate: no auxiliary client for judge → allow")
+            return True, ""
+
+        files_str = "\n".join(f"  - {f}" for f in sorted(files_read)) or "  (无)"
+        prompt = _JUDGE_PROMPT.format(
+            task=task[:500],
+            tool=tool,
+            files_read=files_str,
+            analysis=analysis[:2000],
+        )
+
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=_JUDGE_MAX_TOKENS,
+            temperature=0,
+            timeout=15,
+            extra_body={"thinking": {"type": "disabled"}},
+        )
+        raw = (response.choices[0].message.content or "").strip()
+
+        if "APPROVED" in raw.upper():
+            logger.info("read-think gate: judge APPROVED investigation")
+            return True, ""
+
+        feedback = raw.replace("NEEDS_MORE_WORK", "").strip()
+        logger.info("read-think gate: judge NEEDS_MORE_WORK: %s", feedback[:100])
+        return False, feedback
+
+    except Exception:
+        logger.warning("read-think gate: judge failed → allow (fail-open)", exc_info=True)
+        return True, ""
+
+
 def _build_history_summary(conversation_history: list[dict] | None) -> str:
     """从历史中提取用户消息摘要。
 
@@ -292,6 +375,8 @@ class ReadThinkGateConfig:
     complexity_profiles: Mapping[str, Mapping[str, int]] | None = None
     # 是否用 LLM 做复杂度分类（默认 True，需 auxiliary client 可用）
     use_llm_classifier: bool = True
+    # 是否用 LLM-as-judge 评估调查质量（严格模式下生效）
+    use_llm_judge: bool = True
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> "ReadThinkGateConfig":
@@ -308,6 +393,7 @@ class ReadThinkGateConfig:
             complexity_adaptive=_as_bool(data.get("complexity_adaptive"), False),
             complexity_profiles=profiles_raw if isinstance(profiles_raw, Mapping) else None,
             use_llm_classifier=_as_bool(data.get("use_llm_classifier"), True),
+            use_llm_judge=_as_bool(data.get("use_llm_judge"), True),
         )
 
     def get_profile(self, complexity: str) -> ComplexityProfile:
@@ -363,6 +449,8 @@ class ReadThinkGate:
         self._read_only_count: int = 0
         self._active_complexity: str = "normal"
         self._files_read: set[str] = set()  # 本 turn 读取的文件路径
+        self._user_message: str = user_message or ""  # judge 用：当前任务描述
+        self._last_judge_feedback: str = ""  # judge 最近一次反馈
 
         if self.config.complexity_adaptive:
             history_summary = ""
@@ -445,7 +533,7 @@ class ReadThinkGate:
         if has_read_only:
             self._read_only_count += 1
 
-        if self._try_unlock(content_len, content_text):
+        if self._try_unlock(content_len, content_text, tool_names):
             return None
 
         if not has_mutating:
@@ -499,25 +587,43 @@ class ReadThinkGate:
         )
         return _make_synthetic_result(first_gated, block_msg, content_len)
 
-    def _try_unlock(self, content_len: int, content: str = "") -> bool:
+    def _try_unlock(
+        self, content_len: int, content: str = "", tool_names: list[str] | None = None,
+    ) -> bool:
         """尝试解锁。返回 True 如果状态已变为 satisfied。
 
-        unlock_after_investigation=True（宽松模式）: 读了 1 个文件就放行。
-        unlock_after_investigation=False（严格模式）:
-          - 调查次数 >= profile.min_read_only_calls AND 推理文字 >= profile.min_reasoning_chars
-          - 两个条件同时满足才解锁——调查量不达标，推理再多也不放行
-          - write-target 覆盖率检查在 check_batch 中执行
-          - max_reasoning_rounds 兜底防死循环
+        严格模式三层门控：
+          1. 机械门槛：调查次数 + 推理量达标
+          2. LLM-as-judge：语义评估调查质量（代码理解/关系分析/既有模式/方案评估）
+          3. max_reasoning_rounds 兜底防死循环
         """
         profile = self._active_profile
 
         if not self.config.unlock_after_investigation:
-            # 严格模式：调查量 + 推理量 双达标
+            # 严格模式第一关：调查量 + 推理量 双达标
             if (self._read_only_count >= profile.min_read_only_calls
                     and content_len >= profile.min_reasoning_chars):
+                # 严格模式第二关：LLM-as-judge 语义评估
+                if self.config.use_llm_judge and content:
+                    tool_name = ""
+                    if tool_names:
+                        tool_name = next(
+                            (t for t in tool_names if t in GATED_TOOL_NAMES), tool_names[0] if tool_names else ""
+                        )
+                    approved, feedback = _judge_investigation(
+                        self._user_message, tool_name, self._files_read, content,
+                    )
+                    if not approved:
+                        # judge 不通过——不解锁，反馈给 agent
+                        logger.info(
+                            "read-think gate: judge rejected (reads=%d, complexity=%s): %s",
+                            self._read_only_count, self._active_complexity, feedback[:80],
+                        )
+                        self._last_judge_feedback = feedback
+                        return False
                 self._satisfied = True
                 logger.info(
-                    "read-think gate: unlocked — strict mode (reads=%d>=%d, reasoning=%d>=%d, complexity=%s)",
+                    "read-think gate: unlocked — strict mode (reads=%d>=%d, reasoning=%d>=%d, judge=pass, complexity=%s)",
                     self._read_only_count, profile.min_read_only_calls,
                     content_len, profile.min_reasoning_chars, self._active_complexity,
                 )
@@ -553,12 +659,28 @@ class ReadThinkGate:
         return False
 
     def _build_block_message(self, tool_name: str, content_len: int) -> str:
-        """生成拦截消息——注入调查框架，不数次数不量字数。"""
+        """生成拦截消息——注入调查框架 + judge 反馈。"""
         profile = self._active_profile
         done = self._read_only_count
         needed = profile.min_read_only_calls
 
         if not self.config.unlock_after_investigation:
+            # judge 有反馈 → 优先展示
+            if self._last_judge_feedback:
+                fb = self._last_judge_feedback
+                self._last_judge_feedback = ""  # 消费后清空
+                return (
+                    "[ReadThink Gate — 推理阶段 · 标准任务] 工具 '%s' 暂时不可用。\n\n"
+                    "LLM 评审不通过。评审意见：%s\n\n"
+                    "你的分析需要覆盖：\n"
+                    "  A. 目标代码当前逻辑（引用具体函数/行号/数据流）\n"
+                    "  B. 与它有关系的既有程序（调用方、被依赖方、同类实现）\n"
+                    "  C. 既有程序是怎么做这件事的（等价实现/可复用的模式）\n"
+                    "  D. 你的方案为什么是最优的（对比过的替代方案）\n\n"
+                    "（推理轮数：%d/%d）"
+                    % (tool_name, fb,
+                       self._reasoning_rounds, profile.max_reasoning_rounds)
+                )
             if done < needed:
                 return (
                     "[ReadThink Gate — 推理阶段 · 标准任务] 工具 '%s' 暂时不可用。\n\n"
