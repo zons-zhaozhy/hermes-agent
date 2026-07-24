@@ -502,22 +502,37 @@ class ReadThinkGate:
     def _try_unlock(self, content_len: int, content: str = "") -> bool:
         """尝试解锁。返回 True 如果状态已变为 satisfied。
 
-        unlock_after_investigation=True（默认）: 读了 1 个文件就放行。
-        unlock_after_investigation=False（严格模式）: 不自动解锁，只靠充分推理或轮数耗尽。
-          严格模式下，write-target 覆盖率检查在 check_batch 中执行。
+        unlock_after_investigation=True（宽松模式）: 读了 1 个文件就放行。
+        unlock_after_investigation=False（严格模式）:
+          - 调查次数 >= profile.min_read_only_calls AND 推理文字 >= profile.min_reasoning_chars
+          - 两个条件同时满足才解锁——调查量不达标，推理再多也不放行
+          - write-target 覆盖率检查在 check_batch 中执行
+          - max_reasoning_rounds 兜底防死循环
         """
         profile = self._active_profile
 
-        # 条件1：充分推理——内容足够长，直接放行
-        if content_len >= profile.min_reasoning_chars:
-            self._satisfied = True
-            logger.info(
-                "read-think gate: unlocked — direct reasoning %d chars >= %d (complexity=%s)",
-                content_len, profile.min_reasoning_chars, self._active_complexity,
-            )
-            return True
+        if not self.config.unlock_after_investigation:
+            # 严格模式：调查量 + 推理量 双达标
+            if (self._read_only_count >= profile.min_read_only_calls
+                    and content_len >= profile.min_reasoning_chars):
+                self._satisfied = True
+                logger.info(
+                    "read-think gate: unlocked — strict mode (reads=%d>=%d, reasoning=%d>=%d, complexity=%s)",
+                    self._read_only_count, profile.min_read_only_calls,
+                    content_len, profile.min_reasoning_chars, self._active_complexity,
+                )
+                return True
+        else:
+            # 宽松模式：推理文字够长 → 放行（调查量不强制）
+            if content_len >= profile.min_reasoning_chars:
+                self._satisfied = True
+                logger.info(
+                    "read-think gate: unlocked — direct reasoning %d chars >= %d (complexity=%s)",
+                    content_len, profile.min_reasoning_chars, self._active_complexity,
+                )
+                return True
 
-        # 条件2：做过调查 + unlock_after_investigation → 放行
+        # 宽松模式：做过调查就放行
         if self._investigation_done and self.config.unlock_after_investigation:
             self._satisfied = True
             logger.info(
@@ -526,7 +541,7 @@ class ReadThinkGate:
             )
             return True
 
-        # 条件3：推理轮数耗尽 → 强制解锁防死循环
+        # 兜底：推理轮数耗尽 → 强制解锁防死循环
         if self._reasoning_rounds >= profile.max_reasoning_rounds:
             self._satisfied = True
             logger.info(
@@ -538,13 +553,35 @@ class ReadThinkGate:
         return False
 
     def _build_block_message(self, tool_name: str, content_len: int) -> str:
-        """生成拦截消息——1 行。"""
-        if self._read_only_count == 0:
+        """生成拦截消息——精准指引调查方向。"""
+        profile = self._active_profile
+        needed = profile.min_read_only_calls
+        done = self._read_only_count
+
+        if not self.config.unlock_after_investigation:
+            # 严格模式：明确告诉还差多少调查
+            if done < needed:
+                return (
+                    "[ReadThink Gate — 严格模式] 调查不足（%d/%d 次）。"
+                    "用 search_files/read_file 充分调查所有相关代码和逻辑，"
+                    "评估确定最优方案后才动手。（轮 %d/%d）"
+                    % (done, needed, self._reasoning_rounds, profile.max_reasoning_rounds)
+                )
+            # 调查够了但推理不够
+            return (
+                "[ReadThink Gate — 严格模式] 调查已完成（%d/%d）但推理不充分（%d/%d 字符）。"
+                "分析调查结果，评估最优方案。（轮 %d/%d）"
+                % (done, needed, content_len, profile.min_reasoning_chars,
+                   self._reasoning_rounds, profile.max_reasoning_rounds)
+            )
+
+        # 宽松模式
+        if done == 0:
             return "[ReadThink] 先用 search_files/read_file 调查再动手。（轮 %d/%d）" % (
-                self._reasoning_rounds, self._active_profile.max_reasoning_rounds,
+                self._reasoning_rounds, profile.max_reasoning_rounds,
             )
         return "[ReadThink] 读过了但你要改的文件还没读。先 read_file 目标文件。（轮 %d/%d）" % (
-            self._reasoning_rounds, self._active_profile.max_reasoning_rounds,
+            self._reasoning_rounds, profile.max_reasoning_rounds,
         )
 
 

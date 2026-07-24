@@ -168,7 +168,7 @@ class TestBlockMessage:
         result = gate.check_batch("", ["terminal"], [{}])
         assert result is not None
         # In strict mode after reads, terminal still blocked (not a write target check)
-        assert "[ReadThink]" in result
+        assert "[ReadThink" in result
 
 
 # ── Disabled gate ───────────────────────────────────────────────────
@@ -274,7 +274,7 @@ class TestTurnLifecycle:
         wrapped = json.dumps({"error": msg}, ensure_ascii=False)
         parsed = json.loads(wrapped)
 
-        assert "[ReadThink]" in parsed["error"]
+        assert "[ReadThink" in parsed["error"]
         assert "deliberation_gate" not in str(parsed)
 
     def test_concurrent_path_block_message_works(self):
@@ -283,7 +283,7 @@ class TestTurnLifecycle:
         msg = gate.check_batch("", ["read_file", "terminal"], [{"path": "/x.py"}, {}])
 
         assert msg is not None
-        assert "[ReadThink]" in msg
+        assert "[ReadThink" in msg
         assert gate._investigation_done is True
 
 
