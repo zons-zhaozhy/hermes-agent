@@ -2444,6 +2444,7 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
+    tier: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2451,12 +2452,16 @@ def delegate_task(
 
     Supports two modes:
       - Single: provide goal (+ optional context and role)
-      - Batch:  provide tasks array [{goal, context, role}, ...]
+      - Batch:  provide tasks array [{goal, context, role, tier}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+
+    The 'tier' parameter enables cost-aware model selection per task.
+    Configure delegation.tiers in config.yaml (cheap/standard/capable).
+    Per-task tier overrides the batch-level default.
 
     Returns JSON with results array, one entry per task.
     """
@@ -2528,6 +2533,31 @@ def delegate_task(
         logger.warning("Unhandled exception", exc_info=True)
         return tool_error(str(exc))
 
+    # ── P2: Model tier resolution ───────────────────────────────────────
+    # If tier is specified, overlay tier-specific model/provider onto creds.
+    # Falls back to base creds when tier is unconfigured (fail-open + visible).
+    if tier:
+        from tools.subagent_tiers import resolve_tier_credentials
+
+        creds = resolve_tier_credentials(tier, creds)
+
+    # ── P0: Generate a progress-ledger session ID for this batch ────────
+    # Used by subagent_progress to track which tasks have completed, so
+    # post-compaction resume can skip them instead of re-dispatching.
+    import uuid as _uuid_ledger
+
+    ledger_session_id = f"dl-{_uuid_ledger.uuid4().hex[:12]}"
+
+    # ── P0: Check ledger for already-completed tasks ────────────────────
+    # Read the ledger BEFORE building children so we can skip tasks that
+    # were completed in a prior (pre-compaction) invocation of the same
+    # logical batch.  This requires the caller to pass the same
+    # ledger_session_id, which the runtime does automatically via the
+    # turn context. For now, this is advisory — the ledger is written
+    # but not automatically consumed for skip, because the parent agent
+    # would need to propagate the ledger_session_id across compression.
+    # The ledger is still valuable for manual recovery and observability.
+
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
@@ -2586,6 +2616,19 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+
+            # ── P2: Per-task tier resolution ───────────────────────
+            # If the task or batch specifies a tier, resolve tier-specific
+            # credentials. Falls back to base creds when unconfigured.
+            from tools.subagent_tiers import resolve_tier_credentials
+
+            task_tier = t.get("tier") or tier
+            task_creds = (
+                resolve_tier_credentials(task_tier, creds)
+                if task_tier
+                else creds
+            )
+
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
@@ -2593,18 +2636,18 @@ def delegate_task(
                 # Subagents always inherit the parent's toolsets; the model
                 # cannot choose or narrow them (no model-facing toolsets arg).
                 toolsets=None,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_request_overrides=creds.get("request_overrides"),
-                override_max_tokens=creds.get("max_output_tokens"),
-                override_acp_command=creds.get("command"),
-                override_acp_args=creds.get("args"),
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
+                override_request_overrides=task_creds.get("request_overrides"),
+                override_max_tokens=task_creds.get("max_output_tokens"),
+                override_acp_command=task_creds.get("command"),
+                override_acp_args=task_creds.get("args"),
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -2628,6 +2671,55 @@ def delegate_task(
             # Single task -- run directly (no thread pool overhead)
             _i, _t, child = children[0]
             result = _run_single_child(_i, _t["goal"], child, parent_agent)
+
+            # ── P0: Write progress ledger entry ─────────────────────
+            from tools.subagent_progress import append_task_completion
+
+            append_task_completion(
+                ledger_session_id=ledger_session_id,
+                task_index=_i,
+                goal=_t["goal"],
+                status=result.get("status", "unknown"),
+                summary=result.get("summary", ""),
+                model=result.get("model"),
+                duration_seconds=result.get("duration_seconds"),
+                files_written=result.get("files_written"),
+            )
+
+            # ── P1: Two-stage review (if enabled) ───────────────────
+            from tools.subagent_review import review_child_output
+
+            review_result = review_child_output(
+                task_result=result,
+                goal=_t["goal"],
+                parent_agent=parent_agent,
+                task_index=_i,
+            )
+            if review_result and not review_result.get("approved"):
+                # Issues found — dispatch fix subagent and re-review
+                from tools.subagent_review import fix_and_re_review
+
+                files_written = result.get("files_written") or []
+                fix_outcome = fix_and_re_review(
+                    goal=_t["goal"],
+                    issues=review_result.get("issues", ""),
+                    files_to_fix=files_written,
+                    parent_agent=parent_agent,
+                    task_index=_i,
+                    max_cycles=1,
+                )
+                # Update result with review metadata
+                result["_review"] = {
+                    "initial_review": review_result.get("review_summary", ""),
+                    "final_review": fix_outcome.get("review_summary", ""),
+                    "approved": fix_outcome.get("approved", False),
+                }
+            elif review_result and review_result.get("approved"):
+                result["_review"] = {
+                    "approved": True,
+                    "summary": review_result.get("review_summary", ""),
+                }
+
             results.append(result)
         else:
             # Batch -- run in parallel with per-task progress lines
@@ -2754,6 +2846,26 @@ def delegate_task(
 
             # Sort by task_index so results match input order
             results.sort(key=lambda r: r["task_index"])
+
+            # ── P0: Write progress ledger entries for batch tasks ───
+            from tools.subagent_progress import append_task_completion
+
+            for entry in results:
+                _task_idx = entry.get("task_index", 0)
+                _task_goal = (
+                    task_list[_task_idx]["goal"]
+                    if _task_idx < len(task_list)
+                    else ""
+                )
+                append_task_completion(
+                    ledger_session_id=ledger_session_id,
+                    task_index=_task_idx,
+                    goal=_task_goal,
+                    status=entry.get("status", "unknown"),
+                    summary=entry.get("summary", ""),
+                    model=entry.get("model"),
+                    duration_seconds=entry.get("duration_seconds"),
+                )
 
         # Cap subagent summaries against the parent's remaining context
         # headroom (split across the batch) before they enter the parent's
@@ -3392,7 +3504,7 @@ def _build_top_level_description() -> str:
         f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
         f"user and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
-        "- Subagent model is NOT selectable per call: children inherit the parent model (plus its fallback chain) unless you pin all subagents to a model via delegation.provider / delegation.model in config.yaml.\n"
+        "- Subagent model is NOT selectable per call: children inherit the parent model (plus its fallback chain) unless you pin all subagents to a model via delegation.provider / delegation.model in config.yaml, OR use the 'tier' parameter when delegation.tiers is configured in config.yaml.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task."
     )
@@ -3524,6 +3636,15 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "tier": {
+                            "type": "string",
+                            "enum": ["cheap", "standard", "capable"],
+                            "description": (
+                                "Per-task model tier override. See top-level "
+                                "'tier' for semantics. Overrides the batch-level "
+                                "tier for this task only."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -3547,6 +3668,21 @@ DELEGATE_TASK_SCHEMA = {
                     "the work finishes; just continue working in the meantime. "
                     "Setting this has no effect; the parameter remains only for "
                     "backward compatibility."
+                ),
+            },
+            "tier": {
+                "type": "string",
+                "enum": ["cheap", "standard", "capable"],
+                "description": (
+                    "Cost-aware model tier for this delegation. "
+                    "'cheap' = fast/inexpensive model for mechanical tasks "
+                    "(1-2 files, clear spec). "
+                    "'standard' = mid-tier for integration tasks. "
+                    "'capable' = most powerful model for architecture/design. "
+                    "Tiers must be configured in config.yaml under "
+                    "delegation.tiers. If unconfigured, the parent model is "
+                    "used regardless of this parameter. "
+                    "Per-task tier in the 'tasks' array overrides this."
                 ),
             },
             "acp_command": {
@@ -3631,6 +3767,7 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
+        tier=args.get("tier"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

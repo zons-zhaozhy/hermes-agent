@@ -368,7 +368,7 @@ _RULES = [
     ("R13", _r13_task_drift),
 ]
 # 回复级规则在 check_response() 中处理
-_RESPONSE_RULE_IDS: frozenset[str] = frozenset({"R06", "R07", "R08", "R11", "R14"})
+_RESPONSE_RULE_IDS: frozenset[str] = frozenset({"R06", "R07", "R08", "R11", "R14", "R15"})
 
 
 class SelfCheckManager:
@@ -521,6 +521,12 @@ class SelfCheckManager:
             except Exception as e:
                 logger.warning("SelfCheck: rule %s check raised: %s", rule_id, e)
 
+        # R15: 设计确认门——feature-dev-pipeline 已加载 + write 操作 + 无 phase≥4 文件
+        if tool_name in ("write_file", "patch"):
+            r15_warning = self._check_r15_design_gate(tool_name, args)
+            if r15_warning:
+                warnings.append("[R15] %s" % r15_warning)
+
         # 2. AVOID 领域过滤 + 关键词匹配
         # 核心相关性：先按领域过滤（不相关领域的 AVOID 条目直接跳过），再做关键词匹配
         if tool_name not in _READ_ONLY_TOOLS:
@@ -568,6 +574,60 @@ class SelfCheckManager:
 
         if warnings:
             return "\n".join(warnings)
+        return None
+
+    def _check_r15_design_gate(self, tool_name: str, args: dict) -> str | None:
+        """R15: 设计确认门——feature-dev-pipeline 已加载 + write 操作 + 无 phase≥4 文件。
+
+        触发条件（全部满足才警告）：
+        1. feature-dev-pipeline skill 已被 skill_view 加载到当前会话
+        2. 当前操作是 write_file 或 patch
+        3. ~/.hermes/cache/ 下有 active=true 的 pipeline_phase_*.json 文件
+        4. 该文件的 phase < 4
+
+        这是一个 warning（不阻断），与 pipeline-guard plugin 的物理阻断互补。
+        plugin 不存在或未安装时，R15 仍然工作——它直接读 phase 文件。
+        """
+        # 1. 检查 feature-dev-pipeline 是否已加载
+        pipeline_loaded = any(
+            "feature-dev-pipeline" in skill_dir or "feature_dev_pipeline" in skill_dir
+            for skill_dir in self._loaded_skill_dirs
+        )
+        if not pipeline_loaded:
+            return None
+
+        # 2. 读 phase 文件
+        try:
+            from hermes_constants import get_hermes_home
+            cache_dir = get_hermes_home() / "cache"
+            if not cache_dir.exists():
+                return None
+
+            best_phase = None
+            for f in cache_dir.glob("pipeline_phase_*.json"):
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    if not isinstance(data, dict):
+                        continue
+                    if not data.get("active", False):
+                        continue
+                    phase = data.get("phase", 0)
+                    if best_phase is None or phase > best_phase:
+                        best_phase = phase
+                except (json.JSONDecodeError, OSError):
+                    continue
+
+            if best_phase is None:
+                return None  # 无 active phase 文件 = 流水线未激活
+
+            if best_phase < 4:
+                return (
+                    "设计确认门——流水线 phase=%d (< 4)，用户未确认设计方案前禁止写代码 "
+                    "(feature-dev-pipeline RL-5)" % best_phase
+                )
+        except Exception:
+            logger.warning("SelfCheck R15: phase file check failed", exc_info=True)
+
         return None
 
     def check_response(self, assistant_content: str | None) -> str | None:
