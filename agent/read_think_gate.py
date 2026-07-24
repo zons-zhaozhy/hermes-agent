@@ -553,29 +553,36 @@ class ReadThinkGate:
         return False
 
     def _build_block_message(self, tool_name: str, content_len: int) -> str:
-        """生成拦截消息——精准指引调查方向。"""
+        """生成拦截消息——注入调查框架，不数次数不量字数。"""
         profile = self._active_profile
-        needed = profile.min_read_only_calls
         done = self._read_only_count
+        needed = profile.min_read_only_calls
 
         if not self.config.unlock_after_investigation:
-            # 严格模式：明确告诉还差多少调查
             if done < needed:
                 return (
-                    "[ReadThink Gate — 严格模式] 调查不足（%d/%d 次）。"
-                    "用 search_files/read_file 充分调查所有相关代码和逻辑，"
-                    "评估确定最优方案后才动手。（轮 %d/%d）"
-                    % (done, needed, self._reasoning_rounds, profile.max_reasoning_rounds)
+                    "[ReadThink Gate — 推理阶段 · 标准任务] 工具 '%s' 暂时不可用。\n\n"
+                    "动手前必须搞清楚：\n"
+                    "  1. 要改的代码当前怎么写的？逻辑是什么？（读源码，引用行号）\n"
+                    "  2. 跟它有关系的既有程序有哪些？调用方在哪？被谁依赖？\n"
+                    "  3. 既有程序是怎么做这件事的？是否已有等价实现可以复用或扩展？\n"
+                    "  4. 你打算怎么改？这是最优方案吗？有没有更稳妥的做法？\n\n"
+                    "用 search_files 搜调用方和同类实现，用 read_file 读目标文件全貌，\n"
+                    "用 codegraph/gitnexus 追依赖链。搞清楚再动手。\n\n"
+                    "（调查次数：%d/%d，推理轮数：1/%d）"
+                    % (tool_name, done, needed, profile.max_reasoning_rounds)
                 )
-            # 调查够了但推理不够
             return (
-                "[ReadThink Gate — 严格模式] 调查已完成（%d/%d）但推理不充分（%d/%d 字符）。"
-                "分析调查结果，评估最优方案。（轮 %d/%d）"
-                % (done, needed, content_len, profile.min_reasoning_chars,
-                   self._reasoning_rounds, profile.max_reasoning_rounds)
+                "[ReadThink Gate — 推理阶段 · 标准任务] 工具 '%s' 暂时不可用。\n\n"
+                "已做 %d 次只读调查，但还没有输出分析结论。在回复中明确回答：\n\n"
+                "  ▸ 要改的代码当前逻辑是什么？（引用具体行号和代码）\n"
+                "  ▸ 哪些既有程序与它有关系？它们是怎么做的？\n"
+                "  ▹ 你的改动方案是什么？为什么是最优的？（对比过的替代方案）\n\n"
+                "用充分的分析填满回复——这不是走流程，是确保改对。\n\n"
+                "（推理轮数：%d/%d）"
+                % (tool_name, done, self._reasoning_rounds, profile.max_reasoning_rounds)
             )
 
-        # 宽松模式
         if done == 0:
             return "[ReadThink] 先用 search_files/read_file 调查再动手。（轮 %d/%d）" % (
                 self._reasoning_rounds, profile.max_reasoning_rounds,
