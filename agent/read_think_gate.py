@@ -171,12 +171,12 @@ COMPLEXITY_PROFILES: dict[str, ComplexityProfile] = {
         min_reflection_chars=30, max_reasoning_rounds=3,
     ),
     "normal": ComplexityProfile(
-        min_read_only_calls=3, min_reasoning_chars=300,
-        min_reflection_chars=80, max_reasoning_rounds=8,
+        min_read_only_calls=2, min_reasoning_chars=200,
+        min_reflection_chars=50, max_reasoning_rounds=6,
     ),
     "complex": ComplexityProfile(
-        min_read_only_calls=5, min_reasoning_chars=500,
-        min_reflection_chars=150, max_reasoning_rounds=12,
+        min_read_only_calls=3, min_reasoning_chars=300,
+        min_reflection_chars=100, max_reasoning_rounds=8,
     ),
 }
 
