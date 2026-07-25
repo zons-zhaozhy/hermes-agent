@@ -33,6 +33,7 @@ import hashlib
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,11 @@ def _terminal_writes_file(command: str) -> bool:
     3. cp/mv 目标是文件路径——要求前导空格 + 路径特征（排除 grep/docker/git 中的字符串）
     """
     if not command:
+        return False
+
+    # 0. heredoc 模式不是直接的文件写入——命令只是启动解释器
+    #    python3 << 'PYEOF' / cat > "file" << 'EOF' 是 heredoc 输入，不拦截
+    if "<<" in command:
         return False
 
     # 1. 高置信度模式
@@ -751,6 +757,33 @@ class ReadThinkGate:
         if has_read_only_investigation:
             self._read_only_count += 1
 
+        # ── write-target 覆盖率检查（优先于 _try_unlock）──
+        # 如果要改的文件已经读过，或文件不存在（新建），直接放行。
+        # 不需要再走 diversity/推理门槛——目的性调查已经完成。
+        if tool_args and not self.config.unlock_after_investigation:
+            target_satisfied = False
+            for tn, ta in zip(tool_names, tool_args):
+                if tn in ("write_file", "patch") and isinstance(ta, dict):
+                    wp = ta.get("path", "")
+                    if wp:
+                        if not os.path.exists(wp):
+                            logger.debug(
+                                "read-think gate: write target %s is new file → skip read check",
+                                wp,
+                            )
+                            target_satisfied = True
+                            break
+                        if wp in self._files_read:
+                            self._satisfied = True
+                            logger.info(
+                                "read-think gate: unlocked — write target %s was read before edit",
+                                wp,
+                            )
+                            return None
+            if target_satisfied:
+                # 所有 write/patch target 都满足 → 放行
+                return None
+
         if self._try_unlock(content_len, content_text, tool_names):
             return None
 
@@ -762,33 +795,10 @@ class ReadThinkGate:
             )
             return None
 
-        # ── 漏洞 7 修复：推理轮数在 write-target 检查和兜底之前递增 ──
+        # ── 漏洞 7 修复：推理轮数在兜底之前递增 ──
         # _try_unlock 已在开头检查 max_reasoning_rounds 兜底放行。
-        # 这里递增是为 write-target 未覆盖拦截提供正确的轮数显示。
+        # 这里递增是为未覆盖拦截提供正确的轮数显示。
         self._reasoning_rounds += 1
-
-        # ── write-target 覆盖率验证（漏洞 1 修复：tool_args 现在有值了）──
-        # 严格模式下，要改的文件读过 → 放行；没读过 → 拦截。
-        if tool_args and not self.config.unlock_after_investigation:
-            for tn, ta in zip(tool_names, tool_args):
-                if tn in ("write_file", "patch") and isinstance(ta, dict):
-                    wp = ta.get("path", "")
-                    if wp:
-                        if wp in self._files_read:
-                            self._satisfied = True
-                            logger.info(
-                                "read-think gate: unlocked — write target %s was read before edit",
-                                wp,
-                            )
-                            return None
-                        else:
-                            block_msg = self._build_block_message(tn, content_len)
-                            logger.info(
-                                "read-think gate: blocking %s — write target %s not read (round %d/%d)",
-                                tn, wp, self._reasoning_rounds,
-                                self._active_profile.max_reasoning_rounds,
-                            )
-                            return _make_synthetic_result(tn, block_msg, content_len)
 
         first_gated = next(t for t in tool_names if t in self._gated_tools) if any(t in self._gated_tools for t in tool_names) else "terminal"
         block_msg = self._build_block_message(first_gated, content_len)

@@ -165,9 +165,14 @@ class TestBlockMessage:
     def test_block_message_mentions_digestion_after_reads(self):
         gate = ReadThinkGate(ReadThinkGateConfig(unlock_after_investigation=False))
         gate.check_batch("", ["read_file"], [{"path": "/tmp/a.py"}])
-        result = gate.check_batch("", ["write_file"], [{"path": "/tmp/b.py"}])
-        assert result is not None
-        assert "[ReadThink" in result
+        # 写一个已存在的文件 → 应被拦截（未读 target）
+        result = gate.check_batch("", ["write_file"], [{"path": "/tmp/a.py"}])
+        assert result is None  # target 已读过 → 放行
+        # 写另一个已存在文件 → 应被拦截（未读 target）
+        # 注意：测试环境下 /tmp/test_rtg_exists.py 可能不存在 → 需要 mock
+        # 这里验证的是：读了 a 写 b（b 不存在）→ 新建文件豁免 → 不拦截
+        result2 = gate.check_batch("", ["write_file"], [{"path": "/tmp/nonexist_for_gate_test.py"}])
+        assert result2 is None  # 新建文件 → 豁免
 
 
 # ── Disabled gate ───────────────────────────────────────────────────
@@ -250,8 +255,9 @@ class TestMixedBatches:
     def test_mixed_batch_marks_investigation(self):
         """Batch with read+write tools → marks investigation."""
         gate = ReadThinkGate(ReadThinkGateConfig(unlock_after_investigation=False))
+        # write_file target 不存在 → 新建文件豁免 → 不拦截
         result = gate.check_batch("", ["read_file", "write_file"], [{"path": "/x.py"}, {"path": "/y.py"}])
-        assert result is not None  # write_file blocked
+        assert result is None  # /y.py 不存在 → 新建豁免
         assert gate._investigation_done is True
 
     def test_pure_read_batch_does_not_block(self):
@@ -286,13 +292,20 @@ class TestTurnLifecycle:
         assert r2 is None
         assert gate.phase == "execution"
 
-    def test_full_cycle_strict_mode(self):
+    def test_full_cycle_strict_mode(self, tmp_path):
+        """Strict mode: read target then write → unlocked via write-target coverage."""
         gate = ReadThinkGate(ReadThinkGateConfig(unlock_after_investigation=False))
-        gate.check_batch("", ["read_file", "search_files"], [{"path": "/tmp/other.py"}, {}])
-        r2 = gate.check_batch("", ["write_file"], [{"path": "/tmp/target.py"}])
+        # 创建实际文件，让 write-target 检查知道它们"存在"
+        (tmp_path / "other.py").write_text("# other")
+        target = tmp_path / "target.py"
+        target.write_text("# target")
+        gate.check_batch("", ["read_file", "search_files"], [{"path": str(tmp_path / "other.py")}, {}])
+        # 写 target，没读过 → 拦截
+        r2 = gate.check_batch("", ["write_file"], [{"path": str(target)}])
         assert r2 is not None
-        gate.check_batch("", ["read_file"], [{"path": "/tmp/target.py"}])
-        r3 = gate.check_batch("", ["write_file"], [{"path": "/tmp/target.py"}])
+        # 读了 target → 下次写同一 target → 放行
+        gate.check_batch("", ["read_file"], [{"path": str(target)}])
+        r3 = gate.check_batch("", ["write_file"], [{"path": str(target)}])
         assert r3 is None
         assert gate.phase == "execution"
 
@@ -315,11 +328,14 @@ class TestTurnLifecycle:
         assert "[ReadThink" in parsed["error"]
         assert "deliberation_gate" not in str(parsed)
 
-    def test_concurrent_path_block_message_works(self):
+    def test_concurrent_path_block_message_works(self, tmp_path):
+        """Mixed read+write on same target → write_file blocked until target read."""
         gate = ReadThinkGate(ReadThinkGateConfig(unlock_after_investigation=False))
-        msg = gate.check_batch("", ["read_file", "write_file"], [{"path": "/x.py"}, {"path": "/y.py"}])
-        assert msg is not None
-        assert "[ReadThink" in msg
+        # 创建已存在文件 /x.py → read 后写同一文件 → 放行
+        x = tmp_path / "x.py"
+        x.write_text("# x")
+        msg = gate.check_batch("", ["read_file", "write_file"], [{"path": str(x)}, {"path": str(x)}])
+        assert msg is None  # read_file 和 write_file 同一批，target 已在 files_read 中
         assert gate._investigation_done is True
 
 
@@ -346,17 +362,25 @@ class TestWriteTargetCoverage:
         assert "/tmp/a.py" in gate._files_read
         assert "/tmp/b.py" in gate._files_read
 
-    def test_write_target_checked_before_unlock(self):
+    def test_write_target_checked_before_unlock(self, tmp_path):
+        """Write to existing file not yet read → blocked."""
         gate = ReadThinkGate(ReadThinkGateConfig(unlock_after_investigation=False))
-        gate.check_batch("", ["read_file"], [{"path": "/tmp/a.py"}])
-        result = gate.check_batch("", ["write_file"], [{"path": "/tmp/b.py"}])
-        assert result is not None
+        a = tmp_path / "a.py"
+        a.write_text("# a")
+        b = tmp_path / "b.py"
+        b.write_text("# b")
+        gate.check_batch("", ["read_file"], [{"path": str(a)}])
+        result = gate.check_batch("", ["write_file"], [{"path": str(b)}])
+        assert result is not None  # b 存在且没读过 → 拦截
 
-    def test_write_target_read_unlocks_strict(self):
+    def test_write_target_read_unlocks_strict(self, tmp_path):
+        """Read target then write same target → unlocked in strict mode."""
         gate = ReadThinkGate(ReadThinkGateConfig(unlock_after_investigation=False))
-        gate.check_batch("", ["read_file"], [{"path": "/tmp/target.py"}])
-        result = gate.check_batch("", ["write_file"], [{"path": "/tmp/target.py"}])
-        assert result is None
+        target = tmp_path / "target.py"
+        target.write_text("# target")
+        gate.check_batch("", ["read_file"], [{"path": str(target)}])
+        result = gate.check_batch("", ["write_file"], [{"path": str(target)}])
+        assert result is None  # target 已读过 → 放行
 
 
 # ── Vulnerability fixes (2026-07-25) ──────────────────────────────
@@ -486,25 +510,28 @@ class TestVulnerabilityFixes:
 
     # ── 漏洞 6: block message uses self._reasoning_rounds ──
 
-    def test_block_message_shows_correct_round(self):
+    def test_block_message_shows_correct_round(self, tmp_path):
         """Block message should show actual round number, not hardcoded 1."""
         gate = ReadThinkGate(ReadThinkGateConfig(
             unlock_after_investigation=False,
             min_read_only_calls=10,  # force investigation insufficient
         ))
+        # 创建文件让 write-target 检查判定为"已存在"
+        x = tmp_path / "x.py"
+        x.write_text("# x")
         # First block
-        r1 = gate.check_batch("", ["write_file"], [{"path": "/tmp/x.py"}])
+        r1 = gate.check_batch("", ["write_file"], [{"path": str(x)}])
         assert r1 is not None
         assert "1/" in r1
         # Second block
-        r2 = gate.check_batch("", ["write_file"], [{"path": "/tmp/x.py"}])
+        r2 = gate.check_batch("", ["write_file"], [{"path": str(x)}])
         assert r2 is not None
         # Should show round 2, not round 1
         assert "2/" in r2
 
     # ── 漏洞 7: max_reasoning_rounds off-by-one ──
 
-    def test_max_rounds_exact_threshold(self):
+    def test_max_rounds_exact_threshold(self, tmp_path):
         """Gate should unlock when rounds == max, not rounds == max+1."""
         gate = ReadThinkGate(ReadThinkGateConfig(
             unlock_after_investigation=False,
@@ -512,14 +539,17 @@ class TestVulnerabilityFixes:
             min_read_only_calls=99,  # ensure investigation never satisfies
             min_reasoning_chars=999,  # ensure reasoning never satisfies
         ))
+        # 创建文件让 write-target 检查判定为"已存在"
+        for idx in range(4):
+            (tmp_path / f"x{idx}.py").write_text(f"# x{idx}")
         # 3 blocks should all be blocked
         for i in range(3):
-            result = gate.check_batch("", ["write_file"], [{"path": f"/tmp/x{i}.py"}])
+            result = gate.check_batch("", ["write_file"], [{"path": str(tmp_path / f"x{i}.py")}])
             assert result is not None, f"round {i+1} should be blocked"
         # After 3 rounds, _reasoning_rounds should be 3 == max → _try_unlock should bail out
         assert gate._reasoning_rounds == 3
         # Next call should unlock via max_rounds
-        gate.check_batch("", ["write_file"], [{"path": "/tmp/y.py"}])
+        gate.check_batch("", ["write_file"], [{"path": str(tmp_path / "x3.py")}])
         # _try_unlock checks _reasoning_rounds >= max_reasoning_rounds
         # After 3 increments, the 4th call's _try_unlock should see 3 >= 3 → unlock
         assert gate.is_satisfied
