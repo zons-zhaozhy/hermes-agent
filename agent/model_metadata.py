@@ -296,6 +296,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # Longest-key-first substring matching ensures "glm-5.2" resolves
     # to 1M code default while the provider config overrides it to 256K.
     "glm-5.2": 1_048_576,
+    "glm-5-turbo": 262_144,  # 262K tokens (z.ai)
     "glm": 202752,
     # xAI Grok — xAI /v1/models does not return context_length metadata,
     # so these hardcoded fallbacks prevent Hermes from probing-down to
