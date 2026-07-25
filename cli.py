@@ -2560,6 +2560,9 @@ _ACCENT = _SkinAwareAnsi("response_border", "#FFD700", bold=True)
 _DIM = "\x1b[2;3m"
 # Blue (cyan-leaning) for tool activity lines — distinct from agent response text
 _TOOL_BLUE = "\x1b[38;2;87;166;226m"  # True-color #57A6E2
+# Soft green for user input preview — distinct from agent response (default fg)
+# and tool activity (blue) and accent/gold (borders, symbols)
+_USER_INPUT_GREEN = "\x1b[38;2;120;217;160m"  # True-color #78D9A0
 
 
 def _b(s: str) -> str:
@@ -5841,7 +5844,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         )
         lines = user_input.split("\n")
         if len(lines) <= 1:
-            return f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]{ts_suffix}"
+            return f"{_USER_INPUT_GREEN}● {_escape(user_input)}{_RST}{ts_suffix}"
 
         first_lines = int(getattr(self, "user_message_preview_first_lines", 2))
         last_lines = int(getattr(self, "user_message_preview_last_lines", 2))
@@ -5858,15 +5861,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             tail = []
 
         preview_lines = [
-            f"[bold {_accent_hex()}]●[/] [bold]{_escape(head[0])}[/]{ts_suffix}"
+            f"{_USER_INPUT_GREEN}● {_escape(head[0])}{_RST}{ts_suffix}"
         ]
-        preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in head[1:])
+        preview_lines.extend(f"{_USER_INPUT_GREEN}{_escape(line)}{_RST}" for line in head[1:])
 
         if hidden_middle_count > 0:
             noun = "line" if hidden_middle_count == 1 else "lines"
             preview_lines.append(f"[dim]... (+{hidden_middle_count} more {noun})[/]")
 
-        preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in tail)
+        preview_lines.extend(f"{_USER_INPUT_GREEN}{_escape(line)}{_RST}" for line in tail)
         return "\n".join(preview_lines)
 
     def _expand_paste_references(self, text: str | None) -> str:
@@ -5890,12 +5893,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
     def _print_user_message_preview(self, user_input: str) -> None:
         """Render a user message using the normal chat scrollback style."""
-        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+        ChatConsole().print(f"{_USER_INPUT_GREEN}{'─' * 40}{_RST}")
         text = str(user_input or "")
         if "\n" in text:
             ChatConsole().print(self._format_submitted_user_message_preview(text))
         else:
-            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
+            ChatConsole().print(f"{_USER_INPUT_GREEN}● {_escape(text)}{_RST}")
 
     def _stream_reasoning_delta(self, text: str) -> None:
         """Stream reasoning/thinking tokens into a dim box above the response.

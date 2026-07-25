@@ -235,8 +235,9 @@ _JUDGE_PROMPT = """你是一个代码调查质量评审员。评估 agent 的调
 {task}
 
 agent 要执行的工具：{tool}
-调查中读取的文件：
-{files_read}
+
+调查行为记录（包括代码读取、搜索、网页访问、技能加载等）：
+{investigation_evidence}
 
 agent 的分析内容：
 ---
@@ -270,12 +271,14 @@ def _judge_investigation(
     tool: str,
     files_read: set[str],
     analysis: str,
+    investigation_evidence: list[str] | None = None,
     judge_history: list[str] | None = None,
     fail_count: int = 0,
 ) -> tuple[bool, str, bool]:
     """用 LLM 评估调查质量。
 
     Args:
+        investigation_evidence: 所有调查工具的调用摘要（search_files/web_search 等）
         judge_history: 前几轮 judge 的反馈列表（最近 3 条），用于让 judge 知道之前已反馈了什么
         fail_count: judge 连续失败次数（辅助模型不可用/异常时累计），达到阈值后 fail-open
 
@@ -301,7 +304,13 @@ def _judge_investigation(
             )
             return True, "", True
 
-        files_str = "\n".join(f"  - {f}" for f in sorted(files_read)) or "  (无)"
+        # 构建调查证据文本：文件路径 + 所有调查工具调用记录
+        evidence_parts = []
+        if files_read:
+            evidence_parts.extend(f"  文件: {f}" for f in sorted(files_read))
+        if investigation_evidence:
+            evidence_parts.extend(f"  {e}" for e in investigation_evidence)
+        evidence_str = "\n".join(evidence_parts) if evidence_parts else "  (无)"
 
         # 漏洞 2 修复：注入历史反馈，让 judge 知道之前已要求过什么
         history_context = ""
@@ -315,7 +324,7 @@ def _judge_investigation(
         prompt = _JUDGE_PROMPT.format(
             task=task[:500],
             tool=tool,
-            files_read=files_str,
+            investigation_evidence=evidence_str,
             analysis=analysis[:2000],
             history_context=history_context,
         )
@@ -590,6 +599,7 @@ class ReadThinkGate:
         self._read_only_count: int = 0
         self._active_complexity: str = "normal"
         self._files_read: set[str] = set()  # 本 turn 读取的文件路径
+        self._investigation_evidence: list[str] = []  # 所有调查工具的证据摘要
         self._user_message: str = user_message or ""  # judge 用：当前任务描述
         self._last_judge_feedback: str = ""  # judge 最近一次反馈
         # 漏洞 2 修复：judge 历史反馈列表——让 judge 知道前几轮已要求过什么
@@ -662,14 +672,36 @@ class ReadThinkGate:
         Returns:
             拦截消息（纯文本），放行时返回 None
         """
-        # ── 文件追踪（漏洞 1 修复）必须在所有 early return 之前 ──
-        # 即使 gate 已解锁，read_file 的路径仍需记录。
+        # ── 调查证据追踪（必须在所有 early return 之前）──
+        # 即使 gate 已解锁，调查证据仍需记录。
+        # 追踪所有 READ_ONLY_INVESTIGATION_TOOLS 的调用，不只 read_file 路径。
         if tool_args:
             for tn, ta in zip(tool_names, tool_args):
-                if tn == "read_file" and isinstance(ta, dict):
+                if tn not in READ_ONLY_INVESTIGATION_TOOLS or not isinstance(ta, dict):
+                    continue
+                if tn == "read_file":
                     rp = ta.get("path", "")
                     if rp:
                         self._files_read.add(rp)
+                        self._investigation_evidence.append(f"read_file: {rp}")
+                elif tn == "search_files":
+                    pat = ta.get("pattern", "")
+                    tgt = ta.get("target", "")
+                    self._investigation_evidence.append(f"search_files({tgt}): {pat}")
+                elif tn in ("web_search", "web_extract"):
+                    urls = ta.get("urls", [])
+                    q = ta.get("query", "")
+                    if q:
+                        self._investigation_evidence.append(f"{tn}: {q}")
+                    elif urls:
+                        self._investigation_evidence.append(f"{tn}: {urls[0]}")
+                elif tn.startswith("browser_"):
+                    url = ta.get("url", "")
+                    q = ta.get("question", "")
+                    self._investigation_evidence.append(f"{tn}: {url or q[:80]}")
+                elif tn == "skill_view":
+                    name = ta.get("name", "")
+                    self._investigation_evidence.append(f"skill_view: {name}")
 
         if not self.config.enabled or self._satisfied:
             return None
@@ -793,6 +825,7 @@ class ReadThinkGate:
                     # ── 漏洞 4 修复：传入 fail_count ──
                     approved, feedback, was_infra_failure = _judge_investigation(
                         self._user_message, tool_name, self._files_read, content,
+                        investigation_evidence=self._investigation_evidence,
                         judge_history=self._judge_feedback_history,
                         fail_count=self._judge_fail_count,
                     )
