@@ -10958,13 +10958,19 @@ def _run_prompt_submit(
                         if goal_mgr.is_active():
                             try:
                                 from hermes_cli.goals import gather_background_processes as _gather_bg
+                                from hermes_cli.goals import extract_tool_calls_summary as _extract_tcs
                                 _bg_procs = _gather_bg()
+                                _agent = session.get("agent")
+                                _hist = getattr(_agent, "conversation_history", None) or [] if _agent else []
+                                _tcs = _extract_tcs(_hist)
                             except Exception:
                                 _bg_procs = None
+                                _tcs = None
                             decision = goal_mgr.evaluate_after_turn(
                                 raw,
                                 user_initiated=True,
                                 background_processes=_bg_procs,
+                                tool_calls_summary=_tcs,
                             )
                             verdict_msg = decision.get("message") or ""
                             if verdict_msg:

@@ -384,11 +384,19 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
     # ── Deliberation gate — 一次 assistant_message 只检查一次 ──────
     _gate_block: str | None = None
+    _gated_set: frozenset[str] | set[str] = GATED_TOOL_NAMES  # fallback if gate unavailable
     try:
+        # 漏洞 1 修复：传入 tool_args 让 gate 能追踪 read_file 路径、检测 terminal 写入
+        _gate_tool_args = [
+            _parse_tool_arguments(tc.function.arguments)[0]
+            for tc in tool_calls
+        ]
         _gate_block = agent._read_think_gate.check_batch(
             getattr(assistant_message, "content", None),
             [tc.function.name for tc in tool_calls],
+            _gate_tool_args,
         )
+        _gated_set = getattr(agent._read_think_gate, "_gated_tools", GATED_TOOL_NAMES)
     except Exception:
         logger.warning("ReadThinkGate check_batch failed (concurrent path)", exc_info=True)
         # failsafe: gate crash never blocks execution
@@ -526,7 +534,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     error_message=block_message,
                     middleware_trace=list(middleware_trace),
                 )
-            elif _gate_block is not None and function_name in GATED_TOOL_NAMES:
+            elif _gate_block is not None and function_name in _gated_set:
                 # Deliberation gate block — 同一 batch 所有门控工具共享
                 block_result = _gate_block
                 _emit_terminal_post_tool_call(
@@ -1124,13 +1132,21 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
     # ── Deliberation gate — 一次 assistant_message 只检查一次 ──────
     _gate_block: str | None = None
+    _gated_set: frozenset[str] | set[str] = GATED_TOOL_NAMES
     try:
         _dg = getattr(agent, "_read_think_gate", None)
         if _dg is not None:
+            # 漏洞 1 修复：传入 tool_args 让 gate 能追踪 read_file 路径、检测 terminal 写入
+            _gate_tool_args = [
+                _parse_tool_arguments(tc.function.arguments)[0]
+                for tc in assistant_message.tool_calls
+            ]
             _gate_block = _dg.check_batch(
                 getattr(assistant_message, "content", None),
                 [tc.function.name for tc in assistant_message.tool_calls],
+                _gate_tool_args,
             )
+            _gated_set = getattr(_dg, "_gated_tools", GATED_TOOL_NAMES)
     except Exception:
         logger.warning("ReadThinkGate check_batch failed (sequential path)", exc_info=True)
         # failsafe: gate crash never blocks execution
@@ -1241,7 +1257,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 pass
 
         # ── Deliberation gate block — batch-level, only for mutating tools ──
-        if _gate_block is not None and _block_msg is None and function_name in GATED_TOOL_NAMES:
+        if _gate_block is not None and _block_msg is None and function_name in _gated_set:
             _block_msg = _gate_block
             _block_error_type = "read_think_gate"
 

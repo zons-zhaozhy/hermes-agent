@@ -2558,6 +2558,8 @@ _ACCENT = _SkinAwareAnsi("response_border", "#FFD700", bold=True)
 # Terminal.app modes.  Hardcoded skin colors like #B8860B
 # (dark goldenrod) become invisible against light cream backgrounds.
 _DIM = "\x1b[2;3m"
+# Blue (cyan-leaning) for tool activity lines — distinct from agent response text
+_TOOL_BLUE = "\x1b[38;2;87;166;226m"  # True-color #57A6E2
 
 
 def _b(s: str) -> str:
@@ -9902,14 +9904,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         try:
             from hermes_cli.goals import gather_background_processes as _gather_bg
+            from hermes_cli.goals import extract_tool_calls_summary as _extract_tcs
             _bg_procs = _gather_bg()
+            _tcs = _extract_tcs(self.conversation_history or [])
         except Exception:
             _bg_procs = None
+            _tcs = None
 
         decision = mgr.evaluate_after_turn(
             last_response,
             user_initiated=True,
             background_processes=_bg_procs,
+            tool_calls_summary=_tcs,
         )
         msg = decision.get("message") or ""
         if msg:
@@ -10989,7 +10995,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         from agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚡")
-        _cprint(f"  ┊ {emoji} preparing {tool_name}…")
+        _cprint(f"  {_TOOL_BLUE}┊ {emoji} preparing {tool_name}…{_RST}")
 
     # ====================================================================
     # Tool progress callback (audio cues for voice mode)
@@ -11076,7 +11082,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 try:
                     from agent.display import get_cute_tool_message
                     line = get_cute_tool_message(function_name, stored_args, duration, result=kwargs.get("result"))
-                    _cprint(f"  {line}")
+                    _cprint(f"  {_TOOL_BLUE}{line}{_RST}")
                 except Exception:
                     pass
                 # First-touch onboarding: on the first tool in this process

@@ -37,24 +37,112 @@ from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
 
-# 需要门控的执行类工具——能造成不可逆变更或副作用。
-# read-only 工具（search_files/read_file/web_search 等）不受门控——调查即思考。
+# 默认门控的执行类工具——只覆盖代码编辑工具。
+# terminal/browser/delegate_task/cronjob/process 等运维交互工具不在默认门控范围——
+# 它们不是代码编辑，拦截它们会把 MySQL 运维、docker、git、测试等操作误伤。
+# 用户可通过 config.yaml → read_think_gate.gated_tools 扩展列表。
 GATED_TOOL_NAMES: frozenset[str] = frozenset(
     {
-        "terminal",
         "write_file",
         "patch",
         "execute_code",
-        "browser_navigate",
-        "browser_click",
-        "browser_type",
-        "browser_press",
-        "browser_dialog",
-        "delegate_task",
-        "cronjob",
-        "process",
     }
 )
+
+# 只读调查工具白名单——只有这些工具的调用才算真正的"调查"。
+# 其他非 gated 工具（如 memory、process、cronjob 等）不算调查行为。
+READ_ONLY_INVESTIGATION_TOOLS: frozenset[str] = frozenset(
+    {
+        "read_file",
+        "search_files",
+        "web_search",
+        "web_extract",
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_console",
+        "browser_vision",
+        "browser_get_images",
+        "skill_view",
+    }
+)
+
+# terminal 中可能写入文件的 shell 操作模式——用于检测绕过 gate 的文件写入。
+# 用 _terminal_writes_file() 函数检测，而非简单子串匹配。
+# 优化原则：只匹配确实表示写文件的模式，避免 "grep 'cp '" / "git commit -m 'mv'" 误报。
+
+# 高置信度写操作——几乎不会出现在非写入上下文
+_TERMINAL_WRITE_PATTERNS_HIGH: tuple[str, ...] = (
+    "sed -i",      # sed 原地编辑——唯一用途就是改文件
+    "dd of=",      # dd 输出到文件——唯一用途就是写
+    "rsync ",      # rsync——同步文件到目标
+    "tee /",       # tee 写绝对路径
+    "tee ~",       # tee 写 home 目录
+    "tee ./",      # tee 写相对路径文件
+    "tee \"",       # tee 写引号包裹的路径
+    "tee '",       # tee 写引号包裹的路径
+)
+
+
+def _terminal_writes_file(command: str) -> bool:
+    """检测 terminal 命令是否包含文件写入操作。
+
+    策略：
+    1. 高置信度模式（sed -i/dd of=/rsync/tee+路径）直接匹配
+    2. shell 重定向（> >>）后跟文件路径特征——排除 /dev/null/2>&1
+    3. cp/mv 目标是文件路径——要求前导空格 + 路径特征（排除 grep/docker/git 中的字符串）
+    """
+    if not command:
+        return False
+
+    # 1. 高置信度模式
+    for pat in _TERMINAL_WRITE_PATTERNS_HIGH:
+        if pat in command:
+            return True
+
+    # 2. shell 重定向——检测 > 或 >> 后面跟文件路径
+    #    排除：> /dev/null, > /dev/stdout, 2>&1, >&2, > &-
+    _REDIRECT_SINKS = ("/dev/null", "/dev/stdout", "/dev/stderr")
+    idx = 0
+    while True:
+        gt_pos = command.find(">", idx)
+        if gt_pos == -1:
+            break
+        # 跳过 >& 和 2>& 等操作符
+        after = command[gt_pos + 1:]
+        if after.startswith("&"):
+            idx = gt_pos + 1
+            continue
+        # 取 > 后面的目标
+        target = after.lstrip("> ").strip()
+        # 如果目标以文件路径特征开头，且不是已知 sink
+        if target and not any(target.startswith(s) for s in _REDIRECT_SINKS):
+            # 检查是否像文件路径
+            first_token = target.split()[0] if target.split() else target
+            if (first_token.startswith(("/", "~", "\"", "'", "./", "../"))
+                    or "." in first_token  # file.py, config.yaml
+                    or first_token.endswith((".py", ".js", ".ts", ".json", ".yaml", ".yml", ".toml", ".sh", ".md", ".txt", ".sql"))):
+                return True
+        idx = gt_pos + 1
+
+    # 3. cp/mv——要求前面有管道或空格（排除 grep 'cp '），且目标像文件路径
+    for cmd_prefix in (" cp ", " mv "):
+        pos = command.find(cmd_prefix)
+        if pos == -1:
+            continue
+        # 确保不是在引号内（grep 'cp ...'）
+        before = command[:pos + 1]  # 包含 "cp " 的 "cp" 部分
+        # 简单检查：如果 cp/mv 前面是引号或不是命令边界，跳过
+        # 实际 cp/mv 作为命令时前面通常是行首、管道、分号、&& 或 ||
+        preceding = command[:pos].rstrip()
+        if preceding and not preceding.endswith(("|", ";", "&&", "||")):
+            # 检查 preceding 的最后一个 token 是否是 cp/mv 的合法前导
+            last_word = preceding.split()[-1] if preceding.split() else ""
+            # 如果 last_word 不像是命令结束符，可能是 grep/docker 等参数内的 cp
+            if last_word and not last_word.endswith(("cp", "mv", "&&", "||", ";")):
+                continue
+        return True
+
+    return False
 
 
 # ── 任务复杂度检测 ─────────────────────────────────────────────────
@@ -155,6 +243,7 @@ agent 的分析内容：
 {analysis}
 ---
 
+{history_context}
 逐条评估（每条 PASS 或 FAIL）：
 
 A. 代码理解：是否说明了目标代码当前的逻辑？（引用了具体函数/行号/数据流）
@@ -166,6 +255,10 @@ D. 方案评估：是否论证了即将采取的做法是最优的？是否考�
 - 4 条全 PASS → APPROVED
 - 有任何 FAIL → NEEDS_MORE_WORK
 - 分析内容为空或只有意图陈述 → NEEDS_MORE_WORK
+- 重要：如果前几轮已反馈过某个不足，而 agent 本轮分析中已针对该不足做了补充，
+  则该项应判 PASS。不要反复找新角度——收敛判定。
+- 如果 4 个维度已经基本覆盖（即使深度不够完美），也应该 APPROVED。
+  "完美"不是标准，"充分理解了代码逻辑和方案"才是标准。
 
 只回答 APPROVED 或 NEEDS_MORE_WORK。在 NEEDS_MORE_WORK 后用一句话说明缺了什么。"""
 
@@ -177,26 +270,54 @@ def _judge_investigation(
     tool: str,
     files_read: set[str],
     analysis: str,
-) -> tuple[bool, str]:
+    judge_history: list[str] | None = None,
+    fail_count: int = 0,
+) -> tuple[bool, str, bool]:
     """用 LLM 评估调查质量。
 
+    Args:
+        judge_history: 前几轮 judge 的反馈列表（最近 3 条），用于让 judge 知道之前已反馈了什么
+        fail_count: judge 连续失败次数（辅助模型不可用/异常时累计），达到阈值后 fail-open
+
     Returns:
-        (approved, feedback) — approved=True 时 feedback 为空。
+        (approved, feedback, was_infra_failure)
+        - approved=True 时 feedback 为空，was_infra_failure=False
+        - was_infra_failure=True 表示是基础设施问题（client 不可用/异常），
+          调用方应递增 fail_count 而非重置。
     """
     try:
         from agent.auxiliary_client import get_text_auxiliary_client
 
         client, model = get_text_auxiliary_client("investigation_judge")
         if client is None or not model:
-            logger.debug("read-think gate: no auxiliary client for judge → allow")
-            return True, ""
+            # 漏洞 4 修复：fail-closed 前 2 次（不允许），fail-open 第 3 次（防死锁）
+            if fail_count < 2:
+                logger.warning(
+                    "read-think gate: no auxiliary client for judge → block (fail_count=%d)", fail_count,
+                )
+                return False, "调查质量评审服务暂不可用，请输出完整分析后重试。", True
+            logger.warning(
+                "read-think gate: no auxiliary client, fail_count=%d → allow (fail-open)", fail_count,
+            )
+            return True, "", True
 
         files_str = "\n".join(f"  - {f}" for f in sorted(files_read)) or "  (无)"
+
+        # 漏洞 2 修复：注入历史反馈，让 judge 知道之前已要求过什么
+        history_context = ""
+        if judge_history:
+            recent = judge_history[-3:]  # 最近 3 条反馈
+            history_lines = []
+            for i, fb in enumerate(recent, 1):
+                history_lines.append(f"  第{i}轮反馈：{fb[:200]}")
+            history_context = "前几轮评审反馈（注意：如果 agent 已针对这些反馈做了补充，不要再要求同样的内容）：\n" + "\n".join(history_lines) + "\n"
+
         prompt = _JUDGE_PROMPT.format(
             task=task[:500],
             tool=tool,
             files_read=files_str,
             analysis=analysis[:2000],
+            history_context=history_context,
         )
 
         response = client.chat.completions.create(
@@ -211,15 +332,23 @@ def _judge_investigation(
 
         if "APPROVED" in raw.upper():
             logger.info("read-think gate: judge APPROVED investigation")
-            return True, ""
+            return True, "", False
 
         feedback = raw.replace("NEEDS_MORE_WORK", "").strip()
         logger.info("read-think gate: judge NEEDS_MORE_WORK: %s", feedback[:100])
-        return False, feedback
+        return False, feedback, False
 
     except Exception:
-        logger.warning("read-think gate: judge failed → allow (fail-open)", exc_info=True)
-        return True, ""
+        # 漏洞 4 修复：fail-closed 前 2 次，fail-open 第 3 次
+        if fail_count < 2:
+            logger.warning(
+                "read-think gate: judge failed → block (fail_count=%d)", fail_count, exc_info=True,
+            )
+            return False, "调查质量评审服务异常，请输出完整分析后重试。", True
+        logger.warning(
+            "read-think gate: judge failed, fail_count=%d → allow (fail-open)", fail_count, exc_info=True,
+        )
+        return True, "", True
 
 
 def _build_history_summary(conversation_history: list[dict] | None) -> str:
@@ -377,6 +506,9 @@ class ReadThinkGateConfig:
     use_llm_classifier: bool = True
     # 是否用 LLM-as-judge 评估调查质量（严格模式下生效）
     use_llm_judge: bool = True
+    # 用户自定义额外门控工具（合并到 GATED_TOOL_NAMES 之上）。
+    # 默认只门控 write_file/patch/execute_code；如需门控 terminal 等，在此追加。
+    gated_tools: tuple[str, ...] = ()
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> "ReadThinkGateConfig":
@@ -394,6 +526,10 @@ class ReadThinkGateConfig:
             complexity_profiles=profiles_raw if isinstance(profiles_raw, Mapping) else None,
             use_llm_classifier=_as_bool(data.get("use_llm_classifier"), True),
             use_llm_judge=_as_bool(data.get("use_llm_judge"), True),
+            gated_tools=tuple(
+                str(x) for x in (data.get("gated_tools") or [])
+                if isinstance(x, str)
+            ),
         )
 
     def get_profile(self, complexity: str) -> ComplexityProfile:
@@ -429,6 +565,11 @@ class ReadThinkGate:
 
     def __init__(self, config: ReadThinkGateConfig | None = None):
         self.config = config or ReadThinkGateConfig()
+        # 合并默认门控工具 + 用户自定义扩展，形成实例级集合。
+        # check_batch 用这个 set 而不是直接引用全局 GATED_TOOL_NAMES。
+        self._gated_tools: set[str] = set(GATED_TOOL_NAMES)
+        if self.config.gated_tools:
+            self._gated_tools.update(self.config.gated_tools)
         self.reset_for_turn()
 
     # ── Per-turn state ──────────────────────────────────────────────
@@ -451,6 +592,14 @@ class ReadThinkGate:
         self._files_read: set[str] = set()  # 本 turn 读取的文件路径
         self._user_message: str = user_message or ""  # judge 用：当前任务描述
         self._last_judge_feedback: str = ""  # judge 最近一次反馈
+        # 漏洞 2 修复：judge 历史反馈列表——让 judge 知道前几轮已要求过什么
+        self._judge_feedback_history: list[str] = []
+        # 漏洞 4 修复：judge 连续失败计数——达到阈值后 fail-open
+        self._judge_fail_count: int = 0
+        # 清理上一 turn 动态加入 _gated_tools 的 terminal（漏洞 3 修复副作用）。
+        # 但保留用户通过 config 显式配置的 gated_tools。
+        if "terminal" not in self.config.gated_tools:
+            self._gated_tools.discard("terminal")
 
         if self.config.complexity_adaptive:
             history_summary = ""
@@ -508,12 +657,12 @@ class ReadThinkGate:
         Args:
             assistant_content: 当前 assistant_message 的 content 文本
             tool_names: 当前批次所有工具名
-            tool_args: 每个工具的 args dict（可选，用于 write-target 覆盖率验证）
+            tool_args: 每个工具的 args dict（用于 write-target 覆盖率验证 + terminal 写入检测）
 
         Returns:
-            拦截消息（JSON error string），放行时返回 None
+            拦截消息（纯文本），放行时返回 None
         """
-        # 文件追踪必须在所有 early return 之前——
+        # ── 文件追踪（漏洞 1 修复）必须在所有 early return 之前 ──
         # 即使 gate 已解锁，read_file 的路径仍需记录。
         if tool_args:
             for tn, ta in zip(tool_names, tool_args):
@@ -525,12 +674,34 @@ class ReadThinkGate:
         if not self.config.enabled or self._satisfied:
             return None
 
-        has_mutating = any(t in GATED_TOOL_NAMES for t in tool_names)
-        has_read_only = any(t not in GATED_TOOL_NAMES for t in tool_names)
+        # ── 漏洞 3 修复：检测 terminal 中的文件写入操作 ──
+        # terminal 默认不在 gated_tools 中（运维工具），但如果命令包含
+        # 文件写入操作（> >> tee sed -i cp mv dd 等），则视为代码编辑，需要门控。
+        # 检测到写入操作时把 terminal 动态加入 _gated_tools，
+        # 这样 tool_executor 的 `function_name in _gated_set` 检查才能匹配到。
+        terminal_writing_files = False
+        if tool_args:
+            for tn, ta in zip(tool_names, tool_args):
+                if tn == "terminal" and isinstance(ta, dict):
+                    cmd = ta.get("command", "")
+                    if cmd and _terminal_writes_file(cmd):
+                        terminal_writing_files = True
+                        # 动态加入 _gated_tools，让 tool_executor 分发路径也能拦截
+                        self._gated_tools.add("terminal")
+                        logger.info(
+                            "read-think gate: terminal command writes file → treated as gated: %s", cmd[:80],
+                        )
+                        break
+
+        has_mutating = any(t in self._gated_tools for t in tool_names) or terminal_writing_files
+        # ── 漏洞 5 修复：只对白名单中的调查工具计数 ──
+        has_read_only_investigation = any(
+            t in READ_ONLY_INVESTIGATION_TOOLS for t in tool_names
+        )
         content_text = assistant_content or ""
         content_len = len(content_text)
 
-        if has_read_only:
+        if has_read_only_investigation:
             self._read_only_count += 1
 
         if self._try_unlock(content_len, content_text, tool_names):
@@ -544,17 +715,19 @@ class ReadThinkGate:
             )
             return None
 
-        # write-target 覆盖率验证：
-        # 严格模式（unlock_after_investigation=False）下，这是真正的 gate。
-        # 要改的文件读过 → 放行（比"读了 N 个文件"科学）。
-        # 要改的文件没读过 → 拦截。
+        # ── 漏洞 7 修复：推理轮数在 write-target 检查和兜底之前递增 ──
+        # _try_unlock 已在开头检查 max_reasoning_rounds 兜底放行。
+        # 这里递增是为 write-target 未覆盖拦截提供正确的轮数显示。
+        self._reasoning_rounds += 1
+
+        # ── write-target 覆盖率验证（漏洞 1 修复：tool_args 现在有值了）──
+        # 严格模式下，要改的文件读过 → 放行；没读过 → 拦截。
         if tool_args and not self.config.unlock_after_investigation:
             for tn, ta in zip(tool_names, tool_args):
                 if tn in ("write_file", "patch") and isinstance(ta, dict):
                     wp = ta.get("path", "")
                     if wp:
                         if wp in self._files_read:
-                            # write target 已读 → 放行
                             self._satisfied = True
                             logger.info(
                                 "read-think gate: unlocked — write target %s was read before edit",
@@ -562,8 +735,6 @@ class ReadThinkGate:
                             )
                             return None
                         else:
-                            # write target 未读 → 拦截
-                            self._reasoning_rounds += 1
                             block_msg = self._build_block_message(tn, content_len)
                             logger.info(
                                 "read-think gate: blocking %s — write target %s not read (round %d/%d)",
@@ -572,9 +743,7 @@ class ReadThinkGate:
                             )
                             return _make_synthetic_result(tn, block_msg, content_len)
 
-        self._reasoning_rounds += 1
-
-        first_gated = next(t for t in tool_names if t in GATED_TOOL_NAMES)
+        first_gated = next(t for t in tool_names if t in self._gated_tools) if any(t in self._gated_tools for t in tool_names) else "terminal"
         block_msg = self._build_block_message(first_gated, content_len)
         logger.info(
             "read-think gate: blocking %s (round %d/%d, content=%d, investigated=%d, complexity=%s)",
@@ -599,6 +768,16 @@ class ReadThinkGate:
         """
         profile = self._active_profile
 
+        # ── 漏洞 7 修复：兜底检查移到这里，在调查/推理量检查之前 ──
+        # 这样推理轮数达到上限时直接放行，不会多等一轮。
+        if self._reasoning_rounds >= profile.max_reasoning_rounds:
+            self._satisfied = True
+            logger.info(
+                "read-think gate: unlocked — max reasoning rounds reached (%d, complexity=%s)",
+                profile.max_reasoning_rounds, self._active_complexity,
+            )
+            return True
+
         if not self.config.unlock_after_investigation:
             # 严格模式第一关：调查量 + 推理量 双达标
             if (self._read_only_count >= profile.min_read_only_calls
@@ -608,19 +787,33 @@ class ReadThinkGate:
                     tool_name = ""
                     if tool_names:
                         tool_name = next(
-                            (t for t in tool_names if t in GATED_TOOL_NAMES), tool_names[0] if tool_names else ""
+                            (t for t in tool_names if t in self._gated_tools), tool_names[0] if tool_names else ""
                         )
-                    approved, feedback = _judge_investigation(
+                    # ── 漏洞 2 修复：传入 judge 历史 ──
+                    # ── 漏洞 4 修复：传入 fail_count ──
+                    approved, feedback, was_infra_failure = _judge_investigation(
                         self._user_message, tool_name, self._files_read, content,
+                        judge_history=self._judge_feedback_history,
+                        fail_count=self._judge_fail_count,
                     )
                     if not approved:
                         # judge 不通过——不解锁，反馈给 agent
-                        logger.info(
-                            "read-think gate: judge rejected (reads=%d, complexity=%s): %s",
-                            self._read_only_count, self._active_complexity, feedback[:80],
-                        )
+                        # 区分：基础设施失败 → 递增 fail_count；judge 合法拒绝 → 重置 fail_count
+                        if was_infra_failure:
+                            self._judge_fail_count += 1
+                        else:
+                            self._judge_fail_count = 0
+                            self._judge_feedback_history.append(feedback)
                         self._last_judge_feedback = feedback
+                        logger.info(
+                            "read-think gate: judge rejected (reads=%d, complexity=%s, history=%d): %s",
+                            self._read_only_count, self._active_complexity,
+                            len(self._judge_feedback_history), feedback[:80],
+                        )
                         return False
+                    else:
+                        # judge 通过——重置状态
+                        self._judge_fail_count = 0
                 self._satisfied = True
                 logger.info(
                     "read-think gate: unlocked — strict mode (reads=%d>=%d, reasoning=%d>=%d, judge=pass, complexity=%s)",
@@ -644,15 +837,6 @@ class ReadThinkGate:
             logger.info(
                 "read-think gate: unlocked — investigation done (%d reads, complexity=%s)",
                 self._read_only_count, self._active_complexity,
-            )
-            return True
-
-        # 兜底：推理轮数耗尽 → 强制解锁防死循环
-        if self._reasoning_rounds >= profile.max_reasoning_rounds:
-            self._satisfied = True
-            logger.info(
-                "read-think gate: unlocked — max reasoning rounds reached (%d, complexity=%s)",
-                profile.max_reasoning_rounds, self._active_complexity,
             )
             return True
 
@@ -682,6 +866,7 @@ class ReadThinkGate:
                        self._reasoning_rounds, profile.max_reasoning_rounds)
                 )
             if done < needed:
+                # ── 漏洞 6 修复：推理轮数用 self._reasoning_rounds 而非硬编码 1 ──
                 return (
                     "[ReadThink Gate — 推理阶段 · 标准任务] 工具 '%s' 暂时不可用。\n\n"
                     "动手前必须搞清楚：\n"
@@ -691,8 +876,9 @@ class ReadThinkGate:
                     "  4. 你打算怎么改？这是最优方案吗？有没有更稳妥的做法？\n\n"
                     "用 search_files 搜调用方和同类实现，用 read_file 读目标文件全貌，\n"
                     "用 codegraph/gitnexus 追依赖链。搞清楚再动手。\n\n"
-                    "（调查次数：%d/%d，推理轮数：1/%d）"
-                    % (tool_name, done, needed, profile.max_reasoning_rounds)
+                    "（调查次数：%d/%d，推理轮数：%d/%d）"
+                    % (tool_name, done, needed,
+                       self._reasoning_rounds, profile.max_reasoning_rounds)
                 )
             return (
                 "[ReadThink Gate — 推理阶段 · 标准任务] 工具 '%s' 暂时不可用。\n\n"

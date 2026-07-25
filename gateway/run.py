@@ -14972,14 +14972,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         try:
             from hermes_cli.goals import gather_background_processes as _gather_bg
+            from hermes_cli.goals import extract_tool_calls_summary as _extract_tcs
             _bg_procs = _gather_bg()
+            _hist = []
+            _agent = getattr(session_entry, "agent", None)
+            if _agent is not None:
+                _hist = getattr(_agent, "conversation_history", None) or []
+            _tcs = _extract_tcs(_hist)
         except Exception:
             _bg_procs = None
+            _tcs = None
 
         decision = mgr.evaluate_after_turn(
             final_response or "",
             user_initiated=True,
             background_processes=_bg_procs,
+            tool_calls_summary=_tcs,
         )
         msg = decision.get("message") or ""
 
