@@ -644,6 +644,21 @@ class ReadThinkGate:
         """调查是否达标——至少做了 1 次只读调查。"""
         return self._read_only_count >= 1
 
+    def _has_diverse_investigation(self, profile: ComplexityProfile) -> bool:
+        """调查是否包含搜索类工具，而非只有 read_file/skill_view 堆数量。
+
+        搜索类工具：search_files（代码搜索）、web_search（网络搜索）、
+        web_extract（网页内容提取）、browser_*（浏览器交互）。
+
+        当 use_llm_judge 关闭时，此方法替代语义评估——
+        防止 agent 用 3 次 read_file 在无关文件上凑数过关。
+        """
+        has_search = any(
+            e.startswith(("search_files", "web_search", "web_extract", "browser_"))
+            for e in self._investigation_evidence
+        )
+        return has_search
+
     @property
     def is_satisfied(self) -> bool:
         """门是否已解锁（进入执行阶段）。"""
@@ -847,11 +862,21 @@ class ReadThinkGate:
                     else:
                         # judge 通过——重置状态
                         self._judge_fail_count = 0
+                elif not self._has_diverse_investigation(profile):
+                    # 无 LLM judge 时：调查必须包含搜索类工具（search_files/web_search/web_extract），
+                    # 不能只是 read_file 堆数量。防止三连 read_file 凑数过关。
+                    logger.info(
+                        "read-think gate: investigation not diverse — need search_files/web_search/web_extract "
+                        "(reads=%d, complexity=%s)",
+                        self._read_only_count, self._active_complexity,
+                    )
+                    return False
                 self._satisfied = True
+                judge_label = "judge=pass" if self.config.use_llm_judge else "judge=off(diverse)"
                 logger.info(
-                    "read-think gate: unlocked — strict mode (reads=%d>=%d, reasoning=%d>=%d, judge=pass, complexity=%s)",
+                    "read-think gate: unlocked — strict mode (reads=%d>=%d, reasoning=%d>=%d, %s, complexity=%s)",
                     self._read_only_count, profile.min_read_only_calls,
-                    content_len, profile.min_reasoning_chars, self._active_complexity,
+                    content_len, profile.min_reasoning_chars, judge_label, self._active_complexity,
                 )
                 return True
         else:
@@ -911,6 +936,17 @@ class ReadThinkGate:
                     "用 codegraph/gitnexus 追依赖链。搞清楚再动手。\n\n"
                     "（调查次数：%d/%d，推理轮数：%d/%d）"
                     % (tool_name, done, needed,
+                       self._reasoning_rounds, profile.max_reasoning_rounds)
+                )
+            # 调查次数达标但缺少搜索类工具——不是 read_file 堆数量就够的
+            if not self._has_diverse_investigation(profile):
+                return (
+                    "[ReadThink Gate — 推理阶段 · 标准任务] 工具 '%s' 暂时不可用。\n\n"
+                    "已做 %d 次只读调查（read_file），但还没用搜索类工具。\n"
+                    "用 search_files 搜调用方和同类实现，或用 web_search 查外部文档——\n"
+                    "搞清楚全局关系，不能只盯着单个文件。\n\n"
+                    "（调查次数：%d/%d，推理轮数：%d/%d）"
+                    % (tool_name, done, done, needed,
                        self._reasoning_rounds, profile.max_reasoning_rounds)
                 )
             return (
