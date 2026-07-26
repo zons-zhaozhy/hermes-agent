@@ -864,6 +864,39 @@ in config.yaml (or `HERMES_BACKGROUND_NOTIFICATIONS` env var):
 - `error` — only the final message when exit code != 0
 - `off` — no watcher messages at all
 
+### Persistent Task Memory (Mandatory for Complex Tasks)
+
+Context compression destroys in-flight analysis. The only defense is structured
+persistence to the file system. **This is not a suggestion — it is mandatory for
+any task classified as normal/complex, or any task spanning 3+ distinct steps.**
+
+**Trigger:** When ReadThink gate classifies a task as `normal` or `complex`, OR
+when the task has 3+ distinct subtasks — the agent MUST:
+
+1. **Create a TODO list** via `todo` tool before making any edits.
+2. **Persist intermediate findings immediately** — every completed TODO item's
+   results go to a structured file (skill via `skill_manage`, tech-spec via
+   `write_file`, or `memory` for single facts). Do NOT batch at the end.
+3. **Verify persistence** — after writing, confirm the file exists and is
+   readable with `read_file` or `search_files`.
+
+**Structured file format:** Each completed subtask writes a dated section:
+```markdown
+## <subtask name> — <YYYY-MM-DD HH:MM>
+### Evidence
+- <tool outputs, file paths, metrics>
+### Findings
+- <what was discovered>
+### Actions
+- <what was done or needs doing>
+```
+
+**Anti-pattern:** "I'll finish the whole audit then write a report." → The report
+never gets written because context compacts mid-task. Write section by section.
+
+**Cross-reference with ReadThink gate:** The gate already classifies task
+complexity on `reset_for_turn()`. This signal drives the persistence requirement.
+
 ---
 
 ## Profiles: Multi-Instance Support
