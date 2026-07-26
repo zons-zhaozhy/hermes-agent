@@ -1102,19 +1102,40 @@ def play_audio_file(file_path: str) -> bool:
         exe = shutil.which(cmd[0])
         if exe:
             try:
+                from tools.interrupt import is_interrupted
+            except ImportError:
+                def is_interrupted():
+                    return False
+            try:
                 proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
                 with _playback_lock:
                     _active_playback = proc
-                proc.wait(timeout=300)
-                with _playback_lock:
-                    _active_playback = None
-                return True
-            except subprocess.TimeoutExpired:
-                logger.warning("System player %s timed out, killing process", cmd[0])
-                proc.kill()
-                proc.wait()
-                with _playback_lock:
-                    _active_playback = None
+                deadline = time.monotonic() + 300
+                interrupted = False
+                while proc.poll() is None:
+                    if is_interrupted():
+                        interrupted = True
+                        break
+                    if time.monotonic() > deadline:
+                        break
+                    time.sleep(0.1)
+                if interrupted:
+                    proc.kill()
+                    proc.wait()
+                    with _playback_lock:
+                        _active_playback = None
+                    logger.info("System player %s interrupted by user", cmd[0])
+                    return False
+                if proc.returncode is None:
+                    proc.kill()
+                    proc.wait()
+                    with _playback_lock:
+                        _active_playback = None
+                    logger.warning("System player %s timed out, killing process", cmd[0])
+                else:
+                    with _playback_lock:
+                        _active_playback = None
+                    return True
             except Exception as e:
                 logger.debug("System player %s failed: %s", cmd[0], e)
                 with _playback_lock:

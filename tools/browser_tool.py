@@ -1154,8 +1154,26 @@ def _run_chrome_fallback_command(
             os.close(stdout_fd)
             os.close(stderr_fd)
         try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
+            from tools.interrupt import is_interrupted
+        except ImportError:
+            def is_interrupted():
+                return False
+        deadline = time.monotonic() + timeout
+        interrupted = False
+        while proc.poll() is None:
+            if is_interrupted():
+                interrupted = True
+                break
+            if time.monotonic() > deadline:
+                break
+            time.sleep(0.1)
+
+        if interrupted:
+            proc.kill()
+            proc.wait()
+            return {"success": False, "error": f"Chrome fallback '{cmd}' interrupted by user"}
+
+        if proc.returncode is None:
             proc.kill()
             proc.wait()
             return {"success": False, "error": f"Chrome fallback '{cmd}' timed out"}
@@ -2498,9 +2516,29 @@ def _run_browser_command(
             os.close(stdout_fd)
             os.close(stderr_fd)
 
-        try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
+        deadline = time.monotonic() + timeout
+        interrupted = False
+        while proc.poll() is None:
+            if is_interrupted():
+                interrupted = True
+                break
+            if time.monotonic() > deadline:
+                break
+            time.sleep(0.1)
+
+        if interrupted:
+            proc.kill()
+            proc.wait()
+            stdout, stderr = _read_command_output_files(stdout_path, stderr_path)
+            _unlink_command_output_files(stdout_path, stderr_path)
+            logger.info("browser '%s' interrupted by user (task=%s)", command, task_id)
+            return {
+                "success": False,
+                "error": "Browser command interrupted by user",
+            }
+
+        if proc.returncode is None:
+            # Timeout — process did not complete within deadline
             proc.kill()
             proc.wait()
             stdout, stderr = _read_command_output_files(stdout_path, stderr_path)
@@ -2513,90 +2551,90 @@ def _run_browser_command(
                 )
             logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
                            command, timeout, task_id, task_socket_dir)
-            result = {
+            return {
                 "success": False,
                 "error": _format_browser_timeout_error(command, timeout, stdout, stderr),
             }
-            # Fall through to fallback check below
-        else:
-            with open(stdout_path, "r", encoding="utf-8") as f:
-                stdout = f.read()
-            with open(stderr_path, "r", encoding="utf-8") as f:
-                stderr = f.read()
-            returncode = proc.returncode
 
-            # Clean up temp files (best-effort)
-            for p in (stdout_path, stderr_path):
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
+        # Process completed successfully — read output files
+        with open(stdout_path, "r", encoding="utf-8") as f:
+            stdout = f.read()
+        with open(stderr_path, "r", encoding="utf-8") as f:
+            stderr = f.read()
+        returncode = proc.returncode
 
-            # Log stderr for diagnostics — use warning level on failure so it's visible
-            if stderr and stderr.strip():
-                level = logging.WARNING if returncode != 0 else logging.DEBUG
-                logger.log(level, "browser '%s' stderr: %s", command, stderr.strip()[:500])
+        # Clean up temp files (best-effort)
+        for p in (stdout_path, stderr_path):
+            try:
+                os.unlink(p)
+            except OSError:
+                logger.warning("Failed to unlink temp browser output file: %s", p)
 
-            stdout_text = stdout.strip()
+        # Log stderr for diagnostics — use warning level on failure so it's visible
+        if stderr and stderr.strip():
+            level = logging.WARNING if returncode != 0 else logging.DEBUG
+            logger.log(level, "browser '%s' stderr: %s", command, stderr.strip()[:500])
 
-            # Empty output with rc=0 is a broken state — treat as failure rather
-            # than silently returning {"success": True, "data": {}}.
-            # Some commands (close, record) legitimately return no output.
-            if not stdout_text and returncode == 0 and command not in _EMPTY_OK_COMMANDS:
-                logger.warning("browser '%s' returned empty output (rc=0)", command)
-                result = {"success": False, "error": f"Browser command '{command}' returned no output"}
-            elif stdout_text:
-                try:
-                    parsed = json.loads(stdout_text)
-                    # Warn if snapshot came back empty (common sign of daemon/CDP issues)
-                    if command == "snapshot" and parsed.get("success"):
-                        snap_data = parsed.get("data", {})
-                        if not snap_data.get("snapshot") and not snap_data.get("refs"):
-                            logger.warning("snapshot returned empty content. "
-                                           "Possible stale daemon or CDP connection issue. "
-                                           "returncode=%s", returncode)
-                    result = parsed
-                except json.JSONDecodeError:
-                    raw = stdout_text[:2000]
-                    logger.warning("browser '%s' returned non-JSON output (rc=%s): %s",
-                                   command, returncode, raw[:500])
+        stdout_text = stdout.strip()
 
-                    if command == "screenshot":
-                        stderr_text = (stderr or "").strip()
-                        combined_text = "\n".join(
-                            part for part in [stdout_text, stderr_text] if part
+        # Empty output with rc=0 is a broken state — treat as failure rather
+        # than silently returning {"success": True, "data": {}}.
+        # Some commands (close, record) legitimately return no output.
+        if not stdout_text and returncode == 0 and command not in _EMPTY_OK_COMMANDS:
+            logger.warning("browser '%s' returned empty output (rc=0)", command)
+            result = {"success": False, "error": f"Browser command '{command}' returned no output"}
+        elif stdout_text:
+            try:
+                parsed = json.loads(stdout_text)
+                # Warn if snapshot came back empty (common sign of daemon/CDP issues)
+                if command == "snapshot" and parsed.get("success"):
+                    snap_data = parsed.get("data", {})
+                    if not snap_data.get("snapshot") and not snap_data.get("refs"):
+                        logger.warning("snapshot returned empty content. "
+                                       "Possible stale daemon or CDP connection issue. "
+                                       "returncode=%s", returncode)
+                result = parsed
+            except json.JSONDecodeError:
+                raw = stdout_text[:2000]
+                logger.warning("browser '%s' returned non-JSON output (rc=%s): %s",
+                               command, returncode, raw[:500])
+
+                if command == "screenshot":
+                    stderr_text = (stderr or "").strip()
+                    combined_text = "\n".join(
+                        part for part in [stdout_text, stderr_text] if part
+                    )
+                    recovered_path = _extract_screenshot_path_from_text(combined_text)
+
+                    if recovered_path and Path(recovered_path).exists():
+                        logger.info(
+                            "browser 'screenshot' recovered file from non-JSON output: %s",
+                            recovered_path,
                         )
-                        recovered_path = _extract_screenshot_path_from_text(combined_text)
-
-                        if recovered_path and Path(recovered_path).exists():
-                            logger.info(
-                                "browser 'screenshot' recovered file from non-JSON output: %s",
-                                recovered_path,
-                            )
-                            result = {
-                                "success": True,
-                                "data": {
-                                    "path": recovered_path,
-                                    "raw": raw,
-                                },
-                            }
-                        else:
-                            result = {
-                                "success": False,
-                                "error": f"Non-JSON output from agent-browser for '{command}': {raw}"
-                            }
+                        result = {
+                            "success": True,
+                            "data": {
+                                "path": recovered_path,
+                                "raw": raw,
+                            },
+                        }
                     else:
                         result = {
                             "success": False,
                             "error": f"Non-JSON output from agent-browser for '{command}': {raw}"
                         }
-            elif returncode != 0:
-                # Check for errors
-                error_msg = stderr.strip() if stderr else f"Command failed with code {returncode}"
-                logger.warning("browser '%s' failed (rc=%s): %s", command, returncode, error_msg[:300])
-                result = {"success": False, "error": error_msg}
-            else:
-                result = {"success": True, "data": {}}
+                else:
+                    result = {
+                        "success": False,
+                        "error": f"Non-JSON output from agent-browser for '{command}': {raw}"
+                    }
+        elif returncode != 0:
+            # Check for errors
+            error_msg = stderr.strip() if stderr else f"Command failed with code {returncode}"
+            logger.warning("browser '%s' failed (rc=%s): %s", command, returncode, error_msg[:300])
+            result = {"success": False, "error": error_msg}
+        else:
+            result = {"success": True, "data": {}}
 
     except Exception as e:
         logger.warning("browser '%s' exception: %s", command, e, exc_info=True)

@@ -19,6 +19,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from typing import Any, Dict, List, Optional, Sequence
 
 
@@ -136,8 +137,23 @@ def _drive_health_report(
         except Exception:
             pass
         try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
+            from tools.interrupt import is_interrupted
+        except ImportError:
+            def is_interrupted():
+                return False
+        deadline = time.monotonic() + timeout
+        interrupted = False
+        while proc.poll() is None:
+            if is_interrupted():
+                interrupted = True
+                break
+            if time.monotonic() > deadline:
+                break
+            time.sleep(0.1)
+        if interrupted:
+            proc.kill()
+            proc.wait()
+        elif proc.returncode is None:
             proc.kill()
             proc.wait()
 
