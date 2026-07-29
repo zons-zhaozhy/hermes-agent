@@ -3513,7 +3513,7 @@ def run_conversation(
                 ):
                     _retry.nous_auth_retry_attempted = True
                     if agent._try_refresh_nous_client_credentials(force=True):
-                        print(f"{agent.log_prefix}🔐 Nous agent key refreshed after 401. Retrying request...")
+                        agent._safe_print(f"{agent.log_prefix}🔐 Nous agent key refreshed after 401. Retrying request...")
                         continue
                     # Credential refresh didn't help — show diagnostic info.
                     # Most common causes: Portal OAuth expired/revoked,
@@ -3527,16 +3527,16 @@ def run_conversation(
                             _body_text = str(_body)[:200]
                     except Exception:
                         pass
-                    print(f"{agent.log_prefix}🔐 Nous 401 — Portal authentication failed.")
+                    agent._safe_print(f"{agent.log_prefix}🔐 Nous 401 — Portal authentication failed.")
                     if _body_text:
-                        print(f"{agent.log_prefix}   Response: {_body_text}")
+                        agent._safe_print(f"{agent.log_prefix}   Response: {_body_text}")
                     if not _print_nous_entitlement_guidance(agent, "Nous model access"):
-                        print(f"{agent.log_prefix}   Most likely: Portal OAuth expired, account out of credits, or agent key revoked.")
-                    print(f"{agent.log_prefix}   Troubleshooting:")
-                    print(f"{agent.log_prefix}     • Re-authenticate: hermes auth add nous")
-                    print(f"{agent.log_prefix}     • Check credits / billing: https://portal.nousresearch.com")
-                    print(f"{agent.log_prefix}     • Verify stored credentials: {_dhh}/auth.json")
-                    print(f"{agent.log_prefix}     • Switch providers temporarily: /model <model> --provider openrouter")
+                        agent._safe_print(f"{agent.log_prefix}   Most likely: Portal OAuth expired, account out of credits, or agent key revoked.")
+                    agent._safe_print(f"{agent.log_prefix}   Troubleshooting:")
+                    agent._safe_print(f"{agent.log_prefix}     • Re-authenticate: hermes auth add nous")
+                    agent._safe_print(f"{agent.log_prefix}     • Check credits / billing: https://portal.nousresearch.com")
+                    agent._safe_print(f"{agent.log_prefix}     • Verify stored credentials: {_dhh}/auth.json")
+                    agent._safe_print(f"{agent.log_prefix}     • Switch providers temporarily: /model <model> --provider openrouter")
                 if (
                     agent.provider == "copilot"
                     and status_code == 401
@@ -3556,33 +3556,33 @@ def run_conversation(
                     from agent.anthropic_adapter import _is_oauth_token
                     from agent.azure_identity_adapter import is_token_provider
                     if agent._try_refresh_anthropic_client_credentials():
-                        print(f"{agent.log_prefix}🔐 Anthropic credentials refreshed after 401. Retrying request...")
+                        agent._safe_print(f"{agent.log_prefix}🔐 Anthropic credentials refreshed after 401. Retrying request...")
                         continue
                     # Credential refresh didn't help — show diagnostic info
                     key = agent._anthropic_api_key
-                    print(f"{agent.log_prefix}🔐 Anthropic 401 — authentication failed.")
+                    agent._safe_print(f"{agent.log_prefix}🔐 Anthropic 401 — authentication failed.")
                     if is_token_provider(key):
                         # Azure Foundry Entra ID — the bearer token is
                         # minted per-request by an httpx event hook on a
                         # custom http_client passed to the SDK. The 401
                         # means Azure rejected the JWT (RBAC role missing,
                         # az login expired, IMDS unreachable, etc.).
-                        print(f"{agent.log_prefix}   Auth method: Microsoft Entra ID (httpx event hook)")
-                        print(f"{agent.log_prefix}   Run `hermes doctor` for credential-chain diagnostics, or")
-                        print(f"{agent.log_prefix}   `az login` if your developer session expired.")
+                        agent._safe_print(f"{agent.log_prefix}   Auth method: Microsoft Entra ID (httpx event hook)")
+                        agent._safe_print(f"{agent.log_prefix}   Run `hermes doctor` for credential-chain diagnostics, or")
+                        agent._safe_print(f"{agent.log_prefix}   `az login` if your developer session expired.")
                     else:
                         auth_method = "Bearer (OAuth/setup-token)" if _is_oauth_token(key) else "x-api-key (API key)"
-                        print(f"{agent.log_prefix}   Auth method: {auth_method}")
-                        print(f"{agent.log_prefix}   Token prefix: {key[:12]}..." if isinstance(key, str) and len(key) > 12 else f"{agent.log_prefix}   Token: (empty or short)")
-                    print(f"{agent.log_prefix}   Troubleshooting:")
+                        agent._safe_print(f"{agent.log_prefix}   Auth method: {auth_method}")
+                        agent._safe_print(f"{agent.log_prefix}   Token prefix: {key[:12]}..." if isinstance(key, str) and len(key) > 12 else f"{agent.log_prefix}   Token: (empty or short)")
+                    agent._safe_print(f"{agent.log_prefix}   Troubleshooting:")
                     from hermes_constants import display_hermes_home as _dhh_fn
                     _dhh = _dhh_fn()
-                    print(f"{agent.log_prefix}     • Check ANTHROPIC_TOKEN in {_dhh}/.env for Hermes-managed OAuth/setup tokens")
-                    print(f"{agent.log_prefix}     • Check ANTHROPIC_API_KEY in {_dhh}/.env for API keys or legacy token values")
-                    print(f"{agent.log_prefix}     • For API keys: verify at https://platform.claude.com/settings/keys")
-                    print(f"{agent.log_prefix}     • For Claude Code: run 'claude /login' to refresh, then retry")
-                    print(f"{agent.log_prefix}     • Legacy cleanup: hermes config set ANTHROPIC_TOKEN \"\"")
-                    print(f"{agent.log_prefix}     • Clear stale keys: hermes config set ANTHROPIC_API_KEY \"\"")
+                    agent._safe_print(f"{agent.log_prefix}     • Check ANTHROPIC_TOKEN in {_dhh}/.env for Hermes-managed OAuth/setup tokens")
+                    agent._safe_print(f"{agent.log_prefix}     • Check ANTHROPIC_API_KEY in {_dhh}/.env for API keys or legacy token values")
+                    agent._safe_print(f"{agent.log_prefix}     • For API keys: verify at https://platform.claude.com/settings/keys")
+                    agent._safe_print(f"{agent.log_prefix}     • For Claude Code: run 'claude /login' to refresh, then retry")
+                    agent._safe_print(f"{agent.log_prefix}     • Legacy cleanup: hermes config set ANTHROPIC_TOKEN \"\"")
+                    agent._safe_print(f"{agent.log_prefix}     • Clear stale keys: hermes config set ANTHROPIC_API_KEY \"\"")
 
                 # Thinking block signature recovery.
                 #
@@ -5103,7 +5103,7 @@ def run_conversation(
         # the `response` variable is still None. Break out cleanly.
         if response is None:
             _turn_exit_reason = "all_retries_exhausted_no_response"
-            print(f"{agent.log_prefix}❌ All API retries exhausted with no successful response.")
+            agent._safe_print(f"{agent.log_prefix}❌ All API retries exhausted with no successful response.")
             agent._persist_session(messages, conversation_history)
             break
 
@@ -5386,7 +5386,7 @@ def run_conversation(
                     if tc.function.name not in agent.valid_tool_names:
                         repaired = agent._repair_tool_call(tc.function.name)
                         if repaired:
-                            print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
+                            agent._safe_print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
                             tc.function.name = repaired
                 invalid_tool_calls = [
                     tc.function.name for tc in assistant_message.tool_calls
@@ -5766,6 +5766,68 @@ def run_conversation(
                 # execution so a single truncation doesn't poison the
                 # entire conversation.
                 truncated_tool_call_retries = 0
+
+                # Emergency mid-turn context overflow break: if the
+                # conversation has grown beyond 85% of the context window
+                # during tool execution, stop the tool loop now so the next
+                # turn entry triggers preflight compression.  We CANNOT
+                # compress mid-turn because that would invalidate the
+                # prompt cache (sacred invariant).  Instead we break early
+                # and let the compressor handle it at the next turn
+                # boundary.
+                #
+                # Uses a rough estimate of the current messages (which now
+                # include the tool results just appended) plus tool schema
+                # overhead and system prompt.  Provider-reported prompt_tokens
+                # from the *previous* API call are stale here because tool
+                # results have since been added to messages.  The rough
+                # estimate intentionally overestimates, which is safer
+                # than underestimating for an emergency break.
+                #
+                # System prompt tokens are cached because they don't change
+                # during a turn and estimating them every iteration would be
+                # expensive (the system prompt is often 40-60K tokens for
+                # tools-heavy sessions).
+                _compressor = getattr(agent, "context_compressor", None)
+                if _compressor and _compressor.context_length > 0:
+                    _overflow_pct = 0.85
+                    _overflow_limit = int(_compressor.context_length * _overflow_pct)
+                    _rough_tokens = estimate_messages_tokens_rough(messages)
+                    if agent.tools:
+                        _rough_tokens += _estimate_tools_tokens_rough(
+                            agent.tools
+                        )
+                    # Cache system prompt tokens to avoid re-estimating every
+                    # iteration.  The system prompt doesn't change during
+                    # a turn, so this cache is valid for the entire loop.
+                    if not hasattr(agent, "_cached_system_prompt_tokens"):
+                        _cached_system_prompt = getattr(
+                            agent, "_cached_system_prompt", None
+                        )
+                        if _cached_system_prompt:
+                            agent._cached_system_prompt_tokens = estimate_messages_tokens_rough(
+                                [{"role": "system", "content": _cached_system_prompt}]
+                            )
+                        else:
+                            agent._cached_system_prompt_tokens = 0
+                    _rough_tokens += getattr(agent, "_cached_system_prompt_tokens", 0)
+                    # Add 15K buffer for rough estimate noise and any
+                    # overhead not captured by the estimation logic.
+                    _rough_tokens += 15000
+                    if _rough_tokens >= _overflow_limit:
+                        if not agent.quiet_mode:
+                            logger.warning(
+                                "Mid-turn context overflow emergency break: "
+                                "~%d rough tokens >= %d (%.0f%% of %d). "
+                                "Stopping tool loop to allow preflight "
+                                "compression on the next turn.",
+                                _rough_tokens,
+                                _overflow_limit,
+                                _overflow_pct * 100,
+                                _compressor.context_length,
+                            )
+                        _turn_exit_reason = "mid_turn_context_overflow"
+                        break
 
                 # Signal that a paragraph break is needed before the next
                 # streamed text.  We don't emit it immediately because
@@ -6555,7 +6617,7 @@ def run_conversation(
             else:
                 error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
             try:
-                print(f"❌ {error_msg}")
+                agent._safe_print(f"❌ {error_msg}")
             except (OSError, ValueError):
                 logger.error(error_msg)
 

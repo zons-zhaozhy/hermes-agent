@@ -3711,7 +3711,13 @@ This compaction should PRIORITISE preserving all information related to the focu
                 self._consecutive_timeout_failures = (
                     getattr(self, "_consecutive_timeout_failures", 0) + 1
                 )
-                _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
+                # Cap cooldown at 180s (3 min).  Longer cooldowns cause a
+                # vicious cycle: the context keeps growing during the cooldown
+                # window, so the next summarization attempt has a larger
+                # middle_window and is *more* likely to time out again.  A
+                # tight cooldown lets the compressor retry before the context
+                # balloons past the threshold, breaking the cycle.
+                _TIMEOUT_COOLDOWN_LADDER = (60, 120, 180)
                 _transient_cooldown = _TIMEOUT_COOLDOWN_LADDER[
                     min(self._consecutive_timeout_failures,
                         len(_TIMEOUT_COOLDOWN_LADDER)) - 1
@@ -3732,7 +3738,15 @@ This compaction should PRIORITISE preserving all information related to the focu
             # placeholder marker — retrying once the network recovers is
             # strictly better than dropping context (#29559, #25585). Mirrors
             # the auth-failure carve-out; independent of abort_on_summary_failure.
-            if _is_streaming_closed:
+            if _is_streaming_closed and not _is_timeout:
+                # Only flag as a network failure when this is genuinely a
+                # connection/streaming issue, NOT a timeout.  A timeout
+                # (APITimeoutError) also matches _is_connection_error, but
+                # treating it as a network failure forces compress() to
+                # abort (bypassing abort_on_summary_failure=false), which
+                # traps the session in an uncompressible state.  Timeouts
+                # should go through the cooldown-and-retry path, not the
+                # abort path.
                 self._last_summary_network_failure = True
             logger.warning(
                 "Failed to generate context summary: %s. "
