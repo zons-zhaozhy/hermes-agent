@@ -3823,28 +3823,6 @@ DELEGATE_TASK_SCHEMA = {
                     "Per-task tier in the 'tasks' array overrides this."
                 ),
             },
-            "acp_command": {
-                "type": "string",
-                "description": (
-                    "Override ACP command for child agents (e.g. 'copilot'). "
-                    "When set, children use ACP subprocess transport instead of inheriting "
-                    "the parent's transport. Requires an ACP-compatible CLI "
-                    "(currently GitHub Copilot CLI via 'copilot --acp --stdio'). "
-                    "See agent/copilot_acp_client.py for the implementation. "
-                    "IMPORTANT: Do NOT set this unless the user has explicitly told you "
-                    "a specific ACP-compatible CLI is installed and configured. "
-                    "Leave empty to use the parent's default transport (Hermes subagents)."
-                ),
-            },
-            "acp_args": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "Arguments for the ACP command (default: ['--acp', '--stdio']). "
-                    "Only used when acp_command is set. "
-                    "Leave empty unless acp_command is explicitly provided."
-                ),
-            },
         },
         "required": [],
     },

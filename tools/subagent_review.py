@@ -370,7 +370,7 @@ def _parse_handoff(summary_text: str) -> Dict[str, Any]:
     if next_h2_idx != -1:
         body = body[:next_h2_idx]
 
-    result["raw_block"] = body.strip()
+    result["raw_block"] = block[:block.index('\n') + 1].strip() + '\n' + body.strip() if body.strip() else block.strip()
 
     # Split by "### " headers and process each section
     # Use "\n### " as delimiter to avoid splitting on "#" inside text
@@ -419,7 +419,7 @@ def _parse_handoff(summary_text: str) -> Dict[str, Any]:
                 line = line.strip()
                 if line.startswith('- '):
                     item = line[2:].strip()
-                    if item:
+                    if item and not (item.startswith('(') and item.endswith(')')):
                         result["uncertainty"].append(item)
 
     return result
