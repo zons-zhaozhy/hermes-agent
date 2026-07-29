@@ -80,13 +80,14 @@ _FOUR_AXIS_COMPILED: dict[str, list[re.Pattern]] = {
     for axis, patterns in _FOUR_AXIS_PATTERNS.items()
 }
 
-# 四轴闸门只对核心代码编辑工具强制要求。
-# terminal（即使动态 gated）不需要四轴——运维操作（pytest/tail/grep）不产出"风险矩阵"。
+# 四轴闸门只对直接代码编辑工具强制要求。
+# execute_code 不在此列——它可以是纯只读（审计/查询/分析），
+# 也可以通过 write_file/patch 间接写文件（后者已被四轴覆盖）。
+# terminal（即使动态 gated）不需要四轴——运维操作不产出"风险矩阵"。
 _FOUR_AXIS_REQUIRED_TOOLS: frozenset[str] = frozenset(
     {
         "write_file",
         "patch",
-        "execute_code",
     }
 )
 

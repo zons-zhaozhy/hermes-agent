@@ -697,6 +697,24 @@ def _build_child_system_prompt(
         "- What you found or accomplished\n"
         "- Any files you created or modified\n"
         "- Any issues encountered\n\n"
+        "At the END of your summary, include a Deliverable Handoff block "
+        "so your work can be independently verified. Format it exactly like this:\n\n"
+        "## Deliverable Handoff\n"
+        "### Files\n"
+        "- path/to/file1.py\n"
+        "- path/to/file2.yaml\n"
+        "### Commands Executed\n"
+        "- pytest tests/test_x.py -q  (exit 0)\n"
+        "- python -c 'import ast; ast.parse(open(\"file.py\").read())' (exit 0)\n"
+        "### Uncertainty\n"
+        "- (what you are not sure about or could not verify)\n\n"
+        "Rules for this block:\n"
+        "- Files: list every file you created or modified, with full paths.\n"
+        "- Commands Executed: every terminal command you ran to verify your work, "
+        "including its exit code. Be honest — this is the ground truth the reviewer "
+        "will cross-check.\n"
+        "- Uncertainty: anything you are unsure about. Don't guess or hide gaps — "
+        "stating uncertainty shows you know the limits of your work.\n\n"
         "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task/context explicitly gives that path. "
         "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
         "Keep your final summary tight: lead with outcomes, prefer bullet "
@@ -1244,18 +1262,48 @@ def _build_child_agent(
         child_thinking_cb = _child_thinking
 
     # Resolve effective credentials: config override > parent inherit
-    effective_model = model or parent_agent.model
+    effective_model = model or getattr(parent_agent, "model", None)
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
-    effective_base_url = override_base_url or parent_agent.base_url
+    effective_base_url = override_base_url or getattr(parent_agent, "base_url", None)
+    _parent_provider = getattr(parent_agent, "provider", None) or ""
     if not override_base_url:
-        effective_base_url = _inherit_parent_base_url(parent_agent, effective_base_url)
+        # Only inherit the parent's base_url when the provider is the same.
+        # When switching providers (e.g., Judge uses deepseek while parent uses
+        # zai), leave effective_base_url as None so AIAgent resolves it from
+        # the provider registry.
+        if effective_provider == _parent_provider or not override_provider:
+            effective_base_url = _inherit_parent_base_url(parent_agent, effective_base_url)
+        # else: keep as None → AIAgent resolves default for the new provider
+    # Fallback: resolve base_url from provider profile when parent_agent=None
+    # or when parent and child use different providers.
+    if not effective_base_url and effective_provider:
+        try:
+            from providers import get_provider_profile
+            profile = get_provider_profile(effective_provider)
+            if profile is not None and profile.base_url:
+                effective_base_url = profile.base_url
+        except Exception:
+            logger.warning("[DELEGATE] Failed to resolve base_url from provider profile", exc_info=True)
     effective_api_key = override_api_key or parent_api_key
+    # Fallback: resolve api_key from provider profile's env var when not set
+    if not effective_api_key and effective_provider:
+        try:
+            from providers import get_provider_profile
+            profile = get_provider_profile(effective_provider)
+            if profile is not None and profile.env_vars:
+                import os as _os
+                for _env_key in profile.env_vars:
+                    _env_val = _os.environ.get(_env_key)
+                    if _env_val:
+                        effective_api_key = _env_val
+                        break
+        except Exception:
+            logger.warning("[DELEGATE] Failed to resolve api_key from provider env vars", exc_info=True)
     # Bug #20558 / PR #20563: api_mode must NOT be inherited when the child uses a
     # different provider than the parent — each provider has its own API surface
     # (e.g. MiniMax uses anthropic_messages, DeepSeek uses chat_completions).
     # Inheriting the parent's mode causes 404 errors when the child routes to the
     # wrong endpoint.  Derive the mode from the target provider when it differs.
-    _parent_provider = getattr(parent_agent, "provider", None) or ""
     if override_api_mode is not None:
         effective_api_mode = override_api_mode
     elif effective_provider != _parent_provider:
@@ -2711,6 +2759,7 @@ def delegate_task(
         results block. That is the contract: fan-out runs in the background,
         waits on each other, and returns together.
         """
+        logger.info("[REVIEW-DEBUG] _execute_and_aggregate called, n_tasks=%d, thread=%s", n_tasks, threading.current_thread().name)
         if n_tasks == 1:
             # Single task -- run directly (no thread pool overhead)
             _i, _t, child = children[0]
@@ -2731,40 +2780,21 @@ def delegate_task(
             )
 
             # ── P1: Two-stage review (if enabled) ───────────────────
-            from tools.subagent_review import review_child_output
+            from tools.subagent_review import _load_review_config, run_review_loop
 
-            review_result = review_child_output(
-                task_result=result,
-                goal=_t["goal"],
-                parent_agent=parent_agent,
-                task_index=_i,
-            )
-            if review_result and not review_result.get("approved"):
-                # Issues found — dispatch fix subagent and re-review
-                from tools.subagent_review import fix_and_re_review
-
-                files_written = result.get("files_written") or []
-                fix_outcome = fix_and_re_review(
+            review_cfg = _load_review_config()
+            logger.info("[REVIEW-DEBUG] n_tasks=1 branch, review_cfg=%s, files_written=%s", review_cfg.get("enabled"), result.get("files_written"))
+            if not review_cfg.get("enabled", False):
+                results.append(result)
+            else:
+                result = run_review_loop(
+                    task_result=result,
                     goal=_t["goal"],
-                    issues=review_result.get("issues", ""),
-                    files_to_fix=files_written,
                     parent_agent=parent_agent,
                     task_index=_i,
-                    max_cycles=1,
+                    review_cfg=review_cfg,
                 )
-                # Update result with review metadata
-                result["_review"] = {
-                    "initial_review": review_result.get("review_summary", ""),
-                    "final_review": fix_outcome.get("review_summary", ""),
-                    "approved": fix_outcome.get("approved", False),
-                }
-            elif review_result and review_result.get("approved"):
-                result["_review"] = {
-                    "approved": True,
-                    "summary": review_result.get("review_summary", ""),
-                }
-
-            results.append(result)
+                results.append(result)
         else:
             # Batch -- run in parallel with per-task progress lines
             completed_count = 0

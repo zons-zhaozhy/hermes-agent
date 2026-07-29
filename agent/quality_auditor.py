@@ -297,3 +297,105 @@ def aggregate_daily(output_file=None):
         with open(output_file, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
     return report
+
+
+def get_last_audit_feedback(session_id: str = "") -> Optional[str]:
+    """Read the most recent quality audit entry and return actionable feedback.
+
+    Returns a compact string suitable for appending to the agent's next-turn
+    context. Only returns feedback if the audit entry is less than 1 hour old
+    (stale feedback is worse than no feedback).
+
+    Returns None if no recent audit exists.
+    """
+    audit_file = get_hermes_home() / "state" / "quality_audit.jsonl"
+    if not audit_file.exists():
+        return None
+
+    cutoff = time.time() - 3600  # 1 hour freshness window
+    try:
+        with open(audit_file, encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        return None
+
+    # Read from the end to find the most recent matching entry
+    for line in reversed(lines):
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        # Match by session_id if provided; if not, take the most recent
+        if session_id and entry.get("session_id") != session_id:
+            continue
+        if entry.get("_ts", 0) < cutoff:
+            return None  # Too old
+        return _format_audit_feedback(entry)
+
+    return None
+
+
+def _format_audit_feedback(entry: Dict[str, Any]) -> Optional[str]:
+    """Format a single audit entry as a concise feedback string.
+
+    Contract:
+      Preconditions: entry is a dict (may be empty)
+      Postconditions: returns str if feedback exists, None otherwise
+    """
+    if not isinstance(entry, dict):
+        return None
+    issues = entry.get("issues") or []
+    suggestions = entry.get("suggestions") or []
+    fatal = entry.get("fatal_issues") or []
+    total_score = entry.get("total_score")
+
+    if not issues and not suggestions and not fatal:
+        return None  # Nothing to report
+
+    parts = ["[Quality feedback from previous turn]"]
+
+    if fatal:
+        parts.append("CRITICAL: " + "; ".join(fatal[:2]))
+
+    if total_score is not None:
+        parts.append(f"Score: {total_score}/100")
+
+    # Pick top 2 issues and top 1 suggestion
+    for issue in issues[:2]:
+        parts.append(f"- Issue: {issue}")
+    for suggestion in suggestions[:1]:
+        parts.append(f"- Suggestion: {suggestion}")
+
+    return "\n".join(parts)
+
+
+def inject_audit_feedback(
+    session_id: str,
+    user_message: str,
+) -> str:
+    """Wrap user message with quality audit feedback from the previous turn.
+
+    If feedback exists and is fresh, prepend it to the user message.
+    Does NOT modify the system prompt — preserves prompt caching.
+
+    Call this in the agent's turn processing, before the message reaches
+    the LLM. Example integration point (run_agent.py or cli.py):
+
+        from agent.quality_auditor import inject_audit_feedback
+        user_msg = inject_audit_feedback(session_id, user_msg)
+
+    Returns the original message unchanged if no feedback is available.
+
+    Contract:
+      Preconditions: session_id is non-empty str, user_message is str
+      Postconditions: return type is str (feedback-prefixed or original)
+    """
+    if not session_id or not isinstance(user_message, str):
+        return user_message
+    feedback = get_last_audit_feedback(session_id)
+    if not feedback:
+        return user_message
+    return f"{feedback}\n\n---\n\n{user_message}"

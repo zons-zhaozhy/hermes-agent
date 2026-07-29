@@ -191,6 +191,20 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         out = file_state.writes_since("parent", since, [p])
         self.assertEqual(out, {})
 
+    def test_writes_since_empty_paths_returns_all_writes(self):
+        """When paths=[], writes_since returns ALL writes (wildcard)."""
+        p1 = self._mk()
+        p2 = self._mk()
+        since = time.time()
+        time.sleep(0.01)
+        file_state.note_write("child_A", p1)
+        file_state.note_write("child_B", p2)
+        out = file_state.writes_since("", since, [])
+        self.assertIn("child_A", out)
+        self.assertIn("child_B", out)
+        self.assertIn(p1, out["child_A"])
+        self.assertIn(p2, out["child_B"])
+
     def test_kill_switch_env_var(self):
         p = self._mk()
         os.environ["HERMES_DISABLE_FILE_STATE_GUARD"] = "1"
