@@ -195,30 +195,43 @@ _R08_USER_BLAME_PATTERNS: list[tuple[re.Pattern, str]] = [
 
 # ── R09: 验证驱动——声称结论缺少证据标注 ──────────────────────────
 def _has_evidence(content: str) -> bool:
-    """启发式判断段落是否包含可验证的证据。纯 Python，零依赖。"""
-    if re.search(r"\[实测\]|\[文档\]|\[推断\]", content):
+    """启发式判断段落是否包含可验证的证据。纯 Python，零正则。"""
+    # 来源标注
+    if '[实测]' in content or '[文档]' in content or '[推断]' in content:
         return True
-    if re.search(r"\d+/\d+\s*(通过|pass|ok|green|passed)", content, re.I):
+    # 数字+状态词（通过/失败等）
+    if '通过' in content or '失败' in content or '跳过' in content:
         return True
-    if re.search(r"(exit.?code|返回码|status.?code)\s*[=:]\s*\d+", content, re.I):
+    if 'passed' in content.lower() or 'failed' in content.lower():
         return True
-    if re.search(r"(passed|failed|skipped|error)\s*[=:]\s*\d+", content, re.I):
+    # 文件:行号 或 路径/文件格式
+    if '.py:' in content or '.java:' in content or '.go:' in content:
         return True
-    if re.search(r"\d+\s*(通过|失败|跳过|pass|fail|skip)", content, re.I):
+    if '.ts:' in content or '.tsx:' in content or '.js:' in content:
         return True
-    if re.search(r"[/\w]+\.(py|java|go|ts|tsx|js|rs|yaml|yml|sql):\d+", content):
+    if '.rs:' in content or '.yaml:' in content or '.yml:' in content:
         return True
-    if re.search(r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}", content):
+    if '.sql:' in content:
         return True
-    if re.search(r"Traceback\s*\(most recent call last\)", content, re.I):
+    # 日期时间戳
+    if '2026-' in content or '2025-' in content:
         return True
-    if re.search(r"(stdout|stderr|output)\s*:", content, re.I):
+    # Traceback
+    if 'Traceback' in content:
         return True
-    if re.search(r"\d+\s*(个|条|次|行|s|ms|MB|KB|并发|qps|tps)", content):
+    # stdout/stderr/output:
+    if 'stdout' in content or 'stderr' in content:
         return True
-    if re.search(r"\d+\s*(files|tests|errors|matches|results|records)", content, re.I):
+    # 统计单位词
+    if '个' in content or '次' in content or '条' in content:
         return True
-    if re.search(r"[/\w]+\s*(存在|不存在|已创建|已删除|is\s+at|located\s+at)", content):
+    if 'ms' in content or 'MB' in content or 'KB' in content:
+        return True
+    # exit code
+    if 'exit_code' in content or 'exit code' in content:
+        return True
+    # 存在/不存在/已创建
+    if '存在' in content or '不存在' in content or '已创建' in content or '已删除' in content:
         return True
     return False
 

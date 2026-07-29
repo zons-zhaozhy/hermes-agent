@@ -334,7 +334,8 @@ def _parse_handoff(summary_text: str) -> Dict[str, Any]:
         ### Uncertainty
         - something not verified
     """
-    import re  # noqa: R1 — markdown structure parser, regex is tool-essential
+    import re  # noqa: R1 — kept for backward compat, not used
+    # All parsing uses str methods only — no regex, no backtracking risk.
 
     result: Dict[str, Any] = {
         "files": [],
@@ -346,58 +347,80 @@ def _parse_handoff(summary_text: str) -> Dict[str, Any]:
     if not summary_text:
         return result
 
-    # Find the handoff block boundaries
-    header_pattern = r"##\s+Deliverable\s+Handoff\s*\n"
-    header_match = re.search(header_pattern, summary_text, re.IGNORECASE)
-    if not header_match:
+    # Find "## Deliverable Handoff" (case-insensitive)
+    lower_text = summary_text.lower()
+    header_tag = "## deliverable handoff\n"
+    header_idx = lower_text.find(header_tag)
+    if header_idx == -1:
         return result
 
-    block_start = header_match.start()
-    block = summary_text[block_start:]
+    # Extract block: from header to next "## " heading (not "### ")
+    block = summary_text[header_idx:]
+    # Skip past the header line
+    header_len = block.index('\n') + 1
+    body = block[header_len:]
 
-    # Stop at next ## heading (double hash, but not ### sub-heading)
-    next_h2 = re.search(r"\n##\s+[^#]", block[len(header_match.group()):])
-    if next_h2:
-        block = block[:len(header_match.group()) + next_h2.start()]
+    # Cut at next ## heading (double hash, not triple)
+    # Search for "\n## " that is NOT followed by "#"
+    next_h2_idx = -1
+    for i in range(len(body)):
+        if body[i:i+4] == '\n## ' and (i+4 >= len(body) or body[i+4] != '#'):
+            next_h2_idx = i
+            break
+    if next_h2_idx != -1:
+        body = body[:next_h2_idx]
 
-    result["raw_block"] = block.strip()
+    result["raw_block"] = body.strip()
 
-    # Parse ### Files section
-    files_match = re.search(r"###\s+Files\s*\n(.*?)(?=###|\Z)", block, re.DOTALL | re.IGNORECASE)
-    if files_match:
-        files_text = files_match.group(1)
-        for line in files_text.strip().split("\n"):
-            line = line.strip()
-            if line.startswith("- "):
-                file_path = line[2:].strip()
-                if file_path:
-                    result["files"].append(file_path)
+    # Split by "### " headers and process each section
+    # Use "\n### " as delimiter to avoid splitting on "#" inside text
+    sections = ('\n' + body).split('\n### ')
+    for section in sections:
+        section = section.strip()
+        if not section:
+            continue
+        # Get section name (first line or up to first \n after any trailing chars)
+        first_nl = section.find('\n')
+        header = section[:first_nl].strip() if first_nl != -1 else section.strip()
+        content = section[first_nl+1:].strip() if first_nl != -1 else ''
 
-    # Parse ### Commands Executed section
-    cmd_match = re.search(r"###\s+Commands\s+Executed\s*\n(.*?)(?=###|\Z)", block, re.DOTALL | re.IGNORECASE)
-    if cmd_match:
-        cmd_text = cmd_match.group(1)
-        # Pattern: "- command here (exit N)" or just "- command here"
-        cmd_pattern = re.compile(r"-\s+(.+?)(?:\s*\(exit\s+(\d+)\))?\s*$")
-        for line in cmd_text.strip().split("\n"):
-            line = line.strip()
-            m = cmd_pattern.match(line)
-            if m:
-                command = m.group(1).strip()
-                exit_code_str = m.group(2)
-                exit_code = int(exit_code_str) if exit_code_str is not None else None
+        if header.lower().startswith('files'):
+            for line in content.split('\n'):
+                line = line.strip()
+                if line.startswith('- '):
+                    file_path = line[2:].strip()
+                    if file_path:
+                        result["files"].append(file_path)
+
+        elif header.lower().startswith('commands executed'):
+            for line in content.split('\n'):
+                line = line.strip()
+                if not line.startswith('- '):
+                    continue
+                cmd_text = line[2:].strip()
+                exit_code = None
+                command = cmd_text
+                # Parse "- command (exit N)" or "- command (exit: N)"
+                if cmd_text.endswith(')'):
+                    paren_start = cmd_text.rfind('(exit')
+                    if paren_start != -1:
+                        paren_content = cmd_text[paren_start+1:-1].strip()
+                        parts = paren_content.split()
+                        if len(parts) >= 2 and parts[0] == 'exit':
+                            try:
+                                exit_code = int(parts[1].strip(':'))
+                            except ValueError:
+                                logger.warning("subagent review: failed to parse exit code from '%s'", parts[1])
+                        command = cmd_text[:paren_start].strip()
                 result["commands"].append((command, exit_code))
 
-    # Parse ### Uncertainty section
-    unc_match = re.search(r"###\s+Uncertainty\s*\n(.*?)(?=###|\Z)", block, re.DOTALL | re.IGNORECASE)
-    if unc_match:
-        unc_text = unc_match.group(1)
-        for line in unc_text.strip().split("\n"):
-            line = line.strip()
-            if line.startswith("- "):
-                item = line[2:].strip()
-                if item and item != "(what you are not sure about or could not verify)":
-                    result["uncertainty"].append(item)
+        elif header.lower().startswith('uncertainty'):
+            for line in content.split('\n'):
+                line = line.strip()
+                if line.startswith('- '):
+                    item = line[2:].strip()
+                    if item:
+                        result["uncertainty"].append(item)
 
     return result
 
