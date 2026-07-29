@@ -33,7 +33,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,37 +47,31 @@ _FOUR_AXIS_MARKER_FILE = _FOUR_AXIS_MARKER_DIR / "four_axis_gate.json"
 
 # 四轴关键词模式——用于从 assistant_content 中检测四轴证据。
 # 每轴独立判定，track 含"或"关系。
-_FOUR_AXIS_PATTERNS: dict[str, list[str]] = {
+# Keyword-based four-axis detection — no regex, no backtracking risk.
+# re.search caused catastrophic backtracking (sre_ucs2_match CPU 100%)
+# on certain content patterns. Simple substring matching is O(n) and safe.
+_FOUR_AXIS_KEYWORDS: dict[str, list[str]] = {
     "影响面": [
-        r'/(?:[a-zA-Z][/\w.-]*){2,}:\d+',        # /absolute/path:line
-        r'\[源码确认\]|\[搜索推断\]',               # 来源标注
-        r'caller|consumer|importer|调用方|依赖此接口', # 调用方列举
+        "[源码确认]", "[搜索推断]",
+        "caller", "consumer", "importer",
+        "调用方", "依赖此接口",
     ],
     "原意图": [
-        r'git log.*-p',
-        r'commit\s+[a-f0-9]{7,}',
-        r'前置条件|后置条件|副作用约定|不变量',
-        r'保持.*修改.*破坏',                       # 不变量标注
+        "git log",
+        "前置条件", "后置条件", "副作用约定", "不变量",
     ],
     "根因": [
-        r'症状位置.*:\d+|根因位置.*:\d+',           # 症状/根因位置（必含行号）
-        r'根因.*上游|数据源头|配置源',               # 根因溯源
-        r'阻断方案|入口校验|配置强制|启动报错',       # 不可修改时的阻断方案
+        "症状位置", "根因位置",
+        "根因", "上游", "数据源头", "配置源",
+        "阻断方案", "入口校验", "配置强制", "启动报错",
     ],
     "风险": [
-        r'静默数据损坏|向后不兼容|缓存失效',
-        r'并发竞争|异常路径被吞|第三方依赖超时',
-        r'触发条件.*影响范围|影响范围.*可恢复',       # 风险矩阵格式
+        "静默数据损坏", "向后不兼容", "缓存失效",
+        "并发竞争", "异常路径被吞", "第三方依赖超时",
+        "触发条件", "影响范围", "可恢复",
     ],
 }
 
-# Pre-compiled regex patterns — avoid re-compilation per call which causes
-# GIL contention in multi-threaded runs (py-spy confirmed re.search
-# holding GIL at 100% CPU).
-_FOUR_AXIS_COMPILED: dict[str, list[re.Pattern]] = {
-    axis: [re.compile(pat) for pat in patterns]
-    for axis, patterns in _FOUR_AXIS_PATTERNS.items()
-}
 
 # 四轴闸门只对直接代码编辑工具强制要求。
 # execute_code 不在此列——它可以是纯只读（审计/查询/分析），
@@ -731,14 +724,13 @@ class ReadThinkGate:
         if not content:
             return
         # 四轴关键词通常在结论部分。对超长文本只扫描尾部 8KB，
-        # 避免对每条 tool call 的完整回复做全文正则（py-spy 实测
-        # re.search 在长 content 上占满 GIL）。
+        # 避免超大 content 做全文扫描的 CPU 开销。
         scan_text = content if len(content) <= 8192 else content[-8192:]
-        for axis, patterns in _FOUR_AXIS_COMPILED.items():
+        for axis, keywords in _FOUR_AXIS_KEYWORDS.items():
             if axis in self._four_axis_found:
                 continue
-            for pat in patterns:
-                if pat.search(scan_text):
+            for kw in keywords:
+                if kw in scan_text:
                     self._four_axis_found.add(axis)
                     logger.info(
                         "read-think gate: four-axis '%s' detected — %d/4 axes found",
@@ -764,7 +756,7 @@ class ReadThinkGate:
 
     def _missing_axes(self) -> list[str]:
         """返回尚未检测到的轴名称列表。"""
-        return [a for a in _FOUR_AXIS_PATTERNS if a not in self._four_axis_found]
+        return [a for a in _FOUR_AXIS_KEYWORDS if a not in self._four_axis_found]
 
     def _has_diverse_investigation(self, profile: ComplexityProfile) -> bool:
         """调查是否包含搜索类工具，而非只有 read_file/skill_view 堆数量。
