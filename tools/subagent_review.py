@@ -669,7 +669,10 @@ def fix_and_re_review(
                     "and test."
                 ),
                 toolsets=None,
-                model=getattr(parent_agent, "model", None),
+                model=review_cfg.get("model") or getattr(parent_agent, "model", None),
+                override_provider=review_cfg.get("provider") or getattr(parent_agent, "provider", None),
+                override_base_url=review_cfg.get("base_url") or getattr(parent_agent, "base_url", None),
+                override_api_key=review_cfg.get("api_key") or getattr(parent_agent, "api_key_ref", None),
                 max_iterations=20,
                 task_count=1,
                 parent_agent=parent_agent,
