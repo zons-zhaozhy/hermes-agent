@@ -97,6 +97,50 @@ def should_review(task_result: Dict[str, Any]) -> bool:
     return True
 
 
+def _parse_review_verdict(review_text: str) -> tuple:
+    """Parse the reviewer LLM's response into (approved, issues_text).
+
+    The reviewer prompt asks for 'REVIEW: APPROVED' or 'REVIEW: NEEDS_FIX',
+    but real LLMs don't always use those exact keywords. This parser
+    falls back to detecting negative-vocabulary markers (FAIL, CRITICAL,
+    BUG, etc.) when the canonical keywords are absent.
+
+    Uses str methods only — no regex (zero backtracking risk).
+
+    Returns:
+        (approved: bool, issues_text: str)
+    """
+    upper = review_text.upper()
+
+    # Explicit APPROVED keyword → approved
+    if "REVIEW: APPROVED" in upper:
+        return True, ""
+
+    # Explicit NEEDS_FIX keyword → not approved, extract issues after marker
+    if "NEEDS_FIX" in upper:
+        idx = upper.index("NEEDS_FIX") + len("NEEDS_FIX")
+        return False, review_text[idx:]
+
+    # Fallback: detect negative-vocabulary markers.
+    # If the reviewer used words like FAIL, CRITICAL, BUG, INCORRECT,
+    # treat it as not approved even without the canonical keyword.
+    fail_markers = [
+        "FAIL",
+        "CRITICAL",
+        "BUG",
+        "INCORRECT",
+        "WRONG",
+        "ERROR",
+        "BROKEN",
+    ]
+    has_fail = any(marker in upper for marker in fail_markers)
+    if has_fail:
+        return False, review_text
+
+    # No explicit verdict and no fail markers → default to approved.
+    return True, ""
+
+
 def _build_reviewer_prompt(
     goal: str,
     task_summary: str,
@@ -604,16 +648,7 @@ def review_child_output(
         )
 
         review_text = result.get("summary", "") or ""
-        approved = "REVIEW: APPROVED" in review_text.upper()
-
-        issues_text = ""
-        if not approved:
-            # Extract everything after "REVIEW: NEEDS_FIX"
-            parts = review_text.upper().split("NEEDS_FIX")
-            if len(parts) > 1:
-                issues_text = review_text[review_text.upper().index("NEEDS_FIX") + len("NEEDS_FIX"):]
-            else:
-                issues_text = review_text
+        approved, issues_text = _parse_review_verdict(review_text)
 
         return {
             "approved": approved,
@@ -692,7 +727,11 @@ def fix_and_re_review(
             )
             break
 
-        # Re-review
+        # Re-review — inject the files_to_fix so should_review() passes
+        # even when the fixer modified existing files rather than creating
+        # new ones (files_written in fix_result may be empty for patches).
+        if not fix_result.get("files_written"):
+            fix_result["files_written"] = files_to_fix
         re_review = review_child_output(
             task_result=fix_result,
             goal=goal,
