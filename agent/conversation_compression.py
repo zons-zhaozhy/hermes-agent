@@ -1570,6 +1570,27 @@ def compress_context(
                 failure_class="lock_contended",
             )
             _complete_compaction_lifecycle()
+            # Brief session-level cooldown after lock contention to prevent
+            # busy-waiting: the winner still holds the lock and may take
+            # minutes (auxiliary API timeout + retry chain). Re-checking every
+            # tool-loop turn wastes SQLite queries and GIL on abort cycles.
+            try:
+                _cooldown_recorder = getattr(
+                    type(agent.context_compressor),
+                    "_record_compression_failure_cooldown",
+                    None,
+                )
+                if callable(_cooldown_recorder):
+                    _cooldown_recorder(
+                        agent.context_compressor,
+                        30.0,
+                        "compression lock contended by another path",
+                    )
+            except Exception as _cd_exc:
+                logger.warning(
+                    "Failed to set compression cooldown after lock contention: %s",
+                    _cd_exc,
+                )
             return messages, _existing_sp
     _lock_released = False
 
