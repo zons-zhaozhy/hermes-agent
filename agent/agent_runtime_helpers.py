@@ -814,7 +814,7 @@ def strip_think_blocks(agent, content: str) -> str:
     content = re.sub(
         r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*'
         r'<function\b[^>]*\bname\s*=[^>]*>'
-        r'(?:(?:(?!</function>).)*)</function>',
+        r'.*?</function>',
         '',
         content,
         flags=re.DOTALL | re.IGNORECASE,
@@ -3245,22 +3245,43 @@ def _iter_pool_sockets(client: Any):
     ``conn._connection``; older versions exposed stream attributes directly
     on the pool entry. Keep the traversal defensive because these are private
     transport internals and vary across httpx/httpcore releases.
+
+    When the httpx client uses per-scheme mounts (e.g. ``_build_keepalive_http_client``
+    creates separate ``HTTPTransport`` instances for ``http://`` and ``https://``
+    to bypass env-proxy resolution), the default ``_transport`` pool is empty —
+    the real connections live in the mounted transports' pools. We must traverse
+    both ``_transport`` and every ``_mounts`` transport to find all live sockets.
+    Otherwise ``force_close_tcp_sockets`` returns 0 on every interrupt, the
+    worker thread's ``recv()`` is never unblocked, and the agent hangs until
+    the kernel's TCP timeout fires (5-15 minutes).
     """
     try:
         http_client = getattr(client, "_client", None)
         if http_client is None:
             return
-        transport = getattr(http_client, "_transport", None)
-        if transport is None:
+        # Collect all transports: the default _transport plus any mounted transports.
+        transports = []
+        default_transport = getattr(http_client, "_transport", None)
+        if default_transport is not None:
+            transports.append(default_transport)
+        mounts = getattr(http_client, "_mounts", None)
+        if mounts:
+            for mt in mounts.values():
+                if mt is not None and mt not in transports:
+                    transports.append(mt)
+        if not transports:
             return
-        pool = getattr(transport, "_pool", None)
-        if pool is None:
-            return
-        connections = (
-            getattr(pool, "_connections", None)
-            or getattr(pool, "_pool", None)
-            or []
-        )
+        connections: list = []
+        for transport in transports:
+            pool = getattr(transport, "_pool", None)
+            if pool is None:
+                continue
+            pool_conns = (
+                getattr(pool, "_connections", None)
+                or getattr(pool, "_pool", None)
+                or []
+            )
+            connections.extend(pool_conns)
     except Exception:
         return
 

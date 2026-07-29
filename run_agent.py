@@ -2842,7 +2842,7 @@ class AIAgent:
 
         except Exception as e:
             if self.verbose_logging:
-                logging.warning(f"Failed to save session log: {e}")
+                logging.exception("Failed to save session log")
 
 
     def interrupt(self, message: str = None) -> None:
@@ -4563,6 +4563,16 @@ class AIAgent:
         the owning worker thread's pending ``recv``/``send`` with an EOF or
         ``EPIPE`` so it can unwind and close ``client`` from its own context
         — which is where the FD release belongs.
+
+        Fallback: if ``force_close_tcp_sockets`` returns 0 (no sockets found in
+        the pool — e.g. the connection is still in CONNECTING state, or an
+        httpx version change moved the socket elsewhere), we fall back to
+        ``client.close()`` as a last resort. The FD-recycle corruption of
+        #29507 was caused by closing the *shared* client from a stranger
+        thread; per-request clients are ephemeral and short-lived, so the
+        risk of FD recycling into unrelated file handles is much lower.
+        Leaving the worker blocked indefinitely is worse than the small race
+        risk here.
         """
         if client is None:
             return
@@ -4575,6 +4585,27 @@ class AIAgent:
                 shutdown_count,
                 self._client_log_context(),
             )
+            if shutdown_count == 0:
+                # Fallback: socket shutdown found no sockets. The connection
+                # may be mid-handshake (CONNECTING state, _connection is None)
+                # or the pool structure differs from what _iter_pool_sockets
+                # expects. Close the client to unblock the worker rather than
+                # letting it hang for minutes on a kernel TCP timeout.
+                logger.warning(
+                    "force_close_tcp_sockets found 0 sockets (%s) — "
+                    "falling back to client.close() to unblock worker %s",
+                    reason,
+                    self._client_log_context(),
+                )
+                try:
+                    client.close()
+                except Exception as close_exc:
+                    logger.warning(
+                        "Fallback client.close() failed (%s) %s error=%s",
+                        reason,
+                        self._client_log_context(),
+                        close_exc,
+                    )
         except Exception as exc:
             logger.debug(
                 "OpenAI client abort failed (%s, shared=False) %s error=%s",
@@ -4658,6 +4689,10 @@ class AIAgent:
         SSL BIO and can recycle a TLS FD into a SQLite header (#29507 /
         #67142). Only ``shutdown(SHUT_RDWR)`` the pool's sockets so the worker
         unblocks and releases the FD from its own thread.
+
+        Fallback: if ``force_close_tcp_sockets`` returns 0 (no sockets found),
+        fall back to ``client.close()`` — same rationale as the OpenAI abort
+        path. See ``_abort_request_openai_client`` for the full explanation.
         """
         if client is None:
             return
@@ -4671,6 +4706,25 @@ class AIAgent:
                 getattr(self, "provider", None),
                 getattr(self, "model", None),
             )
+            if shutdown_count == 0:
+                logger.warning(
+                    "force_close_tcp_sockets found 0 sockets (%s) — "
+                    "falling back to client.close() to unblock worker "
+                    "provider=%s model=%s",
+                    reason,
+                    getattr(self, "provider", None),
+                    getattr(self, "model", None),
+                )
+                try:
+                    client.close()
+                except Exception as close_exc:
+                    logger.warning(
+                        "Fallback client.close() failed (%s) provider=%s model=%s error=%s",
+                        reason,
+                        getattr(self, "provider", None),
+                        getattr(self, "model", None),
+                        close_exc,
+                    )
         except Exception as exc:
             logger.debug(
                 "Anthropic client abort failed (%s, shared=False) provider=%s model=%s error=%s",

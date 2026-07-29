@@ -296,7 +296,7 @@ def _strip_reasoning_tags(text: str) -> str:
     cleaned = re.sub(
         r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*'
         r'<function\b[^>]*\bname\s*=[^>]*>'
-        r'(?:(?:(?!</function>).)*)</function>\s*',
+        r'.*?</function>\s*',
         '',
         cleaned,
         flags=re.DOTALL | re.IGNORECASE,

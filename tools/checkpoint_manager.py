@@ -648,7 +648,23 @@ def _dir_file_count(path: str) -> int:
 
 
 def _dir_size_bytes(path: Path) -> int:
-    """Best-effort recursive size in bytes.  Returns 0 on error."""
+    """Best-effort recursive size in bytes.  Returns 0 on error.
+
+    Uses ``du -sk`` (single statfs + directory walk in C) instead of
+    ``Path.rglob`` (N Python-level stat() calls).  On a 100k-file git
+    store this is ~100x faster and doesn't hold the GIL.
+    """
+    try:
+        result = subprocess.run(
+            ["du", "-sk", str(path)],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0 and result.stdout:
+            # du -sk returns KB as first field
+            return int(result.stdout.split()[0]) * 1024
+    except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+        logger.warning("du -sk failed for %s: %s, falling back to rglob", path, e)
+    # Fallback: quick rglob with early exit
     total = 0
     try:
         for p in path.rglob("*"):
@@ -1088,8 +1104,14 @@ class CheckpointManager:
         # Real pruning — drop old commits beyond max_snapshots.
         self._prune(store, working_dir, ref)
 
-        # Enforce global size cap.
-        self._enforce_size_cap(store)
+        # Enforce global size cap — but not on every checkpoint.
+        # _dir_size_bytes is O(N) even with du; checking every _take()
+        # causes CPU spikes when the store has many files (py-spy
+        # confirmed _dir_size_bytes → stat() holding GIL at 100% CPU).
+        # Check every 50th checkpoint instead.
+        self._take_counter = getattr(self, "_take_counter", 0) + 1
+        if self._take_counter % 50 == 0:
+            self._enforce_size_cap(store)
 
         return True
 

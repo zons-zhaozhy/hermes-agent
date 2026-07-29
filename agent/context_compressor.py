@@ -2842,17 +2842,6 @@ class ContextCompressor(ContextEngine):
                 content = "\n".join(text_parts)
             content = _redact_compaction_text(content or "")
             content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
-            # Strip inline reasoning blocks (<think>, <reasoning>, etc.) from
-            # assistant content before it reaches the summarizer. Reasoning
-            # traces are transient scratch work — feeding them to the aux
-            # model wastes summarizer context and risks scratch-work
-            # conclusions being preserved as facts in the summary. The native
-            # ``reasoning`` message field is already excluded (only
-            # ``content`` is serialized); this closes the inline-tag path
-            # used when native thinking is disabled or the provider inlines
-            # traces into content.
-            if role == "assistant" and content:
-                content = strip_think_blocks(None, content)
 
             # Tool results: keep enough content for the summarizer
             if role == "tool":
@@ -2891,7 +2880,14 @@ class ContextCompressor(ContextEngine):
                 content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
             parts.append(f"[{role.upper()}]: {content}")
 
-        return "\n\n".join(parts)
+        result = "\n\n".join(parts)
+        # Strip reasoning/thinking blocks once on the full assembled context
+        # instead of per-message in the loop above. A single re.sub on the
+        # joined text is O(N) in input size; per-message re.sub is O(M × N)
+        # where M is the message count, which compounds to minutes of CPU on
+        # long-running sessions with 30K+ assistant turns.
+        result = strip_think_blocks(None, result)
+        return result
 
     def _build_static_fallback_summary(
         self,

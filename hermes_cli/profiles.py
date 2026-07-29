@@ -1829,6 +1829,15 @@ def set_active_profile(name: str) -> None:
         tmp.replace(path)
 
 
+# Cache for get_active_profile_name().  The profile name is set once at
+# startup via HERMES_HOME and never changes mid-process, so the repeated
+# Path.resolve() calls (which hit the filesystem with stat() on every
+# prompt_toolkit render tick) are pure waste.  See py-spy dumps showing
+# _joinrealpath consuming 100% CPU in the render loop.
+_cached_profile_name: str | None = None
+_cached_profile_home: str | None = None
+
+
 def get_active_profile_name() -> str:
     """Infer the current profile name from HERMES_HOME.
 
@@ -1836,12 +1845,22 @@ def get_active_profile_name() -> str:
     Returns the profile name if HERMES_HOME points into ``~/.hermes/profiles/<name>``.
     Returns ``"custom"`` if HERMES_HOME is set to an unrecognized path.
     """
+    global _cached_profile_name, _cached_profile_home
+
     from hermes_constants import get_hermes_home
     hermes_home = get_hermes_home()
+    home_str = str(hermes_home)
+
+    # Invalidate cache if HERMES_HOME changed (e.g. in tests or profile switch)
+    if _cached_profile_name is not None and _cached_profile_home == home_str:
+        return _cached_profile_name
+
     resolved = hermes_home.resolve()
 
     default_resolved = _get_default_hermes_home().resolve()
     if resolved == default_resolved:
+        _cached_profile_name = "default"
+        _cached_profile_home = home_str
         return "default"
 
     profiles_root = _get_profiles_root().resolve()
@@ -1849,10 +1868,14 @@ def get_active_profile_name() -> str:
         rel = resolved.relative_to(profiles_root)
         parts = rel.parts
         if len(parts) == 1 and _PROFILE_ID_RE.match(parts[0]):
+            _cached_profile_name = parts[0]
+            _cached_profile_home = home_str
             return parts[0]
     except ValueError:
         pass
 
+    _cached_profile_name = "custom"
+    _cached_profile_home = home_str
     return "custom"
 
 
