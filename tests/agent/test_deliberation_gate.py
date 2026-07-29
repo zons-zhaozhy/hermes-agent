@@ -597,3 +597,112 @@ class TestVulnerabilityFixes:
         import inspect
         sig = inspect.signature(_judge_investigation)
         assert "fail_count" in sig.parameters
+
+
+# ── Escape valve fixes (2026-07-29) ────────────────────────────────
+
+
+class TestEscapeValves:
+    """Tests for wall-clock, total-call-cap, and four-axis scope fixes."""
+
+    # ── 墙钟逃逸阀 ──
+
+    def test_wall_clock_unlocks_after_180s(self):
+        """Turn started > 180s ago → unlock even with insufficient investigation."""
+        import time as _time
+        gate = ReadThinkGate(ReadThinkGateConfig(
+            enabled=True, unlock_after_investigation=False,
+        ))
+        gate.reset_for_turn("test")
+        gate._turn_start_time = _time.time() - 200  # 200s ago
+        gate._read_only_count = 0
+        gate._reasoning_rounds = 0
+        assert gate._try_unlock(10, "short", ["write_file"]) is True
+        assert gate.is_satisfied
+
+    def test_wall_clock_does_not_unlock_before_180s(self):
+        """Turn started < 180s ago → normal gating applies."""
+        gate = ReadThinkGate(ReadThinkGateConfig(
+            enabled=True, unlock_after_investigation=False,
+            min_read_only_calls=99, min_reasoning_chars=999,
+        ))
+        gate.reset_for_turn("test")
+        # _turn_start_time just set → elapsed ~0s
+        gate._read_only_count = 0
+        gate._reasoning_rounds = 0
+        assert gate._try_unlock(10, "short", ["write_file"]) is False
+        assert not gate.is_satisfied
+
+    # ── 总调用次数逃逸阀 ──
+
+    def test_total_call_cap_unlocks(self):
+        """total_tool_calls >= max_rounds×3 → unlock via call cap."""
+        gate = ReadThinkGate(ReadThinkGateConfig(
+            enabled=True, unlock_after_investigation=False,
+            max_reasoning_rounds=3,
+            min_read_only_calls=99, min_reasoning_chars=999,
+        ))
+        gate.reset_for_turn("test")
+        gate._total_tool_calls = 10  # 3×3=9, so 10 >= 9
+        assert gate._try_unlock(10, "short", ["write_file"]) is True
+        assert gate.is_satisfied
+
+    def test_total_call_cap_not_triggered_below_threshold(self):
+        """total_tool_calls < max_rounds×3 → normal gating."""
+        gate = ReadThinkGate(ReadThinkGateConfig(
+            enabled=True, unlock_after_investigation=False,
+            max_reasoning_rounds=5,
+            min_read_only_calls=99, min_reasoning_chars=999,
+        ))
+        gate.reset_for_turn("test")
+        gate._total_tool_calls = 5  # 5×3=15, so 5 < 15
+        assert gate._try_unlock(10, "short", ["write_file"]) is False
+
+    def test_total_tool_calls_tracked_in_check_batch(self):
+        """check_batch increments _total_tool_calls."""
+        gate = ReadThinkGate(ReadThinkGateConfig(unlock_after_investigation=False))
+        gate.reset_for_turn("test")
+        assert gate._total_tool_calls == 0
+        gate.check_batch("", ["read_file", "search_files"], [{"path": "/a"}, {}])
+        assert gate._total_tool_calls == 2
+
+    # ── 四轴只对核心代码编辑工具强制 ──
+
+    def test_four_axis_not_required_for_terminal(self):
+        """terminal (dynamically gated) should NOT require four-axis."""
+        gate = ReadThinkGate(ReadThinkGateConfig(
+            enabled=True, unlock_after_investigation=False,
+            min_read_only_calls=1, min_reasoning_chars=50,
+            use_llm_judge=False,  # skip judge, test four-axis gate directly
+        ))
+        gate.reset_for_turn("test")
+        # Satisfy investigation + diversity
+        gate.check_batch("", ["read_file", "search_files"], [{"path": "/a"}, {"pattern": "x"}])
+        gate._read_only_count = 5  # above threshold
+        # terminal was dynamically gated by a previous write command
+        gate._gated_tools.add("terminal")
+        # No four-axis evidence, but terminal is not core edit → should NOT block on four-axis
+        result = gate.check_batch("x" * 100, ["terminal"], [{"command": "echo x > /tmp/f.py"}])
+        # Should unlock despite no four-axis (terminal doesn't require it)
+        assert gate.is_satisfied or result is None
+
+    def test_four_axis_required_for_write_file(self):
+        """write_file (core edit) SHOULD require four-axis in strict mode."""
+        gate = ReadThinkGate(ReadThinkGateConfig(
+            enabled=True, unlock_after_investigation=False,
+            min_read_only_calls=1, min_reasoning_chars=50,
+            use_llm_judge=False,
+        ))
+        gate.reset_for_turn("test")
+        # Satisfy investigation + diversity
+        gate.check_batch("", ["read_file", "search_files"], [{"path": "/a"}, {"pattern": "x"}])
+        gate._read_only_count = 5
+        # No four-axis evidence → write_file to existing unread file should be blocked
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as td:
+            target = os.path.join(td, "target.py")
+            with open(target, "w") as f:
+                f.write("# exists")
+            # target exists but was NOT read → write-target check won't unlock
+            result = gate.check_batch("x" * 100, ["write_file"], [{"path": target}])
+            assert result is not None  # blocked by four-axis

@@ -30,13 +30,74 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
+import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
+
+# 四轴闸门 marker 文件路径——ReadThinkGate 写入，pre_tool_call 插件读取。
+# 四轴全部验证通过时，写入此文件作为双防线同步信号。
+_FOUR_AXIS_MARKER_DIR = Path.home() / ".hermes" / "cache"
+_FOUR_AXIS_MARKER_FILE = _FOUR_AXIS_MARKER_DIR / "four_axis_gate.json"
+
+# 四轴关键词模式——用于从 assistant_content 中检测四轴证据。
+# 每轴独立判定，track 含"或"关系。
+_FOUR_AXIS_PATTERNS: dict[str, list[str]] = {
+    "影响面": [
+        r'/(?:[a-zA-Z][/\w.-]*){2,}:\d+',        # /absolute/path:line
+        r'\[源码确认\]|\[搜索推断\]',               # 来源标注
+        r'caller|consumer|importer|调用方|依赖此接口', # 调用方列举
+    ],
+    "原意图": [
+        r'git log.*-p',
+        r'commit\s+[a-f0-9]{7,}',
+        r'前置条件|后置条件|副作用约定|不变量',
+        r'保持.*修改.*破坏',                       # 不变量标注
+    ],
+    "根因": [
+        r'症状位置.*:\d+|根因位置.*:\d+',           # 症状/根因位置（必含行号）
+        r'根因.*上游|数据源头|配置源',               # 根因溯源
+        r'阻断方案|入口校验|配置强制|启动报错',       # 不可修改时的阻断方案
+    ],
+    "风险": [
+        r'静默数据损坏|向后不兼容|缓存失效',
+        r'并发竞争|异常路径被吞|第三方依赖超时',
+        r'触发条件.*影响范围|影响范围.*可恢复',       # 风险矩阵格式
+    ],
+}
+
+# Pre-compiled regex patterns — avoid re-compilation per call which causes
+# GIL contention in multi-threaded runs (py-spy confirmed re.search
+# holding GIL at 100% CPU).
+_FOUR_AXIS_COMPILED: dict[str, list[re.Pattern]] = {
+    axis: [re.compile(pat) for pat in patterns]
+    for axis, patterns in _FOUR_AXIS_PATTERNS.items()
+}
+
+# 四轴闸门只对核心代码编辑工具强制要求。
+# terminal（即使动态 gated）不需要四轴——运维操作（pytest/tail/grep）不产出"风险矩阵"。
+_FOUR_AXIS_REQUIRED_TOOLS: frozenset[str] = frozenset(
+    {
+        "write_file",
+        "patch",
+        "execute_code",
+    }
+)
+
+
+def _clear_four_axis_marker() -> None:
+    """清除四轴 marker 文件——每个 turn 开始时调用。"""
+    try:
+        if _FOUR_AXIS_MARKER_FILE.exists():
+            _FOUR_AXIS_MARKER_FILE.unlink()
+    except Exception:
+        pass
 
 # 默认门控的执行类工具——只覆盖代码编辑工具。
 # terminal/browser/delegate_task/cronjob/process 等运维交互工具不在默认门控范围——
@@ -585,6 +646,9 @@ class ReadThinkGate:
         self._gated_tools: set[str] = set(GATED_TOOL_NAMES)
         if self.config.gated_tools:
             self._gated_tools.update(self.config.gated_tools)
+        self._four_axis_found: set[str] = set()  # 本 turn 四轴证据集合
+        self._turn_start_time: float = 0.0  # 墙钟逃逸阀
+        self._total_tool_calls: int = 0  # 总工具调用次数（含read-only），防膨胀
         self.reset_for_turn()
 
     # ── Per-turn state ──────────────────────────────────────────────
@@ -612,6 +676,13 @@ class ReadThinkGate:
         self._judge_feedback_history: list[str] = []
         # 漏洞 4 修复：judge 连续失败计数——达到阈值后 fail-open
         self._judge_fail_count: int = 0
+        # 四轴闸门——每 turn 重新计数
+        self._four_axis_found: set[str] = set()
+        # 清除上一 turn 的四轴 marker 文件
+        _clear_four_axis_marker()
+        # 漏洞修复：记录 turn 开始时间——墙钟逃逸阀防止用户感知的"卡死"
+        self._turn_start_time = time.time()
+        self._total_tool_calls = 0
         # 清理上一 turn 动态加入 _gated_tools 的 terminal（漏洞 3 修复副作用）。
         # 但保留用户通过 config 显式配置的 gated_tools。
         if "terminal" not in self.config.gated_tools:
@@ -649,6 +720,50 @@ class ReadThinkGate:
     def _investigation_done(self) -> bool:
         """调查是否达标——至少做了 1 次只读调查。"""
         return self._read_only_count >= 1
+
+    def _scan_four_axis(self, content: str | None) -> None:
+        """扫描 assistant 回复文本，检测四轴证据并累积到 self._four_axis_found。
+
+        每轴独立判定：该轴的任一模式匹配即标记为 found。
+        四轴全部 found 时写入 marker 文件，供 pre_tool_call 插件读取。
+        """
+        if not content:
+            return
+        # 四轴关键词通常在结论部分。对超长文本只扫描尾部 8KB，
+        # 避免对每条 tool call 的完整回复做全文正则（py-spy 实测
+        # re.search 在长 content 上占满 GIL）。
+        scan_text = content if len(content) <= 8192 else content[-8192:]
+        for axis, patterns in _FOUR_AXIS_COMPILED.items():
+            if axis in self._four_axis_found:
+                continue
+            for pat in patterns:
+                if pat.search(scan_text):
+                    self._four_axis_found.add(axis)
+                    logger.info(
+                        "read-think gate: four-axis '%s' detected — %d/4 axes found",
+                        axis, len(self._four_axis_found),
+                    )
+                    break
+        # 四轴全部到位 → 写入 marker 文件
+        if len(self._four_axis_found) == 4:
+            try:
+                _FOUR_AXIS_MARKER_DIR.mkdir(parents=True, exist_ok=True)
+                _FOUR_AXIS_MARKER_FILE.write_text(json.dumps({
+                    "verified": True,
+                    "timestamp": time.time(),
+                    "axes": sorted(self._four_axis_found),
+                }))
+                logger.info("read-think gate: four-axis complete — marker written")
+            except Exception:
+                logger.warning("read-think gate: failed to write four-axis marker", exc_info=True)
+
+    def _four_axis_complete(self) -> bool:
+        """四轴是否全部检测到。"""
+        return len(self._four_axis_found) == 4
+
+    def _missing_axes(self) -> list[str]:
+        """返回尚未检测到的轴名称列表。"""
+        return [a for a in _FOUR_AXIS_PATTERNS if a not in self._four_axis_found]
 
     def _has_diverse_investigation(self, profile: ComplexityProfile) -> bool:
         """调查是否包含搜索类工具，而非只有 read_file/skill_view 堆数量。
@@ -724,6 +839,9 @@ class ReadThinkGate:
                     name = ta.get("name", "")
                     self._investigation_evidence.append(f"skill_view: {name}")
 
+        # ── 四轴证据扫描（每次 assistant 回复都扫，累积到 self._four_axis_found）──
+        self._scan_four_axis(assistant_content)
+
         if not self.config.enabled or self._satisfied:
             return None
 
@@ -756,6 +874,9 @@ class ReadThinkGate:
 
         if has_read_only_investigation:
             self._read_only_count += 1
+
+        # 总工具调用计数——防止 read-only 和 gated 交替膨胀
+        self._total_tool_calls += len(tool_names)
 
         # ── write-target 覆盖率检查（优先于 _try_unlock）──
         # 如果要改的文件已经读过，或文件不存在（新建），直接放行。
@@ -795,9 +916,10 @@ class ReadThinkGate:
             )
             return None
 
-        # ── 漏洞 7 修复：推理轮数在兜底之前递增 ──
-        # _try_unlock 已在开头检查 max_reasoning_rounds 兜底放行。
-        # 这里递增是为未覆盖拦截提供正确的轮数显示。
+        # ── 推理轮数递增 ──
+        # _try_unlock 的 max_reasoning_rounds 兜底在递增之前检查，
+        # 所以当 _reasoning_rounds 达到 max 时直接放行，不会多一轮。
+        # 这里递增后，拦截消息显示的轮次与实际一致（第1次拦截显示 1/N）。
         self._reasoning_rounds += 1
 
         first_gated = next(t for t in tool_names if t in self._gated_tools) if any(t in self._gated_tools for t in tool_names) else "terminal"
@@ -818,10 +940,11 @@ class ReadThinkGate:
     ) -> bool:
         """尝试解锁。返回 True 如果状态已变为 satisfied。
 
-        严格模式三层门控：
+        严格模式四层门控：
           1. 机械门槛：调查次数 + 推理量达标
           2. LLM-as-judge：语义评估调查质量（代码理解/关系分析/既有模式/方案评估）
-          3. max_reasoning_rounds 兜底防死循环
+          3. 四轴闸门：影响面/原意图/根因/风险 四轴证据全部在回复中出现
+          4. max_reasoning_rounds 兜底防死循环（跳过四轴检查）
         """
         profile = self._active_profile
 
@@ -832,6 +955,36 @@ class ReadThinkGate:
             logger.info(
                 "read-think gate: unlocked — max reasoning rounds reached (%d, complexity=%s)",
                 profile.max_reasoning_rounds, self._active_complexity,
+            )
+            return True
+
+        # ── 墙钟逃逸阀：turn 开始后超过 3 分钟直接解锁 ──
+        # 防止 LLM 模型每轮调用耗时长（reasoning model 1-2 min/轮）
+        # 导致 8 轮 × 2 分钟 = 16 分钟用户感知"卡死"。
+        # 3 分钟是用户耐心的合理上限——超过即认为调查已足够。
+        if self._turn_start_time > 0:
+            elapsed = time.time() - self._turn_start_time
+            if elapsed > 180:
+                self._satisfied = True
+                logger.info(
+                    "read-think gate: unlocked — wall-clock escape valve (%.0fs > 180s, rounds=%d/%d, complexity=%s)",
+                    elapsed, self._reasoning_rounds, profile.max_reasoning_rounds,
+                    self._active_complexity,
+                )
+                return True
+
+        # ── 总调用次数逃逸阀：防止 read-only/gated 交替膨胀 ──
+        # 场景：agent 做 search → terminal 被 block → search → terminal 被 block ...
+        # read-only 轮不计入 _reasoning_rounds，导致实际 LLM 调用数远超 max。
+        # 上限 = max_reasoning_rounds × 3（每次 block 最多允许 2 次 read-only 穿插）。
+        total_call_cap = profile.max_reasoning_rounds * 3
+        if self._total_tool_calls >= total_call_cap:
+            self._satisfied = True
+            logger.info(
+                "read-think gate: unlocked — total tool call cap reached (%d >= %d, rounds=%d/%d, complexity=%s)",
+                self._total_tool_calls, total_call_cap,
+                self._reasoning_rounds, profile.max_reasoning_rounds,
+                self._active_complexity,
             )
             return True
 
@@ -879,6 +1032,20 @@ class ReadThinkGate:
                         "read-think gate: investigation not diverse — need search_files/web_search/web_extract "
                         "(reads=%d, complexity=%s)",
                         self._read_only_count, self._active_complexity,
+                    )
+                    return False
+                # 四轴闸门——严格模式下四轴不齐不解锁。
+                # 但只对核心代码编辑工具（write_file/patch/execute_code）强制要求。
+                # terminal 即使被动态 gated（含文件写入），也不要求四轴——
+                # 运维操作（pytest/grep/tail）不应被"风险矩阵"卡住。
+                requesting_core_edit = bool(
+                    tool_names and any(t in _FOUR_AXIS_REQUIRED_TOOLS for t in tool_names)
+                )
+                if requesting_core_edit and not self._four_axis_complete():
+                    missing = self._missing_axes()
+                    logger.info(
+                        "read-think gate: four-axis incomplete — missing %s (judge path, complexity=%s)",
+                        missing, self._active_complexity,
                     )
                     return False
                 self._satisfied = True
@@ -957,6 +1124,22 @@ class ReadThinkGate:
                     "搞清楚全局关系，不能只盯着单个文件。\n\n"
                     "（调查次数：%d/%d，推理轮数：%d/%d）"
                     % (tool_name, done, done, needed,
+                       self._reasoning_rounds, profile.max_reasoning_rounds)
+                )
+            # 四轴闸门未通过——调查做了但四轴输出不齐
+            if not self._four_axis_complete():
+                missing = self._missing_axes()
+                return (
+                    "[ReadThink Gate — 推理阶段 · 四轴闸门] 工具 '%s' 暂时不可用。\n\n"
+                    "调查已完成，但四轴闸门未通过。缺少：%s\n\n"
+                    "在前面的回复中逐项输出以下四轴内容，缺一不可：\n"
+                    "  1. 影响面清单：列出每一个受影响调用方（绝对路径+函数名+行号）\n"
+                    "  2. 原意图溯源：git log -p 追溯到最初 commit + 不变量清单（逐条标注保持/修改/破坏）\n"
+                    "  3. 根因定位：区分症状位置与根因位置（文件+行号），修复目标必须是根因\n"
+                    "  4. 风险矩阵：枚举最坏场景（触发条件+影响范围+可恢复性），覆盖六类风险\n\n"
+                    "四轴的输出就是 commit message 的 body。即写即用。\n\n"
+                    "（推理轮数：%d/%d）"
+                    % (tool_name, "、".join(missing),
                        self._reasoning_rounds, profile.max_reasoning_rounds)
                 )
             return (
