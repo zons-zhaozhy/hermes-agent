@@ -823,48 +823,85 @@ def strip_think_blocks(agent, content: str) -> str:
             content = str(content)
         if not content:
             return ""
-    # 1. Closed tag pairs — case-insensitive for all variants so
-    #    mixed-case tags (<THINK>, <Thinking>) don't slip through to
-    #    the unterminated-tag pass and take trailing content with them.
-    content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL | re.IGNORECASE)
-    content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL | re.IGNORECASE)
-    content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL | re.IGNORECASE)
-    content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL | re.IGNORECASE)
-    content = re.sub(r'<thought>.*?</thought>', '', content, flags=re.DOTALL | re.IGNORECASE)
-    # 1b. Tool-call XML blocks (openclaw/openclaw#67318). Handle the
-    #     generic tag names first — they have no attribute gating since
-    #     a literal <tool_call> in prose is already vanishingly rare.
+    # 1. Closed tag pairs — str.find (O(n)) replaces DOTALL re.sub
+    #    to prevent catastrophic regex backtracking / sre_ucs2_match freeze.
+    for _ct in ('<think>', '<thinking>', '<reasoning>',
+                '<REASONING_SCRATCHPAD>', '<thought>'):
+        _ct_close = _ct.replace('<', '</')
+        _ct_l = _ct.lower(); _ct_close_l = _ct_close.lower()
+        while True:
+            _pos = content.lower().find(_ct_l)
+            if _pos == -1:
+                break
+            _end = content.lower().find(_ct_close_l, _pos + len(_ct))
+            if _end == -1:
+                break
+            content = content[:_pos] + content[_end + len(_ct_close):]
+    # 1b. Tool-call XML blocks (openclaw/openclaw#67318).
+    #     str.find (O(n)) replaces DOTALL re.sub.
     for _tc_name in ("tool_call", "tool_calls", "tool_result",
                       "function_call", "function_calls"):
-        content = re.sub(
-            rf'<{_tc_name}\b[^>]*>.*?</{_tc_name}>',
-            '',
-            content,
-            flags=re.DOTALL | re.IGNORECASE,
-        )
-    # 1c. <function name="...">...</function> — Gemma-style standalone
-    #     tool call. Only strip when the tag sits at a block boundary
-    #     (start of text, after a newline, or after sentence-ending
-    #     punctuation) AND carries a name="..." attribute. This keeps
-    #     prose mentions like "Use <function> to declare" safe.
-    content = re.sub(
-        r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*'
-        r'<function\b[^>]*\bname\s*=[^>]*>'
-        r'.*?</function>',
-        '',
-        content,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-    # 2. Unterminated reasoning block — open tag at a block boundary
-    #    (start of text, or after a newline) with no matching close.
-    #    Strip from the tag to end of string.  Fixes #8878 / #9568
-    #    (MiniMax M2.7 leaking raw reasoning into assistant content).
-    content = re.sub(
-        r'(?:^|\n)[ \t]*<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b[^>]*>.*$',
-        '',
-        content,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
+        _open_l = f'<{_tc_name}'.lower()
+        _close = f'</{_tc_name}>'
+        _close_l = _close.lower()
+        while True:
+            _pos = content.lower().find(_open_l)
+            if _pos == -1:
+                break
+            _gt = content.find('>', _pos)
+            if _gt == -1:
+                break
+            _end = content.lower().find(_close_l, _gt + 1)
+            if _end == -1:
+                break
+            content = content[:_pos] + content[_end + len(_close):]
+    # 1c. <function name="...">...</function> — Gemma-style.
+    #     str.find (O(n)) with boundary + name= checks.
+    #     Use _fc cursor to avoid infinite loop on skip → continue.
+    _fc = 0
+    while True:
+        _pos = content.lower().find('<function', _fc)
+        if _pos == -1:
+            break
+        _fc = _pos + 1  # default: advance past this occurrence
+        if _pos > 0 and content[_pos - 1] not in ('\n', '\r', '.', '!', '?', ':'):
+            continue
+        _gt = content.find('>', _pos)
+        if _gt == -1:
+            break
+        if 'name=' not in content[_pos:_gt].lower():
+            _fc = _gt + 1
+            continue
+        _end = content.lower().find('</function>', _gt + 1)
+        if _end == -1:
+            break
+        content = content[:_pos] + content[_end + len('</function>'):]
+        _fc = 0  # content changed — restart scan
+    # 2. Unterminated reasoning block — str.find (O(n)) at line starts.
+    #    Strip from the tag to end of string.  Fixes #8878 / #9568.
+    for _tag in ('think', 'thinking', 'reasoning', 'thought', 'REASONING_SCRATCHPAD'):
+        _open = f'<{_tag}'
+        _open_l = _open.lower()
+        _ut = 0  # cursor to avoid infinite loop on skip
+        while True:
+            _pos = content.lower().find(_open_l, _ut)
+            if _pos == -1:
+                break
+            _ut = _pos + 1  # default: advance
+            if _pos > 0 and content[_pos - 1] not in ('\n', '\r'):
+                continue
+            _gt = content.find('>', _pos)
+            if _gt == -1:
+                break
+            _close_l = _open.replace('<', '</') + '>'
+            _end = content.lower().find(_close_l.lower(), _gt)
+            if _end != -1:
+                # Properly closed — skip this one
+                _ut = _pos + len(_open)
+                continue
+            # Unterminated — strip from this position to end of string
+            content = content[:_pos]
+            break
     # 3. Stray orphan open/close tags that slipped through.
     content = re.sub(
         r'</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*',

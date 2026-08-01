@@ -115,7 +115,17 @@ def ensure_closed_code_fences(text: str) -> str:
     # pollute the standalone count.  Also remove any trailing unclosed
     # ``` that leaks through (defence in depth).
     import re
-    without_fences = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    # str.find (O(n)) replaces DOTALL re.sub to prevent regex backtracking
+    _t2 = text; _fence = '```'
+    while True:
+        _p = _t2.find(_fence)
+        if _p == -1:
+            break
+        _p2 = _t2.find(_fence, _p + 3)
+        if _p2 == -1:
+            break
+        _t2 = _t2[:_p] + _t2[_p2 + 3:]
+    without_fences = _t2
     without_fences = re.sub(r"```[^`]*$", "", without_fences)
 
     if without_fences.count("`") % 2 == 1:

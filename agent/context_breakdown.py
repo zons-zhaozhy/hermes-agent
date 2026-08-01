@@ -12,7 +12,26 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-_SKILLS_BLOCK_RE = re.compile(r"<available_skills>.*?</available_skills>", re.DOTALL)
+def _find_skills_block(text: str):
+    """Find <available_skills>...</available_skills> block. O(n)."""
+    if not text:
+        return None
+    _start = text.lower().find('<available_skills>')
+    if _start == -1:
+        return None
+    _start += len('<available_skills>')
+    _end = text.lower().find('</available_skills>', _start)
+    if _end == -1:
+        return None
+
+    class _Match:
+        def start(self): return _start
+        def end(self): return _end
+        def group(self, n=0):
+            if n == 0:
+                return text[_start - len('<available_skills>'):_end + len('</available_skills>')]
+            return text[_start:_end]
+    return _Match()
 
 _SUBAGENT_TOOL_NAMES = frozenset({"delegate_task"})
 
@@ -99,7 +118,7 @@ def compute_session_context_breakdown(
     context = parts.get("context", "") or ""
     volatile = parts.get("volatile", "") or ""
 
-    skills_match = _SKILLS_BLOCK_RE.search(stable)
+    skills_match = _find_skills_block(stable)
     skills_index = skills_match.group(0) if skills_match else ""
 
     memory_block, user_block = _memory_blocks(agent)

@@ -1403,7 +1403,19 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     # directly in the content rather than returning separate API fields).
     if not reasoning_text:
         content = flatten_message_text(getattr(assistant_message, "content", None))
-        think_blocks = re.findall(r'<think>(.*?)</think>', content, flags=re.DOTALL)
+        # str.find (O(n)) replaces re.findall to prevent regex backtracking
+        _tb_start = '<think>'; _tb_end = '</think>'
+        think_blocks = []
+        _cursor = 0
+        while True:
+            _p = content.lower().find(_tb_start.lower(), _cursor)
+            if _p == -1:
+                break
+            _q = content.lower().find(_tb_end.lower(), _p + len(_tb_start))
+            if _q == -1:
+                break
+            think_blocks.append(content[_p + len(_tb_start):_q])
+            _cursor = _q + len(_tb_end)
         if think_blocks:
             combined = "\n\n".join(b.strip() for b in think_blocks if b.strip())
             reasoning_text = combined or None
@@ -2311,7 +2323,18 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
         if final_response:
             if "<think>" in final_response:
-                final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+                # str.find (O(n)) replaces DOTALL re.sub
+                _t = final_response.lower(); _o = '<think>'; _c = '</think>'
+                while True:
+                    _p = _t.find(_o)
+                    if _p == -1:
+                        break
+                    _q = _t.find(_c, _p + len(_o))
+                    if _q == -1:
+                        break
+                    final_response = final_response[:_p] + final_response[_q + len(_c):]
+                    _t = final_response.lower()
+                final_response = final_response.strip()
             if final_response:
                 summary_call_outcome = "success"
                 messages.append({"role": "assistant", "content": final_response})
@@ -2373,7 +2396,18 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
             if final_response:
                 if "<think>" in final_response:
-                    final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+                    # str.find (O(n)) replaces DOTALL re.sub
+                    _t = final_response.lower(); _o = '<think>'; _c = '</think>'
+                    while True:
+                        _p = _t.find(_o)
+                        if _p == -1:
+                            break
+                        _q = _t.find(_c, _p + len(_o))
+                        if _q == -1:
+                            break
+                        final_response = final_response[:_p] + final_response[_q + len(_c):]
+                        _t = final_response.lower()
+                    final_response = final_response.strip()
                 if final_response:
                     summary_call_outcome = "success"
                     messages.append({"role": "assistant", "content": final_response})

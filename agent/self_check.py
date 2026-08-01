@@ -227,6 +227,9 @@ def _has_evidence(content: str) -> bool:
         return True
     if 'ms' in content or 'MB' in content or 'KB' in content:
         return True
+    # 任意数字（如"500并发零超时"）
+    if any(ch.isdigit() for ch in content):
+        return True
     # exit code
     if 'exit_code' in content or 'exit code' in content:
         return True
@@ -341,10 +344,12 @@ def _r13_task_drift(tool_name: str, args: dict, history: dict) -> str | None:
 # ── R14: 操作结果忽略——工具输出含错误但回复无引用 ─────────────────
 _R14_ERROR_SIGNALS: list[re.Pattern] = [
     re.compile(r"Traceback\s*\(most recent call last\)", re.I),
-    re.compile(r"\bERROR\b.*[:：]", re.I),
-    re.compile(r"\bFAILED\b", re.I),
     re.compile(r"\bError:\s", re.I),
     re.compile(r"exit_code\s*[=:]\s*[1-9]"),
+    re.compile(r"\bCRITICAL\b.*[:：]", re.I),
+    re.compile(r"\bPANIC\b", re.I),
+    re.compile(r"\bcore dumped\b", re.I),
+    re.compile(r"\bsegfault\b", re.I),
 ]
 
 _R14_ACK_PATTERNS: re.Pattern = re.compile(
@@ -643,8 +648,14 @@ class SelfCheckManager:
 
         return None
 
-    def check_response(self, assistant_content: str | None) -> str | None:
+    def check_response(self, assistant_content: str | None, *, has_tool_calls: bool = False) -> str | None:
         """检查 assistant 回复文本是否包含推责/推断/缺证据等行为模式。
+
+        Args:
+            assistant_content: The assistant's response text content.
+            has_tool_calls: Whether this assistant message also carries
+                tool_calls. When True, R14 is suppressed because the model
+                is actively continuing rather than ignoring an error.
 
         Returns:
             None if clean, or a compact warning string (one line per rule).
@@ -653,36 +664,42 @@ class SelfCheckManager:
             return None
 
         try:
-            return self._do_check_response(assistant_content)
+            return self._do_check_response(assistant_content, has_tool_calls=has_tool_calls)
         except Exception:
             logger.exception("SelfCheck: check_response raised — returning None")
             return None
 
-    def _do_check_response(self, assistant_content: str) -> str | None:
+    def _do_check_response(self, assistant_content: str, *, has_tool_calls: bool = False) -> str | None:
         """check_response 的核心逻辑。"""
         warnings: list[str] = []
+        # 只检测最新一段回复——self_check 关注的是模型刚生成文本中的行为模式，
+        # 不需要搜索全部上下文历史。截尾防止正则在超长文本上指数回溯（sre_ucs2_match
+        # 的 .{0,N} 贪婪量词在大文本上触发 GIL 饥饿导致进程卡死）。
+        tail = assistant_content[-8000:]
         for pattern, hint in _BLAME_PATTERNS:
-            if pattern.search(assistant_content):
+            if pattern.search(tail):
                 warnings.append("[R06] %s" % hint)
         for pattern, hint in _R07_SPECULATION_PATTERNS:
-            if pattern.search(assistant_content):
+            if pattern.search(tail):
                 warnings.append("[R07] %s" % hint)
         for pattern, hint in _R08_USER_BLAME_PATTERNS:
-            if pattern.search(assistant_content):
+            if pattern.search(tail):
                 warnings.append("[R08] %s" % hint)
         # R09 removed: evidence-tagging enforcement produces more noise than value.
         # Pattern matching can't reliably distinguish "has evidence" from "doesn't".
         # The system prompt already instructs evidence-tagging; SelfCheck can't enforce it.
         for pattern, hint in _R11_JUDGMENT_PATTERNS:
-            if pattern.search(assistant_content):
-                has_comparison = bool(re.search(r"方案\s*[A-Za-z①②③]|①|②|③|\bvs\b|比较|权衡|对比|另一个|替代方案|哪个更好", assistant_content, re.I))
+            if pattern.search(tail):
+                has_comparison = bool(re.search(r"方案\s*[A-Za-z①②③]|①|②|③|\bvs\b|比较|权衡|对比|另一个|替代方案|哪个更好", tail, re.I))
                 if not has_comparison:
                     warnings.append("[R11] %s" % hint)
-        # R14: 操作结果忽略
-        if self._last_tool_output:
+        # R14: 操作结果忽略——只在模型没有继续调用工具时才检测。
+        # 如果 assistant_message 本身带了 tool_calls，说明模型已经在处理，
+        # 不需要 R14 告警（否则每个含 exit_code 的 terminal 输出都会误报）。
+        if self._last_tool_output and not has_tool_calls:
             has_error = any(p.search(self._last_tool_output) for p in _R14_ERROR_SIGNALS)
             if has_error:
-                acknowledges = bool(_R14_ACK_PATTERNS.search(assistant_content))
+                acknowledges = bool(_R14_ACK_PATTERNS.search(tail))
                 if not acknowledges:
                     warnings.append("[R14] 上次工具输出含错误但回复未引用")
 

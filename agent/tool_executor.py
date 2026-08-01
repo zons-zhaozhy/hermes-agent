@@ -667,7 +667,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         sc_mgr = get_self_check()
         if sc_mgr is not None:
             _response_self_check = sc_mgr.check_response(
-                getattr(assistant_message, "content", None)
+                getattr(assistant_message, "content", None),
+                has_tool_calls=bool(getattr(assistant_message, "tool_calls", None)),
             )
     except Exception:
         logger.warning("SelfCheck check_response failed (concurrent path)", exc_info=True)
@@ -1368,7 +1369,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         sc_mgr = get_self_check()
         if sc_mgr is not None:
             _response_self_check = sc_mgr.check_response(
-                getattr(assistant_message, "content", None)
+                getattr(assistant_message, "content", None),
+                has_tool_calls=bool(getattr(assistant_message, "tool_calls", None)),
             )
     except Exception:
         logger.warning("SelfCheck check_response failed (sequential path)", exc_info=True)

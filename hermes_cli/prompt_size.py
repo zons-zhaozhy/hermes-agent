@@ -19,7 +19,26 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 # The skills index is wrapped in this tag pair inside the stable tier.
-_SKILLS_BLOCK_RE = re.compile(r"<available_skills>.*?</available_skills>", re.DOTALL)
+def _find_skills_block(text: str):
+    """Find <available_skills>...</available_skills> block. O(n)."""
+    if not text:
+        return None
+    _start = text.lower().find('<available_skills>')
+    if _start == -1:
+        return None
+    _start += len('<available_skills>')
+    _end = text.lower().find('</available_skills>', _start)
+    if _end == -1:
+        return None
+
+    class _Match:
+        def start(self): return _start
+        def end(self): return _end
+        def group(self, n=0):
+            if n == 0:
+                return text[_start - len('<available_skills>'):_end + len('</available_skills>')]
+            return text[_start:_end]
+    return _Match()
 
 # A rendered skill entry inside <available_skills> is ``    - name: desc`` (or
 # ``    - name`` when the skill has no description). Category headers use two
@@ -253,7 +272,7 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
 
     # Skills index — the <available_skills> block (the largest single block
     # when many skills are installed). Measured inside the stable tier.
-    skills_match = _SKILLS_BLOCK_RE.search(stable)
+    skills_match = _find_skills_block(stable)
     skills_index = skills_match.group(0) if skills_match else ""
 
     # Memory + user profile live in the volatile tier. We re-derive their
