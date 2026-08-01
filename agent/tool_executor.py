@@ -49,6 +49,7 @@ from tools.tool_result_storage import (
     enforce_turn_budget,
 )
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from agent.self_check import get_self_check
 
 logger = logging.getLogger(__name__)
 
@@ -660,9 +661,20 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             )
         return
 
+    # ── SelfCheck R14: response-level check ──────────────────────────
+    _response_self_check: str | None = None
+    try:
+        sc_mgr = get_self_check()
+        if sc_mgr is not None:
+            _response_self_check = sc_mgr.check_response(
+                getattr(assistant_message, "content", None)
+            )
+    except Exception:
+        logger.warning("SelfCheck check_response failed (concurrent path)", exc_info=True)
+
     # ── Parse args + pre-execution bookkeeping ───────────────────────
     # (tool call, resolved name, parsed args, middleware trace, parse error,
-    # tool-search scope block)
+    # tool-search scope block, self_check_warning)
     parsed_calls = []
     for tool_call in tool_calls:
         function_name = tool_call.function.name
@@ -680,6 +692,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     [],
                     malformed_args_result,
                     None,
+                    None,  # self_check_warning — skipped for malformed args
                 )
             )
             continue
@@ -724,19 +737,28 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
+        # ── SelfCheck R06: pre-execution check ───────────────────────
+        self_check_warning = None
+        try:
+            sc_mgr = get_self_check()
+            if sc_mgr is not None:
+                self_check_warning = sc_mgr.check(function_name, function_args)
+        except Exception:
+            logger.warning("self_check.check raised for %s", function_name, exc_info=True)
+
         parsed_calls.append(
-            (tool_call, function_name, function_args, [], None, _ts_scope_block)
+            (tool_call, function_name, function_args, [], None, _ts_scope_block, self_check_warning)
         )
 
     # ── Logging / callbacks ──────────────────────────────────────────
-    tool_names_str = ", ".join(name for _, name, _, _, _, _ in parsed_calls)
+    tool_names_str = ", ".join(name for _, name, _, _, _, _, _ in parsed_calls)
     if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
         print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
 
     # ── Concurrent execution ─────────────────────────────────────────
     # Each slot holds (function_name, function_args, function_result, duration, error_flag, blocked_flag, middleware_trace)
     results = [None] * num_tools
-    for i, (tc, name, args, middleware_trace, block_result, _scope_block) in enumerate(parsed_calls):
+    for i, (tc, name, args, middleware_trace, block_result, _scope_block, _scw) in enumerate(parsed_calls):
         if block_result is not None:
             results[i] = (name, args, block_result, 0.0, True, True, middleware_trace)
 
@@ -768,6 +790,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         middleware_trace,
         scope_block,
         start_order,
+        self_check_warning=None,
     ):
         """Worker function executed in a thread."""
         # Register this worker tid so the agent can fan out an interrupt
@@ -877,6 +900,21 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
             else:
                 logger.info("tool %s completed (%.2fs, %d chars)", function_name, duration, len(result))
+
+            # ── SelfCheck: prepend response check to first tool result ──
+            if index == 0 and _response_self_check and result is not None:
+                result = _response_self_check + "\n\n" + result
+            # ── SelfCheck: prepend per-tool warning to result ──
+            if self_check_warning and result is not None:
+                result = self_check_warning + "\n\n" + result
+            # ── SelfCheck R14: record tool output for error-ignored detection ──
+            try:
+                sc_mgr = get_self_check()
+                if sc_mgr is not None and result:
+                    sc_mgr.record_tool_result(function_name, result)
+            except Exception:
+                logger.warning("SelfCheck record_tool_result skipped (concurrent)", exc_info=True)
+
             results[index] = (
                 function_name,
                 function_args,
@@ -910,8 +948,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
     try:
         runnable_calls = [
-            (i, tc, name, args, scope_block)
-            for i, (tc, name, args, _trace, parse_error, scope_block) in enumerate(
+            (i, tc, name, args, scope_block, self_check_warning)
+            for i, (tc, name, args, _trace, parse_error, scope_block, self_check_warning) in enumerate(
                 parsed_calls
             )
             if parse_error is None
@@ -932,7 +970,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             executor = DaemonThreadPoolExecutor(max_workers=max_workers)
             abandon_executor = False
             try:
-                for submit_index, (i, tc, name, args, scope_block) in enumerate(
+                for submit_index, (i, tc, name, args, scope_block, self_check_warning) in enumerate(
                     runnable_calls
                 ):
                     # Propagate the agent turn's ContextVars (e.g.
@@ -948,6 +986,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                             parsed_calls[i][3],
                             scope_block,
                             submit_index,
+                            self_check_warning,
                         )
                     except RuntimeError as submit_error:
                         if not _is_interpreter_shutdown_submit_error(submit_error):
@@ -964,6 +1003,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                             skipped_name,
                             skipped_args,
                             _scope_block,
+                            _scw,
                         ) in skipped_calls:
                             if results[skipped_i] is None:
                                 middleware_trace = parsed_calls[skipped_i][3]
@@ -1098,7 +1138,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             spinner.stop(f"⚡ {completed}/{num_tools} tools completed in {total_dur:.1f}s total")
 
     # ── Post-execution: display per-tool results ─────────────────────
-    for i, (tc, name, args, middleware_trace, _parse_error, _scope_block) in enumerate(
+    for i, (tc, name, args, middleware_trace, _parse_error, _scope_block, _scw) in enumerate(
         parsed_calls
     ):
         r = results[i]
@@ -1321,6 +1361,18 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     """
     # Resolve the context-scaled tool-output budget once per turn.
     _tool_budget = _budget_for_agent(agent)
+
+    # ── SelfCheck R14: response-level check ──────────────────────────
+    _response_self_check: str | None = None
+    try:
+        sc_mgr = get_self_check()
+        if sc_mgr is not None:
+            _response_self_check = sc_mgr.check_response(
+                getattr(assistant_message, "content", None)
+            )
+    except Exception:
+        logger.warning("SelfCheck check_response failed (sequential path)", exc_info=True)
+
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
         if getattr(agent, "_incremental_persistence_failed", False):
             return
@@ -1884,6 +1936,29 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 _append_subdir_hint_to_multimodal(function_result, subdir_hints)
             else:
                 function_result += subdir_hints
+
+        # ── SelfCheck R06: pre-execution check ───────────────────────
+        _self_check_warning = None
+        try:
+            sc_mgr = get_self_check()
+            if sc_mgr is not None:
+                _self_check_warning = sc_mgr.check(function_name, function_args)
+        except Exception:
+            logger.warning("self_check.check raised for %s", function_name, exc_info=True)
+
+        # ── SelfCheck: prepend response check to first tool result ──
+        if i == 1 and _response_self_check and function_result is not None:
+            function_result = _response_self_check + "\n\n" + function_result
+        # ── SelfCheck: prepend per-tool warning to result ──
+        if _self_check_warning and function_result is not None:
+            function_result = _self_check_warning + "\n\n" + function_result
+        # ── SelfCheck R14: record tool output for error-ignored detection ──
+        try:
+            sc_mgr = get_self_check()
+            if sc_mgr is not None and function_result:
+                sc_mgr.record_tool_result(function_name, function_result)
+        except Exception:
+            logger.warning("SelfCheck record_tool_result skipped (sequential)", exc_info=True)
 
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.
