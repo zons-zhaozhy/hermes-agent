@@ -245,6 +245,11 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     # drive the bounded retry. Persisting them would replay the internal
     # retry instruction as user-authored context on resume.
     "_dropped_toolcall_nudge",
+    # analysis-then-stop guard: agent output analysis/conclusions as text-only
+    # without following up with tool calls. The nudge exists only to drive
+    # the continuation; persisting it would replay the internal instruction
+    # as user-authored context on resume.
+    "_analysis_stop_synthetic",
 )
 
 

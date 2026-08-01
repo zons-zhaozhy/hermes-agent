@@ -233,7 +233,7 @@ MIN_FIRST_OPEN_TIMEOUT = 120
 # with web_tools.DEFAULT_EXTRACT_CHAR_LIMIT (15000) — the snapshot and
 # web_extract paths share the same truncate-and-store pattern, so the model
 # gets the same per-page budget from both.
-SNAPSHOT_SUMMARIZE_THRESHOLD = 15000
+SNAPSHOT_SUMMARIZE_THRESHOLD = 10000  # Reduced from 15K for browser-dense sessions (V7/V8 comparison pattern)
 
 # Hard ceiling on the full-snapshot file written to cache/web when a snapshot
 # is truncated or LLM-summarized. Mirrors web_tools.MAX_STORED_TEXT_CHARS —
