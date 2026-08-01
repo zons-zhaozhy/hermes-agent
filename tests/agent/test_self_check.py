@@ -117,7 +117,12 @@ class TestIntegrationCheckPipeline:
         assert result is not None, "R14 应通过 check_response() 管道命中"
         assert "[R14]" in result
 
-    # R07 test removed — rule retired (regex response rules cleaned)
+    def test_r07_fires_through_response_pipeline(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("应该没问题。")
+        assert result is not None, "R07 应通过 check_response() 管道命中"
+        assert "[R07]" in result
 
 
 class TestSelfCheckManager:
@@ -198,8 +203,146 @@ name: test-skill
         assert s["files_edited"] == 1
 
 
-# ── R06/R07/R08/R11 removed: regex-based response rules that never fire
-# on GLM-5.2 with SOUL.md discipline. See self_check.py docstring. ───
+# ── R06: blame-shift detection ───────────────────────────────────────
+
+
+class TestR06BlameShift:
+    """check_response should detect blame-shifting language."""
+
+    def test_detects_blame_attribution(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("这不是我改出来的，是之前的代码就有的")
+        assert result is not None
+        assert "[R06]" in result
+
+    def test_detects_upstream_blame(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("这是上游的问题，不是我这次引入的")
+        assert result is not None
+        assert "[R06]" in result
+
+    def test_detects_out_of_scope(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("这个问题不属于本次修改范围")
+        assert result is not None
+        assert "[R06]" in result
+
+    def test_clean_text_passes(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("发现根因是 self_check.py 第 227 行的类型错位")
+        assert result is None
+
+    def test_clean_analysis_passes(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("问题在于 AVOID 匹配对只读工具做了关键词搜索，产生误报。修复方案是加白名单。")
+        assert result is None
+
+    def test_none_content(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        assert mgr.check_response(None) is None
+        assert mgr.check_response("") is None
+
+
+# ── R07: first-principles speculation detection ──────────────────────
+
+
+class TestR07FirstPrinciples:
+    def test_detects_should_be(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("应该是 config.yaml 里的参数配错了")
+        assert result is not None
+        assert "[R07]" in result
+
+    def test_detects_probably(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("大概率是缓存没刷新导致的")
+        assert result is not None
+        assert "[R07]" in result
+
+    def test_detects_jump_to_fix(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("直接修复一下就好了")
+        assert result is not None
+        assert "[R07]" in result
+
+    def test_clean_analysis_passes(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response(
+            "根因是 self_check.py:227 把 search_files 的 pattern 参数当行为去匹配 AVOID 条目。"
+        )
+        assert result is None
+
+
+# ── R08: user delegation detection ───────────────────────────────────
+
+
+class TestR08UserDelegation:
+    def test_detects_need_you_to(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("需要你做的：在 config.yaml 中加上这个配置")
+        assert result is not None
+        assert "[R08]" in result
+
+    def test_detects_ask_user(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("要不要我帮你改？")
+        assert result is not None
+        assert "[R08]" in result
+
+    def test_detects_please_confirm(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("请确认一下这个路径是否正确")
+        assert result is not None
+        assert "[R08]" in result
+
+    def test_detects_cannot_execute(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("我无法直接执行这个命令")
+        assert result is not None
+        assert "[R08]" in result
+
+    def test_detects_ask_which_to_fix(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("你要我修哪个文件？")
+        assert result is not None
+        assert "[R08]" in result
+
+    def test_detects_still_need_manual(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("还需手动运行一下迁移脚本")
+        assert result is not None
+        assert "[R08]" in result
+
+    def test_clean_directive_passes(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("已修复，测试 50/50 通过。")
+        assert result is None
+
+    def test_r08_clean_text_passes(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("已修复 self_check.py 的 AVOID 匹配逻辑。不需要用户操作。")
+        assert result is None or "[R08]" not in result
+
+
+# ── R09 removed: evidence-tagging enforcement was too noisy. ────────
 
 
 # ── R10: tool chain routing ────────────────────────────────────────
@@ -271,7 +414,37 @@ class TestHasEvidence:
         assert not _has_evidence("")
 
 
-# ── R11 removed: judgment-stage regex rules (same reason as R06-R08). ─
+# ── R11: judgment stage ─────────────────────────────────────────────
+
+
+class TestR11JudgmentGate:
+    def test_detects_simple_solution_claim(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("方案很简单，加个白名单就行。")
+        assert result is not None
+        assert "[R11]" in result
+
+    def test_detects_direct_fix(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("直接改那行代码就好了。")
+        assert result is not None
+        assert "[R11]" in result
+
+    def test_allows_comparison_framework(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("方案A：加白名单；方案B：加负向前瞻。方案A更精确所以选A。")
+        has_r11 = result and "[R11]" in result
+        assert not has_r11
+
+    def test_allows_straightforward_fix_description(self):
+        mgr = SelfCheckManager()
+        mgr._loaded = True
+        result = mgr.check_response("修复方案是加白名单。")
+        has_r11 = result and "[R11]" in result
+        assert not has_r11
 
 
 # ── R10 extended ───────────────────────────────────────────────────
@@ -375,17 +548,17 @@ class TestSelfAudit:
             }
         )
         assert report["alive"] == report["total"]
-        assert report["total"] >= 6  # R01-R05, R10, R13 + R14 (R06-R09,R11,R12 removed)
+        assert report["total"] >= 10  # at least 10 rules (R09+R12 removed)
 
     def test_audit_detects_broken_rule(self):
         mgr = SelfCheckManager()
         import agent.self_check as sc_mod
-        original = sc_mod._R14_ERROR_SIGNALS[:]
-        sc_mod._R14_ERROR_SIGNALS = [
-            sc_mod.re.compile(r"THIS_WILL_NEVER_MATCH_ANYTHING")
+        original = sc_mod._R07_SPECULATION_PATTERNS[:]
+        sc_mod._R07_SPECULATION_PATTERNS = [
+            (sc_mod.re.compile(r"THIS_WILL_NEVER_MATCH_ANYTHING"), "broken")
         ]
         try:
             report = mgr.audit()
-            assert report["status"].get("R14") == "broken"
+            assert report["status"].get("R07") == "broken"
         finally:
-            sc_mod._R14_ERROR_SIGNALS = original
+            sc_mod._R07_SPECULATION_PATTERNS = original
