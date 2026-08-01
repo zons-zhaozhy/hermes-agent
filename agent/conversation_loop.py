@@ -7109,6 +7109,34 @@ def run_conversation(
                     final_response = None
                     continue
 
+                # ── SelfCheck: response-level rules for no-tool-call turns ──
+                # R06/R07/R08/R11/R14 check when the model stops without
+                # issuing tool_calls — the blind spot of tool_executor's
+                # check_response (which only fires when tool_calls exist).
+                # Warning is appended to the final assistant message so the
+                # model sees it in the next turn's context.
+                if not getattr(assistant_message, "tool_calls", None):
+                    try:
+                        from agent.self_check import get_self_check
+                        sc_mgr = get_self_check()
+                        if sc_mgr is not None and final_response:
+                            _sc_warning = sc_mgr.check_response(
+                                final_response, has_tool_calls=False
+                            )
+                            if _sc_warning:
+                                _sc_block = (
+                                    "\n\n---\n[SelfCheck]\n"
+                                    + _sc_warning
+                                    + "\n---"
+                                )
+                                final_response = final_response + _sc_block
+                                final_msg["content"] = final_response
+                    except Exception:
+                        logger.warning(
+                            "SelfCheck check_response failed (turn-final)",
+                            exc_info=True,
+                        )
+
                 messages.append(final_msg)
                 
                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
