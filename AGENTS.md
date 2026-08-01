@@ -230,9 +230,98 @@ hermes-agent/
 `gateway.log` when running the gateway. Profile-aware via `get_hermes_home()`.
 Browse with `hermes logs [--follow] [--level ...] [--session ...]`.
 
+- Prefer small nanostores over component state when state is shared, reused, or read by distant UI.
+- Let each feature own its atoms. Chat state belongs near chat, shell state near shell, shared state in `src/store`.
+- Components that render from an atom should use `useStore`. Non-rendering actions should read with `$atom.get()`.
+- Do not pass state through three components when the leaf can subscribe to the atom.
+- Keep persistence beside the atom that owns it.
+- Keep route roots thin. They compose routes and shell; they should not become controllers.
+- No monolithic hooks. A hook should own one narrow job.
+- Prefer colocated action modules over hidden god hooks.
+- If a callback is pure side effect, use the terse void form:
+  `onState={st => void setGatewayState(st)}`.
+- Async UI handlers should make intent explicit:
+  `onClick={() => void save()}`.
+- Prefer interfaces for public props and shared object shapes. Avoid `type X = { ... }` for object props.
+- Extend React primitives for props: `React.ComponentProps<'button'>`, `React.ComponentProps<typeof Dialog>`, `Omit<...>`, `Pick<...>`.
+- Table-driven beats condition ladders when mapping ids, routes, or views.
+- `src/app` owns routes, pages, and page-specific components.
+- `src/store` owns shared atoms.
+- `src/lib` owns shared pure helpers.
 
+## File Dependency Chain
 
--
+```
+tools/registry.py  (no deps — imported by all tool files)
+       ↑
+tools/*.py  (each calls registry.register() at import time)
+       ↑
+model_tools.py  (imports tools/registry + triggers tool discovery)
+       ↑
+run_agent.py, cli.py, batch_runner.py, environments/
+```
+
+---
+
+## AIAgent Class (run_agent.py)
+
+The real `AIAgent.__init__` takes ~60 parameters (credentials, routing, callbacks,
+session context, budget, credential pool, etc.). The signature below is the
+minimum subset you'll usually touch — read `run_agent.py` for the full list.
+
+```python
+class AIAgent:
+    def __init__(self,
+        base_url: str = None,
+        api_key: str = None,
+        provider: str = None,
+        api_mode: str = None,              # "chat_completions" | "codex_responses" | ...
+        model: str = "",                   # empty → resolved from config/provider later
+        max_iterations: int = 500,         # tool-calling iterations (shared with subagents)
+        enabled_toolsets: list = None,
+        disabled_toolsets: list = None,
+        quiet_mode: bool = False,
+        save_trajectories: bool = False,
+        platform: str = None,              # "cli", "telegram", etc.
+        session_id: str = None,
+        skip_context_files: bool = False,
+        skip_memory: bool = False,
+        credential_pool=None,
+        # ... plus callbacks, thread/user/chat IDs, iteration_budget, fallback_model,
+        # checkpoints config, prefill_messages, service_tier, reasoning_config, etc.
+    ): ...
+
+    def chat(self, message: str) -> str:
+        """Simple interface — returns final response string."""
+
+    def run_conversation(self, user_message: str, system_message: str = None,
+                         conversation_history: list = None, task_id: str = None) -> dict:
+        """Full interface — returns dict with final_response + messages."""
+```
+
+### Agent Loop
+
+The core loop is inside `run_conversation()` — entirely synchronous, with
+interrupt checks, budget tracking, and a one-turn grace call:
+
+```python
+while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) \
+        or self._budget_grace_call:
+    if self._interrupt_requested: break
+    response = client.chat.completions.create(model=model, messages=messages, tools=tool_schemas)
+    if response.tool_calls:
+        for tool_call in response.tool_calls:
+            result = handle_function_call(tool_call.name, tool_call.args, task_id)
+            messages.append(tool_result_message(result))
+        api_call_count += 1
+    else:
+        return response.content
+```
+
+Messages follow OpenAI format: `{"role": "system/user/assistant/tool", ...}`.
+Reasoning content is stored in `assistant_msg["reasoning"]`.
+
+---
 
 ## CLI Architecture (cli.py)
 
@@ -1025,14 +1114,15 @@ def profile_env(tmp_path, monkeypatch):
 ### Python
 **ALWAYS use `scripts/run_tests.sh`** — do not call `pytest` directly. The script enforces
 hermetic environment parity with CI (unset credential vars, TZ=UTC, LANG=C.UTF-8,
-`-n auto` xdist workers, in-tree subprocess-isolation plugin). Direct `pytest`
+per-file subprocess isolation via `scripts/run_tests_parallel.py` — no xdist,
+worker count auto-scaled from CPU count). Direct `pytest`
 on a 16+ core developer machine with API keys set diverges from CI in ways
 that have caused multiple "works locally, fails in CI" incidents (and the reverse).
 
 ```bash
 scripts/run_tests.sh                                  # full suite, CI-parity
 scripts/run_tests.sh tests/gateway/                   # one directory
-scripts/run_tests.sh tests/agent/test_foo.py::test_x  # one test
+scripts/run_tests.sh tests/agent/test_foo.py -k test_x  # one test (file + -k; the runner is file-granular)
 scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
 ```
 
