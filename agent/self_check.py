@@ -386,7 +386,7 @@ _RULES = [
     ("R13", _r13_task_drift),
 ]
 # 回复级规则在 check_response() 中处理
-_RESPONSE_RULE_IDS: frozenset[str] = frozenset({"R06", "R07", "R08", "R11", "R14", "R15"})
+_RESPONSE_RULE_IDS: frozenset[str] = frozenset({"R14", "R15"})
 
 
 class SelfCheckManager:
@@ -670,29 +670,17 @@ class SelfCheckManager:
             return None
 
     def _do_check_response(self, assistant_content: str, *, has_tool_calls: bool = False) -> str | None:
-        """check_response 的核心逻辑。"""
+        """check_response 的核心逻辑。
+
+        R06/R07/R08/R11 removed: these were regex-based Chinese keyword
+        matchers for blame/speculation/user-blame/judgment patterns.
+        On GLM-5.2 with SOUL.md behavior discipline, they never fire
+        (0 triggers across 24K lines of agent.log). Their false-positive
+        risk on normal prose outweighs their value. The system prompt
+        already enforces these behaviors.
+        """
         warnings: list[str] = []
-        # 只检测最新一段回复——self_check 关注的是模型刚生成文本中的行为模式，
-        # 不需要搜索全部上下文历史。截尾防止正则在超长文本上指数回溯（sre_ucs2_match
-        # 的 .{0,N} 贪婪量词在大文本上触发 GIL 饥饿导致进程卡死）。
         tail = assistant_content[-8000:]
-        for pattern, hint in _BLAME_PATTERNS:
-            if pattern.search(tail):
-                warnings.append("[R06] %s" % hint)
-        for pattern, hint in _R07_SPECULATION_PATTERNS:
-            if pattern.search(tail):
-                warnings.append("[R07] %s" % hint)
-        for pattern, hint in _R08_USER_BLAME_PATTERNS:
-            if pattern.search(tail):
-                warnings.append("[R08] %s" % hint)
-        # R09 removed: evidence-tagging enforcement produces more noise than value.
-        # Pattern matching can't reliably distinguish "has evidence" from "doesn't".
-        # The system prompt already instructs evidence-tagging; SelfCheck can't enforce it.
-        for pattern, hint in _R11_JUDGMENT_PATTERNS:
-            if pattern.search(tail):
-                has_comparison = bool(re.search(r"方案\s*[A-Za-z①②③]|①|②|③|\bvs\b|比较|权衡|对比|另一个|替代方案|哪个更好", tail, re.I))
-                if not has_comparison:
-                    warnings.append("[R11] %s" % hint)
         # R14: 操作结果忽略——只在模型没有继续调用工具时才检测。
         # 如果 assistant_message 本身带了 tool_calls，说明模型已经在处理，
         # 不需要 R14 告警（否则每个含 exit_code 的 terminal 输出都会误报）。
@@ -784,17 +772,8 @@ class SelfCheckManager:
     ]
 
     _CANARY_RESPONSE_CASES: list[dict] = [
-        {"rule": "R06", "type": "positive", "text": "不是我改的bug。"},
-        {"rule": "R06", "type": "negative", "text": "根因在匹配逻辑。"},
-        {"rule": "R07", "type": "positive", "text": "应该没问题。"},
-        {"rule": "R07", "type": "negative", "text": "已修复。[实测]"},
-        {"rule": "R08", "type": "positive", "text": "需要你做的：改配置。"},
-        {"rule": "R08", "type": "negative", "text": "我来修复。"},
-        # R09 removed — evidence-tagging enforcement removed
-        # {"rule": "R09", "type": "positive", "text": "根因是连接池太小。"},
-        # {"rule": "R09", "type": "negative", "text": "根因是连接池 [实测]：500并发通过。"},
-        {"rule": "R11", "type": "positive", "text": "方案很简单，加个白名单就行。"},
-        {"rule": "R11", "type": "negative", "text": "方案A加白名单；方案B加分类器。选A因为更简洁。"},
+        # R06/R07/R08/R11 removed — regex response rules retired.
+        # R14 canary is handled separately below.
     ]
 
     def audit(self) -> dict:
