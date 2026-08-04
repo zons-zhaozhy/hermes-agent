@@ -1028,14 +1028,12 @@ CRONJOB_SCHEMA = {
     "name": "cronjob",
     "description": """Manage scheduled cron jobs with a single compressed tool.
 
-Use action='create' to schedule a new job from a prompt or one or more skills.
-Use action='list' to inspect jobs.
-Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing job.
-
-To stop a job the user no longer wants: first action='list' to find the job_id, then action='remove' with that job_id. Never guess job IDs — always list first.
+action='create' schedules a new job from a prompt and/or skills.
+action='list' inspects jobs. action='update', 'pause', 'resume', 'remove', or 'run' manage existing jobs.
+To stop a job: action='list' to find the job_id, then action='remove' with it. Never guess job IDs — always list first.
 
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained.
-If skills are provided on create, the future cron run loads those skills in order, then follows the prompt as the task instruction.
+If skills are provided on create, the cron run loads them in order, then follows the prompt as the task instruction.
 On update, passing skills=[] clears attached skills.
 
 NOTE: The agent's final response is auto-delivered to the target. Put the primary
@@ -1072,7 +1070,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "deliver": {
                 "type": "string",
-                "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), 'all' (fan out to every connected home channel), or platform:chat_id:thread_id for a specific destination. Combine with comma: 'origin,all' delivers to the origin plus every other connected channel. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567', 'all'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting. 'all' resolves at fire time, so a job created before a channel was wired up will pick it up automatically once connected."
+                "description": "Omit to auto-deliver back to the current chat/topic (recommended — preserves thread context). Set explicitly only when delivering ELSEWHERE. Values: 'origin' (same as omitting), 'local' (save only, no delivery), 'all' (fan out to every connected home channel), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567'). Combine with comma: 'origin,all' = origin plus all channels. WARNING: platform:chat_id without :thread_id loses topic targeting; 'all' resolves at fire time (channels wired up later are picked up automatically)."
             },
             "skills": {
                 "type": "array",
@@ -1087,45 +1085,44 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "boolean",
                 "default": False,
                 "description": (
-                    "Default: False (LLM-driven job — the agent runs the prompt each tick). "
-                    "Set True to skip the LLM entirely: the scheduler just runs ``script`` on schedule and delivers its stdout verbatim. No tokens, no agent loop, no model override honoured. "
-                    "\n\n"
-                    "REQUIREMENTS when True: ``script`` MUST be set (``prompt`` and ``skills`` are ignored). "
-                    "\n\n"
-                    "DELIVERY SEMANTICS when True: "
-                    "(a) non-empty stdout is sent verbatim as the message; "
-                    "(b) EMPTY stdout means SILENT — nothing is sent to the user and they won't see anything happened, so design your script to stay quiet when there's nothing to report (the watchdog pattern); "
-                    "(c) non-zero exit / timeout sends an error alert so a broken watchdog can't fail silently. "
-                    "\n\n"
-                    "WHEN TO USE True: recurring script-only pings where the script itself produces the exact message text (memory/disk/GPU watchdogs, threshold alerts, heartbeats, CI notifications, API pollers with a fixed output shape). "
-                    "WHEN TO USE False (default): anything that needs reasoning — summarize a feed, draft a daily briefing, pick interesting items, rephrase data for a human, follow conditional logic based on content."
+                    "Default False (LLM-driven: agent runs the prompt each tick). "
+                    "Set True to skip the LLM entirely — the scheduler just runs ``script`` "
+                    "on schedule and delivers stdout verbatim (no tokens, no agent loop). "
+                    "REQUIREMENTS: ``script`` MUST be set; ``prompt``/``skills`` ignored. "
+                    "DELIVERY: (a) non-empty stdout sent verbatim; (b) EMPTY stdout = SILENT "
+                    "(nothing sent — design watchdog scripts to stay quiet when there's "
+                    "nothing to report); (c) non-zero exit/timeout sends an error alert "
+                    "so a broken watchdog can't fail silently. "
+                    "USE True for recurring script-only pings with fixed output shape "
+                    "(memory/disk/GPU watchdogs, threshold alerts, heartbeats, CI "
+                    "notifications, API pollers). Use False for anything needing reasoning "
+                    "(summaries, briefings, conditional logic)."
                 ),
             },
             "context_from": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Optional job ID or list of job IDs whose most recent completed output is "
-                    "injected into the prompt as context before each run. "
-                    "Use this to chain cron jobs: job A collects data, job B processes it. "
-                    "Each entry must be a valid job ID (from cronjob action='list'). "
-                    "Note: injects the most recent completed output — does not wait for "
-                    "upstream jobs running in the same tick. "
-                    "On update, pass an empty array to clear."
+                    "Optional job ID or IDs whose most recent completed output is "
+                    "injected into the prompt before each run — chain jobs (A "
+                    "collects, B processes). IDs come from cronjob action='list'. "
+                    "Note: uses most recent completed output, does not wait for "
+                    "upstream jobs in the same tick. On update, pass empty array "
+                    "to clear."
                 ),
             },
             "enabled_toolsets": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional list of toolset names to restrict the job's agent to (e.g. [\"web\", \"terminal\", \"file\", \"delegation\"]). When set, only tools from these toolsets are loaded, significantly reducing input token overhead. When omitted, all default tools are loaded. Infer from the job's prompt — e.g. use \"web\" if it calls web_search, \"terminal\" if it runs scripts, \"file\" if it reads files, \"delegation\" if it calls delegate_task. On update, pass an empty array to clear."
+                "description": "Optional toolset names to restrict the job's agent to (e.g. [\"web\", \"terminal\", \"file\", \"delegation\"]). When set, only these toolsets load, cutting input token overhead. Omit for all default tools. Infer from the prompt — \"web\" for web_search, \"terminal\" for scripts, \"file\" for files, \"delegation\" for delegate_task. On update, pass empty array to clear."
             },
             "workdir": {
                 "type": "string",
-                "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
+                "description": "Optional absolute path to run the job from. When set, AGENTS.md/CLAUDE.md/.cursorrules from that directory are injected and terminal/file tools use it as cwd — useful for running a job inside a specific project. Must be an existing absolute path. When unset, no project context files and tools use the scheduler's cwd. On update, pass empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
             },
             "attach_to_session": {
                 "type": "boolean",
-                "description": "When True, this job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context instead of asking 'what is that?'. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread is opened for the job and its replies; on DM-only platforms (WhatsApp/Signal) the brief is mirrored into the origin DM session. Use this for conversational recurring jobs the user will reply to — daily briefings, reminders that kick off follow-up work. Leave unset for fire-and-forget alerts/watchdogs. Overrides the global cron.mirror_delivery config for this one job. Only the origin chat is touched (never fan-out targets); no effect when deliver='local'."
+                "description": "True = job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread is opened; on DM-only platforms (WhatsApp/Signal) the brief is mirrored into the origin DM. Use for conversational recurring jobs (daily briefings, reminders with follow-up work). Leave unset for fire-and-forget alerts/watchdogs. Overrides cron.mirror_delivery for this job. Only the origin chat is touched; no effect when deliver='local'."
             },
         },
         "required": ["action"]

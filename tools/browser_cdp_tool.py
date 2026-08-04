@@ -609,16 +609,14 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
             "frame_id": {
                 "type": "string",
                 "description": (
-                    "Optional. Out-of-process iframe (OOPIF) frame_id from "
+                    "Optional. OOPIF frame_id from "
                     "browser_snapshot.frame_tree.children[] where "
-                    "is_oopif=true. When set, routes the call through the "
-                    "CDP supervisor's live session for that iframe. "
-                    "Essential for Runtime.evaluate inside cross-origin "
-                    "iframes, especially on Browserbase where fresh "
-                    "per-call CDP connections can't keep up with signed "
-                    "URL rotation. For same-origin iframes, use parent "
-                    "contentWindow/contentDocument from Runtime.evaluate "
-                    "at the top-level page instead."
+                    "is_oopif=true. Routes the call through the CDP "
+                    "supervisor's live session for that iframe — essential "
+                    "for Runtime.evaluate inside cross-origin iframes "
+                    "(Browserbase signed-URL rotation). For same-origin "
+                    "iframes, use parent contentWindow/contentDocument at "
+                    "the top-level page instead."
                 ),
             },
             "timeout": {
