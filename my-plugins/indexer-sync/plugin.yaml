@@ -1,0 +1,6 @@
+name: indexer-sync
+version: "1.0.0"
+kind: standalone
+description: "Incremental index sync for codegraph/gitnexus after file edits"
+hooks:
+  - post_tool_call

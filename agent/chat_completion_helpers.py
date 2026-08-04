@@ -2324,7 +2324,18 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
         if final_response:
             if "<think>" in final_response:
-                final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+                                # str.find (O(n)) replaces DOTALL re.sub
+                                _t = final_response.lower(); _o = '\U0001f9d0'; _c = '\U0001f4a4'
+                                while True:
+                                    _p = _t.find(_o)
+                                    if _p == -1:
+                                        break
+                                    _q = _t.find(_c, _p + len(_o))
+                                    if _q == -1:
+                                        break
+                                    final_response = final_response[:_p] + final_response[_q + len(_c):]
+                                    _t = final_response.lower()
+                                final_response = final_response.strip()
             if final_response:
                 summary_call_outcome = "success"
                 messages.append({"role": "assistant", "content": final_response})
@@ -2386,7 +2397,18 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
             if final_response:
                 if "<think>" in final_response:
-                    final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+                                    # str.find (O(n)) replaces DOTALL re.sub
+                                    _t = final_response.lower(); _o = '\U0001f9d0'; _c = '\U0001f4a4'
+                                    while True:
+                                        _p = _t.find(_o)
+                                        if _p == -1:
+                                            break
+                                        _q = _t.find(_c, _p + len(_o))
+                                        if _q == -1:
+                                            break
+                                        final_response = final_response[:_p] + final_response[_q + len(_c):]
+                                        _t = final_response.lower()
+                                    final_response = final_response.strip()
                 if final_response:
                     summary_call_outcome = "success"
                     messages.append({"role": "assistant", "content": final_response})

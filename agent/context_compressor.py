@@ -1940,7 +1940,7 @@ class ContextCompressor(ContextEngine):
         ``run_compress_context_with_progress_timeout``. Avoids re-implementing
         the ladder at each call site (#62452).
         """
-        _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
+        _TIMEOUT_COOLDOWN_LADDER = (60, 120, 180)
         self._consecutive_timeout_failures = (
             getattr(self, "_consecutive_timeout_failures", 0) + 1
         )
@@ -4022,7 +4022,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                 self._consecutive_timeout_failures = (
                     getattr(self, "_consecutive_timeout_failures", 0) + 1
                 )
-                _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
+                _TIMEOUT_COOLDOWN_LADDER = (60, 120, 180)
                 _transient_cooldown = _TIMEOUT_COOLDOWN_LADDER[
                     min(self._consecutive_timeout_failures,
                         len(_TIMEOUT_COOLDOWN_LADDER)) - 1

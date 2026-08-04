@@ -1692,6 +1692,11 @@ def _play_audio_file_impl(file_path: str) -> bool:
         exe = shutil.which(cmd[0])
         if exe:
             try:
+                from tools.interrupt import is_interrupted
+            except ImportError:
+                def is_interrupted():
+                    return False
+            try:
                 # Sibling of TTS/STT credential scrub (#70342 / #56332): system
                 # audio players must not inherit gateway tokens / API keys.
                 from tools.environments.local import hermes_subprocess_env
@@ -1705,16 +1710,38 @@ def _play_audio_file_impl(file_path: str) -> bool:
                 )
                 with _playback_lock:
                     _active_playback = proc
-                proc.wait(timeout=300)
-                rc = proc.returncode
-                with _playback_lock:
-                    _active_playback = None
-                if rc == 0:
-                    return True
-                # Non-zero exit: player failed (e.g. WSL ffplay/aplay with no
-                # audio device, or the PowerShell fallback's ffmpeg/playback
-                # step failing). Fall through to the next player in the list.
-                logger.debug("System player %s exited with code %d, trying next", cmd[0], rc)
+                deadline = time.monotonic() + 300
+                interrupted = False
+                while proc.poll() is None:
+                    if is_interrupted():
+                        interrupted = True
+                        break
+                    if time.monotonic() > deadline:
+                        break
+                    time.sleep(0.1)
+                if interrupted:
+                    proc.kill()
+                    proc.wait()
+                    with _playback_lock:
+                        _active_playback = None
+                    logger.info("System player %s interrupted by user", cmd[0])
+                    return False
+                if proc.returncode is None:
+                    proc.kill()
+                    proc.wait()
+                    with _playback_lock:
+                        _active_playback = None
+                    logger.warning("System player %s timed out, killing process", cmd[0])
+                else:
+                    rc = proc.returncode
+                    with _playback_lock:
+                        _active_playback = None
+                    if rc == 0:
+                        return True
+                    # Non-zero exit: player failed (e.g. WSL ffplay/aplay with no
+                    # audio device, or the PowerShell fallback's ffmpeg/playback
+                    # step failing). Fall through to the next player in the list.
+                    logger.debug("System player %s exited with code %d, trying next", cmd[0], rc)
             except subprocess.TimeoutExpired:
                 logger.warning("System player %s timed out, killing process", cmd[0])
                 proc.kill()

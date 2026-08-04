@@ -7,7 +7,7 @@ can invoke skills via /skill-name commands.
 import json
 import logging
 import os
-import re
+import re  # noqa: skill content parsing — regex is essential
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -268,6 +268,58 @@ def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None
         pass  # Non-critical — skill still loads without config injection
 
 
+def _extract_critical_prefix(content: str) -> str:
+    """Extract the critical prefix of a skill for lightweight injection.
+
+    Strategy (first match wins):
+    1. ``<!-- CRITICAL_END -->`` HTML comment marker
+    2. First ``## `` heading after frontmatter (top-level section)
+
+    Everything before the marker is kept; everything after is replaced
+    with a one-line pointer telling the agent to load the full skill when
+    the relevant stage is reached.
+    """
+    # Strip YAML frontmatter
+    body = content
+    if body.startswith("---"):
+        end = body.find("---", 3)
+        if end != -1:
+            body = body[end + 3:].lstrip("\n")
+
+    # Strategy 1: explicit CRITICAL_END marker
+    marker = "<!-- CRITICAL_END -->"
+    marker_pos = body.find(marker)
+    if marker_pos != -1:
+        critical = body[:marker_pos].rstrip()
+        full_name_hint = ""
+        # Try to extract skill name from first heading
+        for line in critical.split("\n"):
+            if line.startswith("# ") and not line.startswith("## "):
+                full_name_hint = line.lstrip("# ").strip()
+                break
+        return (
+            critical
+            + "\n\n[... skill continues — load full content with "
+            + f"skill_view() when needed"
+            + (f' for "{full_name_hint}"' if full_name_hint else "")
+            + " ...]"
+        )
+
+    # Strategy 2: first ## heading
+    first_section = body.find("\n## ")
+    if first_section != -1:
+        critical = body[:first_section].rstrip()
+        section_name = body[first_section:].lstrip().split("\n")[0].lstrip("# ").strip(" ")
+        return (
+            critical
+            + "\n\n[... skill continues — load full content with "
+            + f"skill_view() when entering \"{section_name}\" stage ...]"
+        )
+
+    # No section found — return body (small skill, no truncation needed)
+    return body
+
+
 def _build_skill_message(
     loaded_skill: dict[str, Any],
     skill_dir: Path | None,
@@ -275,11 +327,27 @@ def _build_skill_message(
     user_instruction: str = "",
     runtime_note: str = "",
     session_id: str | None = None,
+    critical_only: bool = False,
 ) -> str:
-    """Format a loaded skill into a user/system message payload."""
+    """Format a loaded skill into a user/system message payload.
+
+    Args:
+        critical_only: If True, only inject the critical prefix of the skill
+            (everything before the ``<!-- CRITICAL_END -->`` marker or the
+            first ``## `` heading, whichever comes first).  Used for
+            auto-loaded skills where token budget matters.
+    """
     from tools.skills_tool import SKILLS_DIR
 
     content = str(loaded_skill.get("content") or "")
+
+    # ── Critical-only extraction ──
+    # When critical_only=True, strip the skill down to the top portion
+    # before the CRITICAL_END marker (or the first ## heading as fallback).
+    # This keeps token cost low for auto-loaded skills while preserving
+    # the essential rules/triggers.
+    if critical_only:
+        content = _extract_critical_prefix(content)
 
     # ── Template substitution and inline-shell expansion ──
     # Done before anything else so downstream blocks (setup notes,
@@ -598,6 +666,15 @@ def build_skill_invocation_message(
         bump_use(skill_name)
     except Exception:
         pass  # Non-critical — skill invocation proceeds regardless
+
+    # On-demand AVOID loading: activate this skill's AVOID rules in SelfCheck
+    try:
+        from agent.self_check import get_self_check
+        sc = get_self_check()
+        if sc is not None and skill_dir:
+            sc.load_skill_on_demand(str(skill_dir), skill_name)
+    except Exception as e:
+        logger.warning("SelfCheck on-demand AVOID load failed for '%s': %s", skill_name, e)
 
     activation_note = (
         f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want '

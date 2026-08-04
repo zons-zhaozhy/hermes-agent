@@ -49,6 +49,7 @@ from tools.tool_result_storage import (
     enforce_turn_budget,
 )
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from agent.self_check import get_self_check
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,6 @@ def _budget_for_agent(agent) -> BudgetConfig:
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
 _MAX_TOOL_WORKERS = 8
-_DEFAULT_IMAGE_PARALLEL_REQUESTS = 4
 # Keep this above the stock auxiliary.web_extract timeout (360s) so the batch
 # guard does not preempt a slow-but-valid summarization attempt.
 _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
@@ -158,46 +158,6 @@ def _flush_session_db_after_tool_progress(
         agent._incremental_persistence_failed = True
         logger.warning("Incremental tool-call persistence failed after %s: %s", stage, exc)
         return False
-
-
-def _image_generate_parallel_limit() -> int:
-    """Return the configured image-generation parallelism cap.
-
-    Image-generation calls are slow enough that concurrent execution is useful,
-    but backend bursts can hit TTFB or rate-limit failures. Keep the default
-    intentionally conservative while allowing users to tune it per install.
-    """
-    try:
-        from hermes_cli.config import load_config
-
-        cfg = load_config() or {}
-        image_gen = cfg.get("image_gen") if isinstance(cfg, dict) else None
-        value = (
-            image_gen.get("max_parallel_requests")
-            if isinstance(image_gen, dict)
-            else None
-        )
-    except Exception:
-        value = None
-
-    try:
-        limit = int(value)
-    except (TypeError, ValueError):
-        limit = _DEFAULT_IMAGE_PARALLEL_REQUESTS
-    return max(1, min(limit, _MAX_TOOL_WORKERS))
-
-
-def _max_workers_for_tool_batch(runnable_calls) -> int:
-    """Return the worker cap for a concurrent tool batch."""
-    if not runnable_calls:
-        return 0
-    max_workers = _MAX_TOOL_WORKERS
-    if any(
-        (call[2] if len(call) >= 3 else None) == "image_generate"
-        for call in runnable_calls
-    ):
-        max_workers = min(max_workers, _image_generate_parallel_limit())
-    return min(len(runnable_calls), max_workers)
 
 
 def _ra():
@@ -701,9 +661,21 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             )
         return
 
+    # ── SelfCheck R14: response-level check ──────────────────────────
+    _response_self_check: str | None = None
+    try:
+        sc_mgr = get_self_check()
+        if sc_mgr is not None:
+            _response_self_check = sc_mgr.check_response(
+                getattr(assistant_message, "content", None),
+                has_tool_calls=bool(getattr(assistant_message, "tool_calls", None)),
+            )
+    except Exception:
+        logger.warning("SelfCheck check_response failed (concurrent path)", exc_info=True)
+
     # ── Parse args + pre-execution bookkeeping ───────────────────────
     # (tool call, resolved name, parsed args, middleware trace, parse error,
-    # tool-search scope block)
+    # tool-search scope block, self_check_warning)
     parsed_calls = []
     for tool_call in tool_calls:
         function_name = tool_call.function.name
@@ -721,6 +693,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     [],
                     malformed_args_result,
                     None,
+                    None,  # self_check_warning — skipped for malformed args
                 )
             )
             continue
@@ -765,19 +738,28 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
+        # ── SelfCheck R06: pre-execution check ───────────────────────
+        self_check_warning = None
+        try:
+            sc_mgr = get_self_check()
+            if sc_mgr is not None:
+                self_check_warning = sc_mgr.check(function_name, function_args)
+        except Exception:
+            logger.warning("self_check.check raised for %s", function_name, exc_info=True)
+
         parsed_calls.append(
-            (tool_call, function_name, function_args, [], None, _ts_scope_block)
+            (tool_call, function_name, function_args, [], None, _ts_scope_block, self_check_warning)
         )
 
     # ── Logging / callbacks ──────────────────────────────────────────
-    tool_names_str = ", ".join(name for _, name, _, _, _, _ in parsed_calls)
+    tool_names_str = ", ".join(name for _, name, _, _, _, _, _ in parsed_calls)
     if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
         print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
 
     # ── Concurrent execution ─────────────────────────────────────────
     # Each slot holds (function_name, function_args, function_result, duration, error_flag, blocked_flag, middleware_trace)
     results = [None] * num_tools
-    for i, (tc, name, args, middleware_trace, block_result, _scope_block) in enumerate(parsed_calls):
+    for i, (tc, name, args, middleware_trace, block_result, _scope_block, _scw) in enumerate(parsed_calls):
         if block_result is not None:
             results[i] = (name, args, block_result, 0.0, True, True, middleware_trace)
 
@@ -809,6 +791,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         middleware_trace,
         scope_block,
         start_order,
+        self_check_warning=None,
     ):
         """Worker function executed in a thread."""
         # Register this worker tid so the agent can fan out an interrupt
@@ -918,6 +901,21 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
             else:
                 logger.info("tool %s completed (%.2fs, %d chars)", function_name, duration, len(result))
+
+            # ── SelfCheck: prepend response check to first tool result ──
+            if index == 0 and _response_self_check and result is not None:
+                result = _response_self_check + "\n\n" + result
+            # ── SelfCheck: prepend per-tool warning to result ──
+            if self_check_warning and result is not None:
+                result = self_check_warning + "\n\n" + result
+            # ── SelfCheck R14: record tool output for error-ignored detection ──
+            try:
+                sc_mgr = get_self_check()
+                if sc_mgr is not None and result:
+                    sc_mgr.record_tool_result(function_name, result)
+            except Exception:
+                logger.warning("SelfCheck record_tool_result skipped (concurrent)", exc_info=True)
+
             results[index] = (
                 function_name,
                 function_args,
@@ -951,8 +949,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
     try:
         runnable_calls = [
-            (i, tc, name, args, scope_block)
-            for i, (tc, name, args, _trace, parse_error, scope_block) in enumerate(
+            (i, tc, name, args, scope_block, self_check_warning)
+            for i, (tc, name, args, _trace, parse_error, scope_block, self_check_warning) in enumerate(
                 parsed_calls
             )
             if parse_error is None
@@ -963,7 +961,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         timeout_s = _resolve_concurrent_tool_timeout()
         deadline = time.monotonic() + timeout_s if timeout_s is not None else None
         if runnable_calls:
-            max_workers = _max_workers_for_tool_batch(runnable_calls)
+            max_workers = min(len(runnable_calls), _MAX_TOOL_WORKERS)
             # Daemon workers: an interrupted/timed-out batch is abandoned with
             # shutdown(wait=False), but stdlib ThreadPoolExecutor workers are
             # non-daemon and registered in concurrent.futures' atexit hook,
@@ -973,7 +971,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             executor = DaemonThreadPoolExecutor(max_workers=max_workers)
             abandon_executor = False
             try:
-                for submit_index, (i, tc, name, args, scope_block) in enumerate(
+                for submit_index, (i, tc, name, args, scope_block, self_check_warning) in enumerate(
                     runnable_calls
                 ):
                     # Propagate the agent turn's ContextVars (e.g.
@@ -989,6 +987,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                             parsed_calls[i][3],
                             scope_block,
                             submit_index,
+                            self_check_warning,
                         )
                     except RuntimeError as submit_error:
                         if not _is_interpreter_shutdown_submit_error(submit_error):
@@ -1005,6 +1004,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                             skipped_name,
                             skipped_args,
                             _scope_block,
+                            _scw,
                         ) in skipped_calls:
                             if results[skipped_i] is None:
                                 middleware_trace = parsed_calls[skipped_i][3]
@@ -1139,7 +1139,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             spinner.stop(f"⚡ {completed}/{num_tools} tools completed in {total_dur:.1f}s total")
 
     # ── Post-execution: display per-tool results ─────────────────────
-    for i, (tc, name, args, middleware_trace, _parse_error, _scope_block) in enumerate(
+    for i, (tc, name, args, middleware_trace, _parse_error, _scope_block, _scw) in enumerate(
         parsed_calls
     ):
         r = results[i]
@@ -1232,8 +1232,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     logging.debug("file-mutation verifier record failed: %s", _ver_err)
 
             if agent.verbose_logging:
-                logging.debug("Tool %s completed in %.2fs", function_name, tool_duration)
-                logging.debug("Tool result (%d chars): %s", len(function_result), function_result)
+                logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
+                logging.debug(f"Tool result ({len(function_result)} chars): {function_result}")
 
         agent._current_tool = None
         _status_suffix = " (error)" if is_error else ""
@@ -1292,7 +1292,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     result=display_function_result,
                 )
             except Exception as cb_err:
-                logging.debug("Tool progress callback error: %s", cb_err)
+                logging.debug(f"Tool progress callback error: {cb_err}")
 
         # Print cute message per tool
         if agent._should_emit_quiet_tool_messages():
@@ -1316,7 +1316,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     tc.id, name, display_args, display_function_result,
                 )
             except Exception as cb_err:
-                logging.debug("Tool complete callback error: %s", cb_err)
+                logging.debug(f"Tool complete callback error: {cb_err}")
 
         if (
             risk_metadata is not None
@@ -1353,26 +1353,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
 
 
-def _append_cancelled_tool_results(messages: list, tool_calls, *, reason: str) -> None:
-    """Append a cancelled ``tool`` result for each call in ``tool_calls``.
-
-    Used when a hard interrupt (KeyboardInterrupt / BaseException) aborts the
-    sequential executor mid-batch. Without this, the loop re-raises leaving the
-    assistant tool-call turn with no matching tool results — a message-role
-    alternation violation that malforms the next provider request. Mirrors the
-    cooperative-interrupt skip block and the concurrent path, both of which
-    already emit a result for every call_id.
-    """
-    for tc in tool_calls:
-        name = getattr(getattr(tc, "function", None), "name", "") or "tool"
-        messages.append(make_tool_result_message(
-            name,
-            f"[Tool execution cancelled — {name} was skipped due to {reason}]",
-            getattr(tc, "id", "") or "",
-            effect_disposition="none",
-        ))
-
-
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools.
 
@@ -1382,6 +1362,19 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     """
     # Resolve the context-scaled tool-output budget once per turn.
     _tool_budget = _budget_for_agent(agent)
+
+    # ── SelfCheck R14: response-level check ──────────────────────────
+    _response_self_check: str | None = None
+    try:
+        sc_mgr = get_self_check()
+        if sc_mgr is not None:
+            _response_self_check = sc_mgr.check_response(
+                getattr(assistant_message, "content", None),
+                has_tool_calls=bool(getattr(assistant_message, "tool_calls", None)),
+            )
+    except Exception:
+        logger.warning("SelfCheck check_response failed (sequential path)", exc_info=True)
+
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
         if getattr(agent, "_incremental_persistence_failed", False):
             return
@@ -1784,14 +1777,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     agent.interrupt("keyboard interrupt")
                 except Exception:
                     pass
-                # Emit a tool result for THIS call and every remaining call in
-                # the batch before re-raising, so the assistant tool-call turn
-                # is never left without matching tool results (alternation).
-                _append_cancelled_tool_results(
-                    messages,
-                    assistant_message.tool_calls[i - 1:],
-                    reason="keyboard interrupt",
-                )
                 raise
             except Exception as tool_error:
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -1860,13 +1845,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     agent.interrupt("keyboard interrupt")
                 except Exception:
                     pass
-                # Emit a tool result for THIS call and every remaining call in
-                # the batch before re-raising (see interactive branch above).
-                _append_cancelled_tool_results(
-                    messages,
-                    assistant_message.tool_calls[i - 1:],
-                    reason="keyboard interrupt",
-                )
                 raise
             except Exception as tool_error:
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -1940,9 +1918,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")
 
         if agent.verbose_logging:
-            logging.debug("Tool %s completed in %.2fs", function_name, tool_duration)
+            logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
             _log_result = _multimodal_text_summary(function_result)
-            logging.debug("Tool result (%d chars): %s", len(_log_result), _log_result)
+            logging.debug(f"Tool result ({len(_log_result)} chars): {_log_result}")
 
         display_function_result = function_result
         function_result = maybe_persist_tool_result(
@@ -1960,6 +1938,29 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 _append_subdir_hint_to_multimodal(function_result, subdir_hints)
             else:
                 function_result += subdir_hints
+
+        # ── SelfCheck R06: pre-execution check ───────────────────────
+        _self_check_warning = None
+        try:
+            sc_mgr = get_self_check()
+            if sc_mgr is not None:
+                _self_check_warning = sc_mgr.check(function_name, function_args)
+        except Exception:
+            logger.warning("self_check.check raised for %s", function_name, exc_info=True)
+
+        # ── SelfCheck: prepend response check to first tool result ──
+        if i == 1 and _response_self_check and function_result is not None:
+            function_result = _response_self_check + "\n\n" + function_result
+        # ── SelfCheck: prepend per-tool warning to result ──
+        if _self_check_warning and function_result is not None:
+            function_result = _self_check_warning + "\n\n" + function_result
+        # ── SelfCheck R14: record tool output for error-ignored detection ──
+        try:
+            sc_mgr = get_self_check()
+            if sc_mgr is not None and function_result:
+                sc_mgr.record_tool_result(function_name, function_result)
+        except Exception:
+            logger.warning("SelfCheck record_tool_result skipped (sequential)", exc_info=True)
 
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.
@@ -1984,7 +1985,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     result=display_function_result,
                 )
             except Exception as cb_err:
-                logging.debug("Tool progress callback error: %s", cb_err)
+                logging.debug(f"Tool progress callback error: {cb_err}")
 
         if not _execution_blocked and agent.tool_complete_callback:
             try:
@@ -1999,7 +2000,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     display_function_result,
                 )
             except Exception as cb_err:
-                logging.debug("Tool complete callback error: %s", cb_err)
+                logging.debug(f"Tool complete callback error: {cb_err}")
 
         if (
             risk_metadata is not None

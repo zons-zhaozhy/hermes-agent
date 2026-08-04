@@ -27,6 +27,7 @@ import platform as _platform_mod
 import re
 import subprocess
 import sys
+import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -300,7 +301,30 @@ def _drive_health_report(
             {"name": "health_report", "arguments": args},
         )
     finally:
-        _close_mcp(proc, timeout)
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            from tools.interrupt import is_interrupted
+        except ImportError:
+            def is_interrupted():
+                return False
+        deadline = time.monotonic() + timeout
+        interrupted = False
+        while proc.poll() is None:
+            if is_interrupted():
+                interrupted = True
+                break
+            if time.monotonic() > deadline:
+                break
+            time.sleep(0.1)
+        if interrupted:
+            proc.kill()
+            proc.wait()
+        elif proc.returncode is None:
+            proc.kill()
+            proc.wait()
 
     result = call_resp.get("result") or {}
     if not isinstance(result, dict):

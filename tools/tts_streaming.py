@@ -83,7 +83,27 @@ def take_speech_interrupted() -> bool:
 
 # Sentence boundary: after .!? followed by whitespace, or a blank line.
 SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s|\n)|(?:\n\n)")
-_THINK_BLOCK_RE = re.compile(r"<think[\s>].*?</think>", flags=re.DOTALL)
+def _strip_think_blocks(text: str) -> str:
+    """Remove <think ...>...</think> blocks. O(n), no regex backtracking."""
+    if not text:
+        return text
+    _open = '<think'
+    _close = '</think>'
+    _close_len = len(_close)
+    _t = text.lower()
+    while True:
+        _p = _t.find(_open)
+        if _p == -1:
+            break
+        _gt = text.find('>', _p)
+        if _gt == -1:
+            break
+        _q = _t.find(_close, _gt + 1)
+        if _q == -1:
+            break
+        text = text[:_p] + text[_q + _close_len:]
+        _t = text.lower()
+    return text
 
 
 class SentenceChunker:
@@ -102,7 +122,7 @@ class SentenceChunker:
 
     def feed(self, delta: str) -> List[str]:
         """Absorb *delta*; return every complete sentence now ready to speak."""
-        self.buf = _THINK_BLOCK_RE.sub("", self.buf + delta)
+        self.buf = _strip_think_blocks( self.buf + delta)
         if "<think" in self.buf and "</think>" not in self.buf:
             return []  # open think tag — the closing tag may arrive next delta
         out: List[str] = []
@@ -119,7 +139,7 @@ class SentenceChunker:
 
     def flush(self) -> List[str]:
         """Drain the tail (end-of-text or long-idle flush)."""
-        tail = _THINK_BLOCK_RE.sub("", self.buf).strip()
+        tail = _strip_think_blocks( self.buf).strip()
         self.buf = ""
         return [tail] if tail else []
 

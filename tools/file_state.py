@@ -224,6 +224,10 @@ class FileStateRegistry:
         """Return ``{writer_task_id: [paths]}`` for writes done after
         ``since_ts`` by agents OTHER than ``exclude_task_id``.
 
+        When ``paths`` is empty, returns ALL writes since ``since_ts``
+        (wildcard — used by delegate_task to populate ``files_written``
+        for the review loop).
+
         Used by delegate_task to append a "subagent modified files the
         parent previously read" reminder to the delegation result.
         """
@@ -237,8 +241,9 @@ class FileStateRegistry:
                     continue
                 if ts < since_ts:
                     continue
-                if p in paths_set:
-                    out[writer_tid].append(p)
+                if paths_set and p not in paths_set:
+                    continue
+                out[writer_tid].append(p)
         return dict(out)
 
     def known_reads(self, task_id: str) -> List[str]:

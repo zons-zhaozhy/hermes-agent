@@ -7477,7 +7477,7 @@ _DEFAULT_AUX_TIMEOUT = 30.0
 # per-call ``timeout=``.  A floor is harmless for fast compression models
 # (they finish before the deadline) and is a minimum, so a higher config value
 # is kept unchanged.
-_COMPRESSION_TIMEOUT_FLOOR_SECONDS = 300.0
+_COMPRESSION_TIMEOUT_FLOOR_SECONDS = 120.0
 
 
 def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:

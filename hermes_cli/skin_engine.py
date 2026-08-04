@@ -300,6 +300,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#F1E6CF",
             "input_rule": "#A93333",
             "response_border": "#C7A96B",
+            "tool_activity": "#927666",       # Tool output — muted bronze-brown
             "status_bar_bg": "#2A1212",
             "status_bar_text": "#F1E6CF",
             "status_bar_strong": "#C7A96B",
@@ -377,6 +378,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#c9d1d9",
             "input_rule": "#606060",
             "response_border": "#aaaaaa",
+            "tool_activity": "#6E7686",       # Tool output — cool gray-blue
             "status_bar_bg": "#1F1F1F",
             "status_bar_text": "#C9D1D9",
             "status_bar_strong": "#E6EDF3",
@@ -421,6 +423,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#c9d1d9",
             "input_rule": "#4169e1",
             "response_border": "#7eb8f6",
+            "tool_activity": "#617CA6",       # Tool output — dark slate blue
             "status_bar_bg": "#151C2F",
             "status_bar_text": "#C9D1D9",
             "status_bar_strong": "#7EB8F6",
@@ -465,6 +468,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#111827",
             "input_rule": "#6E94BE",
             "response_border": "#2563EB",
+            "tool_activity": "#6B7280",       # Tool output — medium gray for light bg
             "status_bar_bg": "#E5EDF8",
             "status_bar_text": "#111827",
             "status_bar_strong": "#2563EB",
@@ -511,6 +515,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#2C1810",
             "input_rule": "#8B6914",
             "response_border": "#8B6914",
+            "tool_activity": "#8B7355",       # Tool output — warm gray-brown
             "status_bar_bg": "#F5F0E8",
             "status_bar_text": "#2C1810",
             "status_bar_strong": "#8B4513",
@@ -557,6 +562,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#EAF7FF",
             "input_rule": "#2A6FB9",
             "response_border": "#5DB8F5",
+            "tool_activity": "#5186AA",       # Tool output — deep sea blue
             "status_bar_bg": "#0F2440",
             "status_bar_text": "#EAF7FF",
             "status_bar_strong": "#A9DFFF",
@@ -634,6 +640,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#F5F5F5",
             "input_rule": "#656565",
             "response_border": "#B7B7B7",
+            "tool_activity": "#757575",       # Tool output — dark neutral gray
             "status_bar_bg": "#202020",
             "status_bar_text": "#D3D3D3",
             "status_bar_strong": "#F5F5F5",
@@ -712,6 +719,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#FFF0D4",
             "input_rule": "#C75B1D",
             "response_border": "#F29C38",
+            "tool_activity": "#8B6914",       # Tool output — dark amber-orange
             "status_bar_bg": "#2B160E",
             "status_bar_text": "#FFF0D4",
             "status_bar_strong": "#FFD39A",

@@ -77,8 +77,11 @@ CONTINUATION_PROMPT_TEMPLATE = (
     "[Continuing toward your standing goal]\n"
     "Goal: {goal}\n\n"
     "Continue working toward this goal. Take the next concrete step. "
-    "If you believe the goal is complete, state so explicitly and stop. "
-    "If you are blocked and need input from the user, say so clearly and stop."
+    "Do NOT claim the goal is complete unless you can show concrete evidence: "
+    "a command output, test result, file contents, or a verifiable URL. "
+    "Self-reported assertions like 'done' or 'all tests pass' without proof "
+    "will be rejected. If you are blocked and need input from the user, "
+    "say so clearly and describe the specific blocker."
 )
 
 # Used when the goal carries a structured completion contract. The contract
@@ -119,11 +122,19 @@ JUDGE_SYSTEM_PROMPT = (
     "achieved a user's stated goal. You receive the goal text, the agent's "
     "most recent response, and — when present — a list of background "
     "processes the agent has running. Decide one of three verdicts.\n\n"
-    "DONE — the goal is fully satisfied:\n"
-    "- The response explicitly confirms the goal was completed, OR\n"
-    "- The response clearly shows the final deliverable was produced, OR\n"
-    "- The response explains the goal is unachievable / blocked / needs "
-    "user input (treat this as DONE with reason describing the block).\n\n"
+    "DONE — the goal is fully satisfied. ALL of these must be true:\n"
+    "- The response shows CONCRETE EVIDENCE the goal was completed: a "
+    "command output, test result, file contents excerpt, or a URL/deliverable "
+    "that can be independently checked.\n"
+    "- The evidence directly satisfies the goal's stated outcome, not just "
+    "a related subtask.\n"
+    "- There is no remaining work item, TODO, or known gap mentioned.\n\n"
+    "Claims WITHOUT evidence are NOT done. These must all return CONTINUE:\n"
+    "- 'The goal is complete' / 'all done' / 'finished' without showing proof\n"
+    "- 'Tests pass' without pasting or referencing actual test output\n"
+    "- 'The file is created' without showing its contents or a command proving it\n"
+    "- 'Deployed successfully' without a URL, log line, or status check\n"
+    "- Any generic success assertion that an independent observer cannot verify\n\n"
     "WAIT — the goal is NOT done, but the next step is to wait for async "
     "work to finish rather than act again. Choose this ONLY when the agent's "
     "progress is genuinely gated on something running on its own:\n"
@@ -144,8 +155,8 @@ JUDGE_SYSTEM_PROMPT = (
     "CONTINUE — not done, and there is a concrete next step the agent can "
     "take right now. This is the default when in doubt.\n\n"
     "Reply ONLY with a single JSON object on one line. Shapes:\n"
-    '{"verdict": "done", "reason": "<one sentence>"}\n'
-    '{"verdict": "continue", "reason": "<one sentence>"}\n'
+    '{"verdict": "done", "reason": "<one sentence citing the concrete evidence>"}\n'
+    '{"verdict": "continue", "reason": "<one sentence saying what evidence is missing>"}\n'
     '{"verdict": "wait", "wait_on_session": "<id>", "reason": "<one sentence>"}\n'
     '{"verdict": "wait", "wait_on_pid": <int>, "reason": "<one sentence>"}\n'
     '{"verdict": "wait", "wait_for_seconds": <int>, "reason": "<one sentence>"}\n'
@@ -167,7 +178,20 @@ JUDGE_USER_PROMPT_TEMPLATE = (
     "Goal:\n{goal}\n\n"
     "Agent's most recent response:\n{response}\n\n"
     "{background_block}"
+    "{tool_calls_block}"
     "Current time: {current_time}\n\n"
+    "Decision rules:\n"
+    "- DONE requires concrete evidence in the response above — a command "
+    "output line, test result summary, file contents excerpt, or URL. The "
+    "evidence must directly prove the goal's outcome is achieved.\n"
+    "- Self-reported claims like 'done', 'complete', 'all tests pass', "
+    "'successfully deployed' are NOT evidence by themselves. If the response "
+    "contains only assertions without verifiable proof, return CONTINUE.\n"
+    "- If the tool calls section shows zero verification commands (no "
+    "terminal/test/build calls) but the agent claims completion, this is "
+    "almost certainly premature — return CONTINUE.\n"
+    "- If the agent explains the goal is blocked / unachievable / needs user "
+    "input, treat it as DONE with the reason describing the block.\n\n"
     "Is the goal satisfied — done, continue, or wait?"
 )
 
@@ -179,6 +203,7 @@ JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "satisfied for the goal to be DONE):\n{subgoals_block}\n\n"
     "Agent's most recent response:\n{response}\n\n"
     "{background_block}"
+    "{tool_calls_block}"
     "Current time: {current_time}\n\n"
     "Decision: For each numbered criterion above, find concrete "
     "evidence in the agent's response that the criterion is "
@@ -201,6 +226,7 @@ JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE = (
     "{contract_block}\n\n"
     "Agent's most recent response:\n{response}\n\n"
     "{background_block}"
+    "{tool_calls_block}"
     "Current time: {current_time}\n\n"
     "Decision rules:\n"
     "- The goal is DONE only when the Verification criterion is satisfied AND "
@@ -208,6 +234,9 @@ JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE = (
     "contents excerpt, test/benchmark output) — not a claim like 'done' or "
     "'all tests pass' without evidence.\n"
     "- If any stated Constraint was violated, the goal is NOT done — CONTINUE.\n"
+    "- If the tool calls section shows zero verification commands but the "
+    "agent claims the verification criterion is met, treat the claim as "
+    "unverified — return CONTINUE.\n"
     "- If the response shows the agent is waiting on a listed background "
     "process to satisfy the Verification criterion (e.g. CI is the "
     "verification and it's still running), return WAIT on that process "
@@ -843,6 +872,52 @@ def _render_background_block(background_processes: Optional[List[Dict[str, Any]]
     return JUDGE_BACKGROUND_BLOCK_TEMPLATE.format(background_lines="\n".join(lines))
 
 
+def _render_tool_calls_block(tool_calls_summary: Optional[str]) -> str:
+    """Render the agent's tool-call activity this turn for the judge.
+
+    When the agent claims completion but made zero tool calls (no verification
+    commands run), the judge needs to see that gap. An empty summary means the
+    caller didn't provide tool-call info (older call sites) — return empty so
+    the prompt section is skipped, preserving backward compatibility.
+    """
+    if not tool_calls_summary or not tool_calls_summary.strip():
+        return ""
+    return f"Tool calls this turn: {tool_calls_summary.strip()}\n\n"
+
+
+def extract_tool_calls_summary(history: Optional[List[Dict[str, Any]]]) -> Optional[str]:
+    """Extract a brief summary of tool calls from the last assistant turn.
+
+    Looks at the most recent assistant message with tool_calls and produces
+    a human-readable summary like "3 calls: terminal, read_file, search_files".
+    Returns None when no tool calls were made or history is unavailable.
+    """
+    if not history:
+        return None
+    try:
+        for msg in reversed(history):
+            if msg.get("role") != "assistant":
+                continue
+            tcs = msg.get("tool_calls")
+            if not tcs:
+                # This is the last assistant message but it had no tool calls.
+                return "0 calls (text-only response)"
+            names: list[str] = []
+            for tc in tcs:
+                if isinstance(tc, dict):
+                    fn = tc.get("function", {})
+                    if isinstance(fn, dict):
+                        name = fn.get("name", "")
+                        if name:
+                            names.append(name)
+            if not names:
+                return "0 calls (text-only response)"
+            return f"{len(names)} call(s): {', '.join(names)}"
+    except Exception:
+        return None
+    return None
+
+
 def judge_goal(
     goal: str,
     last_response: str,
@@ -851,6 +926,7 @@ def judge_goal(
     subgoals: Optional[List[str]] = None,
     background_processes: Optional[List[Dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
+    tool_calls_summary: Optional[str] = None,
 ) -> Tuple[str, str, bool, Optional[Dict[str, Any]], bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
@@ -865,7 +941,7 @@ def judge_goal(
 
     ``transport_failed`` is True only when the judge couldn't reach the API at
     all (auth 401, timeout, DNS, connection error).  Repeated transport
-    failures signal a permanent config problem (e.g. invalid API key).  Callers
+    failures signal a permanent config problem (e.g. invalid API key). Callers
     use this flag to auto-pause after N consecutive transport failures (see
     ``DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES``). Callers use this flag to
     auto-pause after N consecutive parse failures (see
@@ -878,10 +954,13 @@ def judge_goal(
     verdict naming its pid, parking the loop instead of re-poking.
     ``contract`` is an optional structured completion contract; when present
     the judge decides DONE strictly against its Verification criterion and
-    refuses completion when a Constraint was violated. All three are additive
-    — a contract, subgoals, and a background-process list can coexist in one
-    judge prompt; when none are set, behavior is identical to the original
-    free-form judge.
+    refuses completion when a Constraint was violated.
+    ``tool_calls_summary`` is a brief description of the tool calls the agent
+    made this turn (e.g. "3 calls: terminal, read_file, terminal"); when
+    provided, the judge can detect claims without supporting tool execution.
+    All four are additive — a contract, subgoals, a background-process list,
+    and a tool-calls summary can coexist in one judge prompt; when none are
+    set, behavior is identical to the original free-form judge.
 
     This is deliberately fail-open: transport errors return ``("continue", ..., ..., None, True)``
     — the ``transport_failed=True`` flag lets callers track and auto-pause after
@@ -907,6 +986,7 @@ def judge_goal(
     # truth.
     clean_subgoals = [s.strip() for s in (subgoals or []) if s and s.strip()]
     background_block = _render_background_block(background_processes)
+    tool_calls_block = _render_tool_calls_block(tool_calls_summary)
     current_time = datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
     if contract is not None and not contract.is_empty():
@@ -922,6 +1002,7 @@ def judge_goal(
             contract_block=_truncate(contract_block, 2500),
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
             background_block=background_block,
+            tool_calls_block=tool_calls_block,
             current_time=current_time,
         )
     elif clean_subgoals:
@@ -933,6 +1014,7 @@ def judge_goal(
             subgoals_block=_truncate(subgoals_block, 2000),
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
             background_block=background_block,
+            tool_calls_block=tool_calls_block,
             current_time=current_time,
         )
     else:
@@ -940,6 +1022,7 @@ def judge_goal(
             goal=_truncate(goal, 2000),
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
             background_block=background_block,
+            tool_calls_block=tool_calls_block,
             current_time=current_time,
         )
 
@@ -1387,6 +1470,7 @@ class GoalManager:
         *,
         user_initiated: bool = True,
         background_processes: Optional[List[Dict[str, Any]]] = None,
+        tool_calls_summary: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run the judge and update state. Return a decision dict.
 
@@ -1449,6 +1533,7 @@ class GoalManager:
             subgoals=state.subgoals or None,
             background_processes=background_processes,
             contract=state.contract if state.has_contract() else None,
+            tool_calls_summary=tool_calls_summary,
         )
         state.last_verdict = verdict
         state.last_reason = reason
@@ -1804,4 +1889,5 @@ __all__ = [
     "migrate_goal_to_session",
     "judge_goal",
     "run_kanban_goal_loop",
+    "extract_tool_calls_summary",
 ]

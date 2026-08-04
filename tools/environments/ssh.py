@@ -7,6 +7,8 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _popen_bash
@@ -271,21 +273,77 @@ class SSHEnvironment(BaseEnvironment):
             # Allow tar_proc to receive SIGPIPE if ssh_proc exits early
             tar_proc.stdout.close()
 
+            # Drain stdout/stderr via background threads so pipes don't fill
+            # and block the subprocesses, then poll with interrupt checks.
+            ssh_stdout_chunks: list[bytes] = []
+            ssh_stderr_chunks: list[bytes] = []
+            tar_stderr_chunks: list[bytes] = []
+
+            def _drain(stream, chunks):
+                try:
+                    while True:
+                        chunk = stream.read(4096)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                except Exception as exc:
+                    logger.warning("SSH drain closed: %s", exc)
+
+            ssh_stdout_thread = threading.Thread(
+                target=_drain, args=(ssh_proc.stdout, ssh_stdout_chunks), daemon=True
+            )
+            ssh_stderr_thread = threading.Thread(
+                target=_drain, args=(ssh_proc.stderr, ssh_stderr_chunks), daemon=True
+            )
+            tar_stderr_thread = threading.Thread(
+                target=_drain, args=(tar_proc.stderr, tar_stderr_chunks), daemon=True
+            )
+            ssh_stdout_thread.start()
+            ssh_stderr_thread.start()
+            tar_stderr_thread.start()
+
             try:
-                _, ssh_stderr = ssh_proc.communicate(timeout=120)
-                # Use communicate() instead of wait() to drain stderr and
-                # avoid deadlock if tar produces more than PIPE_BUF of errors.
-                tar_stderr_raw = b""
-                if tar_proc.poll() is None:
-                    _, tar_stderr_raw = tar_proc.communicate(timeout=10)
-                else:
-                    tar_stderr_raw = tar_proc.stderr.read() if tar_proc.stderr else b""
-            except subprocess.TimeoutExpired:
+                from tools.interrupt import is_interrupted
+            except ImportError:
+                def is_interrupted():
+                    return False
+
+            deadline = time.monotonic() + 120
+            interrupted = False
+            while ssh_proc.poll() is None or tar_proc.poll() is None:
+                if is_interrupted():
+                    interrupted = True
+                    break
+                if time.monotonic() > deadline:
+                    break
+                time.sleep(0.1)
+
+            if interrupted:
                 tar_proc.kill()
                 ssh_proc.kill()
                 tar_proc.wait()
                 ssh_proc.wait()
+                ssh_stdout_thread.join(timeout=2)
+                ssh_stderr_thread.join(timeout=2)
+                tar_stderr_thread.join(timeout=2)
+                raise RuntimeError("SSH bulk upload interrupted by user")
+
+            if ssh_proc.poll() is None or tar_proc.poll() is None:
+                tar_proc.kill()
+                ssh_proc.kill()
+                tar_proc.wait()
+                ssh_proc.wait()
+                ssh_stdout_thread.join(timeout=2)
+                ssh_stderr_thread.join(timeout=2)
+                tar_stderr_thread.join(timeout=2)
                 raise RuntimeError("SSH bulk upload timed out")
+
+            ssh_stdout_thread.join(timeout=2)
+            ssh_stderr_thread.join(timeout=2)
+            tar_stderr_thread.join(timeout=2)
+
+            ssh_stderr = b"".join(ssh_stderr_chunks)
+            tar_stderr_raw = b"".join(tar_stderr_chunks)
 
             if tar_proc.returncode != 0:
                 raise RuntimeError(

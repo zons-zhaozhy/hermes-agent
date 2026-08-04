@@ -1,0 +1,7 @@
+name: skill-drift-check
+version: "1.0.0"
+description: "Skill source-file SHA drift detector — auto-checks on session start, warns when referenced code has changed."
+author: stan
+kind: standalone
+hooks:
+  - on_session_start

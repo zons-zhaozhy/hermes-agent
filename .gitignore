@@ -189,6 +189,9 @@ infographic/
 infographics/
 infograficos/
 infografico/
+
+# CodeGraph 本地索引 —— 不入库
+.codegraph/
 native/fts5_cjk/*.so
 # Runtime marker written by hermes update when a lazy dependency refresh is
 # interrupted; consumed by launch-time recovery. Never commit it (was tracked

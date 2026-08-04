@@ -318,7 +318,11 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "the task, use them instead of telling the user what you would do.\n"
     "Every response should either (a) contain tool calls that make progress, or "
     "(b) deliver a final result to the user. Responses that only describe intentions "
-    "without acting are not acceptable."
+    "without acting are not acceptable.\n"
+    "CRITICAL: After outputting analysis, findings, or a plan, you MUST immediately "
+    "follow with tool calls to execute — never end a turn with only text output "
+    "when there are remaining actions to take. A text-only response after analysis "
+    "is a stop-and-wait failure mode you must avoid."
 )
 
 # Model name substrings that trigger tool-use enforcement guidance.

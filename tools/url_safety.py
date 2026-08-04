@@ -221,22 +221,30 @@ def _global_allow_private_urls() -> bool:
     """Return True when the user has opted out of private-IP blocking.
 
     Checks (in priority order):
-    1. ``HERMES_ALLOW_PRIVATE_URLS`` env var  (``true``/``1``/``yes``)
-    2. ``security.allow_private_urls`` in config.yaml
-    3. ``browser.allow_private_urls`` in config.yaml  (legacy / backward compat)
+    1. HERMES_ALLOW_PRIVATE_URLS env var  (true/1/yes)
+    2. security.allow_private_urls in config.yaml
+    3. browser.allow_private_urls in config.yaml  (legacy / backward compat)
 
-    The single-profile result is cached for the process lifetime. Multiplexed
-    profile turns bypass that process-global cache because their config root is
-    context-local; ``read_raw_config()`` already provides path/mtime caching.
+    Env var is checked on every call — highest priority bypasses cache.
+    The single-profile config result is cached for the process lifetime.
+    Multiplexed profile turns bypass that process-global cache because their
+    config root is context-local; ``read_raw_config()`` already provides
+    path/mtime caching.
     """
     global _allow_private_resolved, _cached_allow_private
 
-    # A multiplex gateway serves several independently configured profiles in
-    # one process. Reusing the first profile's opt-out here would let it disable
-    # private-network blocking for every later profile in that process.
+    # 1. Env var override — checked every call (highest priority, bypasses cache)
+    env_val = os.getenv("HERMES_ALLOW_PRIVATE_URLS", "").strip().lower()
+    if env_val in {"true", "1", "yes"}:
+        return True
+    if env_val in {"false", "0", "no"}:
+        return False
+
+    # 2. Multiplex gateway — bypass process-global cache (context-local config)
     if get_hermes_home_override() is not None:
         return _resolve_allow_private_urls()
 
+    # 3. Cache — env var unset, return cached config file result
     if _allow_private_resolved:
         return _cached_allow_private
 
