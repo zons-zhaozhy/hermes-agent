@@ -486,12 +486,11 @@ DEFAULT_CONTEXT_LENGTHS = {
     # https://platform.minimax.io/docs/api-reference/text-chat-openai
     "minimax-m3": 1000000,
     "minimax": 204800,
-    # GLM — GLM-5.2 ships with a 1M context window (verified empirically:
-    # needle-in-a-haystack retrieval at 789K prompt tokens succeeded with
-    # zero errors on api.z.ai/api/coding/paas/v4).  Older GLM models
-    # (5, 5.1, 5-turbo) are ~202K.  Longest-key-first substring matching
-    # ensures "glm-5.2" resolves to 1M while older variants still hit the
-    # generic 202K fallback.
+    # GLM — GLM-5.2 and glm-5-turbo cap at 256K (user-configured override).
+    # The provider's default is 1M, but we enforce 262144 to stay within the
+    # user's preferred limit. Older GLM models (5, 5.1) are ~202K.
+    # Longest-key-first substring matching ensures "glm-5.2" resolves to
+    # 256K while older variants still hit the generic 202K fallback.
     "glm-5.2": 262_144,
     "glm-5-turbo": 262_144,
     "glm": 202752,
