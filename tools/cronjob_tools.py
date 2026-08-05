@@ -1070,7 +1070,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "deliver": {
                 "type": "string",
-                "description": "Omit to auto-deliver back to the current chat/topic (recommended — preserves thread context). Set explicitly only when delivering ELSEWHERE. Values: 'origin' (same as omitting), 'local' (save only, no delivery), 'all' (fan out to every connected home channel), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567'). Combine with comma: 'origin,all' = origin plus all channels. WARNING: platform:chat_id without :thread_id loses topic targeting; 'all' resolves at fire time (channels wired up later are picked up automatically)."
+                "description": "Omit to auto-deliver to current chat/topic (recommended). Set explicitly only when delivering ELSEWHERE. Values: 'origin' (same as omit), 'local' (save only), 'all' (fan out to every connected channel), or platform:chat_id:thread_id. Combine with comma: 'origin,all'. WARNING: platform:chat_id without :thread_id loses topic targeting; 'all' resolves at fire time.""
             },
             "skills": {
                 "type": "array",
@@ -1085,18 +1085,17 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "boolean",
                 "default": False,
                 "description": (
-                    "Default False (LLM-driven: agent runs the prompt each tick). "
-                    "Set True to skip the LLM entirely — the scheduler just runs ``script`` "
-                    "on schedule and delivers stdout verbatim (no tokens, no agent loop). "
-                    "REQUIREMENTS: ``script`` MUST be set; ``prompt``/``skills`` ignored. "
-                    "DELIVERY: (a) non-empty stdout sent verbatim; (b) EMPTY stdout = SILENT "
-                    "(nothing sent — design watchdog scripts to stay quiet when there's "
-                    "nothing to report); (c) non-zero exit/timeout sends an error alert "
-                    "so a broken watchdog can't fail silently. "
-                    "USE True for recurring script-only pings with fixed output shape "
-                    "(memory/disk/GPU watchdogs, threshold alerts, heartbeats, CI "
-                    "notifications, API pollers). Use False for anything needing reasoning "
-                    "(summaries, briefings, conditional logic)."
+                    "Default False (LLM-driven agent runs the prompt each tick). "
+                    "True = skip the LLM; scheduler runs ``script`` on schedule "
+                    "and delivers stdout verbatim (no tokens, no agent loop). "
+                    "REQUIREMENTS: ``script`` MUST be set; ``prompt``/``skills`` "
+                    "ignored. DELIVERY: (a) non-empty stdout sent verbatim; "
+                    "(b) EMPTY stdout = SILENT (design watchdogs to stay quiet "
+                    "when nothing to report); (c) non-zero exit/timeout sends "
+                    "an error alert so a broken watchdog can't fail silently. "
+                    "True for script-only pings (watchdogs, threshold alerts, "
+                    "heartbeats, CI notifications, API pollers). False for "
+                    "anything needing reasoning."
                 ),
             },
             "context_from": {
@@ -1122,7 +1121,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "attach_to_session": {
                 "type": "boolean",
-                "description": "True = job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread is opened; on DM-only platforms (WhatsApp/Signal) the brief is mirrored into the origin DM. Use for conversational recurring jobs (daily briefings, reminders with follow-up work). Leave unset for fire-and-forget alerts/watchdogs. Overrides cron.mirror_delivery for this job. Only the origin chat is touched; no effect when deliver='local'."
+                "description": "True = job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread opens; on DM-only platforms (WhatsApp/Signal) the brief mirrors into the origin DM. Use for conversational recurring jobs (daily briefings, reminders with follow-up work). Leave unset for fire-and-forget alerts/watchdogs. Overrides cron.mirror_delivery for this job. No effect when deliver='local'."
             },
         },
         "required": ["action"]

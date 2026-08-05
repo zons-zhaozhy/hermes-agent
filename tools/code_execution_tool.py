@@ -2028,21 +2028,17 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
 
     description = (
         "Run a Python script that calls Hermes tools programmatically. "
-        "Use when you need 3+ tool calls with logic between them: "
-        "filtering/reducing large outputs before they enter context, "
-        "conditional branching, or loops (N pages/files, retry on failure). "
-        "Use normal tool calls for single calls, results you must reason "
-        "over in full, or anything needing user interaction.\n\n"
+        "Use for 3+ tool calls with logic between them: filtering/reducing "
+        "large outputs before context, conditional branching, or loops. "
+        "Use normal tool calls for single calls or anything needing reasoning.\n\n"
         f"Available via `from hermes_tools import ...`:\n\n"
         f"{tool_lines}\n\n"
-        "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
-        "terminal() is foreground-only (no background or pty).\n\n"
+        "Limits: 5-min timeout, 50KB stdout cap, 50 tool calls/script. "
+        "terminal() is foreground-only.\n\n"
         f"{cwd_note}\n\n"
-        "Print your final result to stdout; stdlib (json, re, csv, datetime, ...) "
-        "is available for processing.\n\n"
-        "Built-in helpers (no import): json_parse(text) — tolerant json.loads for "
-        "terminal() output; shell_quote(s) — shlex.quote for dynamic shell args; "
-        "retry(fn, max_attempts=3, delay=2) — exponential backoff for transient failures."
+        "Print final result to stdout; stdlib available.\n\n"
+        "Built-in helpers: json_parse(text), shell_quote(s), "
+        "retry(fn, max_attempts=3, delay=2)."
     )
 
     return {

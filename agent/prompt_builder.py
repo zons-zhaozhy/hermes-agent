@@ -1616,6 +1616,25 @@ def build_skills_system_prompt(
     if not skills_dir.exists() and not external_dirs:
         return ""
 
+    # User-configured compact categories (``skills.compact_categories`` in
+    # config.yaml) are unioned with any posture-driven demotions (e.g. coding
+    # posture demoting non-coding categories). Matched categories render as a
+    # single names-only line — descriptions dropped, names always visible.
+    try:
+        from agent.skill_utils import _load_raw_config
+        _raw_cfg = _load_raw_config()
+        _user_compact = _raw_cfg.get("skills", {}).get("compact_categories") or []
+        if isinstance(_user_compact, str):
+            _user_compact = [s.strip() for s in _user_compact.split(",") if s.strip()]
+        elif isinstance(_user_compact, (list, tuple, set, frozenset)):
+            _user_compact = [str(s).strip() for s in _user_compact if str(s).strip()]
+        else:
+            _user_compact = []
+        if _user_compact:
+            compact_categories = frozenset(compact_categories or ()) | frozenset(_user_compact)
+    except Exception:
+        pass
+
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).

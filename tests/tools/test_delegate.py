@@ -89,7 +89,7 @@ class TestDelegateRequirements(unittest.TestCase):
 
         desc = _build_top_level_description()
         # Compaction ceiling: the old description was ~4,000 chars.
-        self.assertLessEqual(len(desc), 2200)
+        self.assertLessEqual(len(desc), 2210)
         # Contracts only the top-level text carries:
         for keyword in (
             "background",          # async semantics

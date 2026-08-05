@@ -3892,7 +3892,7 @@ def _build_top_level_description() -> str:
         "unless pinned via delegation.provider / delegation.model in "
         "config.yaml, or via 'tier' when configured.\n"
         "- Each subagent gets its own terminal session (separate cwd/state); "
-        "results always return as an array, one entry per task."
+        "results always return as an array, one per task."
     )
 
 

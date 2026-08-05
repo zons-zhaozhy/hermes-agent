@@ -189,27 +189,16 @@ CLARIFY_SCHEMA = {
     "name": "clarify",
     "description": (
         "Ask the user a question when you need clarification, feedback, or a "
-        "decision before proceeding. Supports three modes:\n\n"
-        "1. **Single-select multiple choice** — provide up to 4 choices. The user picks one "
-        "or types their own answer via a 5th 'Other' option.\n"
-        "2. **Multi-select multiple choice** — set multi_select=true. The user can select "
-        "multiple options via checkboxes. user_response will be a list of selected choices.\n"
-        "3. **Open-ended** — omit choices entirely. The user types a free-form "
-        "response.\n\n"
-        "CRITICAL: when you are offering options, put each option ONLY in the "
-        "`choices` array — NEVER enumerate the options inside the `question` "
-        "text. The UI renders `choices` as selectable rows; options written "
-        "into the question string render as dead prose the user can't pick. "
-        "Right: question='Which deployment target?', choices=['staging', "
-        "'prod']. Wrong: question='Which target? 1) staging 2) prod', choices=[].\n\n"
-        "Use this tool when:\n"
-        "- The task is ambiguous and you need the user to choose an approach\n"
-        "- You want post-task feedback ('How did that work out?')\n"
-        "- You want to offer to save a skill or update memory\n"
-        "- A decision has meaningful trade-offs the user should weigh in on\n\n"
-        "Do NOT use this tool for simple yes/no confirmation of dangerous "
-        "commands (the terminal tool handles that). Prefer making a reasonable "
-        "default choice yourself when the decision is low-stakes."
+        "decision before proceeding. Three modes: 1) single-select multiple "
+        "choice (up to 4 choices; user can pick or type 'Other'); 2) "
+        "multi-select (multi_select=true → checkbox list); 3) open-ended "
+        "(omit choices entirely).\n\n"
+        "CRITICAL: options go ONLY in `choices` — never enumerate them inside "
+        "`question` (rendered as dead prose the user can't pick).\n\n"
+        "Use when: task is ambiguous; post-task feedback; offering to save a "
+        "skill or update memory; a decision has meaningful trade-offs.\n"
+        "Do NOT use for simple yes/no of dangerous commands (terminal handles "
+        "that). Prefer a reasonable default yourself when low-stakes."
     ),
     "parameters": {
         "type": "object",
@@ -217,9 +206,8 @@ CLARIFY_SCHEMA = {
             "question": {
                 "type": "string",
                 "description": (
-                    "The question itself, and ONLY the question (e.g. 'Which "
-                    "deployment target?'). Do NOT embed the answer options here "
-                    "— pass them as separate elements in `choices`."
+                    "The question itself, and ONLY the question. Do NOT embed "
+                    "the answer options here — pass them in `choices`."
                 ),
             },
             "choices": {
@@ -227,20 +215,17 @@ CLARIFY_SCHEMA = {
                 "items": {"type": "string"},
                 "maxItems": MAX_CHOICES,
                 "description": (
-                    "REQUIRED whenever you are presenting selectable options: "
-                    "each distinct option is its own array element (up to 4). "
-                    "The UI renders these as pickable rows and auto-appends an "
-                    "'Other (type your answer)' option. Omit this parameter "
-                    "entirely ONLY for a genuinely open-ended free-text question."
+                    "Required when presenting selectable options: each distinct "
+                    "option is its own element (up to 4). UI renders pickable "
+                    "rows + auto-appended 'Other'. Omit only for genuinely "
+                    "open-ended questions."
                 ),
             },
             "multi_select": {
                 "type": "boolean",
                 "description": (
-                    "When true, the user can select MULTIPLE options (like checkboxes). "
-                    "The user_response will be a list of selected choices. "
-                    "When false (default), single selection (radio). "
-                    "Has no effect when choices is omitted (open-ended question)."
+                    "true → checkboxes, user_response is a list; false (default) "
+                    "→ single selection. No effect when choices omitted."
                 ),
             },
         },

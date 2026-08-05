@@ -3348,7 +3348,7 @@ TERMINAL_SCHEMA = {
             },
             "background": {
                 "type": "boolean",
-                "description": "Run in the background, returning a session_id. Pair with notify_on_complete=true for anything with a defined end (tests, builds, deploys) — without it the process runs silently. Only servers/watchers/daemons that never exit should stay silent. Short commands: prefer foreground with a generous timeout.",
+                "description": "Run in background, returning a session_id. Pair notify_on_complete=true for bounded tasks (tests, builds) — without it the process runs silently. Only servers/watchers that never exit stay silent. Short commands: prefer foreground with generous timeout.",
                 "default": False
             },
             "timeout": {
@@ -3367,13 +3367,13 @@ TERMINAL_SCHEMA = {
             },
             "notify_on_complete": {
                 "type": "boolean",
-                "description": "With background=true: get exactly one notification when the process exits. The right choice for nearly every bounded long task — set it and keep working. MUTUALLY EXCLUSIVE with watch_patterns (watch_patterns is dropped when both are set).",
+                "description": "With background=true: exactly one notification when the process exits. Right for nearly every bounded long task. Mutually exclusive with watch_patterns (dropped when both set).",
                 "default": False
             },
             "watch_patterns": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Strings to watch for in background output. ONLY for rare one-shot mid-process signals on processes that never exit (e.g. ['Application startup complete'] on a server). NOT for end-of-run markers (use notify_on_complete) and NOT for per-iteration patterns like 'ERROR' in loops — rate-limited to 1 notification/15s; repeated over-firing auto-disables it and falls back to notify-on-exit. When in doubt, use notify_on_complete. MUTUALLY EXCLUSIVE with notify_on_complete."
+                "description": "Strings to watch in background output — only for rare one-shot mid-process signals (e.g. ['Application startup complete'] on a server), never end-of-run markers (use notify_on_complete) or per-iteration patterns ('ERROR' loops). Rate-limited 1/15s; over-firing auto-disables to notify-on-exit. Mutually exclusive with notify_on_complete."
             }
         },
         "required": ["command"]

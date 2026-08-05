@@ -646,11 +646,11 @@ def bridge_tool_schemas(
     DOMAINS are reachable and that search is mandatory for tool discovery.
     """
     desc_search = (
-        f"Search {deferred_count} additional tools that are loaded on demand. "
-        "Returns up to ``limit`` matches with name and description. Follow "
-        f"with `{TOOL_DESCRIBE_NAME}` to load a tool's full parameter schema, "
-        f"then `{TOOL_CALL_NAME}` to invoke it. Tools listed at the top of this "
-        "system prompt are already available and do not need to be searched."
+        f"Search {deferred_count} additional tools loaded on demand. Returns "
+        "up to ``limit`` matches (name + description). Follow with "
+        f"`{TOOL_DESCRIBE_NAME}` to load a tool's full schema, then "
+        f"`{TOOL_CALL_NAME}` to invoke. Tools listed at the top of this system "
+        "prompt are already available — no search needed."
     )
     if listing and listing_form == "groups":
         desc_search += (
@@ -667,12 +667,6 @@ def bridge_tool_schemas(
             f"`{TOOL_DESCRIBE_NAME}` (skip `{TOOL_SEARCH_NAME}` when you "
             "already see the exact name)."
         )
-        if listing_form == "mixed":
-            desc_search += (
-                " For servers marked 'names not listed', the tools exist "
-                f"too — find them with `{TOOL_SEARCH_NAME}` before "
-                "concluding anything is missing."
-            )
         desc_search += "\n\n" + listing
     desc_describe = (
         f"Load the full JSON schema for one tool returned by `{TOOL_SEARCH_NAME}`. "

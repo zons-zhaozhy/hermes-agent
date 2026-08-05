@@ -46,15 +46,12 @@ _HERMES_CORE_TOOLS = [
     "bfl_flux3_text_to_video", "bfl_flux3_image_to_video",
     "bfl_flux3_keyframes_to_video", "bfl_flux3_video_continuation",
     "bfl_flux3_get_result", "bfl_flux3_prompting_guide",
-    # Skills
-    "skills_list", "skill_view", "skill_manage",
-    # Browser automation
+    # Skills (skill_manage deferred — low frequency, available via tool_search)
+    "skills_list", "skill_view",
+    # Browser automation (CDP/vision/console/dialog/get_images/back deferred — low frequency)
     "browser_navigate", "browser_snapshot", "browser_click",
-    "browser_type", "browser_scroll", "browser_back",
-    "browser_press", "browser_get_images",
-    "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-    # Text-to-speech
-    "text_to_speech",
+    "browser_type", "browser_scroll", "browser_press",
+    # Text-to-speech (deferred — very low frequency)
     # Planning & memory
     "todo", "memory",
     # NOTE: the desktop Project tools (project_list/create/switch) are
