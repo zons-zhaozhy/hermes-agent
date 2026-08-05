@@ -46,11 +46,12 @@ _HERMES_CORE_TOOLS = [
     "bfl_flux3_text_to_video", "bfl_flux3_image_to_video",
     "bfl_flux3_keyframes_to_video", "bfl_flux3_video_continuation",
     "bfl_flux3_get_result", "bfl_flux3_prompting_guide",
-    # Skills (skill_manage deferred — low frequency, available via tool_search)
-    "skills_list", "skill_view",
-    # Browser automation (CDP/vision/console/dialog/get_images/back deferred — low frequency)
+    # Skills (skill_manage HIGH frequency per logs — 1273 calls/week)
+    "skills_list", "skill_view", "skill_manage",
+    # Browser automation (console HIGH frequency per logs — 1041 calls/week)
+    # CDP/vision/dialog/get_images/back deferred — genuinely low frequency
     "browser_navigate", "browser_snapshot", "browser_click",
-    "browser_type", "browser_scroll", "browser_press",
+    "browser_type", "browser_scroll", "browser_press", "browser_console",
     # Text-to-speech (deferred — very low frequency)
     # Planning & memory
     "todo", "memory",
