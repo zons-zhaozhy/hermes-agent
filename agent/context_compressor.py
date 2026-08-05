@@ -4012,7 +4012,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             # summary route can produce within its deadline will fail the
             # same way every time, and re-burning the full timeout every
             # 60s turns each subsequent turn into a multi-minute stall
-            # (#62452). 60s → 300s → 900s (capped); any successful summary
+            # (#62452). 60s → 120s → 180s (capped); any successful summary
             # resets the streak via _clear_compression_failure_cooldown().
             # Timeout takes precedence over the streaming-closed short rung:
             # a "timed out" error also matches _is_connection_error, but a
@@ -4043,7 +4043,15 @@ This compaction should PRIORITISE preserving all information related to the focu
             # placeholder marker — retrying once the network recovers is
             # strictly better than dropping context (#29559, #25585). Mirrors
             # the auth-failure carve-out; independent of abort_on_summary_failure.
-            if _is_streaming_closed:
+            #
+            # Timeout precedence (see the cooldown ladder above): a timed-out
+            # request ALSO matches _is_connection_error (APITimeoutError is a
+            # subclass of the connection-error family), but a deadline
+            # exhaustion is the structural repeat-offender class — it is
+            # handled by the escalating timeout cooldown, NOT by aborting the
+            # session. Only a genuine mid-stream close (peer drop, chunked
+            # read failure) without timeout semantics gets the abort flag.
+            if _is_streaming_closed and not _is_timeout:
                 self._last_summary_network_failure = True
             logger.warning(
                 "Failed to generate context summary: %s. "

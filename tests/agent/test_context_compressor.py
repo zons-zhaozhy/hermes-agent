@@ -682,6 +682,32 @@ class TestAuthFailureAborts:
         assert c._last_summary_network_failure is True
         assert c._last_summary_auth_failure is False
 
+    def test_timeout_does_not_flag_network_failure(self):
+        """A timeout error must NOT flag _last_summary_network_failure.
+
+        APITimeoutError is a subclass of the connection-error family, so
+        _is_connection_error() matches it and _is_streaming_closed would be
+        True. But a deadline exhaustion is the structural repeat-offender
+        class handled by the escalating timeout cooldown ladder — aborting
+        the session would bypass abort_on_summary_failure=false (#62452).
+        """
+        from unittest.mock import MagicMock
+
+        from openai import APITimeoutError
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=APITimeoutError(request=MagicMock()),
+        ):
+            result = c._generate_summary(self._msgs())
+        assert result is None
+        assert c._last_summary_network_failure is False
+        assert c._last_summary_auth_failure is False
+        # Timeout is still recorded on the escalating cooldown ladder.
+        assert c._consecutive_timeout_failures == 1
+
 
 
 
