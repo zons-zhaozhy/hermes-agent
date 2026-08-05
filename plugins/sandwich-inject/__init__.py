@@ -42,7 +42,6 @@ ACTIVATION MODEL
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import threading
@@ -59,7 +58,35 @@ _TRACKER_LOCK = threading.Lock()
 _CONFIG_CACHE: Dict[str, tuple[float, Optional[dict]]] = {}  # path -> (mtime, data)
 _CONFIG_LOCK = threading.Lock()
 
+# knowledge_files 内容缓存: path -> (mtime, content)
+_KB_CACHE: Dict[str, tuple[float, str]] = {}
+_KB_LOCK = threading.Lock()
+
+# 会话级场景锁定: session_id -> scene dict (首个命中后锁定, 防多轮失活)
+_SESSION_SCENES: Dict[str, dict] = {}
+_SESSION_LOCK = threading.Lock()
+
 _MAX_RETRIES_DEFAULT = 3
+
+# 长跑进程（gateway）会话数无界增长防护：超过上限时清理最旧条目
+_MAX_TRACKED_SESSIONS = 512
+
+
+def _bounded_insert(d: Dict[str, Any], key: str, value: Any) -> None:
+    """Insert into a session-keyed dict, evicting oldest when over capacity.
+
+    Contract:
+      Preconditions: d is a dict, key is a str, value is Any
+      Postconditions: d[key] == value; len(d) <= _MAX_TRACKED_SESSIONS;
+        oldest-inserted keys evicted first
+    """
+    if key in d:
+        d[key] = value
+        return
+    if len(d) >= _MAX_TRACKED_SESSIONS:
+        # dict 保持插入序：弹出最旧 key
+        d.pop(next(iter(d)))
+    d[key] = value
 
 
 def _config_path() -> Path:
@@ -106,21 +133,33 @@ def _load_config() -> Optional[dict]:
 
 
 def _load_knowledge_files(files: Optional[List[str]]) -> str:
-    """Read knowledge files, join contents. Missing files skipped with warning.
+    """Read knowledge files with mtime cache, join contents.
 
     Contract:
       Preconditions: files is None or a list of path strings
       Postconditions: returns joined file contents ("" when empty/missing);
+        cached by file mtime so unchanged files are read once per change;
         missing or unreadable files are skipped with a warning, never raised
     """
+    if not files:
+        return ""
     parts: List[str] = []
-    for f in files or []:
+    for f in files:
         try:
             p = Path(f).expanduser()
-            if p.exists():
-                parts.append(p.read_text(encoding="utf-8"))
-            else:
+            if not p.exists():
                 logger.warning("[Sandwich] knowledge file missing: %s", f)
+                continue
+            mtime = p.stat().st_mtime
+            with _KB_LOCK:
+                cached = _KB_CACHE.get(str(p))
+                if cached and cached[0] == mtime:
+                    parts.append(cached[1])
+                    continue
+            content = p.read_text(encoding="utf-8")
+            with _KB_LOCK:
+                _KB_CACHE[str(p)] = (mtime, content)
+            parts.append(content)
         except Exception as exc:
             logger.warning("[Sandwich] knowledge file read failed %s: %s", f, exc)
     return "\n\n".join(parts)
@@ -177,13 +216,7 @@ def _last_turn_tool_calls(conversation_history: List[dict]) -> List[str]:
     return []
 
 
-def _tracker_state(session_id: str, scene_name: str) -> Dict[str, Any]:
-    with _TRACKER_LOCK:
-        sess = _VIOLATION_TRACKER.setdefault(session_id, {})
-        return sess.setdefault(scene_name, {"violations": 0, "active": True})
-
-
-def _render_injection(scene: dict, user_message: str, violations: int, max_retries: int) -> str:
+def _render_injection(scene: dict, violations: int, max_retries: int) -> str:
     """Build the injected context block for a matched scene.
 
     Contract:
@@ -243,12 +276,19 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
     if not user_message:
         return None
 
-    cfg = _load_config()
-    scene = _match_scene(cfg, user_message)
+    session_id = str(kwargs.get("session_id") or kwargs.get("task_id") or "default")
+
+    # ── 场景解析：会话级锁定（首个命中后锁定，防多轮关键词失活）──
+    with _SESSION_LOCK:
+        scene = _SESSION_SCENES.get(session_id)
+        if scene is None:
+            cfg = _load_config()
+            scene = _match_scene(cfg, user_message)
+            if scene is not None:
+                _bounded_insert(_SESSION_SCENES, session_id, scene)
     if scene is None:
         return None
 
-    session_id = str(kwargs.get("session_id") or kwargs.get("task_id") or "default")
     scene_name = str(scene.get("name") or "unnamed")
     max_retries = int(scene.get("max_retries") or _MAX_RETRIES_DEFAULT)
 
@@ -257,26 +297,39 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
     required = set(scene.get("required_tools") or [])
     called = set(_last_turn_tool_calls(history))
 
-    state = _tracker_state(session_id, scene_name)
-    if required:
-        missing = required - called
-        if missing and state["active"]:
-            state["violations"] += 1
-            if state["violations"] >= max_retries:
-                state["active"] = False
-                return {
-                    "context": (
-                        f"【强制SOP】\n{scene.get('sop') or '（无 SOP）'}\n\n"
-                        f"你已连续 {state['violations']} 轮违反工具契约"
-                        f"（缺少: {sorted(missing)}）。\n"
-                        f"NEED_HUMAN_INTERVENTION — 转人工处理。"
-                    )
-                }
-        elif not missing:
-            # 本轮补齐了契约 → 清零违规计数
-            state["violations"] = 0
+    # 违规计数 read-modify-write 全程持锁（多会话并发安全）
+    with _TRACKER_LOCK:
+        state = _VIOLATION_TRACKER.get(session_id)
+        if state is None:
+            state = {}
+            _bounded_insert(_VIOLATION_TRACKER, session_id, state)
+        if scene_name not in state:
+            state[scene_name] = {"violations": 0, "active": True}
+        state = state[scene_name]
+        if required:
+            missing = required - called
+            if missing and state["active"]:
+                state["violations"] += 1
+                if state["violations"] >= max_retries:
+                    state["active"] = False
+            elif not missing:
+                # 本轮补齐了契约 → 清零违规计数
+                state["violations"] = 0
+        violations = state["violations"]
+        active = state["active"]
 
-    injection = _render_injection(scene, user_message, state["violations"], max_retries)
+    if required and missing and not active:
+        # 已转人工且仍缺工具：保持 NEED_HUMAN_INTERVENTION 信号
+        return {
+            "context": (
+                f"【强制SOP】\n{scene.get('sop') or '（无 SOP）'}\n\n"
+                f"你已连续 {violations} 轮违反工具契约"
+                f"（缺少: {sorted(missing)}）。\n"
+                f"NEED_HUMAN_INTERVENTION — 转人工处理。"
+            )
+        }
+
+    injection = _render_injection(scene, violations, max_retries)
     return {"context": injection}
 
 
