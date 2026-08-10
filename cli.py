@@ -3253,6 +3253,60 @@ def _cprint(text: str):
             pass
 
 
+
+def _emit_exec_code_diff(result_text: str) -> None:
+    """Extract unified-diff lines from an execute_code result and print them.
+
+    execute_code's write_file/patch stubs auto-print the diff to stdout,
+    which ends up in the tool result's ``output`` field.  The result arrives
+    as a JSON string where real newlines are encoded as ``\\n``; we parse
+    the JSON first so the extracted diff contains actual newline characters.
+
+    Contract:
+      Preconditions: result_text is a non-None string (empty string is OK)
+      Postconditions: if diff markers found, prints colored lines via _cprint
+    """
+    if not result_text or not isinstance(result_text, str):
+        return
+    # The result is a JSON-encoded string (e.g. from execute_code).
+    # Parse it to get real newline characters instead of literal \n.
+    raw = result_text
+    try:
+        import json as _json
+        parsed = _json.loads(result_text)
+        if isinstance(parsed, dict):
+            raw = parsed.get("output", result_text)
+        elif isinstance(parsed, str):
+            raw = parsed
+    except Exception:
+        import logging as _logging
+        _logging.getLogger(__name__).warning("diff JSON parse failed, using raw text")
+    if not raw or not isinstance(raw, str):
+        return
+    # Scan for the first unified-diff header line.
+    idx = len(raw)
+    for marker in ("--- ", "+++ ", "@@ "):
+        pos = raw.find(marker)
+        if pos != -1:
+            header = raw.rfind("--- ", 0, pos + 1)
+            idx = min(idx, header if header != -1 else pos)
+    if idx >= len(raw):
+        return
+    diff_text = raw[idx:].rstrip()
+    if not diff_text:
+        return
+    # Render with the same per-line ANSI coloring as patch tool diffs.
+    try:
+        from agent.display import _render_inline_unified_diff, _ANSI_RESET
+        rendered = _render_inline_unified_diff(diff_text)
+        if rendered:
+            _cprint("  ┊ review diff")
+            for line in rendered:
+                _cprint(f"  {line}")
+    except Exception:
+        _cprint(f"  {_DIM}{diff_text}{_RST}")
+
+
 def _prepend_note_to_message(message, note: str):
     """Prepend a one-shot system-style note to a user message.
 
@@ -12305,6 +12359,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     _cprint(f"  {_TOOL_BLUE}{line}{_RST}")
                 except Exception:
                     pass
+                # Show unified diff from execute_code output so the user sees
+                # file changes immediately without waiting for the next message.
+                if function_name == "execute_code":
+                    _emit_exec_code_diff(kwargs.get("result", ""))
                 # First-touch onboarding: on the first tool in this process
                 # that takes longer than the threshold while we're in the
                 # noisiest progress mode, print a one-time hint about

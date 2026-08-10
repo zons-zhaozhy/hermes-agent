@@ -1834,7 +1834,7 @@ class ShellFileOperations(FileOperations):
                     )
                 )
 
-        # Capture pre-write content.  Two consumers want it:
+        # Capture pre-write content.  Three consumers want it:
         #
         #   1. The lint-delta layer (for in-process linters like ast.parse
         #      and json.loads) needs the previous content to compute the
@@ -1844,26 +1844,27 @@ class ShellFileOperations(FileOperations):
         #      when lines are added/removed, and the shift map remaps
         #      baseline diagnostics into post-edit coordinates so the
         #      strict (range-aware) delta key matches.
+        #   3. The unified diff generator needs pre-content to produce
+        #      a meaningful old→new diff instead of a misleading
+        #      /dev/null→new "creation" diff for files that already exist.
         #
-        # The set of extensions we capture pre_content for is therefore
-        # the UNION of in-process lint coverage and LSP coverage.  For
-        # extensions outside both sets (binaries, opaque formats),
-        # skipping the read keeps the hot path fast.
-        want_pre = ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
-        if want_pre:
-            if pre_content is not None:
-                # Caller already has file content (e.g. patch_replace read it
-                # for fuzzy matching) — reuse directly, skip redundant cat.
-                pass
-            else:
-                # Best-effort read; failure (file missing, permission) leaves
-                # pre_content as None which makes both downstream consumers
-                # degrade gracefully (lint reports all errors; LSP skips the
-                # shift map).
-                read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
-                read_result = self._exec(read_cmd)
-                if read_result.exit_code == 0 and read_result.stdout:
-                    pre_content = read_result.stdout
+        # Always read pre_content when the caller didn't supply it.
+        # The cost is one cat subprocess (microseconds) and the benefit
+        # is a correct diff for every file type.
+        want_pre = True
+        if pre_content is not None:
+            # Caller already has file content (e.g. patch_replace read it
+            # for fuzzy matching) — reuse directly, skip redundant cat.
+            pass
+        else:
+            # Best-effort read; failure (file missing, permission) leaves
+            # pre_content as None which makes both downstream consumers
+            # degrade gracefully (lint reports all errors; LSP skips the
+            # shift map).
+            read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+            read_result = self._exec(read_cmd)
+            if read_result.exit_code == 0 and read_result.stdout:
+                pre_content = read_result.stdout
 
         # ── Line-ending preservation (Roo Code pattern) ──────────────
         # If the file existed with CRLF endings and the agent's content

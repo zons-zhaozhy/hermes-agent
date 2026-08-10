@@ -449,11 +449,24 @@ def generate_hermes_tools_module(enabled_tools: List[str],
         if tool_name not in _TOOL_STUBS:
             continue
         func_name, sig, doc, args_expr = _TOOL_STUBS[tool_name]
-        stub_functions.append(
-            f"def {func_name}({sig}):\n"
+        body = (
             f"    {doc}\n"
-            f"    return _call({func_name!r}, {args_expr})\n"
+            f"    result = _call({func_name!r}, {args_expr})\n"
+            f"    return result\n"
         )
+        # Auto-print diff for write_file and patch so the model always
+        # sees what changed on disk, even when the script doesn't
+        # explicitly print the result.
+        if tool_name in ("write_file", "patch"):
+            body = (
+                f"    {doc}\n"
+                f"    result = _call({func_name!r}, {args_expr})\n"
+                f"    _diff = result.get('diff', '')\n"
+                f"    if _diff:\n"
+                f"        print(_diff, end='', flush=True)\n"
+                f"    return result\n"
+            )
+        stub_functions.append(f"def {func_name}({sig}):\n{body}")
         export_names.append(func_name)
 
     if transport == "file":
