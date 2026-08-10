@@ -110,7 +110,7 @@ class TestCallLlmUnsupportedTemperatureRetry:
         assert client.chat.completions.create.call_count == 2
         first_kwargs = client.chat.completions.create.call_args_list[0].kwargs
         retry_kwargs = client.chat.completions.create.call_args_list[1].kwargs
-        assert first_kwargs["temperature"] == 0.3
+        assert first_kwargs["temperature"] == 0.1
         assert "temperature" not in retry_kwargs
         # max_tokens is intentionally omitted on OpenAI-compatible endpoints
         # (#34530) — auxiliary calls let the model max out its own output — so
@@ -150,7 +150,9 @@ class TestCallLlmUnsupportedTemperatureRetry:
         assert client.chat.completions.create.call_count == 1
 
     def test_no_retry_when_temperature_not_in_kwargs(self):
-        """If caller didn't send temperature, don't invent a temperature-retry."""
+        """If _fixed_temperature_for_model returns None (no override), and caller
+        also passes temperature=None, then temperature is absent from kwargs.
+        A misleading provider error about temperature must NOT trigger retry."""
         client = MagicMock()
         client.base_url = "https://api.openai.com/v1"
         # Provider complains about temperature even though we didn't send it.
@@ -167,6 +169,8 @@ class TestCallLlmUnsupportedTemperatureRetry:
             patch("agent.auxiliary_client._validate_llm_response",
                   side_effect=lambda resp, _task, **_kw: resp),
             patch("agent.auxiliary_client._try_payment_fallback",
+                  return_value=None),
+            patch("agent.auxiliary_client._fixed_temperature_for_model",
                   return_value=None),
         ):
             with pytest.raises(RuntimeError):
@@ -210,7 +214,7 @@ class TestAsyncCallLlmUnsupportedTemperatureRetry:
         assert client.chat.completions.create.await_count == 2
         first_kwargs = client.chat.completions.create.call_args_list[0].kwargs
         retry_kwargs = client.chat.completions.create.call_args_list[1].kwargs
-        assert first_kwargs["temperature"] == 0.3
+        assert first_kwargs["temperature"] == 0.1
         assert "temperature" not in retry_kwargs
         # max_tokens is intentionally omitted on OpenAI-compatible endpoints
         # (#34530); assert it's absent and that model survives the retry.

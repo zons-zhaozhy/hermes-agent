@@ -656,7 +656,9 @@ def _fixed_temperature_for_model(
         return OMIT_TEMPERATURE
     if _is_arcee_trinity_thinking(model):
         return 0.5
-    return None
+    # All other models: pin temperature=0.1 for deterministic, stable coding output.
+    # Most providers default to 0.7-1.0 which is too high for code generation.
+    return 0.1
 
 
 def _compression_threshold_for_model(
