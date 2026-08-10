@@ -8,9 +8,9 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli.prompt_size import (
-    _SKILLS_BLOCK_RE,
     _build_inspection_agent,
     _compute_skills_breakdown,
+    _find_skills_block,
     compute_prompt_breakdown,
     render_breakdown,
 )
@@ -98,7 +98,7 @@ def test_skills_breakdown_attributes_demoted_category_shared_line(isolated_home)
     _seed_skill(isolated_home, "alpha-skill", "alpha description")
     _seed_skill(isolated_home, "beta-skill", "beta description")
     prompt = build_skills_system_prompt(compact_categories=frozenset({"demo"}))
-    skills_match = _SKILLS_BLOCK_RE.search(prompt)
+    skills_match = _find_skills_block(prompt)
     assert skills_match is not None
     skills_block = skills_match.group(0)
     shared_line = next(

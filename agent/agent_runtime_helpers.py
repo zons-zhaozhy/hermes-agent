@@ -56,31 +56,6 @@ _MAX_AUTH_REFRESH_ATTEMPTS = 2
 _REASONING_TAG_NAMES = ("think", "thinking", "reasoning", "REASONING_SCRATCHPAD", "thought")
 _TOOL_CALL_TAG_NAMES = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls")
 
-_REASONING_BLOCK_PATTERNS = tuple(
-    re.compile(rf"<{name}>.*?</{name}>", re.DOTALL | re.IGNORECASE)
-    for name in _REASONING_TAG_NAMES
-)
-
-_TOOL_CALL_BLOCK_PATTERNS = tuple(
-    re.compile(rf"<{name}\b[^>]*>.*?</{name}>", re.DOTALL | re.IGNORECASE)
-    for name in _TOOL_CALL_TAG_NAMES
-)
-
-# Named <function name=...> blocks — see strip_think_blocks step 1c for the
-# full rationale (sentence-boundary lookbehind + tempered-dot body so a plain
-# prose mention of "function" is never eaten).
-_NAMED_FUNCTION_BLOCK_PATTERN = re.compile(
-    r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*'
-    r'<function\b[^>]*\bname\s*=[^>]*>'
-    r'(?:(?:(?!</function>).)*)</function>',
-    re.DOTALL | re.IGNORECASE,
-)
-
-_UNTERMINATED_REASONING_BLOCK_PATTERN = re.compile(
-    rf'(?:^|\n)[ \t]*<(?:{"|".join(_REASONING_TAG_NAMES)})\b[^>]*>.*$',
-    re.DOTALL | re.IGNORECASE,
-)
-
 _ORPHAN_REASONING_TAG_PATTERN = re.compile(
     rf'</?(?:{"|".join(_REASONING_TAG_NAMES)})>\s*',
     re.IGNORECASE,
@@ -875,24 +850,85 @@ def strip_think_blocks(agent, content: str) -> str:
     # 1. Closed tag pairs — case-insensitive for all variants so
     #    mixed-case tags (<THINK>, <Thinking>) don't slip through to
     #    the unterminated-tag pass and take trailing content with them.
-    for _pattern in _REASONING_BLOCK_PATTERNS:
-        content = _pattern.sub('', content)
+    #    str.find (O(n)) replaces DOTALL re.sub to prevent regex backtracking.
+    for _tag in _REASONING_TAG_NAMES:
+        _open = f'<{_tag}>'; _close = f'</{_tag}>'
+        _open_l = _open.lower(); _close_l = _close.lower()
+        while True:
+            _pos = content.lower().find(_open_l)
+            if _pos == -1:
+                break
+            _end = content.lower().find(_close_l, _pos + len(_open))
+            if _end == -1:
+                break
+            content = content[:_pos] + content[_end + len(_close):]
     # 1b. Tool-call XML blocks (openclaw/openclaw#67318). Handle the
     #     generic tag names first — they have no attribute gating since
-    #     a literal <tool_call> in prose is already vanishingly rare.
-    for _pattern in _TOOL_CALL_BLOCK_PATTERNS:
-        content = _pattern.sub('', content)
+    #     a literal  vanuit prose is already vanishingly rare.
+    #     str.find (O(n)) replaces DOTALL re.sub.
+    for _tc_name in _TOOL_CALL_TAG_NAMES:
+        _open_l = f'<{_tc_name}'.lower()
+        _close = f'</{_tc_name}>'; _close_l = _close.lower()
+        while True:
+            _pos = content.lower().find(_open_l)
+            if _pos == -1:
+                break
+            _gt = content.find('>', _pos)
+            if _gt == -1:
+                break
+            _end = content.lower().find(_close_l, _gt + 1)
+            if _end == -1:
+                break
+            content = content[:_pos] + content[_end + len(_close):]
     # 1c. <function name="...">...</function> — Gemma-style standalone
     #     tool call. Only strip when the tag sits at a block boundary
     #     (start of text, after a newline, or after sentence-ending
-    #     punctuation) AND carries a name="..." attribute. This keeps
+    #     punctuation) AND carries a name="...". This keeps
     #     prose mentions like "Use <function> to declare" safe.
-    content = _NAMED_FUNCTION_BLOCK_PATTERN.sub('', content)
+    #     str.find (O(n)) with boundary + name= checks.
+    _fc = 0
+    while True:
+        _pos = content.lower().find('<function', _fc)
+        if _pos == -1:
+            break
+        _fc = _pos + 1  # default: advance past this occurrence
+        if _pos > 0 and content[_pos - 1] not in ('\n', '\r', '.', '!', '?', ':'):
+            continue
+        _gt = content.find('>', _pos)
+        if _gt == -1:
+            break
+        if 'name=' not in content[_pos:_gt].lower():
+            _fc = _gt + 1
+            continue
+        _end = content.lower().find('</function>', _gt + 1)
+        if _end == -1:
+            break
+        content = content[:_pos] + content[_end + len('</function>'):]
+        _fc = 0  # content changed — restart scan
     # 2. Unterminated reasoning block — open tag at a block boundary
     #    (start of text, or after a newline) with no matching close.
     #    Strip from the tag to end of string.  Fixes #8878 / #9568
     #    (MiniMax M2.7 leaking raw reasoning into assistant content).
-    content = _UNTERMINATED_REASONING_BLOCK_PATTERN.sub('', content)
+    #    str.find (O(n)) at line starts.
+    for _tag in _REASONING_TAG_NAMES:
+        _open = f'<{_tag}'; _open_l = _open.lower()
+        _ut = 0  # cursor to avoid infinite loop on skip
+        while True:
+            _pos = content.lower().find(_open_l, _ut)
+            if _pos == -1:
+                break
+            _ut = _pos + 1  # default: advance
+            if _pos > 0 and content[_pos - 1] not in ('\n', '\r'):
+                continue
+            _gt = content.find('>', _pos)
+            if _gt == -1:
+                break
+            _close_l = f'</{_tag}>'.lower()
+            _end = content.lower().find(_close_l, _gt + 1)
+            if _end == -1:
+                content = content[:_pos]
+                break
+            _ut = _end + 1
     # 3. Stray orphan open/close tags that slipped through.
     content = _ORPHAN_REASONING_TAG_PATTERN.sub('', content)
     # 3b. Stray tool-call closers. (We do NOT strip bare <function> or
@@ -1811,19 +1847,26 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
                 if thinking_text and thinking_text not in reasoning_parts:
                     reasoning_parts.append(thinking_text)
     if not reasoning_parts and isinstance(content, str) and content:
-        inline_patterns = (
-            r"<think>(.*?)</think>",
-            r"<thinking>(.*?)</thinking>",
-            r"<thought>(.*?)</thought>",
-            r"<reasoning>(.*?)</reasoning>",
-            r"<REASONING_SCRATCHPAD>(.*?)</REASONING_SCRATCHPAD>",
-        )
-        for pattern in inline_patterns:
-            flags = re.DOTALL | re.IGNORECASE
-            for block in re.findall(pattern, content, flags=flags):
+        # str.find (O(n)) replaces DOTALL re.findall to prevent regex backtracking
+        _inline_pairs = [
+            ('💭', '💭'), ('<thinking>', '</thinking>'), ('<thought>', '</thought>'),
+            ('<reasoning>', '</reasoning>'), ('<REASONING_SCRATCHPAD>', '</REASONING_SCRATCHPAD>'),
+        ]
+        for _op, _cl in _inline_pairs:
+            _cursor = 0
+            _op_l = _op.lower(); _cl_l = _cl.lower()
+            while True:
+                _p = content.lower().find(_op_l, _cursor)
+                if _p == -1:
+                    break
+                _q = content.lower().find(_cl_l, _p + len(_op))
+                if _q == -1:
+                    break
+                block = content[_p + len(_op):_q]
                 cleaned = block.strip()
                 if cleaned and cleaned not in reasoning_parts:
                     reasoning_parts.append(cleaned)
+                _cursor = _q + len(_cl)
     
     # Combine all reasoning parts
     if reasoning_parts:
