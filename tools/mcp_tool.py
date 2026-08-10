@@ -2474,11 +2474,15 @@ class MCPServerTask:
         finally:
             for t in (shutdown_task, reconnect_task):
                 if not t.done():
-                    t.cancel()
                     try:
-                        await t
-                    except (asyncio.CancelledError, Exception):
-                        pass
+                        t.cancel()
+                    except RuntimeError:
+                        pass  # Event loop already closed during shutdown
+                    else:
+                        try:
+                            await t
+                        except (asyncio.CancelledError, Exception):
+                            pass
 
         if self._shutdown_event.is_set():
             return "shutdown"
@@ -2518,15 +2522,15 @@ class MCPServerTask:
         finally:
             for t in (shutdown_task, reconnect_task):
                 if not t.done():
-                    t.cancel()
                     try:
-                        # Guard against the loop being closed during
-                        # shutdown teardown — asyncio will raise
-                        # RuntimeError if the loop is already gone.
-                        if not asyncio.get_running_loop().is_closed():
+                        t.cancel()
+                    except RuntimeError:
+                        pass  # Event loop already closed during shutdown
+                    else:
+                        try:
                             await t
-                    except (asyncio.CancelledError, RuntimeError) as exc:
-                        logger.warning("MCP task cancelled during loop teardown: %s", exc)
+                        except (asyncio.CancelledError, Exception):
+                            pass
         if self._shutdown_event.is_set():
             return "shutdown"
         self._reconnect_event.clear()
@@ -3716,12 +3720,15 @@ class MCPServerTask:
         finally:
             for task in (shutdown_task, reconnect_task):
                 if not task.done():
-                    task.cancel()
                     try:
-                        if not asyncio.get_running_loop().is_closed():
+                        task.cancel()
+                    except RuntimeError:
+                        pass  # Event loop already closed during shutdown
+                    else:
+                        try:
                             await task
-                    except (asyncio.CancelledError, RuntimeError) as exc:
-                        logger.warning("MCP task cancelled during loop teardown: %s", exc)
+                        except (asyncio.CancelledError, Exception):
+                            pass
 
 
 # ---------------------------------------------------------------------------
