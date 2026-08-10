@@ -1489,7 +1489,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "deliver": {
                 "type": "string",
-                "description": "Omit to auto-deliver to current chat/topic (recommended). Set explicitly only when delivering ELSEWHERE. Values: 'origin' (same as omit), 'local' (save only), 'all' (fan out to every connected channel), or platform:chat_id:thread_id. Combine with comma: 'origin,all'. WARNING: platform:chat_id without :thread_id loses topic targeting; 'all' resolves at fire time.""
+                "description": "Omit to auto-deliver to current chat/topic (recommended). Set explicitly only when delivering ELSEWHERE. Values: 'origin' (same as omit), 'local' (save only), 'all' (fan out to every connected channel), or platform:chat_id:thread_id. Combine with comma: 'origin,all'. WARNING: platform:chat_id without :thread_id loses topic targeting; 'all' resolves at fire time."
             },
             "skills": {
                 "type": "array",

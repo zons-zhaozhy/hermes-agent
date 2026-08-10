@@ -897,6 +897,80 @@ def check_delegate_requirements() -> bool:
     return True
 
 
+def _audit_context_adequacy(
+    task_list: list,
+    fallback_context: Optional[str],
+) -> None:
+    """Log warnings when subagent tasks lack sufficient context.
+
+    Subagents have no memory, no skills, no conversation history. They can
+    only work with what is explicitly passed in 'context'. This function audits
+    every task and emits structured warnings when context is missing or too
+    thin, so the operator can see in agent.log what was (not) provided.
+    """
+    for i, task in enumerate(task_list):
+        effective_context = task.get("context") or fallback_context
+        goal = task.get("goal", "")
+        label = goal[:60]
+
+        # Level 0: completely missing context
+        if not effective_context or not effective_context.strip():
+            logger.warning(
+                "[DELEGATE-CONTEXT-AUDIT] Task %d ('%s'): "
+                "NO context provided. Subagent will operate blind — "
+                "no file paths, no conventions, no constraints. "
+                "This almost guarantees wasted work.",
+                i, label,
+            )
+            continue
+
+        ctx = effective_context.strip()
+
+        # Level 1: context suspiciously short — likely insufficient
+        if len(ctx) < 80:
+            logger.warning(
+                "[DELEGATE-CONTEXT-AUDIT] Task %d ('%s'): "
+                "context is only %d chars — likely insufficient. "
+                "Include: file paths, naming conventions, "
+                "known pitfalls, completion criteria.",
+                i, label, len(ctx),
+            )
+
+        # Level 2: no concrete file paths mentioned
+        has_path_hints = (
+            "/" in ctx
+            or "path" in ctx.lower()
+            or "file" in ctx.lower()
+            or "dir" in ctx.lower()
+        )
+        if not has_path_hints and len(goal) > 30:
+            logger.warning(
+                "[DELEGATE-CONTEXT-AUDIT] Task %d ('%s'): "
+                "context contains no file/directory references. "
+                "If the task involves file operations, the subagent "
+                "will waste turns discovering paths.",
+                i, label,
+            )
+
+        # Level 3: no completion criteria
+        has_completion = (
+            "success" in ctx.lower()
+            or "complete" in ctx.lower()
+            or "done" in ctx.lower()
+            or "output" in ctx.lower()
+            or "result" in ctx.lower()
+            or "deliverable" in ctx.lower()
+            or "verify" in ctx.lower()
+        )
+        if not has_completion and len(ctx) > 200:
+            logger.warning(
+                "[DELEGATE-CONTEXT-AUDIT] Task %d ('%s'): "
+                "context lacks explicit completion criteria. "
+                "Subagent may not know when it's done.",
+                i, label,
+            )
+
+
 def _build_child_system_prompt(
     goal: str,
     context: Optional[str] = None,
@@ -921,12 +995,26 @@ def _build_child_system_prompt(
     ]
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
+    else:
+        parts.append(
+            "\n⚠️ WARNING: NO CONTEXT was provided by the parent agent. "
+            "You have no access to project conventions, file paths, "
+            "naming rules, known pitfalls, or architectural knowledge. "
+            "If your task requires any of these, you will likely produce "
+            "incorrect results. Work cautiously and flag every assumption "
+            "you make in the Uncertainty section of your handoff."
+        )
     if workspace_path and str(workspace_path).strip():
+        workspace_str = str(workspace_path).strip()
         parts.append(
             "\nWORKSPACE PATH:\n"
-            f"{workspace_path}\n"
+            f"{workspace_str}\n"
             "Use this exact path for local repository/workdir operations unless the task explicitly says otherwise."
         )
+        # Auto-inject project context from .hermes.md / AGENTS.md
+        project_ctx = _extract_project_context_summary(workspace_str)
+        if project_ctx:
+            parts.append(f"\n{project_ctx}")
     parts.append(
         "\nComplete this task using the tools available to you. "
         "When finished, provide a clear, concise summary of:\n"
@@ -958,6 +1046,28 @@ def _build_child_system_prompt(
         "points over paragraphs, and don't replay your whole process. Your "
         "response is returned to the parent agent as a summary, and overlong "
         "summaries crowd out the parent's context window."
+    )
+    # Universal context-hunger notice — remind every subagent of its limits
+    # AND its ability to self-serve missing information.
+    parts.append(
+        "\n## Important: Self-Serve Missing Information\n"
+        "You have NO memory of the parent's conversation, NO access to "
+        "skills, NO ability to use codegraph/gitnexus/MCP tools. "
+        "Everything you know is in the CONTEXT and TASK above.\n\n"
+        "HOWEVER, you HAVE tools to acquire missing information yourself. "
+        "Before doing anything, if you are missing critical information:\n"
+        "- Need project conventions? → read_file the .hermes.md / AGENTS.md "
+        "in your WORKSPACE PATH\n"
+        "- Need to understand existing code? → search_files for the symbol, "
+        "then read_file the relevant source\n"
+        "- Need to know test structure? → search_files for test files, "
+        "read_file to see patterns\n"
+        "- Need API details? → read_file the source, search for route definitions\n"
+        "- Need external info? → web_search or web_extract\n\n"
+        "RULE: Do NOT guess silently. Do NOT skip steps because 'context "
+        "didn't mention it'. Either (a) find the information yourself using "
+        "your tools, or (b) state explicitly in your Deliverable Handoff "
+        "what you could not determine and why."
     )
     if role == "orchestrator":
         child_note = (
@@ -1019,6 +1129,100 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
         if os.path.isabs(text) and os.path.isdir(text):
             return text
     return None
+
+
+# Maximum chars to inject from project context files into subagent prompts.
+# Kept small to avoid bloating subagent context windows.
+_PROJECT_CONTEXT_MAX_CHARS = 2000
+
+
+def _extract_project_context_summary(workspace_path: str) -> str:
+    """Extract a concise summary of project constraints from context files.
+
+    Reads .hermes.md and AGENTS.md (if present) and extracts the most
+    actionable rules for subagents: coding conventions, naming rules,
+    project structure hints, and known pitfalls. Truncated to
+    _PROJECT_CONTEXT_MAX_CHARS to stay lightweight.
+
+    This is the 'automatic injection' layer — subagents get project
+    conventions without the parent having to manually extract and
+    paste them into every context parameter.
+    """
+    import re
+
+    summary_parts = []
+
+    # Candidate files, ordered by specificity
+    candidates = [
+        os.path.join(workspace_path, ".hermes.md"),
+        os.path.join(workspace_path, "AGENTS.md"),
+    ]
+
+    for filepath in candidates:
+        if not os.path.isfile(filepath):
+            continue
+        try:
+            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read(_PROJECT_CONTEXT_MAX_CHARS * 2)
+        except Exception:
+            continue
+
+        # Extract section headers that are most useful for subagents
+        useful_sections = []
+        section_markers = [
+            "convention", "pitfall", "important", "naming", "rule",
+            "铁律", "规范", "陷阱", "纪律", "禁止",
+        ]
+        lines = content.split("\n")
+        current_section = []
+        in_useful = False
+
+        for line in lines:
+            stripped = line.strip()
+            # Detect useful section headers (## or # headings)
+            if stripped.startswith("#"):
+                header_lower = stripped.lower()
+                if any(m in header_lower for m in section_markers):
+                    # Start collecting a useful section
+                    if current_section and in_useful:
+                        useful_sections.append("\n".join(current_section))
+                    current_section = [stripped]
+                    in_useful = True
+                else:
+                    # Non-useful section: flush if we were in useful
+                    if current_section and in_useful:
+                        useful_sections.append("\n".join(current_section))
+                    current_section = []
+                    in_useful = False
+            elif in_useful:
+                current_section.append(line)
+
+        # Flush last section
+        if current_section and in_useful:
+            useful_sections.append("\n".join(current_section))
+
+        if useful_sections:
+            source = os.path.basename(filepath)
+            combined = "\n\n".join(useful_sections)
+            # Truncate per file
+            if len(combined) > _PROJECT_CONTEXT_MAX_CHARS:
+                combined = combined[:_PROJECT_CONTEXT_MAX_CHARS] + "\n... (truncated)"
+            summary_parts.append(f"### From {source}\n{combined}")
+
+    if not summary_parts:
+        return ""
+
+    header = (
+        "## Auto-Extracted Project Context\n"
+        "The following rules were automatically extracted from your project's "
+        "context files. Follow them — they represent hard project conventions "
+        "that the parent agent operates under.\n"
+    )
+    result = header + "\n\n".join(summary_parts)
+    # Global truncation
+    if len(result) > _PROJECT_CONTEXT_MAX_CHARS:
+        result = result[:_PROJECT_CONTEXT_MAX_CHARS] + "\n... (truncated)"
+    return result
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
@@ -3375,6 +3579,10 @@ def delegate_task(
             return tool_error(f"Task {i} output_schema invalid: {schema_err}")
         task_schemas.append(coerced_schema)
 
+    # Audit context adequacy for every task — subagents start from zero
+    # knowledge and can only work with what we explicitly give them.
+    _audit_context_adequacy(task_list, context)
+
     overall_start = time.monotonic()
     results = []
 
@@ -4417,13 +4625,19 @@ DELEGATE_TASK_SCHEMA = {
             "context": {
                 "type": "string",
                 "description": (
-                    "Background information the subagent needs: file paths, "
-                    "error messages, project structure, constraints. The more "
-                    "specific you are, the better the subagent performs. "
-                    "CRITICAL: subagents have zero skill/memory access — if the "
-                    "task requires project conventions, naming rules, known "
-                    "pitfalls, or architectural knowledge, load the relevant "
-                    "skill(s) first via skill_view and embed their key rules here."
+                    "MANDATORY for non-trivial tasks. Background information "
+                    "the subagent needs: file paths (absolute), error messages, "
+                    "project structure, naming conventions, known pitfalls, "
+                    "completion criteria. "
+                    "SUBAGENTS START FROM ZERO KNOWLEDGE — they have no memory, "
+                    "no skills, no conversation history. If you don't provide "
+                    "enough context here, the subagent WILL produce wrong results "
+                    "or waste turns guessing. "
+                    "CRITICAL: if the task requires project conventions, naming "
+                    "rules, known pitfalls, or architectural knowledge, load the "
+                    "relevant skill(s) first via skill_view and embed their key "
+                    "rules here. Include absolute file paths and expected output "
+                    "format."
                 ),
             },
             "tasks": {
