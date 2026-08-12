@@ -137,6 +137,50 @@ class TestGoalManager:
         assert "port goal command to hermes" in prompt
         assert prompt.strip()  # non-empty
 
+    def test_continuation_prompt_minimal_after_first_turn(self, hermes_home):
+        """After turn 1, the continuation prompt must NOT repeat the full
+        goal text — only carry the turn number and judge reason. The goal
+        is already in conversation history from the first injection.
+
+        Without this, a 10-turn goal loop wastes ~15K tokens on identical
+        repeated text (measured: 664 injections in one session = 140K tokens).
+        """
+        from hermes_cli.goals import GoalManager, GoalState
+
+        mgr = GoalManager(session_id="cont-min-sid")
+        mgr.set("build the migration tool")
+        assert mgr._state is not None
+        assert mgr._state.turns_used == 0
+
+        # Turn 0 → turns_used increments inside evaluate_after_turn, not
+        # next_continuation_prompt. Simulate turns_used to test the template
+        # switch directly.
+        mgr._state.turns_used = 0
+        prompt_first = mgr.next_continuation_prompt()
+        assert prompt_first is not None
+        assert "build the migration tool" in prompt_first  # full goal text
+
+        mgr._state.turns_used = 2
+        prompt_later = mgr.next_continuation_prompt(reason="tests not passing yet")
+        assert prompt_later is not None
+        assert "build the migration tool" not in prompt_later  # goal NOT repeated
+        assert "turn 2" in prompt_later
+        assert "tests not passing yet" in prompt_later
+        assert len(prompt_later) < len(prompt_first)  # minimal is shorter
+
+    def test_continuation_prompt_force_full(self, hermes_home):
+        """force_full=True must bypass the minimal template — used after
+        context compression to re-inject the goal into a fresh history."""
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="cont-force-sid")
+        mgr.set("ship the feature")
+        mgr._state.turns_used = 5
+
+        prompt = mgr.next_continuation_prompt(force_full=True)
+        assert prompt is not None
+        assert "ship the feature" in prompt  # full goal text restored
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Smoke: CommandDef is wired

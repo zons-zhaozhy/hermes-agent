@@ -9682,7 +9682,7 @@ def _plan_goal_compression_recovery(
         except (TypeError, ValueError):
             attempts = 0
 
-    continuation_prompt = goal_mgr.next_continuation_prompt()
+    continuation_prompt = goal_mgr.next_continuation_prompt(force_full=True)
     if attempts < _GOAL_COMPRESSION_RECOVERY_LIMIT and continuation_prompt:
         session[_GOAL_COMPRESSION_RECOVERY_ATTEMPTS] = {
             "goal_created_at": goal_created_at,

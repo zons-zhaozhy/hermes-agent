@@ -98,6 +98,17 @@ CONTINUATION_PROMPT_TEMPLATE = (
     "say so clearly and describe the specific blocker."
 )
 
+# Minimal continuation for turns > 1: the full goal text and instructions
+# were injected in the first continuation and are already in context.
+# Repeating them every turn wastes ~1.5K tokens/turn (664 injections in one
+# long-lived goal session = ~140K tokens burned on identical text).
+# The judge's reason is the only new information per turn.
+CONTINUATION_PROMPT_MINIMAL_TEMPLATE = (
+    "[Continuing toward your standing goal — turn {turn}]\n"
+    "{reason}\n\n"
+    "Take the next concrete step."
+)
+
 # Used when the goal carries a structured completion contract. The contract
 # block tells the agent exactly what "done" means, how to prove it, what not
 # to break, what's in scope, and when to stop and ask — so it targets the
@@ -2006,7 +2017,7 @@ class GoalManager:
         return {
             "status": "active",
             "should_continue": True,
-            "continuation_prompt": self.next_continuation_prompt(),
+            "continuation_prompt": self.next_continuation_prompt(reason=reason),
             "verdict": "continue",
             "reason": reason,
             "message": (
@@ -2014,9 +2025,33 @@ class GoalManager:
             ),
         }
 
-    def next_continuation_prompt(self) -> Optional[str]:
+    def next_continuation_prompt(self, *, reason: Optional[str] = None, force_full: bool = False) -> Optional[str]:
+        """Return the user-role message to feed back into run_conversation.
+
+        Turn 1 (turns_used <= 1) or force_full: full template with goal text
+        + instructions. Turn > 1: minimal template (turn number + reason only)
+        to avoid repeating ~1900 chars of identical text every turn.
+
+        Contract:
+          Preconditions: self._state exists and status == "active"
+          Postconditions: return is non-empty str when goal is active, None otherwise
+        """
         if not self._state or self._state.status != "active":
             return None
+
+        # After the first continuation, the full goal text and instructions
+        # are already in conversation history. Repeating them wastes
+        # ~1.5K tokens/turn. Use a minimal prompt that carries only the
+        # turn counter and the judge's latest reason.
+        # force_full is used by context-compression recovery to re-inject
+        # the goal after history was lost.
+        if self._state.turns_used > 1 and not force_full:
+            return CONTINUATION_PROMPT_MINIMAL_TEMPLATE.format(
+                turn=self._state.turns_used,
+                reason=reason or "Continue working toward the goal.",
+            )
+
+        # First continuation: inject the full goal text + instructions.
         # Contract takes priority: it carries the verification surface and
         # constraints the agent must target. Subgoals fold in as extra
         # criteria appended to the contract block.
@@ -2210,6 +2245,7 @@ __all__ = [
     "run_gate",
     "workspace_fingerprint",
     "CONTINUATION_PROMPT_TEMPLATE",
+    "CONTINUATION_PROMPT_MINIMAL_TEMPLATE",
     "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
     "CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE",
     "JUDGE_USER_PROMPT_TEMPLATE",
