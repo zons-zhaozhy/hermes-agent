@@ -132,24 +132,29 @@ class TestDiscoveryShape:
         assert "context" not in requested_fields
         assert len(result["results"]) == 1
         hit = result["results"][0]
-        assert "bookend_start" in hit
-        assert hit["messages"]
-        assert "bookend_end" in hit
+        assert hit["snippet"]
+        assert hit["session_id"]
+        assert "bookend_start" not in hit
+        assert "messages" not in hit
+        assert "bookend_end" not in hit
 
-    def test_discovery_result_has_bookends_and_window(self, db):
+    def test_discovery_result_has_snippet_and_metadata_only(self, db):
         _seed_modpack_sessions(db)
         result = json.loads(session_search(query="modpack", limit=3, db=db))
         assert result["success"] is True
         assert result["mode"] == "discover"
         assert result["count"] >= 1
         for hit in result["results"]:
-            assert "bookend_start" in hit
-            assert "messages" in hit
-            assert "bookend_end" in hit
-            assert "match_message_id" in hit
             assert "snippet" in hit
-            assert "messages_before" in hit
-            assert "messages_after" in hit
+            assert "session_id" in hit
+            assert "match_message_id" in hit
+            assert "when" in hit
+            assert "source" in hit
+            assert "messages" not in hit
+            assert "bookend_start" not in hit
+            assert "bookend_end" not in hit
+            assert "messages_before" not in hit
+            assert "messages_after" not in hit
 
 
     def test_current_session_filtered_out(self, db):
@@ -474,23 +479,19 @@ class TestCompactionSummaryFiltering:
         assert not _is_compaction_summary("")
         assert not _is_compaction_summary(None)
 
-    def test_compaction_summary_excluded_from_bookend_start(self, db):
-        """Compaction handoff in bookend_start position must be filtered out."""
+    def test_compaction_summary_not_in_discovery_output(self, db):
+        """Discovery no longer returns message bodies, so compaction handoffs
+        can't leak into the response. Verify discovery stays lean."""
         db.create_session("s_compact", source="cli")
-        # First message: a compaction handoff (should be filtered)
         db.append_message("s_compact", role="user",
                           content="[CONTEXT COMPACTION — REFERENCE ONLY] "
                                   "Earlier turns were compacted into the summary below. " + "x" * 50000)
-        # Second message: normal user message
         db.append_message("s_compact", role="user", content="Fix the zorgblat rendering bug")
-        # Padding messages to push window away from session start (so bookend has room)
         for i in range(10):
             db.append_message("s_compact", role="user", content=f"setup step {i}")
             db.append_message("s_compact", role="assistant", content=f"setup done {i}")
-        # Match target: uses a unique term so FTS5 anchors here, not at the start
         db.append_message("s_compact", role="user", content="investigate the frobnitz mob spawning in KubeJS")
         db.append_message("s_compact", role="assistant", content="I'll look into the frobnitz mob spawning issue.")
-        # Tail messages
         for i in range(5):
             db.append_message("s_compact", role="user", content=f"tail {i}")
             db.append_message("s_compact", role="assistant", content=f"done tail {i}")
@@ -500,12 +501,12 @@ class TestCompactionSummaryFiltering:
         assert result["success"] is True
         assert len(result["results"]) >= 1
         entry = result["results"][0]
-        # bookend_start must NOT contain the compaction handoff
-        for msg in entry.get("bookend_start", []):
-            assert "[CONTEXT COMPACTION" not in (msg.get("content") or "")
-        # The normal message should still be present in bookend_start
-        bookend_contents = [m.get("content", "") for m in entry.get("bookend_start", [])]
-        assert any("zorgblat" in c for c in bookend_contents)
+        # Discovery returns metadata + snippet only — no message bodies
+        assert "messages" not in entry
+        assert "bookend_start" not in entry
+        assert "bookend_end" not in entry
+        # The compaction handoff can't leak because it's never fetched
+        assert "[CONTEXT COMPACTION" not in json.dumps(entry)
 
 
 # =========================================================================
@@ -692,7 +693,7 @@ class TestCompactionDiscoveryBothLayers:
         ])
         db._conn.commit()
 
-    def test_archived_hit_surfaces_with_bounded_summary_free_bookends(self, db):
+    def test_archived_hit_surfaces_in_discovery(self, db):
         self._seed_compacted_session(db)
 
         result = json.loads(session_search(
@@ -706,21 +707,12 @@ class TestCompactionDiscoveryBothLayers:
         entry = result["results"][0]
         assert entry["session_id"] == "s_both"
 
-        # Layer 2a — summary exclusion: the compaction handoff row sits at the
-        # session tail (freshly inserted by archive_and_compact), exactly where
-        # bookend_end samples — it must be filtered out.
-        for msg in entry.get("bookend_start", []) + entry.get("bookend_end", []):
-            assert "[CONTEXT COMPACTION" not in (msg.get("content") or "")
-
-        # Layer 2b — content caps: bookends ≤1200 chars, window ≤4000 chars.
-        for msg in entry.get("bookend_start", []) + entry.get("bookend_end", []):
-            assert len(msg.get("content") or "") <= 1210
-        for msg in entry.get("messages", []):
-            assert len(msg.get("content") or "") <= 4010
-
-        # The long-but-legitimate opening survives (capped, not dropped).
-        bookend_contents = [m.get("content") or "" for m in entry.get("bookend_start", [])]
-        assert any("obsidian gateway migration" in c for c in bookend_contents)
+        # Discovery returns metadata + snippet only — no message bodies
+        # or compaction handoffs can leak because nothing is fetched.
+        assert "messages" not in entry
+        assert "bookend_start" not in entry
+        assert "bookend_end" not in entry
+        assert "[CONTEXT COMPACTION" not in json.dumps(entry)
 
 
 # =========================================================================

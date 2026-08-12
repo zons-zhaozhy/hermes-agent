@@ -6,9 +6,10 @@ Single-shape tool with three calling modes (inferred from args, no explicit
 mode parameter):
 
   1. DISCOVERY — pass ``query``. Runs FTS5, dedupes hits by session lineage,
-     returns top N sessions each with: snippet, ±5 message window around the
-     match, plus bookend_start (first 3 user+assistant msgs of session) and
-     bookend_end (last 3). Zero LLM cost.
+     returns top N sessions each with snippet and metadata (session_id, when,
+     source, model, title, match_message_id). Zero LLM cost. Does NOT return
+     message bodies — use SCROLL to drill into a hit once you know which
+     session matters.
 
   2. SCROLL — pass ``session_id`` + ``around_message_id``. Returns a window
      of ±window messages centered on the anchor, no FTS5, no bookends. To
@@ -19,14 +20,8 @@ mode parameter):
      previews, timestamps).
 
 All three modes operate on the SQLite session DB via the FTS5 index and
-the get_anchored_view / get_messages_around primitives in hermes_state.
+the get_messages_around primitives in hermes_state.
 No LLM calls anywhere — every shape returns actual messages from the DB.
-
-History: PR #20238 (JabberELF) seeded a fast/summary dual-mode split; the
-toolkit expansion in PR #26419 (yoniebans) added the anchored drill-down,
-bookends, and sort. This module merges all of that into a single calling
-shape with no mode parameter, no summary LLM path, and explicit scroll
-support.
 """
 
 import json
@@ -656,16 +651,6 @@ def _title_match_result(
         logging.debug("get_messages failed for title match %s", session_id, exc_info=True)
         messages = []
 
-    anchor_id = messages[0].get("id") if messages else None
-    if anchor_id is not None:
-        try:
-            view = db.get_anchored_view(session_id, anchor_id, window=5, bookend=3)
-        except Exception:
-            logging.debug("get_anchored_view failed for title match %s/%s", session_id, anchor_id, exc_info=True)
-            view = {}
-    else:
-        view = {}
-
     entry = {
         "session_id": session_id,
         "when": _format_timestamp(session_meta.get("started_at")),
@@ -673,13 +658,8 @@ def _title_match_result(
         "model": session_meta.get("model") or "unknown",
         "title": session_meta.get("title") or title_query,
         "matched_role": "session_title",
-        "match_message_id": anchor_id,
+        "match_message_id": messages[0].get("id") if messages else None,
         "snippet": f"Session title matched: {session_meta.get('title') or title_query}",
-        "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or messages[:3])],
-        "messages": [_shape_message(m, anchor_id=anchor_id) for m in (view.get("window") or messages[:5])],
-        "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or messages[-3:])],
-        "messages_before": view.get("messages_before", 0),
-        "messages_after": view.get("messages_after", max(len(messages) - 5, 0)),
         "_lineage_root": lineage_root,
     }
     if lineage_root and lineage_root != session_id:
@@ -790,11 +770,6 @@ def _discover(
             continue
         hit_sid = match_info.get("session_id") or lineage_root
         msg_id = match_info.get("id")
-        try:
-            view = db.get_anchored_view(hit_sid, msg_id, window=5, bookend=3)
-        except Exception as e:
-            logging.warning("get_anchored_view failed for %s/%s: %s", hit_sid, msg_id, e, exc_info=True)
-            continue
 
         try:
             session_meta = db.get_session(lineage_root) or {}
@@ -812,19 +787,6 @@ def _discover(
             "matched_role": match_info.get("role"),
             "match_message_id": msg_id,
             "snippet": match_info.get("snippet") or "",
-            "bookend_start": [
-                _shape_message(m, max_content_len=1200)
-                for m in (view.get("bookend_start") or [])
-                if not _is_compaction_summary(m.get("content", ""))
-            ],
-            "messages": [_shape_message(m, anchor_id=msg_id, max_content_len=4000) for m in (view.get("window") or [])],
-            "bookend_end": [
-                _shape_message(m, max_content_len=1200)
-                for m in (view.get("bookend_end") or [])
-                if not _is_compaction_summary(m.get("content", ""))
-            ],
-            "messages_before": view.get("messages_before", 0),
-            "messages_after": view.get("messages_after", 0),
         }
         if lineage_root and lineage_root != hit_sid:
             entry["parent_session_id"] = lineage_root
@@ -992,7 +954,8 @@ SESSION_SEARCH_SCHEMA = {
         "found' from history alone when a direct source was provided.\n\n"
         "FOUR SHAPES:\n"
         "  1) DISCOVERY — query: FTS5, dedupes by lineage, top N sessions; each "
-        "carries snippet, bookends (goal→match→resolution) and ±5 window.\n"
+        "carries snippet and metadata only (session_id, title, when, match_message_id). "
+        "Lightweight — use to identify which session matters, then SCROLL to read it.\n"
         "  2) SCROLL — session_id + around_message_id (+window): slice centered "
         "on the anchor; scroll forward/back with last/first msg id.\n"
         "  3) READ — session_id only: dump whole session (first 20 + last 10 "
