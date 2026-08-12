@@ -14,6 +14,7 @@ ACTIVATION: ON by default. Set ERROR_DISCIPLINE_DISABLE=1 to turn off.
 from __future__ import annotations
 
 import difflib
+import json
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -60,6 +61,22 @@ _DIAGNOSIS_TOOLS = frozenset({
 
 _CURL_PATTERN = "curl "
 
+_READONLY_PREFIXES = (
+    "cat ", "grep ", "rg ", "head ", "tail ", "less ", "more ",
+    "docker logs", "journalctl", "find ", "ls ", "file ",
+)
+
+# Exit codes that are NOT code bugs — network/environment/grep-no-match
+_NON_ERROR_EXIT_CODES = frozenset({124, 127})
+
+# Commands where exit_code=1 means "no match" (normal, not an error)
+_NO_MATCH_EXIT1_PREFIXES = ("grep ", "rg ", "fgrep ", "egrep ")
+
+_NETWORK_ERROR_PHRASES = (
+    "connection refused", "no such host", "could not resolve",
+    "timed out", "name or service not known",
+)
+
 
 def _plugin_disabled() -> bool:
     return os.environ.get("ERROR_DISCIPLINE_DISABLE", "").lower() in {
@@ -67,45 +84,109 @@ def _plugin_disabled() -> bool:
     }
 
 
+def _extract_exit_code(text: str) -> int | None:
+    """Extract exit_code from terminal result.
+
+    Contract:
+      Preconditions: text is a string (may be empty)
+      Postconditions: returns int or None (None if not found)
+    """
+
+    Handles JSON ({"exit_code": 1}), Python repr ({'exit_code': 1}),
+    and simple format (exit_code=1). Returns None if not found.
+    """
+    if not text:
+        return None
+    # Try JSON parse first (no exception — validate before parse)
+    stripped = text.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            obj = json.loads(stripped)
+            if isinstance(obj, dict) and "exit_code" in obj:
+                return int(obj["exit_code"])
+        except (json.JSONDecodeError, ValueError, TypeError) as exc:
+            logger.warning("exit_code extraction: malformed JSON in result: %s", exc)
+    # Try repr format: {'exit_code': 1}
+    if "'exit_code':" in text:
+        for part in text.split("'exit_code':"):
+            rest = part.lstrip()
+            if rest and rest[0].isdigit():
+                digits = []
+                for ch in rest:
+                    if ch.isdigit():
+                        digits.append(ch)
+                    else:
+                        break
+                if digits:
+                    return int("".join(digits))
+    # Simple format: exit_code=1
+    if "exit_code=" in text:
+        idx = text.index("exit_code=") + len("exit_code=")
+        digits = []
+        for ch in text[idx:]:
+            if ch.isdigit():
+                digits.append(ch)
+            else:
+                break
+        if digits:
+            return int("".join(digits))
+    return None
+
+
 def _is_error_result(result: Any, status: str = "", error_type: str = "", tool_name: str = "") -> bool:
     """Check if a tool result indicates an error.
 
     Only trust structured signals (status/error_type), NOT content keywords.
-    Content-based detection has high false-positive rate (e.g. search results
-    about "error handling" would be misclassified as an error).
-    Special case: terminal curl/wget results contain network errors even when
-    status="ok" (the command ran, but the network call failed).
+    Content-based detection has high false-positive rate.
+
+    Excludes non-code-error exit codes:
+    - 124: SSH/process timeout (network issue, not code bug)
+    - 127: command not found (environment issue)
+
+    Note: grep/rg exit_code=1 (no match) is handled in on_post_tool_call
+    via command-level context, since this function lacks the command string.
     """
     if status in ("error", "blocked"):
         return True
     if error_type:
         return True
     result_str = str(result) if result else ""
-    # Check for non-zero exit code pattern in terminal results
-    import re  # noqa: R1 — traceback pattern matching requires regex
-    if re.search(r"exit.code.:\s*[1-9]", result_str, re.IGNORECASE):
+    # Check for non-zero exit code (exclude timeout/not-found)
+    code = _extract_exit_code(result_str)
+    if code is not None and code != 0 and code not in _NON_ERROR_EXIT_CODES:
         return True
     if result_str.strip().startswith("Traceback "):
         return True
-    # Special case: curl/wget network failures in terminal output
-    if tool_name == "terminal":
-        network_errors = (
-            "connection refused", "no such host", "could not resolve",
-            "timed out", "name or service not known",
-        )
-        if any(err in result_str.lower() for err in network_errors):
+    # Network failures in terminal output (only if not a known non-error exit code)
+    if tool_name == "terminal" and code not in _NON_ERROR_EXIT_CODES:
+        if any(phrase in result_str.lower() for phrase in _NETWORK_ERROR_PHRASES):
             return True
     return False
 
 
 def _is_readonly_terminal(cmd: str) -> bool:
-    """Check if a terminal command is read-only (logs, grep, etc.)."""
+    """Check if a terminal command is read-only (logs, grep, etc.).
+
+    Also recognizes SSH-wrapped read-only commands — extracts the last
+    quoted string as the remote command and checks its prefix.
+    Uses rfind instead of regex to avoid escaping hell.
+    """
     lower = cmd.strip().lower()
-    readonly_prefixes = (
-        "cat ", "grep ", "rg ", "head ", "tail ", "less ", "more ",
-        "docker logs", "journalctl", "find ", "ls ", "file ",
-    )
-    return any(lower.startswith(p) for p in readonly_prefixes)
+    # Direct readonly commands
+    if any(lower.startswith(p) for p in _READONLY_PREFIXES):
+        return True
+    # SSH-wrapped: find last quoted string as remote command
+    # Try single quotes first, then double quotes
+    for quote in ("'", '"'):
+        end = lower.rfind(quote)
+        if end > 0:
+            start = lower.rfind(quote, 0, end)
+            if start >= 0:
+                remote_cmd = lower[start + 1 : end].lstrip()
+                if any(remote_cmd.startswith(p) for p in _READONLY_PREFIXES):
+                    return True
+                break
+    return False
 
 
 def _is_url_probe(cmd: str) -> bool:
@@ -133,7 +214,6 @@ def _commands_are_url_enumeration(recent: List[Dict]) -> bool:
         for r in recent[-3:]
         if r["tool"] == "terminal" and _is_url_probe(r["args"].get("command", ""))
     ]
-    # 2+ curl calls with different URLs + at least one error result
     if len(curl_calls) >= 2:
         urls = [c["args"].get("command", "").split()[-1] for c in curl_calls if c["args"].get("command", "")]
         has_error = any(c.get("is_error") for c in curl_calls)
@@ -164,8 +244,17 @@ def on_post_tool_call(**kwargs) -> None:
     if len(recent) > _MAX_RECENT:
         recent[:] = recent[-_MAX_RECENT:]
 
+    # Determine if this is an error, considering command context for grep
+    is_err = _is_error_result(result, status, error_type, tool_name)
+    # Override: grep/rg with exit_code=1 = no match, not an error
+    if is_err and tool_name == "terminal":
+        cmd = str(args.get("command", "")).lower()
+        code = _extract_exit_code(str(result))
+        if code == 1 and (cmd.startswith(_NO_MATCH_EXIT1_PREFIXES) or "| grep" in cmd or "| rg " in cmd):
+            is_err = False
+
     # Track consecutive errors
-    if _is_error_result(result, status, error_type, tool_name):
+    if is_err:
         _set_error_count(sid, _get_error_count(sid) + 1)
         _set_last_error_read(sid, False)  # error occurred, need new diagnosis
     else:
