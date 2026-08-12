@@ -1240,6 +1240,14 @@ def _configured_provider_matches(
             slug = f"custom:{name}"
             if slug in matches:
                 continue
+            # Skip if this custom_providers entry was derived from a
+            # ``providers:`` key that already matched in the user_providers
+            # pass above — it is the same provider in a different shape
+            # (user_providers key ``zai`` vs custom_providers ``custom:zai``),
+            # not a second declaration.
+            provider_key = str(entry.get("provider_key", "") or "").strip()
+            if provider_key and provider_key in matches:
+                continue
             for key in ("models", "model", "default_model"):
                 hit = _match(entry.get(key))
                 if hit:
