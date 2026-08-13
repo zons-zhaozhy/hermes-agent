@@ -9886,6 +9886,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             return False
 
+    def _redirect_was_steered(self) -> bool:
+        """True when redirect() accepted the text but only as a steer.
+
+        redirect() silently degrades to steer() while a tool is mid-flight
+        (run_agent.py redirect()): the text lands in ``_pending_steer`` and
+        rides on the LAST tool result once the current command finishes —
+        the turn is NOT actually interrupted.  The CLI must not print the
+        "Redirected current turn" illusion in that case; report the real
+        state and tell the user how to interrupt for real (Ctrl+C).
+        """
+        agent = self.agent
+        if agent is None:
+            return False
+        return (
+            getattr(agent, "_pending_steer", None) is not None
+            and getattr(agent, "_pending_redirect", None) is None
+        )
+
     def _should_handle_background_command_inline(
         self, text: str, has_images: bool = False
     ) -> bool:
@@ -15717,8 +15735,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             except Exception:
                                 redirected = False
                         if redirected:
+                            # redirect() silently degrades to steer() while a
+                            # tool is mid-flight — detect and report the real
+                            # state instead of the "Redirected current turn"
+                            # illusion (see _redirect_was_steered).  The
+                            # message is already accepted (steer stash), so it
+                            # must NOT also be enqueued below — that would
+                            # double-inject it.
+                            _degraded_to_steer = self._redirect_was_steered()
                             preview = text[:80] + ("..." if len(text) > 80 else "")
-                            _cprint(f"  {_ACCENT}↪ Redirected current turn: '{preview}'{_RST}")
+                            if _degraded_to_steer:
+                                _cprint(
+                                    f"  {_ACCENT}↪ Message queued mid-command: '{preview}'{_RST}"
+                                )
+                                _cprint(
+                                    f"  {_DIM}  (当前命令继续运行，消息将在命令结束后注入；"
+                                    f"如需立即中断请按 Ctrl+C){_RST}"
+                                )
+                            else:
+                                _cprint(f"  {_ACCENT}↪ Redirected current turn: '{preview}'{_RST}")
                         else:
                             # Compatibility path for older agents, multimodal
                             # follow-ups, or a turn that finished in the race.
