@@ -87,6 +87,8 @@ def _is_verification_tool_call(tool_name: str, args: Dict) -> bool:
     """Check if tool call is verifying a previous write."""
     if tool_name == "search_files":
         return True  # grep after write = verification
+    if tool_name == "read_file":
+        return True  # re-read after patch = verification
     if tool_name == "terminal":
         cmd = str(args.get("command", "")).lower()
         verify_prefixes = ("grep ", "cat ", "head ", "diff ", "git diff")
@@ -130,6 +132,13 @@ def on_post_tool_call(**kwargs) -> None:
         if path:
             attempts = _get_patch_attempts(sid)
             attempts[path] = attempts.get(path, 0) + 1
+
+            # Reset counter on successful patch — the guard targets
+            # repeated FAILURES (stale old_string), not repeated successes.
+            # Without this, 3 successful patches on the same file block
+            # the 4th even though nothing went wrong.
+            if status != "error" and "success" in str(result).lower():
+                attempts[path] = 0
 
     # Track verification after patch
     if _is_verification_tool_call(tool_name, args):
