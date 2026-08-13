@@ -471,6 +471,14 @@ def _compute_tool_definitions(
                 tools_to_include.difference_update(legacy_tools)
                 if not quiet_mode:
                     print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+            elif toolset_name in tools_to_include:
+                # Bare tool name (not a toolset): remove just that one tool.
+                # Used by delegate_task to block individual tools (write_file,
+                # patch) from subagents without stripping the whole "file"
+                # toolset (which also carries read_file/search_files).
+                tools_to_include.discard(toolset_name)
+                if not quiet_mode:
+                    print(f"🚫 Disabled individual tool '{toolset_name}'")
             elif not quiet_mode:
                 print(f"⚠️  Unknown toolset: {toolset_name}")
 

@@ -52,6 +52,8 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
         "cronjob",  # no scheduling more work in the parent's name
+        "write_file",  # subagents must not modify files (user mandate)
+        "patch",  # subagents must not modify files (user mandate)
     ]
 )
 
@@ -1247,11 +1249,16 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
 
 
 def _blocked_toolsets_for_role(role: str) -> List[str]:
-    """Return one-tool deny toolsets for a delegated child role.
+    """Return deny entries for a delegated child role.
+
+    Returns a mix of toolset names (for fully-blocked toolsets) and bare
+    tool names (for individual tools blocked inside mixed toolsets).
+    ``model_tools.get_tool_definitions`` handles both: toolset names are
+    expanded and subtracted; bare tool names remove just that one tool.
 
     ``_strip_blocked_tools`` can remove fully blocked toolsets, but it must keep
     mixed platform bundles such as ``hermes-cli`` because those also contain
-    useful tools. Passing these exact deny toolsets to AIAgent lets
+    useful tools. Passing these exact deny entries to AIAgent lets
     ``model_tools`` subtract blocked names *after* composite expansion, and the
     restriction survives later registry/MCP refreshes through the agent's
     stored ``disabled_toolsets``.
@@ -1259,12 +1266,20 @@ def _blocked_toolsets_for_role(role: str) -> List[str]:
     blocked_names = set(DELEGATE_BLOCKED_TOOLS)
     if role == "orchestrator":
         blocked_names.discard("delegate_task")
-    return sorted(
-        name
-        for name, defn in TOOLSETS.items()
-        if defn.get("tools")
-        and set(defn.get("tools", ())).issubset(blocked_names)
-    )
+
+    deny: List[str] = []
+    for name, defn in TOOLSETS.items():
+        tools = set(defn.get("tools", ()))
+        if not tools:
+            continue
+        if tools.issubset(blocked_names):
+            # Entire toolset is blocked — deny by toolset name.
+            deny.append(name)
+        elif tools & blocked_names:
+            # Mixed toolset — deny each blocked tool by bare name.
+            for t in sorted(tools & blocked_names):
+                deny.append(t)
+    return sorted(set(deny))
 
 
 def _emit_parent_console(parent_agent, line: str) -> None:
@@ -4512,7 +4527,7 @@ def _build_top_level_description() -> str:
         "- Summaries are SELF-REPORTS — verify side effects (fetch the URL, "
         "stat file, read back) before reporting success.\n"
         "- Leaf subagents CANNOT call: delegate_task, clarify, memory, "
-        "send_message. Orchestrators retain delegate_task only.\n"
+        "send_message, write_file, patch. Orchestrators retain delegate_task only.\n"
         "- Model NOT selectable per call: children inherit parent model "
         "unless pinned via delegation.provider / delegation.model or 'tier'.\n"
         "- Each subagent gets its own terminal session (separate cwd/state)."
