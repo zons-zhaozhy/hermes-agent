@@ -1847,9 +1847,13 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
                 if thinking_text and thinking_text not in reasoning_parts:
                     reasoning_parts.append(thinking_text)
     if not reasoning_parts and isinstance(content, str) and content:
-        # str.find (O(n)) replaces DOTALL re.findall to prevent regex backtracking
+        # str.find (O(n)) replaces DOTALL re.findall to prevent regex backtracking.
+        # NOTE: <think> MUST stay first — it is the most common inline format
+        # (DeepSeek etc.).  eb0775d15e dropped it when converting from regex,
+        # silently losing inline reasoning from non-streaming responses.
         _inline_pairs = [
-            ('💭', '💭'), ('<thinking>', '</thinking>'), ('<thought>', '</thought>'),
+            ('<think>', '</think>'), ('💭', '💭'),
+            ('<thinking>', '</thinking>'), ('<thought>', '</thought>'),
             ('<reasoning>', '</reasoning>'), ('<REASONING_SCRATCHPAD>', '</REASONING_SCRATCHPAD>'),
         ]
         for _op, _cl in _inline_pairs:

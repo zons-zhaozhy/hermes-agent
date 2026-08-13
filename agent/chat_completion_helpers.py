@@ -1623,19 +1623,24 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     # directly in the content rather than returning separate API fields).
     if not reasoning_text:
         content = flatten_message_text(getattr(assistant_message, "content", None))
-        # str.find (O(n)) replaces DOTALL re.findall to prevent regex backtracking
-        _tb_start = '💭'; _tb_end = '💭'
+        # str.find (O(n)) replaces DOTALL re.findall to prevent regex backtracking.
+        # Match BOTH the raw model-output tag (<think> — the most common
+        # inline format, DeepSeek etc.) and the stream marker (💭): eb0775d15e
+        # switched this to 💭 only, which broke non-streaming extraction of
+        # real <think> blocks.
+        _tb_pairs = [("<think>", "</think>"), ("💭", "💭")]
         think_blocks = []
-        _cursor = 0
-        while True:
-            _p = content.lower().find(_tb_start.lower(), _cursor)
-            if _p == -1:
-                break
-            _q = content.lower().find(_tb_end.lower(), _p + len(_tb_start))
-            if _q == -1:
-                break
-            think_blocks.append(content[_p + len(_tb_start):_q])
-            _cursor = _q + len(_tb_end)
+        for _tb_start, _tb_end in _tb_pairs:
+            _cursor = 0
+            while True:
+                _p = content.lower().find(_tb_start.lower(), _cursor)
+                if _p == -1:
+                    break
+                _q = content.lower().find(_tb_end.lower(), _p + len(_tb_start))
+                if _q == -1:
+                    break
+                think_blocks.append(content[_p + len(_tb_start):_q])
+                _cursor = _q + len(_tb_end)
         if think_blocks:
             combined = "\n\n".join(b.strip() for b in think_blocks if b.strip())
             reasoning_text = combined or None
