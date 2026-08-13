@@ -1224,11 +1224,22 @@ def _run_chrome_fallback_command(
             os.close(stdout_fd)
             os.close(stderr_fd)
         try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-            return {"success": False, "error": f"Chrome fallback '{cmd}' timed out"}
+            _wait_status = _wait_with_interrupt(proc, timeout)
+            if _wait_status == "interrupted":
+                return {"success": False, "error": "Interrupted"}
+            if _wait_status == "timeout":
+                return {"success": False, "error": f"Chrome fallback '{cmd}' timed out"}
+        except Exception as exc:
+            logger.debug("Chrome fallback tmp cmd '%s' wait error: %s", cmd, exc)
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            return {"success": False, "error": f"Chrome fallback '{cmd}' failed: {exc}"}
         try:
             with open(stdout_path, "r", encoding="utf-8") as f:
                 stdout = f.read().strip()
@@ -2437,6 +2448,67 @@ def _extract_screenshot_path_from_text(text: str) -> Optional[str]:
     return None
 
 
+class _WaitAborted(Exception):
+    """Internal: _run_browser_command distinguishes interrupt vs timeout.
+
+    Carries the status returned by ``_wait_with_interrupt`` so the single
+    except branch can branch on it without re-raising and without touching
+    the ``else`` (normal completion) body.
+    """
+
+    def __init__(self, status: str):
+        super().__init__(status)
+        self.status = status
+
+
+def _wait_with_interrupt(proc: "subprocess.Popen", timeout: Optional[int]) -> str:
+    """Wait for a subprocess while polling ``is_interrupted()``.
+
+    The terminal backend's ``_wait_for_process`` has polled
+    ``is_interrupted()`` since forever, so an agent interrupt (Ctrl+C /
+    /stop) kills a running command within ~0.2s.  The Lightpanda commit
+    (395dbcc873) introduced two bare ``proc.wait(timeout=...)`` sites here
+    that do NOT poll — an interrupt during a browser subcommand only fired
+    once the full timeout elapsed.  This helper restores the same polling
+    discipline for both call sites.
+
+    Returns one of:
+      "ok"          — process exited normally (use proc.returncode)
+      "timeout"     — process killed after ``timeout`` seconds elapsed
+      "interrupted" — process killed because is_interrupted() went True
+    """
+    from tools.interrupt import is_interrupted
+
+    deadline = time.monotonic() + timeout if timeout else float("inf")
+    while True:
+        if is_interrupted():
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            return "interrupted"
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            return "timeout"
+        try:
+            proc.wait(timeout=min(0.2, remaining))
+            return "ok"
+        except subprocess.TimeoutExpired:
+            continue
+
+
 def _run_browser_command(
     task_id: str,
     command: str,
@@ -2639,24 +2711,28 @@ def _run_browser_command(
             os.close(stderr_fd)
 
         try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+            _wait_status = _wait_with_interrupt(proc, timeout)
+            if _wait_status != "ok":
+                raise _WaitAborted(_wait_status)
+        except _WaitAborted as _aborted:
             stdout, stderr = _read_command_output_files(stdout_path, stderr_path)
             _unlink_command_output_files(stdout_path, stderr_path)
-            if stderr and stderr.strip():
-                logger.warning(
-                    "browser '%s' stderr after timeout: %s",
-                    command,
-                    stderr.strip()[:500],
-                )
-            logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
-                           command, timeout, task_id, task_socket_dir)
-            result = {
-                "success": False,
-                "error": _format_browser_timeout_error(command, timeout, stdout, stderr),
-            }
+            if _aborted.status == "interrupted":
+                logger.warning("browser '%s' interrupted (task=%s)", command, task_id)
+                result = {"success": False, "error": "Interrupted"}
+            else:
+                if stderr and stderr.strip():
+                    logger.warning(
+                        "browser '%s' stderr after timeout: %s",
+                        command,
+                        stderr.strip()[:500],
+                    )
+                logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
+                               command, timeout, task_id, task_socket_dir)
+                result = {
+                    "success": False,
+                    "error": _format_browser_timeout_error(command, timeout, stdout, stderr),
+                }
             # Fall through to fallback check below
         else:
             with open(stdout_path, "r", encoding="utf-8") as f:
