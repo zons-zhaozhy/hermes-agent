@@ -25,17 +25,23 @@ from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
-from agent.auxiliary_client import call_llm, async_call_llm
+from agent.auxiliary_client import (
+    _COMPRESSION_TIMEOUT_FLOOR_SECONDS as COMPRESSION_TIMEOUT_FLOOR,
+    async_call_llm,
+    call_llm,
+)
 
-# The committed bounded floor for config-derived compression timeouts.
 # Behaviour contract (see AGENTS.md "Behavior contracts over snapshots"):
-# compression's effective timeout must be at least this when it is
-# config-derived.
-COMPRESSION_TIMEOUT_FLOOR = 300.0
+# compression's effective timeout must be at least the module's committed
+# floor when it is config-derived. The floor VALUE is a local tuning
+# decision (af0f769e51 lowered 300→120 to bound single-API GIL blockage;
+# 22d6d2a6f3 preserved it through the upstream sync) — the test pins the
+# *raising* behaviour, not the number.
+assert COMPRESSION_TIMEOUT_FLOOR > 0, "floor must stay positive"
 
-# The default ``auxiliary.compression.timeout`` shipped in the config schema
-# (hermes_cli/config.py).  Simulated here as the config-derived value.
-COMPRESSION_CONFIG_TIMEOUT = 120.0
+# A config-derived value strictly BELOW the floor, so the raising path is
+# exercised regardless of the floor's current value.
+COMPRESSION_CONFIG_TIMEOUT = max(30.0, COMPRESSION_TIMEOUT_FLOOR / 4)
 
 
 def _ok_response():
