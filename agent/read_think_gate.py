@@ -350,7 +350,7 @@ def _judge_investigation(
           调用方应递增 fail_count 而非重置。
     """
     try:
-        from agent.auxiliary_client import get_text_auxiliary_client
+        from agent.auxiliary_client import get_text_auxiliary_client, build_judge_thinking_extra_body
 
         client, model = get_text_auxiliary_client("investigation_judge")
         if client is None or not model:
@@ -396,7 +396,7 @@ def _judge_investigation(
             max_tokens=_JUDGE_MAX_TOKENS,
             temperature=0,
             timeout=15,
-            extra_body={"thinking": {"type": "disabled"}},
+            extra_body=build_judge_thinking_extra_body(model),
         )
         raw = (response.choices[0].message.content or "").strip()
 
@@ -475,7 +475,7 @@ def _classify_via_llm(user_message: str, history_summary: str = "") -> str | Non
         return cached
 
     try:
-        from agent.auxiliary_client import get_text_auxiliary_client
+        from agent.auxiliary_client import get_text_auxiliary_client, build_judge_thinking_extra_body
 
         client, model = get_text_auxiliary_client("complexity_classify")
         if client is None or not model:
@@ -483,8 +483,8 @@ def _classify_via_llm(user_message: str, history_summary: str = "") -> str | Non
             return None
 
         # thinking mode 下 GLM/DeepSeek 可能将答案放在 reasoning_content。
-        # 用 extra_body.thinking=disabled 禁用推理，强制直接输出。
-        extra_body = {"thinking": {"type": "disabled"}}
+        # 禁用推理强制直接输出；GLM-5.3 不支持禁用 → 最低档 effort。
+        extra_body = build_judge_thinking_extra_body(model)
 
         # 构建上下文（当前消息 + 历史摘要）
         context = user_message[:500]

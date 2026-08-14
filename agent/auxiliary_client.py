@@ -8086,7 +8086,12 @@ def _build_call_kwargs(
     fixed_temperature = _fixed_temperature_for_model(model, base_url)
     if fixed_temperature is OMIT_TEMPERATURE:
         temperature = None  # strip — let server choose
-    elif fixed_temperature is not None:
+    elif fixed_temperature is not None and temperature is None:
+        # Model-specific fixed temperature applies only as a default; an
+        # explicitly passed temperature (judges pinning 0 for determinism,
+        # config'd vision settings, …) must win — the value the caller
+        # chose is the contract (#13157's preserve-explicit-temperature
+        # behavior, which the global 0.1 pin must not clobber).
         temperature = fixed_temperature
 
     # Opus 4.7+ rejects any non-default temperature/top_p/top_k — silently
@@ -10226,3 +10231,33 @@ async def _async_call_llm_impl(
                 logger.debug("Auxiliary (async): cache eviction after connection error failed",
                              exc_info=True)
         raise
+
+
+# ── Judge thinking-shaping helper ───────────────────────────────────────────
+#
+# Lightweight LLM judges (read-think gate, analysis-stop guard, …) pin
+# ``extra_body={"thinking": {"type": "disabled"}}`` so GLM/DeepSeek-style
+# models answer directly instead of hiding the verdict in reasoning tokens.
+# GLM-5.3 (2026-08-14) rejects that wire shape outright — thinking can no
+# longer be disabled; the official migration is ``enabled`` +
+# ``reasoning_effort: "low"``.  Routing every hardcoded judge call through
+# this helper keeps the disable intent on models that accept it while
+# translating to the cheapest legal tier on models that don't.
+
+_JUDGE_NO_THINK_MODEL_RE = re.compile(
+    r"glm-5[._p-]?3", re.IGNORECASE
+)
+
+
+def build_judge_thinking_extra_body(model: Optional[str]) -> Dict[str, Any]:
+    """Return the ``extra_body`` a no-thinking judge should send for ``model``.
+
+    - GLM-5.3 (any alias spelling): ``{"thinking": {"type": "enabled"}}``
+      plus top-level ``reasoning_effort: low`` baked into the same dict —
+      the cheapest legal tier; the model still answers directly.
+    - Everything else (including None/unknown): the historical
+      ``{"thinking": {"type": "disabled"}}`` shape.
+    """
+    if model and _JUDGE_NO_THINK_MODEL_RE.search(model):
+        return {"thinking": {"type": "enabled"}, "reasoning_effort": "low"}
+    return {"thinking": {"type": "disabled"}}

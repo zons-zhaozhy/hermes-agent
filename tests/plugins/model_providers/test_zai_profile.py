@@ -136,6 +136,93 @@ class TestZaiGLM52ReasoningEffort:
         assert top_level == {}
 
 
+class TestZaiGLM53Contract:
+    """GLM-5.3: thinking cannot be disabled; effort has low/high/max tiers."""
+
+    def test_disabled_translates_to_enabled_low(self, zai_profile):
+        """``enabled=False`` on GLM-5.3 must NOT emit ``thinking.type=disabled``
+        — the endpoint rejects it outright.  Official migration shape is
+        ``enabled`` + ``reasoning_effort: low`` (cheapest legal tier)."""
+        extra_body, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False}, model="glm-5.3",
+        )
+        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert top_level == {"reasoning_effort": "low"}
+
+    def test_no_preference_omits_everything(self, zai_profile):
+        extra_body, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config=None, model="glm-5.3",
+        )
+        assert extra_body == {}
+        assert top_level == {}
+
+    def test_enabled_with_effort_max(self, zai_profile):
+        extra_body, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "max"}, model="glm-5.3",
+        )
+        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert top_level == {"reasoning_effort": "max"}
+
+    def test_enabled_low_maps_to_low(self, zai_profile):
+        extra_body, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "low"}, model="glm-5.3",
+        )
+        assert top_level == {"reasoning_effort": "low"}
+
+    @pytest.mark.parametrize("effort", ["medium", "high", ""])
+    def test_mid_efforts_map_to_high(self, zai_profile, effort):
+        extra_body, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort}, model="glm-5.3",
+        )
+        assert top_level == {"reasoning_effort": "high"}
+
+    @pytest.mark.parametrize(
+        "model",
+        ["z-ai/glm-5.3", "glm-5-3", "glm-5p3", "accounts/fireworks/models/glm-5p3"],
+    )
+    def test_alias_spellings_recognized(self, zai_profile, model):
+        _, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False}, model=model,
+        )
+        assert top_level == {"reasoning_effort": "low"}
+
+    def test_glm_5_2_still_allows_disabled(self, zai_profile):
+        """5.3's stricter contract must not leak back into 5.2, which still
+        accepts a real disable."""
+        extra_body, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False}, model="glm-5.2",
+        )
+        assert extra_body == {"thinking": {"type": "disabled"}}
+        assert top_level == {}
+
+
+class TestJudgeThinkingHelper:
+    """``build_judge_thinking_extra_body`` — model-aware judge wiring."""
+
+    def test_glm_5_3_gets_enabled_low(self):
+        from agent.auxiliary_client import build_judge_thinking_extra_body
+
+        assert build_judge_thinking_extra_body("glm-5.3") == {
+            "thinking": {"type": "enabled"}, "reasoning_effort": "low",
+        }
+
+    @pytest.mark.parametrize("model", ["glm-5-3", "GLM-5.3", "z-ai/glm-5p3"])
+    def test_glm_5_3_aliases(self, model):
+        from agent.auxiliary_client import build_judge_thinking_extra_body
+
+        body = build_judge_thinking_extra_body(model)
+        assert body["thinking"] == {"type": "enabled"}
+        assert body["reasoning_effort"] == "low"
+
+    @pytest.mark.parametrize("model", ["glm-5.2", "glm-5-turbo", "deepseek-v4", None, ""])
+    def test_other_models_keep_disabled(self, model):
+        from agent.auxiliary_client import build_judge_thinking_extra_body
+
+        assert build_judge_thinking_extra_body(model) == {
+            "thinking": {"type": "disabled"},
+        }
+
+
 class TestZaiModelGating:
     """GLM 4.5+ get thinking; earlier GLM models are left untouched."""
 

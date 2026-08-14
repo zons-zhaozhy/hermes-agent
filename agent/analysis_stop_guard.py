@@ -171,7 +171,7 @@ def _prev_turn_has_tool_results(messages: list[dict]) -> bool:
 def _llm_judge(task: str, response: str) -> bool:
     """Run LLM judge. Returns True if UNFINISHED (should nudge), False if FINISHED."""
     try:
-        from agent.auxiliary_client import get_text_auxiliary_client
+        from agent.auxiliary_client import get_text_auxiliary_client, build_judge_thinking_extra_body
 
         client, model = get_text_auxiliary_client("analysis_stop_judge")
         if client is None or not model:
@@ -189,7 +189,7 @@ def _llm_judge(task: str, response: str) -> bool:
             max_tokens=10,
             temperature=0,
             timeout=10,
-            extra_body={"thinking": {"type": "disabled"}},
+            extra_body=build_judge_thinking_extra_body(model),
         )
         raw = (result.choices[0].message.content or "").strip().upper()
         logger.info("analysis-stop guard: judge verdict = %s", raw[:20])

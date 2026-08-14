@@ -110,7 +110,9 @@ class TestCallLlmUnsupportedTemperatureRetry:
         assert client.chat.completions.create.call_count == 2
         first_kwargs = client.chat.completions.create.call_args_list[0].kwargs
         retry_kwargs = client.chat.completions.create.call_args_list[1].kwargs
-        assert first_kwargs["temperature"] == 0.1
+        # Explicit caller temperature is preserved verbatim (#13157 contract);
+        # the 0.1 pin only applies when the caller passes nothing.
+        assert first_kwargs["temperature"] == 0.3
         assert "temperature" not in retry_kwargs
         # max_tokens is intentionally omitted on OpenAI-compatible endpoints
         # (#34530) — auxiliary calls let the model max out its own output — so
@@ -214,7 +216,8 @@ class TestAsyncCallLlmUnsupportedTemperatureRetry:
         assert client.chat.completions.create.await_count == 2
         first_kwargs = client.chat.completions.create.call_args_list[0].kwargs
         retry_kwargs = client.chat.completions.create.call_args_list[1].kwargs
-        assert first_kwargs["temperature"] == 0.1
+        # Explicit caller temperature is preserved verbatim (#13157 contract).
+        assert first_kwargs["temperature"] == 0.3
         assert "temperature" not in retry_kwargs
         # max_tokens is intentionally omitted on OpenAI-compatible endpoints
         # (#34530); assert it's absent and that model survives the retry.

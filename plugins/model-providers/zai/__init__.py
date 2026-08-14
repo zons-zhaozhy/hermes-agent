@@ -22,6 +22,14 @@ two enabled levels — ``high`` and ``max`` — on the OpenAI-compatible endpoin
 (per Z.AI / BigModel docs).  Hermes' richer effort scale is collapsed onto
 those two so the user's effort preference actually reaches the model instead
 of being silently dropped.
+
+GLM-5.3 (released 2026-08-14) changes the contract again: thinking can no
+longer be disabled at all — ``thinking.type: "disabled"`` fails the whole
+request — and the effort knob gains a third ``low`` tier (``low`` / ``high``
+/ ``max``, default ``max``).  Per Z.AI's migration guidance, a request that
+would have disabled thinking is translated to ``thinking.type: "enabled"``
+plus ``reasoning_effort: "low"`` (the cheapest tier) instead of being sent
+as-is and rejected server-side.
 """
 
 from __future__ import annotations
@@ -59,6 +67,18 @@ def _is_glm_5_2(model: str | None) -> bool:
     return any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
 
 
+def _is_glm_5_3(model: str | None) -> bool:
+    """Detect GLM-5.3 across the alias spellings providers use.
+
+    Same alias coverage as :func:`_is_glm_5_2` (``glm-5.3`` / ``glm-5-3`` /
+    ``glm-5p3`` plus vendor-prefixed forms).
+    """
+    m = (model or "").strip().lower()
+    if not m:
+        return False
+    return any(token in m for token in ("glm-5.3", "glm-5-3", "glm-5p3"))
+
+
 def _glm_5_2_reasoning_effort(reasoning_config: dict | None) -> str | None:
     """Map Hermes reasoning effort onto GLM-5.2's native ``high``/``max``.
 
@@ -82,8 +102,33 @@ def _glm_5_2_reasoning_effort(reasoning_config: dict | None) -> str | None:
     return "high"
 
 
+def _glm_5_3_reasoning_effort(reasoning_config: dict | None) -> str | None:
+    """Map Hermes reasoning effort onto GLM-5.3's native ``low``/``high``/``max``.
+
+    GLM-5.3 supports three enabled effort levels and cannot disable thinking
+    (``thinking.type: "disabled"`` fails the request; the official migration
+    is ``enabled`` + ``reasoning_effort: "low"``).  Hermes effort collapses
+    as: ``xhigh``/``max``/``ultra`` → ``max``; ``low``/``minimal`` → ``low``;
+    everything else enabled → ``high``.  When reasoning is explicitly
+    disabled, ``low`` is returned as the cheapest legal tier.
+    """
+    if not isinstance(reasoning_config, dict):
+        return None
+    if reasoning_config.get("enabled") is False:
+        # GLM-5.3 rejects disabled thinking; official migration = low effort.
+        return "low"
+
+    effort = (reasoning_config.get("effort") or "").strip().lower()
+    if effort in {"xhigh", "max", "ultra"}:
+        return "max"
+    if effort in {"low", "minimal"}:
+        return "low"
+    # No explicit effort / medium / high → the middle tier.
+    return "high"
+
+
 class ZaiProfile(ProviderProfile):
-    """Z.AI / GLM — extra_body.thinking on/off + GLM-5.2 reasoning_effort."""
+    """Z.AI / GLM — extra_body.thinking on/off + GLM-5.2/5.3 reasoning_effort."""
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
@@ -91,16 +136,26 @@ class ZaiProfile(ProviderProfile):
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}
 
-        if not _model_supports_thinking(model) and not _is_glm_5_2(model):
+        if not _model_supports_thinking(model) and not _is_glm_5_2(model) and not _is_glm_5_3(model):
             return extra_body, top_level
 
         # Only emit when the user expressed a preference; omitting the field
         # keeps the server default (enabled) exactly as before.
         if isinstance(reasoning_config, dict):
             enabled = reasoning_config.get("enabled") is not False
-            extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
+            if not enabled and _is_glm_5_3(model):
+                # GLM-5.3 rejects thinking.type=disabled outright; send the
+                # official migration shape and let the effort knob below
+                # select the cheapest tier (low).
+                extra_body["thinking"] = {"type": "enabled"}
+            else:
+                extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
 
-        if _is_glm_5_2(model):
+        if _is_glm_5_3(model):
+            effort = _glm_5_3_reasoning_effort(reasoning_config)
+            if effort is not None:
+                top_level["reasoning_effort"] = effort
+        elif _is_glm_5_2(model):
             effort = _glm_5_2_reasoning_effort(reasoning_config)
             if effort is not None:
                 top_level["reasoning_effort"] = effort
@@ -116,6 +171,7 @@ zai = ZaiProfile(
     description="Z.AI / GLM — Zhipu AI models",
     signup_url="https://z.ai/",
     fallback_models=(
+        "glm-5.3",
         "glm-5.2",
         "glm-5",
         "glm-4-9b",
