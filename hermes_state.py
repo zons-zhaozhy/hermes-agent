@@ -2294,6 +2294,27 @@ def collect_state_db_stats(db_path: Path) -> Dict[str, Any]:
         except Exception:
             return None
 
+    # Query-level wall-clock cap. A diagnostics probe must never wedge on a
+    # huge store: without this, COUNT(*) over a multi-GB messages table runs
+    # for many minutes inside sqlite3VdbeExec and "hermes doctor" appears
+    # hung (observed 2026-08-15 on a 10 GB state.db — sample(1) showed the
+    # main thread parked in pread under sqlite3VdbeExec for >2 minutes).
+    # The progress handler fires per VDBE opcode batch; returning non-zero
+    # aborts the statement with sqlite3.OperationalError, which _scalar
+    # swallows into None — stats degrade gracefully instead of hanging.
+    # N=100 is the sweet spot: too high (10k) never fires during ordinary
+    # table/index scans — COUNT(*) on an optimized B-tree is nearly opcode-
+    # free, but full scans (SUM, WHERE x%7, FTS rebuilds) fire constantly.
+    _deadline = time.monotonic() + 10.0
+
+    def _probe_cancel_check() -> int:
+        return 1 if time.monotonic() > _deadline else 0
+
+    try:
+        conn.set_progress_handler(_probe_cancel_check, 100)
+    except Exception:
+        pass
+
     try:
         pc = _scalar("PRAGMA page_count")
         ps = _scalar("PRAGMA page_size")
