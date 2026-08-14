@@ -468,6 +468,22 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
 
+    # 3a. Seed a trimmed models.dev disk cache into the isolated home so
+    #     capability/label lookups resolve via the real Stage-3 disk path
+    #     instead of the Stage-4 foreground network fetch. Hermetic envs
+    #     (offline dev machines, sandboxed CI) otherwise get caps=None and
+    #     provider labels collapse to their IDs — tests that pass online
+    #     fail offline for the same code. The seed is a cropped copy of the
+    #     real registry (tests/fixtures/models_dev_seed.json), never mock.
+    try:
+        _seed_path = (
+            Path(__file__).resolve().parent / "fixtures" / "models_dev_seed.json"
+        )
+        if _seed_path.exists():
+            shutil.copy(_seed_path, fake_hermes_home / "models_dev_cache.json")
+    except Exception:
+        pass
+
     # 3b. hermes_state computes ``DEFAULT_DB_PATH = get_hermes_home() / "state.db"``
     #     at import time. When the module is first imported at collection (any
     #     test file with a top-level ``from hermes_state import ...``) that
