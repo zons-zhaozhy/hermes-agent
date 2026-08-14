@@ -1279,7 +1279,12 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     native slash.
 #   - pause: global emergency stop; reached via /hermes pause [off] on
 #     Slack. Added at the 50-cap — a native slot would clamp /platform.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "pause"})
+#   - audit: read-only Info command (recent quality audit scores); low
+#     frequency, reached via /hermes audit on Slack. Sits at registry
+#     position ~50/52, so without curation the 50-slash cap silently
+#     clamps it off native slashes and breaks Telegram↔Slack parity
+#     (test_telegram_parity fails loudly to force this decision).
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "pause", "audit"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
