@@ -18,6 +18,11 @@ def test_collect_runtime_readiness_reports_healthy_local_runtime(tmp_path, monke
     with sqlite3.connect(home / "state.db") as conn:
         conn.execute("CREATE TABLE probe (id INTEGER PRIMARY KEY)")
     monkeypatch.setenv("HERMES_HOME", str(home))
+    # The disk probe reads the REAL volume hosting tmp_path; a dev machine
+    # over the 90% threshold must not fail this runtime-logic test.
+    monkeypatch.setattr(
+        "gateway.readiness._probe_disk", lambda _home: {"status": "ok"}
+    )
 
     result = collect_runtime_readiness(
         configured_model="test/model",
