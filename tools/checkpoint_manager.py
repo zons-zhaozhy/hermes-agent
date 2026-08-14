@@ -144,6 +144,92 @@ DEFAULT_EXCLUDES = [
 # Git subprocess timeout (seconds).
 _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
 
+# A git lock file older than this is considered abandoned (the git process
+# that created it was killed by timeout or crashed) and gets removed before
+# retrying. Must comfortably exceed _GIT_TIMEOUT so a *live* git process's
+# lock is never stolen. Today's evidence: zombie locks from Aug 1/Aug 11
+# blocked all checkpoints for their projects for two weeks.
+_STALE_LOCK_AGE = _GIT_TIMEOUT * 2
+
+# How many times to retry a git command whose lock file is contended.
+_LOCK_RETRY_ATTEMPTS = 3
+_LOCK_RETRY_DELAY = 0.5
+
+
+def _clear_stale_lock(target: Path) -> bool:
+    """Remove an abandoned ``*.lock`` next to *target* if it is stale.
+
+    Git creates ``<name>.lock`` atomically via O_CREAT|O_EXCL and renames it
+    into place on success.  If the git process dies (timeout kill, crash,
+    power loss) the ``.lock`` is orphaned and every subsequent git operation
+    on that resource fails with ``File exists`` forever — the store has no
+    janitor.  A lock whose mtime exceeds ``_STALE_LOCK_AGE`` cannot belong to
+    a live process (git calls here run with ``timeout=_GIT_TIMEOUT``), so it
+    is safe to remove.
+
+    Returns True if a stale lock was removed.
+    """
+    lock = target.with_name(target.name + ".lock")
+    try:
+        if not lock.exists():
+            return False
+        age = time.time() - lock.stat().st_mtime
+        if age < _STALE_LOCK_AGE:
+            return False
+        lock.unlink()
+        logger.warning(
+            "Removed stale git lock %s (age %.0fs > %ds) — abandoned by a dead git process",
+            lock, age, _STALE_LOCK_AGE,
+        )
+        return True
+    except FileNotFoundError:
+        # Raced with another janitor — lock already gone; fine either way.
+        return False
+    except OSError as exc:
+        logger.warning("Could not remove stale git lock %s: %s", lock, exc)
+        return False
+
+
+def _is_lock_contention(stderr: str) -> bool:
+    """Detect git's 'File exists' index/refs lock failure in *stderr*.
+
+    Matches both C and the localized variant observed in the wild:
+    ``致命错误：无法创建 '...index.lock'：File exists。`` — so we key on
+    the ``.lock'`` + ``File exists`` pairing rather than the English prose.
+    """
+    if not stderr:
+        return False
+    return ".lock" in stderr and (
+        "File exists" in stderr or "无法创建" in stderr
+    )
+
+
+def _recover_from_lock_contention(
+    stderr: str, store: Optional[Path] = None, index_file: Optional[Path] = None,
+) -> bool:
+    """Janitor locks named in a git lock-contention stderr.
+
+    Extracts the quoted path(s) from the message, and for each:
+    * stale (mtime > _STALE_LOCK_AGE) → remove, return True
+    * fresh (a live concurrent process owns it) → leave alone
+
+    Falls back to the known per-project index lock when no path parses.
+    Returns True if at least one stale lock was removed.
+    """
+    removed_any = False
+    # git quotes the lock path in single quotes: ... 'path/to/x.lock' ...
+    candidates: List[Path] = []
+    for quoted in re.findall(r"'([^']*\.lock)'", stderr):
+        p = Path(quoted)
+        if p.is_absolute():
+            candidates.append(p)
+    if not candidates and index_file is not None:
+        candidates.append(Path(str(index_file) + ".lock"))
+    for lock in candidates:
+        if _clear_stale_lock(lock.with_suffix("")):
+            removed_any = True
+    return removed_any
+
 # Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
 
@@ -326,44 +412,73 @@ def _run_git(
     cmd = ["git"] + list(args)
     allowed_returncodes = allowed_returncodes or set()
 
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True, encoding='utf-8', errors='replace',
-            timeout=timeout,
-            env=env,
-            cwd=str(normalized_working_dir),
-            stdin=subprocess.DEVNULL,
-            # Checkpoints fire several bare git calls per turn from the
-            # console-less desktop/gateway backend; suppress the per-call
-            # conhost flash on Windows (no-op on POSIX).
-            creationflags=windows_hide_flags(),
-        )
+    # Lock-aware retry loop. Concurrent sessions checkpointing the same
+    # project (or a zombie lock left by a killed git process) make git fail
+    # with "Unable to create '...': File exists". Both are recoverable:
+    # zombie locks get janitored (age-gated), fresh contention gets a short
+    # backoff-and-retry. Without this, one killed git process permanently
+    # bricks checkpointing for that project (observed: locks from Aug 1
+    # still failing every snapshot on Aug 14).
+    for attempt in range(1, _LOCK_RETRY_ATTEMPTS + 1):
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True, encoding='utf-8', errors='replace',
+                timeout=timeout,
+                env=env,
+                cwd=str(normalized_working_dir),
+                stdin=subprocess.DEVNULL,
+                # Checkpoints fire several bare git calls per turn from the
+                # console-less desktop/gateway backend; suppress the per-call
+                # conhost flash on Windows (no-op on POSIX).
+                creationflags=windows_hide_flags(),
+            )
+        except subprocess.TimeoutExpired:
+            msg = f"git timed out after {timeout}s: {' '.join(cmd)}"
+            logger.error(msg, exc_info=True)
+            return False, "", msg
+        except FileNotFoundError as exc:
+            missing_target = getattr(exc, "filename", None)
+            if missing_target == "git":
+                logger.error("Git executable not found: %s", " ".join(cmd), exc_info=True)
+                return False, "", "git not found"
+            msg = f"working directory not found: {normalized_working_dir}"
+            logger.error("Git command failed before execution: %s (%s)", " ".join(cmd), msg, exc_info=True)
+            return False, "", msg
+        except Exception as exc:
+            logger.error("Unexpected git error running %s: %s", " ".join(cmd), exc, exc_info=True)
+            return False, "", str(exc)
+
         ok = result.returncode == 0
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
-        if not ok and result.returncode not in allowed_returncodes:
-            logger.error(
-                "Git command failed: %s (rc=%d) stderr=%s",
-                " ".join(cmd), result.returncode, stderr,
+        if ok or result.returncode in allowed_returncodes:
+            return ok, stdout, stderr
+
+        # Recoverable lock contention / zombie lock?
+        if _is_lock_contention(stderr):
+            recovered = _recover_from_lock_contention(
+                stderr, store=store, index_file=index_file,
             )
-        return ok, stdout, stderr
-    except subprocess.TimeoutExpired:
-        msg = f"git timed out after {timeout}s: {' '.join(cmd)}"
-        logger.error(msg, exc_info=True)
-        return False, "", msg
-    except FileNotFoundError as exc:
-        missing_target = getattr(exc, "filename", None)
-        if missing_target == "git":
-            logger.error("Git executable not found: %s", " ".join(cmd), exc_info=True)
-            return False, "", "git not found"
-        msg = f"working directory not found: {normalized_working_dir}"
-        logger.error("Git command failed before execution: %s (%s)", " ".join(cmd), msg, exc_info=True)
-        return False, "", msg
-    except Exception as exc:
-        logger.error("Unexpected git error running %s: %s", " ".join(cmd), exc, exc_info=True)
-        return False, "", str(exc)
+            if attempt < _LOCK_RETRY_ATTEMPTS:
+                delay = _LOCK_RETRY_DELAY * attempt
+                logger.warning(
+                    "Git %s hit lock contention (attempt %d/%d)%s — retrying in %.1fs",
+                    args[0] if args else "?", attempt, _LOCK_RETRY_ATTEMPTS,
+                    " after janitoring stale lock" if recovered else "",
+                    delay,
+                )
+                time.sleep(delay)
+                continue
+
+        logger.error(
+            "Git command failed: %s (rc=%d) stderr=%s",
+            " ".join(cmd), result.returncode, stderr,
+        )
+        return False, stdout, stderr
+
+    return False, "", "git lock contention persisted after retries"
 
 
 # ---------------------------------------------------------------------------

@@ -1044,3 +1044,87 @@ class TestSessionDiff:
         assert result["success"] is True
         assert "feature.py" in result["diff"]
         assert "+x = 1" in result["diff"]
+
+
+# =========================================================================
+# Lock janitor + contention retry (_run_git hardening)
+# =========================================================================
+
+class TestStaleLockJanitor:
+    """Zombie .lock files must be removed (age-gated); fresh ones kept."""
+
+    def test_zombie_index_lock_removed_and_add_succeeds(self, work_dir, checkpoint_base, fake_home):
+        """Reproduce the live incident: stale index.lock blocks git add -A forever.
+
+        A lock older than _STALE_LOCK_AGE must be janitored and the retried
+        git add must succeed.
+        """
+        monkeypatched_store = checkpoint_base / "store"
+        monkeypatched_store.mkdir(parents=True, exist_ok=True)
+        _init_store(monkeypatched_store, str(work_dir))
+
+        index_file = monkeypatched_store / "indexes" / _project_hash(str(work_dir))
+        index_file.parent.mkdir(parents=True, exist_ok=True)
+        # Simulate the zombie lock (mtime two days ago).
+        lock = Path(str(index_file) + ".lock")
+        lock.touch()
+        import time as _time
+        old = _time.time() - 2 * 24 * 3600
+        import os as _os
+        _os.utime(lock, (old, old))
+
+        from tools.checkpoint_manager import _clear_stale_lock, _STALE_LOCK_AGE
+        assert _STALE_LOCK_AGE >= 20  # sanity: comfortably above git timeout
+        assert _clear_stale_lock(index_file) is True
+        assert not lock.exists()
+
+        # And the follow-up git add actually succeeds now.
+        ok, _, err = _run_git(
+            ["add", "-A"], monkeypatched_store, str(work_dir),
+            index_file=index_file,
+        )
+        assert ok, f"git add should succeed after janitor: {err}"
+
+    def test_fresh_lock_is_not_removed(self, work_dir, checkpoint_base):
+        """A fresh lock belongs to a live concurrent process — must be kept."""
+        index_file = checkpoint_base / "indexes" / "fresh-hash"
+        index_file.parent.mkdir(parents=True, exist_ok=True)
+        lock = Path(str(index_file) + ".lock")
+        lock.touch()  # mtime = now
+
+        from tools.checkpoint_manager import _clear_stale_lock
+        assert _clear_stale_lock(index_file) is False
+        assert lock.exists()
+        lock.unlink()
+
+    def test_is_lock_contention_matches_english_and_localized(self):
+        from tools.checkpoint_manager import _is_lock_contention
+        en = "fatal: Unable to create '/x/index.lock': File exists."
+        zh = "致命错误：无法创建 '/Users/s/.hermes/checkpoints/store/indexes/41bc58c3072daa3c.lock'：File exists。"
+        assert _is_lock_contention(en) is True
+        assert _is_lock_contention(zh) is True
+        assert _is_lock_contention("fatal: not a git repository") is False
+        assert _is_lock_contention("") is False
+
+    def test_run_git_retries_and_recovers_from_stale_lock(
+        self, work_dir, checkpoint_base, fake_home,
+    ):
+        """E2E: stale lock + real git add -A → janitor kicks in, retry succeeds."""
+        store = checkpoint_base / "store"
+        store.mkdir(parents=True, exist_ok=True)
+        _init_store(store, str(work_dir))
+
+        index_file = store / "indexes" / _project_hash(str(work_dir))
+        index_file.parent.mkdir(parents=True, exist_ok=True)
+        lock = Path(str(index_file) + ".lock")
+        lock.touch()
+        import os as _os
+        old = time.time() - 3600  # 1h old zombie
+        _os.utime(lock, (old, old))
+
+        ok, _, err = _run_git(
+            ["add", "-A"], store, str(work_dir),
+            index_file=index_file,
+        )
+        assert ok, f"retried git add should succeed: {err}"
+        assert not lock.exists()
