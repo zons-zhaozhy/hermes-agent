@@ -331,11 +331,16 @@ class TestPluginDiscovery:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
         mgr.discover_and_load()
         assert mgr._discovered is True
-        non_bundled = {
+        # Only count plugins from THIS test's isolated HERMES_HOME. Entry-point
+        # plugins installed into the active venv (e.g. rtk-hermes) are visible
+        # to every process on the machine and cannot be isolated via
+        # HERMES_HOME; asserting a global count here breaks on dev machines
+        # that pip-install Hermes plugins.
+        isolated = {
             n: p for n, p in mgr._plugins.items()
-            if p.manifest.source != "bundled"
+            if p.manifest.source in ("user", "project")
         }
-        assert len(non_bundled) == 1
+        assert set(isolated) == {"retry_plugin"}
 
 
 
