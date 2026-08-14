@@ -1237,7 +1237,15 @@ class TestCaptureAppFilterNoMatch:
              "structuredContent": None},
         ]
 
-        backend.capture(mode="ax")
+        # The GNOME-shell-helper skip is Linux-only logic in
+        # _select_capture_target; without pinning the platform this test
+        # silently exercises the darwin path on macOS dev machines (picks
+        # pid 100) and only passes on Linux CI.
+        with patch("tools.computer_use.cua_backend.sys") as fake_sys:
+            fake_sys.platform = "linux"
+            # _linux_x11_active_window_id also reads sys.platform from the
+            # patched module; DISPLAY unset → returns None deterministically.
+            backend.capture(mode="ax")
 
         assert backend._active_pid == 200
         assert backend._active_window_id == 2
