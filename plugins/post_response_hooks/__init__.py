@@ -47,17 +47,16 @@ def _load_hooks_from_config():
 
     _ensure_framework_importable()
 
-    # Load config
-    config_path = Path.home() / ".hermes" / "config.yaml"
+    # Load config through the canonical loader (managed-scope overlay +
+    # ${ENV_VAR} expansion + profile-aware pathing), never a raw read.
     hook_configs = []
-    if config_path.exists():
-        try:
-            import yaml
-            with open(config_path) as f:
-                cfg = yaml.safe_load(f)
-            hook_configs = cfg.get("agent", {}).get("post_response_hooks", [])
-        except Exception as e:
-            logger.warning("Failed to load hook config: %s", e)
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly() or {}
+        agent_cfg = cfg.get("agent") or {}
+        hook_configs = agent_cfg.get("post_response_hooks") or []
+    except Exception as e:
+        logger.warning("Failed to load hook config: %s", e)
 
     if not hook_configs:
         logger.debug("No post_response_hooks configured")
