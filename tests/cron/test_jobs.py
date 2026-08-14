@@ -1354,3 +1354,71 @@ class TestCompletedOneshotRetentionSweep:
         assert updated["enabled"] is True
         assert updated["state"] == "scheduled"
         assert updated["next_run_at"] is not None
+
+
+# ── resolve_job_ref: ID-prefix resolution ──────────────────────────────
+
+def test_resolve_job_ref_unique_prefix_matches(tmp_cron_dir):
+    """An 8-char ID prefix (what users copy from logs) resolves to the job."""
+    from cron.jobs import create_job, resolve_job_ref
+
+    job = create_job(name="Prefix target", prompt="p", schedule="0 3 * * *")
+    ref = job["id"][:8]
+    assert len(ref) == 8
+    resolved = resolve_job_ref(ref)
+    assert resolved is not None
+    assert resolved["id"] == job["id"]
+
+
+def test_resolve_job_ref_ambiguous_prefix_raises(tmp_cron_dir):
+    """Two jobs sharing an ID prefix must raise, not silently pick one."""
+    import pytest as _pytest
+    from cron.jobs import AmbiguousJobReference, create_job, load_jobs, resolve_job_ref
+
+    # Fabricate two jobs whose IDs share a long prefix.
+    jobs = [
+        {"id": "aaaa11112222", "name": "A", "prompt": "p", "schedule": "0 3 * * *", "enabled": True},
+        {"id": "aaaa33334444", "name": "B", "prompt": "p", "schedule": "0 4 * * *", "enabled": True},
+    ]
+    import cron.jobs as jobs_mod
+    orig = jobs_mod.load_jobs
+    jobs_mod.load_jobs = lambda: jobs
+    try:
+        with _pytest.raises(AmbiguousJobReference) as ei:
+            resolve_job_ref("aaaa")
+        assert {m["id"] for m in ei.value.matches} == {"aaaa11112222", "aaaa33334444"}
+    finally:
+        jobs_mod.load_jobs = orig
+
+
+def test_resolve_job_ref_prefix_no_match_returns_none(tmp_cron_dir):
+    """A prefix that matches nothing resolves to None (truthful miss)."""
+    from cron.jobs import create_job, resolve_job_ref
+
+    create_job(name="Other", prompt="p", schedule="0 5 * * *")
+    assert resolve_job_ref("zzzz9999") is None
+
+
+def test_resolve_job_ref_exact_name_beats_prefix(tmp_cron_dir):
+    """Exact name match must resolve before the ID-prefix fallback runs."""
+    import cron.jobs as jobs_mod
+    from cron.jobs import resolve_job_ref
+
+    jobs = [
+        {"id": "abcd12345678", "name": "deploy", "prompt": "p", "schedule": "0 3 * * *", "enabled": True},
+        {"id": "abcd87654321", "name": "other", "prompt": "p", "schedule": "0 4 * * *", "enabled": True},
+    ]
+    orig = jobs_mod.load_jobs
+    jobs_mod.load_jobs = lambda: jobs
+    try:
+        resolved = resolve_job_ref("deploy")
+        assert resolved["id"] == "abcd12345678"
+        # And the ambiguous prefix "abcd" still raises rather than guessing.
+        from cron.jobs import AmbiguousJobReference
+        try:
+            resolve_job_ref("abcd")
+            raise AssertionError("expected AmbiguousJobReference")
+        except AmbiguousJobReference:
+            pass
+    finally:
+        jobs_mod.load_jobs = orig

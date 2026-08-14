@@ -1817,10 +1817,15 @@ class AmbiguousJobReference(LookupError):
 def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
     """Resolve a job reference (ID or name) to a job record.
 
-    - Exact ID match wins (works even if a different job's name equals this ID).
-    - Otherwise, case-insensitive name match.
-    - If a name matches more than one job, raises AmbiguousJobReference so the
-      caller can surface the matching IDs rather than silently picking one.
+    Resolution order:
+    1. Exact ID match wins (works even if a different job's name equals this ID).
+    2. Case-insensitive exact name match.
+    3. Unique job-ID *prefix* match (IDs are 12-hex; users habitually type
+       the first 8 chars after copy-pasting from logs) — an ambiguous prefix
+       raises AmbiguousJobReference listing the candidates.
+
+    If a name matches more than one job, raises AmbiguousJobReference so the
+    caller can surface the matching IDs rather than silently picking one.
     """
     if not ref:
         return None
@@ -1830,13 +1835,25 @@ def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
             return _normalize_job_record(job)
     ref_lower = ref.lower()
     name_matches = [j for j in jobs if (j.get("name") or "").lower() == ref_lower]
-    if not name_matches:
-        return None
+    if len(name_matches) == 1:
+        return _normalize_job_record(name_matches[0])
     if len(name_matches) > 1:
         raise AmbiguousJobReference(
             ref, [_normalize_job_record(j) for j in name_matches]
         )
-    return _normalize_job_record(name_matches[0])
+    # Unique ID-prefix fallback: users copy 8-char prefixes from logs/lists.
+    # Only IDs strictly longer than the ref can match (an exact-length match
+    # was already handled above), so this never re-hits the exact branch.
+    prefix_matches = [
+        j for j in jobs if j["id"].startswith(ref) and len(j["id"]) > len(ref)
+    ]
+    if len(prefix_matches) == 1:
+        return _normalize_job_record(prefix_matches[0])
+    if len(prefix_matches) > 1:
+        raise AmbiguousJobReference(
+            ref, [_normalize_job_record(j) for j in prefix_matches]
+        )
+    return None
 
 
 def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
