@@ -25,6 +25,7 @@ The three fixes covered here:
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -46,6 +47,14 @@ def isolated_home(monkeypatch):
     os.makedirs(hermes_home)
     monkeypatch.setenv("HERMES_HOME", hermes_home)
 
+    # Seed a models.dev disk cache so capability lookups resolve from disk
+    # (Stage 3 of fetch_models_dev) instead of the network. In a hermetic
+    # env without this seed, the offline Stage-4 fetch fails, caps come
+    # back None, and the text-only skip never triggers — making the test
+    # outcome depend on the runner's connectivity. The seeded registry
+    # mirrors models.dev's real shape.
+    _seed_models_dev_cache(hermes_home)
+
     # Strip all credential-shaped env vars so each scenario starts hermetic.
     for k in list(os.environ.keys()):
         if k.endswith("_API_KEY") or k.endswith("_TOKEN"):
@@ -53,6 +62,31 @@ def isolated_home(monkeypatch):
 
     yield hermes_home
     shutil.rmtree(test_home, ignore_errors=True)
+
+
+def _seed_models_dev_cache(hermes_home: str) -> None:
+    """Write a minimal models.dev registry covering the models under test.
+
+    Format mirrors the upstream api.json: ``{provider_id: {"models": {id:
+    {...}}}}``. Vision capability is read from ``modalities.input`` with a
+    fallback to ``attachment``.
+    """
+    registry = {
+        "deepseek": {
+            "models": {
+                "deepseek-v4-pro": {
+                    "reasoning": True,
+                    "tool_call": True,
+                    "attachment": False,
+                    "modalities": {"input": ["text"]},
+                },
+            },
+        },
+    }
+    with open(
+        os.path.join(hermes_home, "models_dev_cache.json"), "w", encoding="utf-8"
+    ) as fp:
+        json.dump(registry, fp)
 
 
 def _write_config(home: str, text: str) -> None:
