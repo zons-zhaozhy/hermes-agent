@@ -100,9 +100,15 @@ class TestDetectDangerousRm:
 
 
     def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
-        with mock_patch("tempfile.gettempdir", return_value="/tmp"):
+        # The exemption compares against realpath(gettempdir()); patch the
+        # RESOLVED temp dir so the literal operand the command spells out
+        # matches it on every platform (macOS: /tmp → /private/tmp).
+        import os as _os
+
+        resolved_tmp = _os.path.realpath("/tmp")
+        with mock_patch("tempfile.gettempdir", return_value=resolved_tmp):
             for prefix in ("hermes-verify-", "hermes-ad-hoc-"):
-                assert detect_dangerous_command(f"rm -f /tmp/{prefix}example.py") == (
+                assert detect_dangerous_command(f"rm -f {resolved_tmp}/{prefix}example.py") == (
                     False,
                     None,
                     None,
@@ -124,18 +130,25 @@ class TestDetectDangerousRm:
             )
 
     def test_verification_cleanup_exemption_rejects_broader_deletions(self):
+        # See the sibling test: patch the RESOLVED temp dir, then spell the
+        # operands with that same resolved prefix so each rejection is due to
+        # the guard's security rule (recursion, traversal, extra operands,
+        # command chaining), not the platform's /tmp symlink.
+        import os as _os
+
+        t = _os.path.realpath("/tmp")
         commands = (
-            "rm -rf /tmp/hermes-verify-example.py",
-            "rm -f /tmp/hermes-verify-example.py /tmp/other.py",
-            "rm -f /tmp/nested/../hermes-verify-example.py",
-            "rm -f /tmp/a/../../tmp/hermes-verify-example.py",
-            "rm -f /var/tmp/hermes-verify-example.py",
-            "rm -f /tmp/hermes-verify-*",
-            "rm -f /tmp/hermes-verify-$(touch>/tmp/pwned).py",
-            "rm -f /tmp/hermes-ad-hoc-`touch>/tmp/pwned`.py",
-            "rm -f /tmp/hermes-verify-example.py; touch /tmp/pwned",
+            f"rm -rf {t}/hermes-verify-example.py",
+            f"rm -f {t}/hermes-verify-example.py {t}/other.py",
+            f"rm -f {t}/nested/../hermes-verify-example.py",
+            f"rm -f {t}/a/../../tmp/hermes-verify-example.py",
+            f"rm -f /var/tmp/hermes-verify-example.py",
+            f"rm -f {t}/hermes-verify-*",
+            f"rm -f {t}/hermes-verify-$(touch>{t}/pwned).py",
+            f"rm -f {t}/hermes-ad-hoc-`touch>{t}/pwned`.py",
+            f"rm -f {t}/hermes-verify-example.py; touch {t}/pwned",
         )
-        with mock_patch("tempfile.gettempdir", return_value="/tmp"):
+        with mock_patch("tempfile.gettempdir", return_value=t):
             for command in commands:
                 is_dangerous, key, desc = detect_dangerous_command(command)
                 assert is_dangerous is True, command

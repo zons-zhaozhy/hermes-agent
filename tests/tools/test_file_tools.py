@@ -54,7 +54,12 @@ class TestWriteFileHandler:
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool("/tmp/out.txt", "hello world!\n"))
         assert result["status"] == "ok"
-        mock_ops.write_file.assert_called_once_with("/tmp/out.txt", "hello world!\n")
+        # The handler resolves absolute paths (macOS: /tmp → /private/tmp);
+        # compare against the same resolution the code performs.
+        from pathlib import Path as _P
+        mock_ops.write_file.assert_called_once_with(
+            str(_P("/tmp/out.txt").resolve()), "hello world!\n"
+        )
 
     @patch("tools.file_tools._get_file_ops")
     def test_permission_error_returns_error_json_without_error_log(self, mock_get, caplog):
@@ -145,7 +150,12 @@ class TestPatchHandler:
             old_string="foo", new_string="bar"
         ))
         assert result["status"] == "ok"
-        mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "foo", "bar", False)
+        # The handler resolves absolute paths (macOS: /tmp → /private/tmp),
+        # so compare against the same resolution the code performs.
+        from pathlib import Path as _P
+        mock_ops.patch_replace.assert_called_once_with(
+            str(_P("/tmp/f.py").resolve()), "foo", "bar", False
+        )
 
 
     @patch("tools.file_tools._get_file_ops")
