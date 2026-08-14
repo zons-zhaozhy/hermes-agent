@@ -210,7 +210,29 @@ def cron_runs(job_id: Optional[str] = None, limit: int = 20):
     """Show indexed durable cron execution history."""
     from cron.executions import list_executions
 
-    records = list_executions(job_id=job_id, limit=limit)
+    # Accept a full job ID, a unique ID prefix, or a job name — same
+    # reference resolution as `cron edit`. Without this, looking up
+    # history by the only thing a user naturally knows (the job's name)
+    # silently returns "No cron execution attempts recorded." even when
+    # the ledger has records for that job.
+    resolved_id = job_id
+    if job_id:
+        from cron.jobs import AmbiguousJobReference, resolve_job_ref
+
+        try:
+            job = resolve_job_ref(job_id)
+        except AmbiguousJobReference as exc:
+            print(f"Ambiguous job reference: {exc}")
+            for m in exc.matches:
+                print(f"  {m['id']}  (name: {m.get('name')!r})")
+            return
+        if job:
+            resolved_id = job.get("id") or resolved_id
+        # Unresolvable reference (job deleted, typo): fall through with the
+        # raw value — list_executions will simply find no records, which is
+        # the truthful answer for a deleted job's ID.
+
+    records = list_executions(job_id=resolved_id, limit=limit)
     if not records:
         print("No cron execution attempts recorded.")
         return

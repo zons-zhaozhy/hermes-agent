@@ -234,3 +234,69 @@ def test_cron_create_failure_returns_nonzero(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 1
     assert "Failed to create job: boom" in out
+
+
+# ── cron_runs reference resolution ──────────────────────────────────────
+
+def test_cron_runs_resolves_job_name_to_id(monkeypatch, capsys):
+    """History lookup by job NAME must resolve to the job's ID.
+
+    Contract (derived independently): a user naturally queries history by
+    the job's name; the ledger stores job IDs. Without resolution the
+    answer is a false "No cron execution attempts recorded."
+    """
+    monkeypatch.setattr(
+        "cron.jobs.load_jobs",
+        lambda: [
+            {"id": "abc123", "name": "Nightly docs", "schedule": "0 3 * * *"},
+        ],
+    )
+    seen = {}
+
+    def fake_list_executions(job_id=None, limit=20):
+        seen["job_id"] = job_id
+        return [{"id": "exec-1", "status": "completed", "job_id": job_id,
+                 "source": "builtin", "claimed_at": "2026-08-15T00:00:00Z"}]
+
+    monkeypatch.setattr("cron.executions.list_executions", fake_list_executions)
+
+    cron_cli.cron_runs(job_id="Nightly docs")
+
+    assert seen["job_id"] == "abc123"          # resolved to the job's ID
+    out = capsys.readouterr().out
+    assert "No cron execution attempts recorded" not in out
+    assert "abc123" in out
+
+
+def test_cron_runs_full_id_passes_through(monkeypatch, capsys):
+    """A full job ID must pass through unchanged (no name shadowing)."""
+    monkeypatch.setattr(
+        "cron.jobs.load_jobs",
+        lambda: [
+            {"id": "abc123", "name": "Nightly docs", "schedule": "0 3 * * *"},
+        ],
+    )
+    seen = {}
+
+    def fake_list_executions(job_id=None, limit=20):
+        seen["job_id"] = job_id
+        return []
+
+    monkeypatch.setattr("cron.executions.list_executions", fake_list_executions)
+
+    cron_cli.cron_runs(job_id="abc123")
+    assert seen["job_id"] == "abc123"
+
+
+def test_cron_runs_unresolvable_ref_reports_no_records(monkeypatch, capsys):
+    """A deleted/unknown job reference truthfully reports no records."""
+    monkeypatch.setattr("cron.jobs.load_jobs", lambda: [])
+
+    def fake_list_executions(job_id=None, limit=20):
+        assert job_id == "ghost-job"           # raw value falls through
+        return []
+
+    monkeypatch.setattr("cron.executions.list_executions", fake_list_executions)
+
+    cron_cli.cron_runs(job_id="ghost-job")
+    assert "No cron execution attempts recorded" in capsys.readouterr().out
