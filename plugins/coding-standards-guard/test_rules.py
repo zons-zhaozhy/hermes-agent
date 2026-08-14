@@ -103,6 +103,26 @@ test("允许: only logger.warning",
      "import logging\nlogger = logging.getLogger(__name__)\ntry:\n    pass\nexcept Exception as e:\n    logger.warning(e)", None)
 
 # ═══════════════════════════════════════════════════════════════════════
+# R020: 变换异常信息 — except 内 raise 新异常不带 from e
+# ═══════════════════════════════════════════════════════════════════════
+print("R020: 变换异常信息 — raise 新异常不带 from e")
+test("R020 raise 新异常无 from e",
+     'try:\n    x = 1\nexcept Exception as e:\n    raise ValueError(f"bad: {e}")\n', "R020")
+test("R020 raise 新异常 from e — 显式链放行",
+     'try:\n    x = 1\nexcept Exception as e:\n    raise ValueError(f"bad: {e}") from e\n', None)
+test("R020 裸 raise — 完整透传放行",
+     'try:\n    x = 1\nexcept Exception as e:\n    raise\n', None)
+test("R020 raise e — re-raise 本体放行",
+     'try:\n    x = 1\nexcept Exception as e:\n    raise e\n', None)
+test("R020 from None — 压制上下文 warning",
+     'try:\n    x = 1\nexcept Exception as e:\n    raise RuntimeError("x") from None\n', "R020")
+test("R020 raise 局部变量新异常 — 同样断链",
+     'try:\n    x = 1\nexcept Exception as e:\n    exc = RuntimeError("x")\n    raise exc\n', "R020")
+test("R020 except 外 raise — 放行",
+     'def f():\n    raise ValueError("no except here")\n', None)
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # 默认值兜底系列
 # ═══════════════════════════════════════════════════════════════════════
 print("R009: 默认值兜底")

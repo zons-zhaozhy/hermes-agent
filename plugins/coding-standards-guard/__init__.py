@@ -14,10 +14,11 @@
   R008  静默降级（Exception+return 常量）— 只抓宽异常+静默返回
   R013  静默吞异常（Exception+return 无日志）— 只抓宽异常
   R015  except 块只有 debug/info 无 warning/error — 只抓纯低级别
+  R020  变换异常信息 — except 内 raise 新异常不带 from e（error）
 
   ── 默认值兜底系列（3 条）──
-  R009  os.environ.get 带硬编码默认值   — 缺失必须报错引导
-  R016  getattr(config, key, default)   — 只抓变量名含 config/settings/env
+  R009  os.environ.get 带硬编码默认值   — 缺失必须报错引导（error）
+  R016  getattr(config, key, default)   — 只抓变量名含 config/settings/env（error）
   R018  config.get("old") or config.get("new") — 别名兼容禁止
 
   ── 硬编码系列（4 条）──
@@ -305,7 +306,7 @@ def _check_env_default_fallback(tree: ast.AST, lines: List[str]) -> List[Violati
                 if val:
                     violations.append(Violation(
                         rule_id="R009", line=node.lineno, col=node.col_offset,
-                        severity="warning",
+                        severity="error",
                         message=f"os.environ.get 硬编码默认值 '{val}' — 缺失必须报错引导，不能用默认值兜底",
                         snippet=_snippet(lines, node.lineno),
                     ))
@@ -545,7 +546,7 @@ def _check_getattr_default(tree: ast.AST, lines: List[str]) -> List[Violation]:
                 continue
         violations.append(Violation(
             rule_id="R016", line=node.lineno, col=node.col_offset,
-            severity="warning",
+            severity="error",
             message=f"getattr({ast.unparse(first_arg)}, key, default) — 配置缺失静默降级！必须显式检查并报错",
             snippet=_snippet(lines, node.lineno),
         ))
@@ -718,6 +719,76 @@ def _check_sys_exit_in_function(tree: ast.AST, lines: List[str]) -> List[Violati
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# R020: 变换异常信息 — except 内 raise 新异常不带 from e（丢 __cause__ 链）
+# ═══════════════════════════════════════════════════════════════════════
+
+def _check_raise_without_cause(tree: ast.AST, lines: List[str]) -> List[Violation]:
+    """R020: except 块内 raise 新异常但不带 from e — 异常堆栈链断裂。
+
+    合法形态（放行）：
+      - raise                      # 裸 re-raise，完整堆栈透传
+      - raise e                    # re-raise 捕获的异常本体
+      - raise NewError(...) from e # 显式链，__cause__ 保留
+    违规形态（error 阻断）：
+      - raise NewError(...)        # Call 形式新异常，无 cause → 堆栈被改写
+      - raise NewError             # Name 形式新异常（非 handler 名），无 cause
+    警告形态（warning）：
+      - raise NewError(...) from None  # 刻意压制 __context__，堆栈信息丢失
+    """
+    violations = []
+    parent_map: Dict[int, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parent_map[id(child)] = parent
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Raise):
+            continue
+        # 沿父链找最近的 ExceptHandler，确认 raise 在 except 块内
+        cur = parent_map.get(id(node))
+        in_handler = None
+        while cur is not None:
+            if isinstance(cur, ast.ExceptHandler):
+                in_handler = cur
+                break
+            cur = parent_map.get(id(cur))
+        if in_handler is None:
+            continue
+
+        # raise（裸 re-raise）→ 放行
+        if node.exc is None:
+            continue
+        # raise <handler 名>（re-raise 本体）→ 放行
+        if (isinstance(node.exc, ast.Name) and in_handler.name is not None
+                and node.exc.id == in_handler.name):
+            continue
+
+        # from None — 刻意压制上下文，warning
+        if isinstance(node.cause, ast.Constant) and node.cause.value is None:
+            violations.append(Violation(
+                rule_id="R020", line=node.lineno, col=node.col_offset,
+                severity="warning",
+                message="raise ... from None 刻意压制异常上下文 — 堆栈信息丢失，开发人员看不到根因",
+                snippet=_snippet(lines, node.lineno),
+            ))
+            continue
+
+        # 已带 from <expr> → 放行
+        if node.cause is not None:
+            continue
+
+        # raise Call(...) 或 raise 其它 Name，无 cause → error
+        if isinstance(node.exc, (ast.Call, ast.Name)):
+            violations.append(Violation(
+                rule_id="R020", line=node.lineno, col=node.col_offset,
+                severity="error",
+                message="except 内 raise 新异常不带 from e — 异常链断裂（丢 __cause__），堆栈必须原样透传",
+                snippet=_snippet(lines, node.lineno),
+            ))
+    return violations
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # 规则注册表 — 集中管理所有编码规范
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -727,6 +798,7 @@ _RULES = [
     ("R008",      _check_silent_downgrade,         "静默降级 — 宽异常 + return 常量"),
     ("R013",      _check_silent_return,            "静默吞异常 — 宽异常 + return 无 logger"),
     ("R015",      _check_except_low_log_level,     "except 块只有 debug/info 无 warning"),
+    ("R020",      _check_raise_without_cause,      "变换异常信息 — raise 新异常不带 from e"),
     # ── 默认值兜底系列（3 条）──
     ("R009",      _check_env_default_fallback,    "默认值兜底 — os.environ.get 带硬编码默认值"),
     ("R016",      _check_getattr_default,           "getattr 静默降级 — 只抓 config/settings/env"),

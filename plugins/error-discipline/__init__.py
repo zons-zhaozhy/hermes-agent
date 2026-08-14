@@ -90,7 +90,6 @@ def _extract_exit_code(text: str) -> int | None:
     Contract:
       Preconditions: text is a string (may be empty)
       Postconditions: returns int or None (None if not found)
-    """
 
     Handles JSON ({"exit_code": 1}), Python repr ({'exit_code': 1}),
     and simple format (exit_code=1). Returns None if not found.
