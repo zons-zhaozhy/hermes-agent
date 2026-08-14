@@ -1,0 +1,13 @@
+name: pre-response-review
+version: "2.0.0"
+description: |
+  回复前自审外部校验插件（state.db 驱动）。
+  每次 LLM 回复后，扫描文本中的自审标记（改前验证✓ / 不交付半成品✓ / 正则✓），
+  用 session_id 查 state.db 验证对应工具调用是否真实存在。
+  如果自审标了✓但找不到对应工具调用记录，标记为假✓并追加警告。
+
+  从"靠纪律约束"升级到"靠架构保证"——消灭 self-report 的可信度盲区。
+
+author: hermes-agent (enforcement plugin)
+hooks:
+  - transform_llm_output

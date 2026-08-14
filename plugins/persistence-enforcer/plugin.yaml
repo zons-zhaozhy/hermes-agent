@@ -1,0 +1,9 @@
+name: persistence-enforcer
+version: "2.0.0"
+description: Force TODO + intermediate persistence for complex tasks
+author: stan
+hooks:
+  - post_tool_call
+  - pre_llm_call
+  - pre_tool_call
+  - transform_llm_output

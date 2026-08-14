@@ -1,0 +1,7 @@
+name: patch-first
+version: "1.0.0"
+description: 代码/文档修改纪律拦截——检测到sed/脚本批量替换时，注入patch优先提醒。
+author: stan
+hooks:
+  - pre_tool_call
+  - pre_llm_call

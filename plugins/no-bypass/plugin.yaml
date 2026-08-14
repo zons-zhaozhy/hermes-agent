@@ -1,0 +1,6 @@
+name: no-bypass
+version: "1.0"
+description: "Hard-blocks lazy bypass patterns when agent discovers a bug then chooses workaround over fix"
+hooks:
+  - transform_llm_output
+  - pre_tool_call

@@ -1,0 +1,11 @@
+name: reply-certainty-checker
+version: "1.0.0"
+description: |
+  回复确定性检查插件。
+  每次 LLM 回复后扫描文本，检测不确定词汇（可能、也许、大概、猜测、假设、maybe、probably、perhaps 等）。
+  如果检测到，在回复末尾追加自检警告，要求重新分析后再发送。
+
+  目的：将"不许用不确定词汇"从纪律层面提升到机制层面——代码自动扫描，抓到就亮红牌。
+author: hermes-agent (enforcement plugin)
+hooks:
+  - transform_llm_output
