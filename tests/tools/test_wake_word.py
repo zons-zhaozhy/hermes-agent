@@ -219,6 +219,11 @@ def test_openwakeword_ensures_base_models_for_custom_path(monkeypatch):
     # Regression: a custom ``.onnx`` path used to skip download_models entirely,
     # so a fresh install crashed at load time on a missing melspectrogram.onnx.
     # The base feature models must be ensured for a custom path too.
+    # Pin the platform probe OFF: on a real ARM64 Mac the default framework
+    # resolves to tflite, whose runtime (ai-edge-litert) is a lazy install
+    # the hermetic env forbids — the engine would raise instead of testing
+    # the custom-path download contract.
+    monkeypatch.setattr(ww, "_is_macos_arm64", lambda: False)
     calls = _install_fake_openwakeword(monkeypatch)
     eng = ww._OpenWakeWordEngine(
         {"provider": "openwakeword", "openwakeword": {"model": "/models/hey_hermes.onnx"}}

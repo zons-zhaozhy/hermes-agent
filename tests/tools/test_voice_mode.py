@@ -613,6 +613,12 @@ class TestMacOSAudioOutputPolicy:
         class _FakeProc:
             returncode = 0
 
+            def poll(self):
+                # Interruptible playback loop (upstream sync 22d6d2a6f3)
+                # spins on poll() until the process exits; a finished player
+                # reports a non-None returncode immediately.
+                return self.returncode
+
             def wait(self, timeout=None):
                 return 0
 
@@ -695,10 +701,18 @@ class TestCleanupTempRecordings:
 # ============================================================================
 
 class TestPlayBeep:
-    def test_beep_calls_sounddevice_play(self, mock_sd):
+    def test_beep_calls_sounddevice_play(self, mock_sd, monkeypatch):
         np = pytest.importorskip("numpy")
 
         from tools.voice_mode import play_beep
+
+        # This test targets the sounddevice beep path itself; on macOS that
+        # path is disabled by design (TCC prompt avoidance routes beeps
+        # through afplay). Force-allow sounddevice so the sd.play contract
+        # is exercised on every platform.
+        monkeypatch.setattr(
+            "tools.voice_mode._sounddevice_output_allowed", lambda: True
+        )
 
         # play_beep uses polling (get_stream) + sd.stop() instead of sd.wait()
         mock_stream = MagicMock()
@@ -1414,6 +1428,7 @@ class TestWSL2PowerShellFallback:
             return m
 
         with patch("tools.voice_mode._is_wsl2_env", return_value=True), \
+             patch("tools.voice_mode.platform.system", return_value="Linux"), \
              patch("tools.voice_mode._import_audio", side_effect=ImportError), \
              patch("tools.voice_mode.shutil.which",
                    side_effect=lambda x: f"/bin/{x}" if x in ("powershell.exe", "ffmpeg", "ffplay", "sh") else (x if x.startswith("/") else None)), \
@@ -1466,6 +1481,7 @@ class TestWSL2PowerShellFallback:
             return open(path, *args, **kwargs)
 
         with patch("builtins.open", side_effect=_fake_open), \
+             patch("tools.voice_mode.platform.system", return_value="Linux"), \
              patch("shutil.which", side_effect=lambda x: f"/bin/{x}" if x in ("powershell.exe", "ffmpeg", "ffplay") else None), \
              patch("subprocess.check_output", side_effect=_capture_check_output), \
              patch("subprocess.Popen", return_value=MagicMock(returncode=0, wait=lambda **k: 0)), \
