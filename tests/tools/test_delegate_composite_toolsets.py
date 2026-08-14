@@ -13,7 +13,10 @@ class TestExpandParentToolsets(unittest.TestCase):
         expanded = _expand_parent_toolsets({"hermes-cli"})
         self.assertIn("web", expanded)
         self.assertIn("terminal", expanded)
-        self.assertIn("browser", expanded)
+        # 'browser' is NOT expanded: bf60ccce26 deferred the low-frequency
+        # browser tools (cdp/vision/dialog/get_images/back) out of
+        # _HERMES_CORE_TOOLS, so the browser toolset is no longer a subset.
+        self.assertNotIn("browser", expanded)
         # Original composite is preserved
         self.assertIn("hermes-cli", expanded)
 
