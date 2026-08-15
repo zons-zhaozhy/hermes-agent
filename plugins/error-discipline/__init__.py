@@ -146,6 +146,12 @@ def _is_error_result(result: Any, status: str = "", error_type: str = "", tool_n
     via command-level context, since this function lacks the command string.
     """
     if status in ("error", "blocked"):
+        # 2026-08-15 修复：plugin_block 是防线插件的行动指引（如四轴闸门要求
+        # 输出四轴分析），不是待诊断的技术异常。把它计为 consecutive error 会
+        # 与拦截方形成互锁死锁：拦截 -> 计数 -> terminal 封锁 -> 无法继续。
+        # approval deny 仍按错误计。
+        if error_type == "plugin_block":
+            return False
         return True
     if error_type:
         return True
