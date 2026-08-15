@@ -5173,6 +5173,41 @@ def run_conversation(
                                 "failed": True,
                                 "compression_exhausted": True,
                             }
+                        # Also compress the message history so the output-cap
+                        # retry does not just spin on max_tokens alone.  The
+                        # compressor drops the middle window, freeing enough
+                        # tokens for the total to fit inside context_length.
+                        # (#55546)
+                        try:
+                            original_len = len(messages)
+                            original_tokens = estimate_messages_tokens_rough(messages)
+                            _overflow_input = messages
+                            messages, active_system_prompt = agent._compress_context(
+                                messages, system_message,
+                                approx_tokens=request_input_estimate,
+                                task_id=effective_task_id,
+                            )
+                            if messages is _overflow_input and compression_skipped_due_to_lock(agent):
+                                compression_attempts -= 1
+                                agent._persist_session(messages, conversation_history)
+                                return _compression_deferred_result(
+                                    agent, messages, api_call_count
+                                )
+                            conversation_history = conversation_history_after_compression(
+                                agent, messages, conversation_history
+                            )
+                            new_tokens = estimate_messages_tokens_rough(messages)
+                            if len(messages) < original_len:
+                                agent._buffer_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
+                            elif new_tokens > 0 and new_tokens < original_tokens * 0.95:
+                                agent._buffer_status(COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE.format(before=original_tokens, after=new_tokens))
+                        except Exception:
+                            # Compression must never turn an output-cap error
+                            # fatal — fall through and retry on max_tokens alone.
+                            logger.warning(
+                                "%sOutput-cap compression hit an error; retrying on max_tokens only.",
+                                agent.log_prefix,
+                            )
                         _retry.restart_with_compressed_messages = True
                         break
 
@@ -7219,15 +7254,42 @@ def run_conversation(
                     )
                     if _truly_empty and (not _has_structured or _prefill_exhausted) and agent._empty_content_retries < 3:
                         agent._empty_content_retries += 1
+                        wait_time = jittered_backoff(
+                            agent._empty_content_retries,
+                            base_delay=5.0,
+                            max_delay=60.0,
+                        )
                         logger.warning(
                             "Empty response (no content or reasoning) — "
-                            "retry %d/3 (model=%s)",
-                            agent._empty_content_retries, agent.model,
+                            "retry %d/3 in %.1fs (model=%s)",
+                            agent._empty_content_retries, wait_time, agent.model,
                         )
                         agent._buffer_status(
                             f"⚠️ Empty response from model — retrying "
-                            f"({agent._empty_content_retries}/3)"
+                            f"({agent._empty_content_retries}/3) in {wait_time:.0f}s"
                         )
+                        # Sleep in small increments to stay responsive to interrupts
+                        sleep_end = time.time() + wait_time
+                        while time.time() < sleep_end:
+                            if agent._interrupt_requested:
+                                agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during empty-response retry wait, aborting.", force=True)
+                                _interrupt_text = (
+                                    f"Operation interrupted: retrying empty response from model "
+                                    f"(retry {agent._empty_content_retries}/3)."
+                                )
+                                close_interrupted_tool_sequence(messages, _interrupt_text)
+                                agent._persist_session(messages, conversation_history)
+                                agent.clear_interrupt()
+                                _final_response = _interrupt_text
+                                return {
+                                    "final_response": _final_response,
+                                    "messages": messages,
+                                    "completed": False,
+                                    "interrupted": True,
+                                    "api_calls": api_call_count,
+                                    "error": None,
+                                }
+                            time.sleep(0.2)
                         continue
 
                     # ── Exhausted retries — try fallback provider ──
@@ -7375,6 +7437,7 @@ def run_conversation(
 
                 codex_ack_continuations = 0
 
+                _was_length_continuation = bool(truncated_response_parts)
                 if truncated_response_parts:
                     final_response = _join_truncated_parts([*truncated_response_parts, final_response])
                     truncated_response_parts = []
@@ -7636,19 +7699,26 @@ def run_conversation(
                 # text-only without following up with tool calls, and
                 # nudge it to continue executing. Mirrors the verify-on-stop
                 # and kanban-stop nudge pattern above.
-                try:
-                    from agent.analysis_stop_guard import check_analysis_stop
+                # A length-continuation join is exempt: the joined text is
+                # truncated output the provider already generated, stitched
+                # back together by the length-continuation path — nudging it
+                # would re-prompt the model to "continue" an answer it has
+                # already finished, burning API calls for nothing.
+                _analysis_nudge = None
+                if not _was_length_continuation:
+                    try:
+                        from agent.analysis_stop_guard import check_analysis_stop
 
-                    _analysis_nudge = check_analysis_stop(
-                        messages=messages,
-                        assistant_content=final_response or "",
-                        finish_reason=finish_reason,
-                        user_message=getattr(agent, "_current_turn_user_message", "") or "",
-                        nudge_count=getattr(agent, "_analysis_stop_nudges", 0),
-                    )
-                except Exception:
-                    logger.warning("analysis-stop guard check failed", exc_info=True)
-                    _analysis_nudge = None
+                        _analysis_nudge = check_analysis_stop(
+                            messages=messages,
+                            assistant_content=final_response or "",
+                            finish_reason=finish_reason,
+                            user_message=getattr(agent, "_current_turn_user_message", "") or "",
+                            nudge_count=getattr(agent, "_analysis_stop_nudges", 0),
+                        )
+                    except Exception:
+                        logger.warning("analysis-stop guard check failed", exc_info=True)
+                        _analysis_nudge = None
 
                 if _analysis_nudge:
                     agent._analysis_stop_nudges = (

@@ -147,6 +147,12 @@ def test_direct_session_db_flushes_share_marker_claim(agent):
                 self.rows.append(m["content"])
             return list(range(1, len(messages) + 1))
 
+        def flush_token_counts(self):
+            # _persist_session drains the async token-accounting queue at
+            # every persist point (174ad45939); the barrier fake only models
+            # the append path, so accept and ignore the drain.
+            return None
+
     db = _BarrierDB()
     agent._session_db = db
     agent._session_db_created = True
