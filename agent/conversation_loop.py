@@ -4781,7 +4781,7 @@ def run_conversation(
                         original_len = len(messages)
                         messages, active_system_prompt = agent._compress_context(
                             messages, system_message,
-                            approx_tokens=approx_tokens,
+                            approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
                             task_id=effective_task_id,
                         )
                         conversation_history = conversation_history_after_compression(
@@ -5037,7 +5037,8 @@ def run_conversation(
                     original_tokens = estimate_messages_tokens_rough(messages)
                     _overflow_input = messages
                     messages, active_system_prompt = agent._compress_context(
-                        messages, system_message, approx_tokens=approx_tokens,
+                        messages, system_message,
+                        approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
                         task_id=effective_task_id,
                     )
                     if messages is _overflow_input and compression_skipped_due_to_lock(agent):
@@ -5333,7 +5334,8 @@ def run_conversation(
                     original_tokens = estimate_messages_tokens_rough(messages)
                     _overflow_input = messages
                     messages, active_system_prompt = agent._compress_context(
-                        messages, system_message, approx_tokens=approx_tokens,
+                        messages, system_message,
+                        approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
                         task_id=effective_task_id,
                     )
                     if messages is _overflow_input and compression_skipped_due_to_lock(agent):
