@@ -532,7 +532,7 @@ class TestPrefetch:
         # Release the retain; the prefetch should now proceed AFTER it.
         release.set()
         if provider._prefetch_thread:
-            provider._prefetch_thread.join(timeout=5.0)
+            provider._prefetch_thread.join(timeout=30.0)
         provider._retain_queue.join()
         assert order and order[0] == "retain"
         assert "recall" in order
@@ -616,7 +616,7 @@ class TestPrefetchServerRetainVisibility:
 
         provider.queue_prefetch("next turn query")
         if provider._prefetch_thread:
-            provider._prefetch_thread.join(timeout=5.0)
+            provider._prefetch_thread.join(timeout=30.0)
 
         # Recall ran, the op was polled to completion, and the pending set
         # was cleared (so a later prefetch won't re-poll it).
@@ -643,7 +643,7 @@ class TestPrefetchServerRetainVisibility:
         start = time.monotonic()
         p.queue_prefetch("next turn query")
         if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=5.0)
+            p._prefetch_thread.join(timeout=30.0)
         elapsed = time.monotonic() - start
 
         assert order == ["recall"], "prefetch should recall after the timeout"
@@ -667,7 +667,7 @@ class TestPrefetchServerRetainVisibility:
         # First prefetch burns the budget and must DROP the wedged op.
         p.queue_prefetch("q1")
         if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=5.0)
+            p._prefetch_thread.join(timeout=30.0)
         assert p._pending_retain_ops == set(), (
             "unresolved ops must be evicted at deadline, not retained"
         )
@@ -676,7 +676,7 @@ class TestPrefetchServerRetainVisibility:
         start = time.monotonic()
         p.queue_prefetch("q2")
         if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=5.0)
+            p._prefetch_thread.join(timeout=30.0)
         assert time.monotonic() - start < 0.25, (
             "second prefetch re-polled dropped ops — eviction regressed"
         )

@@ -605,6 +605,9 @@ class TestContextAwareCorrectness:
         matches = _strategy_context_aware(big, patt)
         elapsed = time.perf_counter() - start
         assert matches == []
-        # Was ~5.5s before anchoring; generous ceiling to avoid CI flake.
-        assert elapsed < 2.0, f"context_aware no-match took {elapsed:.2f}s"
+        # Was ~5.5s before anchoring; ~0.45s at rest, but up to ~2.6s under a
+        # fully-loaded 20-worker parallel runner. Ceiling must keep enough
+        # margin to catch an anchoring regression (10x+) without flaking
+        # under CPU contention (flake policy: loose wall-clock bounds).
+        assert elapsed < 4.0, f"context_aware no-match took {elapsed:.2f}s"
 
