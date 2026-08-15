@@ -130,7 +130,10 @@ def _max_workers_for_tool_batch(runnable_calls) -> int:
     if not runnable_calls:
         return 0
     max_workers = _MAX_TOOL_WORKERS
-    if any(name == "image_generate" for _, _, name, _ in runnable_calls):
+    # runnable_calls entries have grown extra fields over time (scope_block,
+    # self_check_warning); index position 2 is the tool name in every layout
+    # since c0b0cc3925 introduced this helper.
+    if any(entry[2] == "image_generate" for entry in runnable_calls):
         max_workers = min(max_workers, _image_generate_parallel_limit())
     return min(len(runnable_calls), max_workers)
 # Keep this above the stock auxiliary.web_extract timeout (360s) so the batch
@@ -298,6 +301,26 @@ def _cancelled_tool_result(reason: str = "user interrupt") -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _append_cancelled_tool_results(messages: list, tool_calls, *, reason: str) -> None:
+    """Append a cancelled ``tool`` result for each call in ``tool_calls``.
+
+    Used when a hard interrupt (KeyboardInterrupt / BaseException) aborts the
+    sequential executor mid-batch. Without this, the loop re-raises leaving the
+    assistant tool-call turn with no matching tool results — a message-role
+    alternation violation that malforms the next provider request. Mirrors the
+    cooperative-interrupt skip block and the concurrent path, both of which
+    already emit a result for every call_id.
+    """
+    for tc in tool_calls:
+        name = getattr(getattr(tc, "function", None), "name", "") or "tool"
+        messages.append(make_tool_result_message(
+            name,
+            f"[Tool execution cancelled — {name} was skipped due to {reason}]",
+            getattr(tc, "id", "") or "",
+            effect_disposition="none",
+        ))
 
 
 def _emit_cancelled_terminal_post_tool_call(
@@ -2111,6 +2134,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     agent.interrupt("keyboard interrupt")
                 except Exception:
                     pass
+                # Emit a tool result for THIS call and every remaining call in
+                # the batch before re-raising, so the assistant tool-call turn
+                # is never left without matching tool results (alternation).
+                _append_cancelled_tool_results(
+                    messages,
+                    assistant_message.tool_calls[i - 1:],
+                    reason="keyboard interrupt",
+                )
                 raise
             except Exception as tool_error:
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -2180,6 +2211,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     agent.interrupt("keyboard interrupt")
                 except Exception:
                     pass
+                # Emit a tool result for THIS call and every remaining call in
+                # the batch before re-raising (see interactive branch above).
+                _append_cancelled_tool_results(
+                    messages,
+                    assistant_message.tool_calls[i - 1:],
+                    reason="keyboard interrupt",
+                )
                 raise
             except Exception as tool_error:
                 function_result = f"Error executing tool '{function_name}': {tool_error}"

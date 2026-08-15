@@ -6591,6 +6591,22 @@ def run_conversation(
                 
                 turn_content = assistant_message.content or ""
 
+                # Some local tool-call templates emit a bare bracketed token
+                # (for example ``[memory]``) as assistant content alongside a
+                # function call. It is protocol scaffolding, not an answer.
+                # Persisting or caching it as visible content lets the empty
+                # post-tool fallback replay that token forever after compaction (#78148).
+                if (
+                    assistant_message.tool_calls
+                    and re.fullmatch(r"\[[A-Za-z_][A-Za-z0-9_.-]*\]", turn_content.strip())
+                ):
+                    logger.warning(
+                        "Discarding bare tool-call marker from assistant content: %s",
+                        turn_content,
+                    )
+                    turn_content = ""
+                    assistant_msg["content"] = ""
+
                 # Classify tools in this turn to determine if they are all housekeeping.
                 # This classification is needed regardless of whether the turn has visible content,
                 # because a substantive tool-only turn must invalidate any older housekeeping fallback.
@@ -6794,68 +6810,6 @@ def run_conversation(
                 # entire conversation.
                 truncated_tool_call_retries = 0
 
-                # Emergency mid-turn context overflow break: if the
-                # conversation has grown beyond 85% of the context window
-                # during tool execution, stop the tool loop now so the next
-                # turn entry triggers preflight compression.  We CANNOT
-                # compress mid-turn because that would invalidate the
-                # prompt cache (sacred invariant).  Instead we break early
-                # and let the compressor handle it at the next turn
-                # boundary.
-                #
-                # Uses a rough estimate of the current messages (which now
-                # include the tool results just appended) plus tool schema
-                # overhead and system prompt.  Provider-reported prompt_tokens
-                # from the *previous* API call are stale here because tool
-                # results have since been added to messages.  The rough
-                # estimate intentionally overestimates, which is safer
-                # than underestimating for an emergency break.
-                #
-                # System prompt tokens are cached because they don't change
-                # during a turn and estimating them every iteration would be
-                # expensive (the system prompt is often 40-60K tokens for
-                # tools-heavy sessions).
-                _compressor = getattr(agent, "context_compressor", None)
-                if _compressor and _compressor.context_length > 0:
-                    _overflow_pct = 0.85
-                    _overflow_limit = int(_compressor.context_length * _overflow_pct)
-                    _rough_tokens = estimate_messages_tokens_rough(messages)
-                    if agent.tools:
-                        _rough_tokens += _estimate_tools_tokens_rough(
-                            agent.tools
-                        )
-                    # Cache system prompt tokens to avoid re-estimating every
-                    # iteration.  The system prompt doesn't change during
-                    # a turn, so this cache is valid for the entire loop.
-                    if not hasattr(agent, "_cached_system_prompt_tokens"):
-                        _cached_system_prompt = getattr(
-                            agent, "_cached_system_prompt", None
-                        )
-                        if _cached_system_prompt:
-                            agent._cached_system_prompt_tokens = estimate_messages_tokens_rough(
-                                [{"role": "system", "content": _cached_system_prompt}]
-                            )
-                        else:
-                            agent._cached_system_prompt_tokens = 0
-                    _rough_tokens += getattr(agent, "_cached_system_prompt_tokens", 0)
-                    # Add 15K buffer for rough estimate noise and any
-                    # overhead not captured by the estimation logic.
-                    _rough_tokens += 15000
-                    if _rough_tokens >= _overflow_limit:
-                        if not agent.quiet_mode:
-                            logger.warning(
-                                "Mid-turn context overflow emergency break: "
-                                "~%d rough tokens >= %d (%.0f%% of %d). "
-                                "Stopping tool loop to allow preflight "
-                                "compression on the next turn.",
-                                _rough_tokens,
-                                _overflow_limit,
-                                _overflow_pct * 100,
-                                _compressor.context_length,
-                            )
-                        _turn_exit_reason = "mid_turn_context_overflow"
-                        break
-
                 # Signal that a paragraph break is needed before the next
                 # streamed text.  We don't emit it immediately because
                 # multiple consecutive tool iterations would stack up
@@ -6906,40 +6860,6 @@ def run_conversation(
                     _real_tokens = estimate_request_tokens_rough(
                         messages, tools=agent.tools or None
                     )
-
-                # ── Proactive tool-result prune ──────────────────────
-                # Run BEFORE the compression check so it has a chance to
-                # reclaim old tool results on every tool-result iteration.
-                # The prune has internal hysteresis (proactive_prune_min_reclaim_tokens)
-                # so it only commits when the reclaim is large enough — not
-                # every turn, protecting prompt-cache stability.
-                _prune = getattr(_compressor, "prune_tool_results_only", None)
-                if callable(_prune):
-                    try:
-                        _pruned_msgs, _pruned_n = _prune(
-                            messages, current_tokens=_real_tokens
-                        )
-                    except Exception:
-                        logger.warning(
-                            "proactive tool-result prune failed; skipping",
-                            exc_info=True,
-                        )
-                        _pruned_msgs, _pruned_n = messages, 0
-                    if _pruned_n and _pruned_msgs is not messages:
-                        messages = _pruned_msgs
-                        # Recalculate _real_tokens so the compression check
-                        # below sees the post-prune context size. Without this,
-                        # should_compress fires on the stale pre-prune count
-                        # and triggers an unnecessary LLM compression right
-                        # after the deterministic prune already reclaimed.
-                        _real_tokens = estimate_request_tokens_rough(
-                            messages, tools=agent.tools or None
-                        )
-                        logger.info(
-                            "proactive prune: reclaimed %d tool result(s), "
-                            "context now ~%d tokens",
-                            _pruned_n, _real_tokens,
-                        )
 
                 if (
                     agent.compression_enabled
