@@ -1,6 +1,10 @@
 ---
 name: feature-dev-pipeline
-description: "需求开发全流程——7阶段流水线 skill，强制阶段顺序+退出标准。触发：开发新需求/修 bug/重构。"
+description: "需求开发全流程——7阶段流水线 skill，强制阶段顺序+退出标准。触发：开发新需求/修 bug/重构."
+version: "1.0.0"
+author: "Hermes Agent"
+license: "MIT"
+platforms: [cli, gateway, tui, desktop]
 tags: [engineering, pipeline, development-workflow]
 metadata:
   hermes:

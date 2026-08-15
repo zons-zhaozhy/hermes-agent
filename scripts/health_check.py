@@ -24,7 +24,7 @@ CACHE_FILE = HERMES_HOME / "cache" / "health-check.json"
 
 def run(cmd: list[str], cwd=None, timeout=30) -> tuple[int, str, str]:
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd or REPO_ROOT, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=cwd or REPO_ROOT, timeout=timeout)
         return r.returncode, r.stdout.strip(), r.stderr.strip()
     except subprocess.TimeoutExpired:
         return -1, "", f"timeout after {timeout}s"

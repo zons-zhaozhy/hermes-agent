@@ -4,14 +4,14 @@ description: Belief-based decision tree for complex multi-step tasks.
 version: "1.0.0"
 author: "Hermes Agent"
 license: "MIT"
+platforms: [cli, gateway, tui, desktop]
 metadata:
   hermes:
     tags: [execution, planning, decision-making, self-check]
     category: agent
     related_skills:
-      - strategic-execution
       - systematic-debugging
-      - decision-framework
+      - github-code-review
     config:
       skills.config.decision_tree.stagnation_window:
         type: integer
