@@ -1,5 +1,6 @@
 """Execution-bearing option detection across interpreters and read-only tools."""
 
+import logging
 import os
 import shlex
 import shutil
@@ -9,6 +10,8 @@ import time
 import pytest
 
 from tools.approval import detect_dangerous_command, detect_hardline_command
+
+logger = logging.getLogger(__name__)
 
 
 @pytest.mark.parametrize(
@@ -32,15 +35,66 @@ def test_real_read_tool_binaries_confirm_option_ownership(
     assert completed.stdout == expected_output
 
 
+def _gnu_coreutils_sort() -> bool:
+    """The sort compress-program payload contract below is a GNU coreutils
+    behavior. BSD sort (macOS, `2.3-Apple`) never invokes --compress-program
+    for small inputs and deadlocks when forced to spill. Detect rather than
+    assume by platform."""
+    try:
+        out = subprocess.run(
+            ["sort", "--version"], capture_output=True, text=True, timeout=10
+        )
+        return "GNU coreutils" in (out.stdout or "")
+    except Exception:
+        logger.warning("sort --version probe failed; assuming BSD sort", exc_info=True)
+        return False
+
+
+def _gnu_man_db() -> bool:
+    """The man pager payload contract below is GNU man-db: `--pager`/`-P`
+    accepts an arbitrary program (even one starting with '-'). BSD man
+    rejects a leading-dash program as an illegal option."""
+    try:
+        out = subprocess.run(
+            ["man", "--version"], capture_output=True, text=True, timeout=10
+        )
+        text = (out.stdout or "") + (out.stderr or "")
+        return "man-db" in text or "GNU" in text
+    except Exception:
+        logger.warning("man --version probe failed; assuming BSD man", exc_info=True)
+        return False
+
+
 @pytest.mark.parametrize(
     ("tool", "args", "stdin", "needs_tty"),
     [
         ("rg", ["--pre", "-payload-marker", "needle", "{input}"], None, False),
         ("rg", ["--hostname-bin=-payload-marker", "needle", "{input}"], None, False),
-        ("sort", ["--buffer-size=1K", "--compress-program", "-payload-marker"], "{bulk}", False),
+        pytest.param(
+            "sort", ["--buffer-size=1K", "--compress-program", "-payload-marker"],
+            "{bulk}", False,
+            marks=pytest.mark.skipif(
+                not _gnu_coreutils_sort(),
+                reason="--compress-program payload contract is GNU coreutils-only; "
+                       "BSD sort never invokes it (small input) and deadlocks "
+                       "when forced to spill",
+            ),
+        ),
         ("ag", ["--pager=-payload-marker", "needle", "{input}"], None, True),
-        ("man", ["--pager", "-payload-marker", "ls"], None, True),
-        ("man", ["-P", "-payload-marker", "ls"], None, True),
+        pytest.param(
+            "man", ["--pager", "-payload-marker", "ls"], None, True,
+            marks=pytest.mark.skipif(
+                not _gnu_man_db(),
+                reason="BSD man rejects -payload-marker as an illegal option",
+            ),
+        ),
+        pytest.param(
+            "man", ["-P", "-payload-marker", "ls"], None, True,
+            marks=pytest.mark.skipif(
+                not _gnu_man_db(),
+                reason="BSD man rejects -payload-marker as an illegal option",
+            ),
+        ),
     ],
 )
 def test_real_binaries_execute_leading_dash_program_payload(

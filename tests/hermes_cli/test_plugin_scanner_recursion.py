@@ -104,6 +104,11 @@ class TestCategoryNamespaceRecursion:
         _write_plugin(user_plugins, ["a", "b", "c"])
 
         mgr = PluginManager()
+        # Hermetic: pip-installed entry-point plugins in the developer's venv
+        # (e.g. rtk-hermes) must not leak into scanner assertions.
+        monkeypatch.setattr(
+            PluginManager, "_scan_entry_points", lambda self: []
+        )
         mgr.discover_and_load()
 
         non_bundled = [

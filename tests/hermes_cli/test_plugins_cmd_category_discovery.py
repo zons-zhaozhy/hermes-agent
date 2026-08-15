@@ -113,8 +113,13 @@ class TestDiscoverAllPlugins:
         })
         mock_user_dir.return_value = tmp_path
         mock_bundled_dir.return_value = tmp_path / "nonexistent"
-
-        entries = _discover_all_plugins()
+        # Hermetic: a pip-installed entry-point plugin in the developer's venv
+        # (e.g. rtk-hermes) must not leak into directory-discovery assertions.
+        with patch(
+            "hermes_cli.plugins_cmd._discover_entrypoint_plugins",
+            return_value=[],
+        ):
+            entries = _discover_all_plugins()
         keys = [e[5] for e in entries]
         assert "disk-cleanup" in keys
         assert "web/tavily" in keys
@@ -233,7 +238,9 @@ class TestCmdListJson:
         mock_bundled_dir.return_value = tmp_path / "nonexistent"
 
         # Patch config to return web/tavily as enabled
-        with patch("hermes_cli.plugins_cmd._get_enabled_set", return_value={"web/tavily"}):
+        with patch("hermes_cli.plugins_cmd._get_enabled_set", return_value={"web/tavily"}), patch(
+            "hermes_cli.plugins_cmd._discover_entrypoint_plugins", return_value=[]
+        ):
             args = MagicMock()
             args.json = True
             args.plain = False
