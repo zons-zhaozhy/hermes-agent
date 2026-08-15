@@ -42,8 +42,21 @@ logger = logging.getLogger(__name__)
 
 # 四轴闸门 marker 文件路径——ReadThinkGate 写入，pre_tool_call 插件读取。
 # 四轴全部验证通过时，写入此文件作为双防线同步信号。
-_FOUR_AXIS_MARKER_DIR = Path.home() / ".hermes" / "cache"
-_FOUR_AXIS_MARKER_FILE = _FOUR_AXIS_MARKER_DIR / "four_axis_gate.json"
+# Path resolved lazily per access: get_hermes_home() is profile-aware and can
+# be redirected by tests mid-process (HERMES_HOME); a module-level constant
+# would freeze the first resolution and break profile isolation (PR #3575
+# class of bugs).
+
+
+def _four_axis_marker_path() -> Path:
+    """解析四轴 marker 文件路径（profile-aware，每次调用现算）。
+
+    Returns:
+        Path: hermes_home/cache/four_axis_gate.json
+    """
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "cache" / "four_axis_gate.json"
 
 # 四轴关键词模式——用于从 assistant_content 中检测四轴证据。
 # 每轴独立判定，track 含"或"关系。
@@ -88,10 +101,11 @@ _FOUR_AXIS_REQUIRED_TOOLS: frozenset[str] = frozenset(
 def _clear_four_axis_marker() -> None:
     """清除四轴 marker 文件——每个 turn 开始时调用。"""
     try:
-        if _FOUR_AXIS_MARKER_FILE.exists():
-            _FOUR_AXIS_MARKER_FILE.unlink()
+        _marker = _four_axis_marker_path()
+        if _marker.exists():
+            _marker.unlink()
     except Exception:
-        pass
+        logger.warning("failed to clear four-axis marker file", exc_info=True)
 
 # 默认门控的执行类工具——只覆盖代码编辑工具。
 # terminal/browser/delegate_task/cronjob/process 等运维交互工具不在默认门控范围——
@@ -740,8 +754,9 @@ class ReadThinkGate:
         # 四轴全部到位 → 写入 marker 文件
         if len(self._four_axis_found) == 4:
             try:
-                _FOUR_AXIS_MARKER_DIR.mkdir(parents=True, exist_ok=True)
-                _FOUR_AXIS_MARKER_FILE.write_text(json.dumps({
+                _marker = _four_axis_marker_path()
+                _marker.parent.mkdir(parents=True, exist_ok=True)
+                _marker.write_text(json.dumps({
                     "verified": True,
                     "timestamp": time.time(),
                     "axes": sorted(self._four_axis_found),

@@ -846,9 +846,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     try:
         _gate = getattr(agent, "_read_think_gate", None)
         if _gate is not None:
+            _gate_names = [tc.function.name for tc in tool_calls]
+            _gate_args = []
+            for tc in tool_calls:
+                _tc_args, _tc_err = _parse_tool_arguments(tc.function.arguments)
+                _gate_args.append(_tc_args if _tc_err is None else {})
             _gate_block = _gate.check_batch(
                 getattr(assistant_message, "content", None),
-                [tc.function.name for tc in tool_calls],
+                _gate_names,
+                tool_args=_gate_args,
             )
     except Exception:
         logger.warning("ReadThinkGate check_batch failed (concurrent path)", exc_info=True)
@@ -1689,6 +1695,29 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     except Exception:
         logger.warning("SelfCheck check_response failed (sequential path)", exc_info=True)
 
+    # ── ReadThinkGate — 一次 assistant_message 只检查一次 ──────────────
+    # 与并发路径对称：扫描 content 四轴证据（marker 供 four-axis-guard 副防线
+    # 读取）+ 门控工具推理先行判定。单工具调用（写工具最常见形态）必走此路径，
+    # 03ddfe147d 只恢复了并发路径——此路径缺失导致 marker 永不写入。
+    # Failsafe: gate crash never blocks execution（851bdcf641 不变量）。
+    _gate_block: str | None = None
+    _gate_tool_args: list[dict] | None = None
+    try:
+        _gate = getattr(agent, "_read_think_gate", None)
+        if _gate is not None:
+            _gate_tool_args = []
+            for tc in assistant_message.tool_calls:
+                _tc_args, _tc_err = _parse_tool_arguments(tc.function.arguments)
+                _gate_tool_args.append(_tc_args if _tc_err is None else {})
+            _gate_block = _gate.check_batch(
+                getattr(assistant_message, "content", None),
+                [tc.function.name for tc in assistant_message.tool_calls],
+                tool_args=_gate_tool_args,
+            )
+    except Exception:
+        logger.warning("ReadThinkGate check_batch failed (sequential path)", exc_info=True)
+        # failsafe: gate crash never blocks execution
+
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
         if getattr(agent, "_incremental_persistence_failed", False):
             return
@@ -1799,7 +1828,20 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
-        middleware_trace: list[dict[str, Any]] = []
+        # ── ReadThinkGate block — batch-level, only for mutating tools ──
+        # Merge the turn-level gate verdict into the scope_block channel so
+        # the gate decision rides the existing block machinery. Tool-scope
+        # errors keep priority; the gate never overrides an existing block
+        # (same precedence as the concurrent path, 851bdcf641).
+        _gate_block_for_call = None
+        if _gate_block is not None:
+            _gated_set = getattr(
+                getattr(agent, "_read_think_gate", None), "_gated_tools", None
+            ) or GATED_TOOL_NAMES
+            if function_name in _gated_set:
+                _gate_block_for_call = _gate_block
+
+        middleware_trace: list[dict] = []
         _execution_blocked = False
         _execution_dispatched = False
 
@@ -1820,7 +1862,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 effective_task_id=effective_task_id,
                 tool_call_id=getattr(tool_call, "id", "") or "",
                 execute=_execute,
-                scope_block=_ts_scope_block,
+                scope_block=_ts_scope_block or _gate_block_for_call,
                 display_index=i,
             ))
             tool_duration = time.time() - tool_start_time
@@ -1851,7 +1893,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 effective_task_id=effective_task_id,
                 tool_call_id=getattr(tool_call, "id", "") or "",
                 execute=_execute,
-                scope_block=_ts_scope_block,
+                scope_block=_ts_scope_block or _gate_block_for_call,
                 display_index=i,
             ))
             tool_duration = time.time() - tool_start_time
@@ -1890,7 +1932,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 effective_task_id=effective_task_id,
                 tool_call_id=getattr(tool_call, "id", "") or "",
                 execute=_execute,
-                scope_block=_ts_scope_block,
+                scope_block=_ts_scope_block or _gate_block_for_call,
                 display_index=i,
             ))
             tool_duration = time.time() - tool_start_time
@@ -1912,7 +1954,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 effective_task_id=effective_task_id,
                 tool_call_id=getattr(tool_call, "id", "") or "",
                 execute=_execute,
-                scope_block=_ts_scope_block,
+                scope_block=_ts_scope_block or _gate_block_for_call,
                 display_index=i,
             ))
             tool_duration = time.time() - tool_start_time
@@ -1933,7 +1975,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 effective_task_id=effective_task_id,
                 tool_call_id=getattr(tool_call, "id", "") or "",
                 execute=_execute,
-                scope_block=_ts_scope_block,
+                scope_block=_ts_scope_block or _gate_block_for_call,
                 display_index=i,
             ))
             tool_duration = time.time() - tool_start_time
@@ -1954,7 +1996,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 effective_task_id=effective_task_id,
                 tool_call_id=getattr(tool_call, "id", "") or "",
                 execute=_execute,
-                scope_block=_ts_scope_block,
+                scope_block=_ts_scope_block or _gate_block_for_call,
                 display_index=i,
             ))
             tool_duration = time.time() - tool_start_time
@@ -1973,7 +2015,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 effective_task_id=effective_task_id,
                 tool_call_id=getattr(tool_call, "id", "") or "",
                 execute=_execute,
-                scope_block=_ts_scope_block,
+                scope_block=_ts_scope_block or _gate_block_for_call,
                 display_index=i,
             ))
             tool_duration = time.time() - tool_start_time
@@ -2007,7 +2049,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     effective_task_id=effective_task_id,
                     tool_call_id=getattr(tool_call, "id", "") or "",
                     execute=_execute,
-                    scope_block=_ts_scope_block,
+                    scope_block=_ts_scope_block or _gate_block_for_call,
                     display_index=i,
                 ))
                 _delegate_result = function_result
@@ -2040,7 +2082,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     effective_task_id=effective_task_id,
                     tool_call_id=getattr(tool_call, "id", "") or "",
                     execute=_execute,
-                    scope_block=_ts_scope_block,
+                    scope_block=_ts_scope_block or _gate_block_for_call,
                     display_index=i,
                 ))
                 _ce_result = function_result
@@ -2076,7 +2118,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     effective_task_id=effective_task_id,
                     tool_call_id=getattr(tool_call, "id", "") or "",
                     execute=_execute,
-                    scope_block=_ts_scope_block,
+                    scope_block=_ts_scope_block or _gate_block_for_call,
                     display_index=i,
                 ))
                 _mem_result = function_result
@@ -2138,7 +2180,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                         effective_task_id=effective_task_id,
                         tool_call_id=getattr(tool_call, "id", "") or "",
                         execute=_execute,
-                        scope_block=_ts_scope_block,
+                        scope_block=_ts_scope_block or _gate_block_for_call,
                         display_index=i,
                         middleware_trace=middleware_trace,
                     )
@@ -2217,7 +2259,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                         effective_task_id=effective_task_id,
                         tool_call_id=getattr(tool_call, "id", "") or "",
                         execute=_execute,
-                        scope_block=_ts_scope_block,
+                        scope_block=_ts_scope_block or _gate_block_for_call,
                         display_index=i,
                         middleware_trace=middleware_trace,
                     )
@@ -2498,7 +2540,15 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
     for kind, calls in segments:
         if getattr(agent, "_incremental_persistence_failed", False):
             return
-        segment_message = SimpleNamespace(tool_calls=list(calls))
+        # Preserve the assistant content on the segment view: ReadThinkGate's
+        # check_batch scans it for four-axis evidence (marker for the
+        # four-axis-guard plugin). A bare SimpleNamespace(tool_calls=...)
+        # dropped it, so segmented batches never scanned → marker never
+        # written → plugin blocked every write tool (deadlock).
+        segment_message = SimpleNamespace(
+            tool_calls=list(calls),
+            content=getattr(assistant_message, "content", None),
+        )
         if kind == "parallel":
             execute_tool_calls_concurrent(
                 agent, segment_message, messages, effective_task_id, api_call_count,

@@ -37,11 +37,19 @@ def _mock_response(content="Hello", finish_reason="stop", tool_calls=None):
 
 
 def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None = None) -> AIAgent:
+    # This file tests relay→plugin→guardrail policy precedence — orthogonal to
+    # the ReadThinkGate concern (covered by tests/agent/test_deliberation_gate.py).
+    # Gate default is enabled; block it here so write_file in these fixtures
+    # isn't stopped by the reasoning-first gate before reaching the layers
+    # under test.
+    base_config: dict = {"read_think_gate": {"enabled": False}}
+    if config:
+        base_config.update(config)
     with (
         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs(*tool_names)),
         patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("hermes_cli.config.load_config", return_value=config or {}),
-        patch("hermes_cli.config.load_config_readonly", return_value=config or {}),
+        patch("hermes_cli.config.load_config", return_value=base_config),
+        patch("hermes_cli.config.load_config_readonly", return_value=base_config),
         patch("run_agent.OpenAI"),
     ):
         agent = AIAgent(

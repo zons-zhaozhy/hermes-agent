@@ -21,21 +21,41 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-_MARKER_FILE = Path.home() / ".hermes" / "cache" / "four_axis_gate.json"
+# marker 文件路径由 ReadThinkGate 经 get_hermes_home() 解析（profile-aware），
+# 本插件必须用同一解析方式，否则 profile 隔离下写读两端路径不一致（PR #3575
+# 同类 bug）。延迟解析：每次读取时现算，不冻结进程首次解析结果。
 _WRITE_TOOLS = frozenset({"write_file", "patch", "execute_code"})
 _MARKER_MAX_AGE_SECONDS = 600  # marker 有效期 10 分钟，超时视为无效
+
+
+def _marker_file() -> Path:
+    """解析 marker 文件路径（与 ReadThinkGate 写入端同一解析方式）。
+
+    Returns:
+        Path: hermes_home/cache/four_axis_gate.json
+    """
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "cache" / "four_axis_gate.json"
 
 # 2026-08-15 修复：agent 自维护产物（日报/指标/state/cron 输出/缓存/记忆）不是
 # "核心代码编辑"，无调用方无编译影响，属闸门设计范围外（escape-valve-runbook
 # 第79行设计意图是 core code edit）。此前无路径过滤导致三省 cron 写日报被拦，
 # 与 ErrorDiscipline 级联形成互锁死锁（拦截计数>=2 -> terminal 封锁）。
-_AGENT_OWNED_PREFIXES = (
-    Path.home() / ".hermes" / "retrospectives",
-    Path.home() / ".hermes" / "state",
-    Path.home() / ".hermes" / "cron" / "output",
-    Path.home() / ".hermes" / "cache",
-    Path.home() / ".hermes" / "memories",
-)
+# 前缀同样经 get_hermes_home() 延迟解析（profile-aware，与 marker 路径一致）。
+
+
+def _agent_owned_prefixes() -> tuple[Path, ...]:
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home()
+    return (
+        home / "retrospectives",
+        home / "state",
+        home / "cron" / "output",
+        home / "cache",
+        home / "memories",
+    )
 
 
 def _is_agent_owned_path(path_str: str) -> bool:
@@ -44,7 +64,7 @@ def _is_agent_owned_path(path_str: str) -> bool:
     Contract:
       Preconditions: path_str 为字符串（可为空，空返回 False）
       Postconditions: 返回 True 当且仅当 resolve 后的路径等于某个
-        _AGENT_OWNED_PREFIXES 或位于其下；解析失败返回 False（fail-closed）
+        agent-owned 前缀或位于其下；解析失败返回 False（fail-closed）
     """
     if not path_str:
         return False
@@ -56,11 +76,13 @@ def _is_agent_owned_path(path_str: str) -> bool:
             "path=%r error=%s", path_str, exc, exc_info=True,
         )
         return False
-    result = any(p == prefix or prefix in p.parents for prefix in _AGENT_OWNED_PREFIXES)
+    result = any(p == prefix or prefix in p.parents for prefix in _agent_owned_prefixes())
     if result:
-        hermes_root = str(Path.home() / ".hermes")
+        from hermes_constants import get_hermes_home
+
+        hermes_root = str(get_hermes_home())
         assert str(p).startswith(hermes_root), (
-            f"exempted path escaped ~/.hermes scope: {p}"
+            f"exempted path escaped hermes home scope: {p}"
         )
     return result
 
@@ -68,9 +90,10 @@ def _is_agent_owned_path(path_str: str) -> bool:
 def _read_marker() -> Optional[dict]:
     """读取 marker 文件，验证时效性。"""
     try:
-        if not _MARKER_FILE.exists():
+        _marker = _marker_file()
+        if not _marker.exists():
             return None
-        data = json.loads(_MARKER_FILE.read_text())
+        data = json.loads(_marker.read_text())
         age = time.time() - data.get("timestamp", 0)
         if age > _MARKER_MAX_AGE_SECONDS:
             logger.debug("four-axis marker expired (age=%.0fs)", age)
