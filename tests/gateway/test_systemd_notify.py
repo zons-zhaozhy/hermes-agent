@@ -8,8 +8,24 @@ import socket
 import pytest
 
 
+def _abstract_sockets_supported() -> bool:
+    """Linux-only: abstract-namespace Unix sockets (\0name) don't exist on
+    macOS/BSD — bind() fails with FileNotFoundError there."""
+    if not hasattr(socket, "AF_UNIX"):
+        return False
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    try:
+        probe.bind("\0hermes-probe-abstract-support")
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
 @pytest.mark.skipif(
-    not hasattr(socket, "AF_UNIX"), reason="Unix datagram sockets are unavailable"
+    not _abstract_sockets_supported(),
+    reason="abstract Unix datagram sockets are unavailable (Linux-only)",
 )
 def test_notify_supports_systemd_abstract_socket(monkeypatch):
     name = "\0hermes-test-notify"

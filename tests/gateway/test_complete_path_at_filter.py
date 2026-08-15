@@ -138,11 +138,27 @@ def test_fuzzy_paths_relative_to_cwd_inside_subdir(tmp_path, monkeypatch):
     `git ls-files` result back to a `relpath(root)` and drop anything
     outside `root` so the completion contract stays "paths are cwd-relative".
     """
+    import os
     import subprocess
 
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
+    def _git(*args):
+        # Isolate from the developer machine's global git config: a global
+        # core.hooksPath (e.g. ~/.hermes/githooks) makes every commit in this
+        # throwaway repo run the developer's pre-commit scan and fail.
+        env = {
+            "PATH": os.environ["PATH"],
+            "HOME": str(tmp_path),
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, env=env,
+                       capture_output=True)
+
+    _git("init", "-q")
+    _git("config", "user.email", "test@example.com")
+    _git("config", "user.name", "test")
 
     (tmp_path / "apps" / "web" / "src").mkdir(parents=True)
     (tmp_path / "apps" / "web" / "src" / "appChrome.tsx").write_text("x")
@@ -150,8 +166,8 @@ def test_fuzzy_paths_relative_to_cwd_inside_subdir(tmp_path, monkeypatch):
     (tmp_path / "apps" / "api" / "src" / "server.ts").write_text("x")
     (tmp_path / "README.md").write_text("x")
 
-    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
+    _git("add", ".")
+    _git("commit", "-q", "-m", "init")
 
     # Run from `apps/web/` — completions should be relative to here, and
     # files outside this subtree (apps/api, README.md at root) shouldn't
