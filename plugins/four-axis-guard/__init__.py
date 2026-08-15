@@ -58,9 +58,10 @@ def _is_agent_owned_path(path_str: str) -> bool:
         return False
     result = any(p == prefix or prefix in p.parents for prefix in _AGENT_OWNED_PREFIXES)
     if result:
-        assert all(
-            str(p).startswith(str(Path.home() / ".hermes")),
-        ), f"exempted path escaped ~/.hermes scope: {p}"
+        hermes_root = str(Path.home() / ".hermes")
+        assert str(p).startswith(hermes_root), (
+            f"exempted path escaped ~/.hermes scope: {p}"
+        )
     return result
 
 
