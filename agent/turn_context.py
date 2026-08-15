@@ -427,6 +427,25 @@ class TurnContext:
     preflight_compression_blocked: bool = False
 
 
+def _extract_user_message_text(user_message: Any) -> str | None:
+    """Extract plain text from user_message for complexity detection."""
+    if user_message is None:
+        return None
+    if isinstance(user_message, str):
+        return user_message
+    if isinstance(user_message, dict):
+        content = user_message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(str(item.get("text", "")))
+            return " ".join(parts) if parts else None
+    return str(user_message)
+
+
 def build_turn_context(
     agent,
     user_message: Any,
@@ -568,6 +587,13 @@ def build_turn_context(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
+    # ReadThinkGate — 每 turn 重置推理门控（四轴证据累积清零、墙钟阀重启）。
+    _dg = getattr(agent, "_read_think_gate", None)
+    if _dg is not None:
+        _dg.reset_for_turn(
+            _extract_user_message_text(user_message),
+            conversation_history,
+        )
     _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
     if callable(_reset_consol):
         _reset_consol()

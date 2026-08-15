@@ -44,6 +44,7 @@ from tools.terminal_tool import (
     get_active_env,
 )
 from tools.thread_context import propagate_context_to_thread
+from agent.read_think_gate import GATED_TOOL_NAMES
 from tools.tool_result_storage import (
     maybe_persist_tool_result,
     enforce_turn_budget,
@@ -838,6 +839,21 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     except Exception:
         logger.warning("SelfCheck check_response failed (concurrent path)", exc_info=True)
 
+    # ── ReadThinkGate — 一次 assistant_message 只检查一次 ──────────────
+    # 扫描 content 的四轴证据（_scan_four_axis 写 marker 供 four-axis-guard
+    # 副防线读取），并对门控工具做推理先行判定。08-04 sync 丢失，本次恢复。
+    _gate_block: str | None = None
+    try:
+        _gate = getattr(agent, "_read_think_gate", None)
+        if _gate is not None:
+            _gate_block = _gate.check_batch(
+                getattr(assistant_message, "content", None),
+                [tc.function.name for tc in tool_calls],
+            )
+    except Exception:
+        logger.warning("ReadThinkGate check_batch failed (concurrent path)", exc_info=True)
+        # failsafe: gate crash never blocks execution
+
     # ── Parse args + pre-execution bookkeeping ───────────────────────
     # (tool call, resolved name, parsed args, middleware trace, parse error,
     # tool-search scope block, self_check_warning)
@@ -912,8 +928,17 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         except Exception:
             logger.warning("self_check.check raised for %s", function_name, exc_info=True)
 
+        # ── ReadThinkGate block: gated tool before reasoning done ────
+        _gate_block_for_call = None
+        if _gate_block is not None:
+            _gated_set = getattr(
+                getattr(agent, "_read_think_gate", None), "_gated_tools", None
+            ) or GATED_TOOL_NAMES
+            if function_name in _gated_set:
+                _gate_block_for_call = _gate_block
+
         parsed_calls.append(
-            (tool_call, function_name, function_args, [], None, _ts_scope_block, self_check_warning)
+            (tool_call, function_name, function_args, [], _gate_block_for_call, _ts_scope_block, self_check_warning)
         )
 
     # ── Logging / callbacks ──────────────────────────────────────────

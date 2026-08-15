@@ -41,6 +41,7 @@ from agent.model_metadata import (
     query_ollama_num_ctx,
 )
 from agent.process_bootstrap import _install_safe_stdio
+from agent.read_think_gate import ReadThinkGate, ReadThinkGateConfig
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
@@ -785,6 +786,10 @@ def init_agent(
     agent._executing_tools = False
     agent._tool_guardrails = ToolCallGuardrailController()
     agent._tool_guardrail_halt_decision: ToolGuardrailDecision | None = None
+    # ReadThinkGate — 推理门控主防线：扫描 assistant 内容的四轴证据并写
+    # ~/.hermes/cache/four_axis_gate.json marker（four-axis-guard 副防线读取）。
+    # 08-04 upstream sync (22d6d2a6f3) 丢失接线，本次恢复（backup/pre-sync-20260803 样本）。
+    agent._read_think_gate = ReadThinkGate()
 
     # Interrupt mechanism for breaking out of tool loops
     agent._interrupt_requested = False
@@ -1686,6 +1691,17 @@ def init_agent(
         )
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
+    # ReadThinkGate 配置版初始化——覆盖 agent_init 前段的默认实例，
+    # 读 config.yaml → read_think_gate 段（enabled/max_reasoning_rounds 等）。
+    try:
+        agent._read_think_gate = ReadThinkGate(
+            ReadThinkGateConfig.from_mapping(
+                _agent_cfg.get("read_think_gate", {})
+            )
+        )
+    except Exception as _dg_err:
+        _ra().logger.warning("Read-think gate config ignored: %s", _dg_err)
+        agent._read_think_gate = ReadThinkGate()
     # Cache only the derived auxiliary compression context override that is
     # needed later by the startup feasibility check.  Avoid exposing a
     # broad pseudo-public config object on the agent instance.
