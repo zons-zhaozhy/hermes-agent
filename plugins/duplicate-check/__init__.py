@@ -78,6 +78,15 @@ def _is_new_python_file(tool_name: str, args: Any, cwd: str) -> Optional[str]:
         return None
     if _should_skip(path):
         return None
+    # 项目外的临时脚本（/tmp、~/.hermes、系统目录）不参与项目查重——
+    # git ls-files 搜不到它们，任何"匹配"都只能是误报。
+    try:
+        real_cwd = os.path.realpath(cwd)
+        real_full = os.path.realpath(full)
+        if not real_full.startswith(real_cwd + os.sep) and real_full != real_cwd:
+            return None
+    except OSError:
+        return None
     return path
 
 
@@ -145,48 +154,67 @@ def _search_duplicates(path: str, cwd: str) -> List[str]:
 
     all_files = _get_cached_ls_files(cwd)
 
-    # 策略1：文件名前缀匹配（比 basename 广，比全路径窄）
+    # 策略1：文件名词干匹配（真正的相似性，不是同位字符数）
+    # 只有当两个文件名共享同一个 ≥4 字符的词干（camelCase/snake_case 分词后）
+    # 才算相似——"verify_compression_fix" vs "verification_evidence" 分词后
+    # {verify, compression, fix} vs {verification, evidence} 无公共词干，不拦。
     basename = os.path.basename(path)
     name_no_ext = os.path.splitext(basename)[0]
 
-    # 用关键词的前两个做前缀匹配搜索
+    def _stem_set(name: str) -> Set[str]:
+        # snake/kebab 分词 + camelCase 拆分
+        words = re.split(r"[_\-]", name.lower())
+        stems: Set[str] = set()
+        for w in words:
+            if len(w) < 4:
+                continue
+            # 拆 camelCase（对混合命名）
+            for piece in re.findall(r"[a-z]+|[A-Z][a-z]*", w):
+                if len(piece) >= 4:
+                    stems.add(piece.lower())
+        return stems
+
+    new_stems = _stem_set(name_no_ext)
+
     for kw in keywords[:2]:
         for f in all_files:
             if f == path:
                 continue
             f_basename = os.path.basename(f)
             f_name = os.path.splitext(f_basename)[0]
-            # 检查：两个文件名至少共享 4 个字符 OR 包含同一关键词
-            shared = 0
-            for c1, c2 in zip(name_no_ext, f_name):
-                if c1 == c2:
-                    shared += 1
-                else:
-                    break
-            if shared >= 4:
+            # 同目录 + 共享词干才算等价实现候选
+            if os.path.dirname(f) and os.path.dirname(f) != os.path.dirname(path):
+                continue
+            common = new_stems & _stem_set(f_name)
+            if common:
                 warnings.append(
-                    "文件名相似(共享{0}字符): 已有 {1}".format(shared, f))
+                    "文件名共享词干({0}): 已有 {1}".format(
+                        ",".join(sorted(common))[:40], f))
                 break  # 一个关键词匹配一次就够了
 
     # 策略2：函数/类名关键词匹配（用 rg 而非 git grep，更快）
     if not warnings:  # 如果策略1已命中，策略2可跳过
-        pattern = "|".join(keywords[:2])  # 最多用2个关键词，提高精度
-        try:
-            result = subprocess.run(
-                ["rg", "-l", "--no-heading", "--type", "py",
-                 r"(def|class)\s+\w*({0})\w*".format(pattern)],
-                capture_output=True, text=True, timeout=8, cwd=cwd,
-            )
-            existing = [
-                f.strip() for f in result.stdout.splitlines()
-                if f.strip() and f.strip() != path
-                and not _should_skip(f.strip())
-            ]
-            for f in existing[:3]:
-                warnings.append(
-                    "函数/类名含关键词 '{0}': 已有 {1}".format(pattern, f))
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
+        # 只用 ≥6 字符的关键词——短词（fix/check/verify/utils）在全库
+        # 几乎必然命中，导致大量误报。
+        strong_kws = [k for k in keywords if len(k) >= 6][:2]
+        if strong_kws:
+            pattern = "|".join(strong_kws)
+            try:
+                result = subprocess.run(
+                    ["rg", "-l", "--no-heading", "--type", "py",
+                     r"(def|class)\s+\w*({0})\w*".format(pattern)],
+                    capture_output=True, text=True, timeout=8, cwd=cwd,
+                )
+                existing = [
+                    f.strip() for f in result.stdout.splitlines()
+                    if f.strip() and f.strip() != path
+                    and not _should_skip(f.strip())
+                ]
+                for f in existing[:3]:
+                    warnings.append(
+                        "函数/类名含关键词 '{0}': 已有 {1}".format(pattern, f))
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                pass
 
     elapsed_ms = int((time.time() - start) * 1000)
     if elapsed_ms > 500:

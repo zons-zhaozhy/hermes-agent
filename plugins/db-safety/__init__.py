@@ -45,11 +45,51 @@ _SQL_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+# SQL runs through a DB client shell. Only commands that START with a DB
+# client are candidates for SQL-keyword inspection; anything else carrying
+# SELECT/CREATE/... words is ordinary code or prose (e.g. Python
+# `from agent.x import ...`, `.create(...)`, `new Set(...)`) and must NOT
+# be treated as SQL. This kills the dominant false-positive class where
+# verification scripts got blocked on words like "agent"/"openai".
+_DB_CLIENT_PREFIXES = (
+    "psql", "pg_", "mysql", "mariadb", "sqlite3", "sqlplus",
+    "disql", "duckdb",
+)
+
+# sqlite3 dot-commands (.schema/.tables) and PRAGMA table_info are schema
+# confirmation commands too — previously only \dt / information_schema were
+# recognized, so a session that HAD confirmed the schema via sqlite3 was
+# still blocked on every subsequent query.
 _SCHEMA_CONFIRM_COMMANDS = re.compile(
-    r"(\\dt|\\d\s|information_schema|SHOW\s+TABLES|DESCRIBE\s|SHOW\s+COLUMNS|"
-    r"pg_catalog|\\d\+)",
+    r"(\.schema|\.tables|\\dt|\\d\s|information_schema|SHOW\s+TABLES|DESCRIBE\s|"
+    r"SHOW\s+COLUMNS|pg_catalog|\\d\+|PRAGMA\s+table_info)",
     re.IGNORECASE,
 )
+
+
+def _looks_like_db_shell(cmd: str) -> bool:
+    """True if *cmd* starts with a DB client (possibly after env/PATH noise).
+
+    Handles leading ``ENV=...`` assignments and ``sudo``/``command``/``env``
+    wrappers so ``PGPASSWORD=x psql -c ...`` still counts.
+    """
+    tokens = cmd.strip().split(None, 8)
+    i = 0
+    # skip VAR=value assignments
+    while i < len(tokens) and "=" in tokens[i] and not tokens[i].startswith("-") \
+            and tokens[i].split("=", 1)[0].replace("_", "").isalnum():
+        i += 1
+    # skip sudo / command / env wrappers
+    while i < len(tokens) and tokens[i] in ("sudo", "command", "env"):
+        i += 1
+        # env may carry more VAR= assignments
+        while i < len(tokens) and "=" in tokens[i] and not tokens[i].startswith("-"):
+            i += 1
+    if i >= len(tokens):
+        return False
+    first = tokens[i].rstrip(";|&")
+    return any(first == p or first.startswith(p + " ") or first == p.strip() or first.startswith(p)
+               for p in _DB_CLIENT_PREFIXES if p.strip())
 
 
 def _plugin_disabled() -> bool:
@@ -100,7 +140,8 @@ def on_post_tool_call(**kwargs) -> None:
         args = kwargs.get("args") or {}
         cmd = str(args.get("command", ""))
 
-        # Detect schema confirmation commands
+        # Detect schema confirmation commands (any command may embed one,
+        # e.g. `sqlite3 db ".schema"` or `psql -c '\dt'`)
         if _SCHEMA_CONFIRM_COMMANDS.search(cmd):
             get_session_state(sid, _NAMESPACE)["schema_confirmed"] = True
 
@@ -109,8 +150,9 @@ def on_post_tool_call(**kwargs) -> None:
             for table in d_matches:
                 _get_confirmed_tables(sid).add(table.lower())
 
-        # Track SQL queries
-        if _SQL_KEYWORDS.search(cmd):
+        # Track SQL queries (DB client shells only — avoids logging Python
+        # code that merely contains SQL-shaped words)
+        if _looks_like_db_shell(cmd) and _SQL_KEYWORDS.search(cmd):
             tables = _extract_tables_from_sql(cmd)
             recent = _get_recent_sql(sid)
             recent.append({"cmd": cmd[:200], "tables": tables})
@@ -133,6 +175,10 @@ def on_pre_tool_call(**kwargs) -> Optional[Dict[str, Any]]:
 
     args = kwargs.get("args") or {}
     cmd = str(args.get("command", "")).strip()
+
+    # Not a DB client command — SQL keywords in code/prose are not SQL.
+    if not _looks_like_db_shell(cmd):
+        return None
 
     # Not a SQL command
     if not _SQL_KEYWORDS.search(cmd):
