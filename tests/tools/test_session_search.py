@@ -632,11 +632,8 @@ class TestCompactionSummaryFiltering:
         assert result["success"] is True
         assert len(result["results"]) >= 1
         entry = result["results"][0]
-        # Discovery returns metadata + snippet only — no message bodies
-        assert "messages" not in entry
-        assert "bookend_start" not in entry
-        assert "bookend_end" not in entry
-        # The compaction handoff can't leak because it's never fetched
+        # Adaptive discovery: messages may be present (window/bookends), but
+        # the compaction handoff must never leak into any field.
         assert "[CONTEXT COMPACTION" not in json.dumps(entry)
 
 
@@ -838,11 +835,8 @@ class TestCompactionDiscoveryBothLayers:
         entry = result["results"][0]
         assert entry["session_id"] == "s_both"
 
-        # Discovery returns metadata + snippet only — no message bodies
-        # or compaction handoffs can leak because nothing is fetched.
-        assert "messages" not in entry
-        assert "bookend_start" not in entry
-        assert "bookend_end" not in entry
+        # Adaptive discovery: messages may be present, but the compaction
+        # handoff must never leak into any field.
         assert "[CONTEXT COMPACTION" not in json.dumps(entry)
 
 

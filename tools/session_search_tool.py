@@ -722,6 +722,15 @@ def _title_match_result(
         logging.debug("get_messages failed for title match %s", session_id, exc_info=True)
         messages = []
 
+    anchor_id = messages[0].get("id") if messages else None
+    view = {}
+    if anchor_id is not None:
+        try:
+            view = db.get_anchored_view(session_id, anchor_id, window=5, bookend=3)
+        except Exception:
+            logging.debug("get_anchored_view failed for title match %s/%s", session_id, anchor_id, exc_info=True)
+            view = {}
+
     entry = {
         "session_id": session_id,
         "when": _format_timestamp(session_meta.get("started_at")),
@@ -852,6 +861,11 @@ def _discover(
             continue
         hit_sid = match_info.get("session_id") or lineage_root
         msg_id = match_info.get("id")
+        try:
+            view = db.get_anchored_view(hit_sid, msg_id, window=5, bookend=3)
+        except Exception as e:
+            logging.warning("get_anchored_view failed for %s/%s: %s", hit_sid, msg_id, e, exc_info=True)
+            continue
 
         try:
             session_meta = db.get_session(lineage_root) or {}
