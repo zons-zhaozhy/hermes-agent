@@ -141,7 +141,19 @@ def _call_auxiliary_llm(prompt, timeout=60):
 
     url = base_url.rstrip("/") + "/chat/completions"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key or os.environ.get('OPENAI_API_KEY', '')}"}
-    payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 1200, "temperature": 0.2}
+    # zai coding 端点（/api/coding/paas/v4）的模型默认烧 reasoning tokens：
+    # 单轮确定性 JSON 评分任务实测 effort=none/low 仍烧 1000+ rt，且长思考后
+    # 输出退化为畸形 JSON（空 scores / 缺分隔符），解析失败→条目静默丢失。
+    # 根治 = extra_body.reasoning={"enabled": False} 整体关闭 thinking
+    # （2026-08-18 实测：0 rt，JSON 一次解析 OK）。与 compression aux 的
+    # reasoning_effort:none 修法同族——aux 轻量任务禁烧 thinking。
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 1200,
+        "temperature": 0.2,
+        "extra_body": {"reasoning": {"enabled": False}},
+    }
     try:
         req = urllib.request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode(), headers=headers)
         resp = urllib.request.urlopen(req, timeout=timeout)
