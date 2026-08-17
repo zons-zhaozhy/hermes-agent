@@ -106,7 +106,7 @@ def _on_post_llm_call(**kwargs):
         from agent.post_response_hooks import run_post_response_checks
         result = run_post_response_checks(hooks, assistant_response, context)
 
-        if result and not result.passed:
+        if result is not None and not result.passed:
             logger.warning(
                 "Post-response hook triggered: action=%s session=%s",
                 result.action, session_id,

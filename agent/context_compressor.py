@@ -2441,15 +2441,24 @@ class ContextCompressor(ContextEngine):
     def _apply_threshold_tokens_cap(self) -> None:
         """Apply the absolute token cap if configured.
 
-        After ``threshold_tokens`` is (re)computed from the ratio-based
-        percent, clamp it to the cap so compression never fires later
-        than the user's preferred absolute token count. The cap itself
-        is clamped to the current context length so a cap larger than
-        the model's window is a no-op (the ratio-based threshold wins).
+        When a user sets ``compression.threshold_tokens`` (fixed-size threshold),
+        it takes precedence over the ratio-based ``threshold``. The cap is clamped
+        to the current context length so a cap larger than the model's window is
+        a no-op (compress at the ratio-based threshold instead).
+
+        This honors the user's preference for fixed-size triggers over fragile
+        percentage-based thresholds, which depend on context_length metadata that
+        may be inaccurate (e.g., glm-5-turbo catalog mismatch vs. provider probe).
         """
         if self.threshold_tokens_cap is not None and self.threshold_tokens_cap > 0:
+            # Fixed-size threshold takes precedence over the ratio-based value,
+            # but only when it is a REAL constraint (strictly below the window).
+            # A cap >= context_length would set the trigger to 100% of the
+            # window — the degenerate case where the provider rejects the
+            # request before compaction ever fires (#14690) — so keep the
+            # ratio-based threshold in that case.
             _effective_cap = min(self.threshold_tokens_cap, self.context_length)
-            if _effective_cap < self.threshold_tokens:
+            if _effective_cap < self.context_length:
                 self.threshold_tokens = _effective_cap
 
     @staticmethod

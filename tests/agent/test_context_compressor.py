@@ -2037,6 +2037,45 @@ class TestThresholdTokensCap:
         assert comp.threshold_tokens == 500_000
         assert comp.threshold_tokens_cap is None
 
+    def test_fixed_cap_takes_precedence_over_ratio(self):
+        """A fixed-size cap takes precedence over the ratio-based threshold,
+        even when the ratio-based threshold is LOWER than the cap.
+
+        This honors the user's directive: different models have different
+        context lengths, so a fixed token threshold (compression.threshold_tokens)
+        is more reliable than a percentage of a possibly-inaccurate
+        context_length. The trigger point must be deterministic: exactly the
+        configured token count (clamped below the window)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=150_000,
+            )
+            _ = comp.context_length
+        # Ratio-based would be 500K; user's fixed cap is 150K → use 150K exactly.
+        assert comp.threshold_tokens == 150_000
+
+    def test_fixed_cap_never_degenerates_small_window(self):
+        """A fixed cap that is >= the model's context window must NOT push
+        the trigger to 100% of the window (the #14690 degenerate case where
+        the provider 400s before compaction can fire). The ratio-based
+        threshold wins instead.
+
+        Derivation for a 64K window: small-context floor raises 0.50 → 0.75
+        (< 512K limit); 0.75*64000=48000 is floored by MINIMUM_CONTEXT_LENGTH
+        which meets the window, so the #14690 branch triggers at 85% = 54400.
+        The cap (150K > window) must be a no-op, NOT min(cap, window)=64000."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=64_000):
+            comp = ContextCompressor(
+                "model-a", threshold_percent=0.50, quiet_mode=True,
+                threshold_tokens_cap=150_000,  # > 64K window
+            )
+            _ = comp.context_length
+        # Ratio-based (floored) 85% of 64K = 54400 wins over min(cap, 64K)=64K.
+        assert comp.threshold_tokens == 54_400
+        # Invariant: trigger strictly below the window — never degenerate.
+        assert comp.threshold_tokens < comp.context_length
+
 
 
 

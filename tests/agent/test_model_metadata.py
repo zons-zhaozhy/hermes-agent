@@ -1389,3 +1389,29 @@ class TestFallbackWarning:
             if r.levelno == logging.WARNING and "falling back" in r.getMessage()
         ]
         assert len(fallback_warnings) == 0
+
+
+class TestGlmTurboContextLength:
+    """glm-5-turbo is 200K, not 256K.
+
+    Regression (2026-08-17): a 154K-token prompt on glm-5-turbo was rejected
+    with API error 1261 "Prompt exceeds max length" while Hermes believed
+    the model had 262,144 tokens of room. The oversized catalog entry pushed
+    the compression threshold past the real API limit, so compression only
+    fired as an emergency rescue *after* the 400. Official limit:
+    https://docs.bigmodel.cn — 200K context.
+    """
+
+    def test_glm_5_turbo_is_200k(self):
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+
+        assert DEFAULT_CONTEXT_LENGTHS["glm-5-turbo"] == 200_000
+
+    def test_glm_5_turbo_resolves_via_substring_matching(self):
+        assert get_model_context_length("glm-5-turbo") == 200_000
+
+    def test_glm_5_2_keeps_user_override(self):
+        assert get_model_context_length("glm-5.2") == 262_144
+
+    def test_generic_glm_fallback_unchanged(self):
+        assert get_model_context_length("glm-5.1") == 202_752
