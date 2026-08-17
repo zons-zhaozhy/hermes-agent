@@ -234,6 +234,114 @@ def _plugin_enabled() -> bool:
 
 _STATE_LOCK = threading.Lock()
 _TURN_ERRORS: Dict[str, int] = {}
+# Closed-loop feedback state (v4): session_id → last response stats.
+_LAST_RESPONSE_STATS: Dict[str, Dict[str, Any]] = {}
+
+
+def _extract_reasoning_tokens(response: Any) -> Optional[int]:
+    """Pull reasoning_tokens from a chat-completions response, if present.
+
+    Args:
+        response: Provider response object (OpenAI-compatible).
+
+    Returns:
+        Reasoning token count, or None when the provider omits usage.
+    """
+    usage = getattr(response, "usage", None)
+    details = getattr(usage, "completion_tokens_details", None)
+    value = getattr(details, "reasoning_tokens", None)
+    return value if isinstance(value, int) else None
+
+
+def _extract_finish_reason(response: Any) -> Optional[str]:
+    """Best-effort finish_reason from response or streamed chunks.
+
+    Args:
+        response: Provider response object.
+
+    Returns:
+        finish_reason string, or None when unavailable.
+    """
+    fr = getattr(response, "finish_reason", None)
+    if isinstance(fr, str):
+        return fr
+    choices = getattr(response, "choices", None)
+    if choices:
+        fr = getattr(choices[0], "finish_reason", None)
+        if isinstance(fr, str):
+            return fr
+    return None
+
+
+def adaptive_llm_execution_middleware(**kwargs: Any) -> Any:
+    """llm_execution middleware: OBSERVE the real response, don't alter it.
+
+    Closes the feedback loop the request-side classifier is blind to:
+    difficulty that only reveals itself in model behaviour. Records
+    per-session last-response stats for the next request classification.
+
+    Contract (hermes_cli/middleware.py:_run_execution_chain):
+        next_call(payload) is SINGLE-USE; its result passes through
+        untouched. Never rewrite the response.
+    """
+    next_call = kwargs.get("next_call")
+    if not callable(next_call):
+        return None
+    response = next_call(kwargs.get("request"))
+    try:
+        session_id = str(kwargs.get("session_id") or "")
+        if session_id:
+            rt = _extract_reasoning_tokens(response)
+            fr = _extract_finish_reason(response)
+            if rt is not None or fr is not None:
+                _LAST_RESPONSE_STATS[session_id] = {
+                    "reasoning_tokens": rt,
+                    "finish_reason": fr,
+                    "turn_id": str(kwargs.get("turn_id") or ""),
+                }
+    except Exception:  # observation must never break the call
+        logger.debug("adaptive-reasoning: observation failed", exc_info=True)
+    return response
+
+
+def _feedback_level(stats: Optional[Dict[str, Any]],
+                    tool_errors: int, cfg: Dict[str, Any]) -> Optional[str]:
+    """Derive a closed-loop effort correction from the last response.
+
+    Measured failure modes each rule defends against (eval_benchmark.py):
+    * reasoning_tokens >= feedback_hard_rt while the model was still
+      working (tool loop, not a final answer) → task genuinely hard; keep
+      high. (orbital-sort: low gave 24 tok → wrong; medium 34 → right —
+      revealed difficulty, invisible in the input.)
+    * finish_reason == "length" + high rt → reasoning ate the completion
+      budget (measured 1022/2047-tok starvations) → step DOWN so the
+      answer survives.
+    * low rt + clean finish after real work → easier than it looked;
+      step down.
+
+    Args:
+        stats: Last response stats for this session (may be None).
+        tool_errors: Failed tool calls this turn (rescue path handles).
+        cfg: Tuning config.
+
+    Returns:
+        Effort level hint, or None when no correction applies.
+    """
+    if not stats:
+        return None
+    rt = stats.get("reasoning_tokens")
+    fr = stats.get("finish_reason")
+    hard_threshold = int(cfg.get("feedback_hard_rt", 600) or 600)
+    clean_low_rt = int(cfg.get("feedback_clean_rt", 80) or 80)
+
+    if rt is not None and rt >= hard_threshold and tool_errors == 0:
+        if fr == "length":
+            return "medium"  # starvation: protect the answer
+        return "high"        # revealed-hard task, still in progress
+    if rt is not None and rt <= clean_low_rt and fr not in ("length", None) \
+            and tool_errors == 0:
+        return "low"         # confirmed easier than it looked
+    return None
 
 
 def _state_key(session_id: str, turn_id: str) -> str:
@@ -546,6 +654,17 @@ def adaptive_llm_request_middleware(**kwargs: Any) -> Optional[Dict[str, Any]]:
         cfg=cfg,
         work_depth=work_depth,
     )
+
+    # v4 closed loop: mid-tool-loop (api_call_count > 1) the stale user
+    # message is NOT the difficulty signal — the model's own behaviour on
+    # the previous call of THIS turn is. Feedback never applies on the
+    # first call of a turn (fresh user message wins).
+    if api_call_count > 1:
+        stats = _LAST_RESPONSE_STATS.get(session_id)
+        fb = _feedback_level(stats, tool_errors, cfg)
+        if fb is not None:
+            level = fb
+
     level = _clamp(level, str(cfg["floor"]), str(cfg["ceiling"]))
 
     rewritten = _rewrite_reasoning(request, level, provider, model)
@@ -592,5 +711,6 @@ def _last_user_message(request: Dict[str, Any]) -> str:
 def register(ctx) -> None:  # noqa: ANN001 — PluginContext from loader
     """Plugin entry point: register middleware + observer hook."""
     ctx.register_middleware("llm_request", adaptive_llm_request_middleware)
+    ctx.register_middleware("llm_execution", adaptive_llm_execution_middleware)
     ctx.register_hook("post_tool_call", on_post_tool_call)
     logger.info("adaptive-reasoning registered (issues #74725 / #13663)")

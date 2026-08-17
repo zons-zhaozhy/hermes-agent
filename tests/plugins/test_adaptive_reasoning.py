@@ -382,3 +382,111 @@ def test_clamp_bounds():
     assert plugin_mod._clamp("minimal", "medium", "high") == "medium"
     assert plugin_mod._clamp("ultra", "medium", "high") == "high"
     assert plugin_mod._clamp("low", "minimal", "ultra") == "low"
+
+
+# ── 4. v4 closed-loop feedback ───────────────────────────────────────────
+
+def _fb_cfg() -> Dict[str, Any]:
+    return {"feedback_hard_rt": 600, "feedback_clean_rt": 80}
+
+
+def test_feedback_revealed_hard_keeps_high():
+    # orbital-sort pattern: model burned >=600 rt with a clean finish
+    # mid-task → genuinely hard, keep high
+    stats = {"reasoning_tokens": 1022, "finish_reason": "stop"}
+    assert plugin_mod._feedback_level(stats, 0, _fb_cfg()) == "high"
+
+
+def test_feedback_starvation_steps_down():
+    # measured 1022/2047-tok starvations: rt >= threshold AND finish=length
+    # → reasoning ate the answer budget → medium so the answer survives
+    stats = {"reasoning_tokens": 2047, "finish_reason": "length"}
+    assert plugin_mod._feedback_level(stats, 0, _fb_cfg()) == "medium"
+
+
+def test_feedback_confirmed_easy_steps_down():
+    # low rt + clean stop after real work → easier than it looked
+    stats = {"reasoning_tokens": 24, "finish_reason": "stop"}
+    assert plugin_mod._feedback_level(stats, 0, _fb_cfg()) == "low"
+
+
+def test_feedback_midband_returns_none():
+    # 300 rt is uninformative — prior stands
+    stats = {"reasoning_tokens": 300, "finish_reason": "stop"}
+    assert plugin_mod._feedback_level(stats, 0, _fb_cfg()) is None
+
+
+def test_feedback_disabled_when_tool_errors():
+    # tool errors are the rescue path's ground truth; feedback defers
+    stats = {"reasoning_tokens": 1022, "finish_reason": "stop"}
+    assert plugin_mod._feedback_level(stats, 2, _fb_cfg()) is None
+
+
+def test_feedback_none_stats():
+    assert plugin_mod._feedback_level(None, 0, _fb_cfg()) is None
+
+
+def test_execution_middleware_observes_and_passes_through():
+    # contract: response passes through UNTOUCHED; stats recorded per session
+    class _Resp:
+        class _Usage:
+            class _Details:
+                reasoning_tokens = 700
+            completion_tokens_details = _Details()
+        usage = _Usage()
+        class _Choice:
+            finish_reason = "stop"
+        choices = [_Choice()]
+
+    resp = _Resp()
+    seen = {}
+
+    def fake_next(payload):
+        seen["payload"] = payload
+        return resp
+
+    out = plugin_mod.adaptive_llm_execution_middleware(
+        request={"model": "m"}, next_call=fake_next,
+        session_id="s-exec", turn_id="t9",
+    )
+    assert out is resp  # pass-through, never rewritten
+    stats = plugin_mod._LAST_RESPONSE_STATS["s-exec"]
+    assert stats["reasoning_tokens"] == 700
+    assert stats["finish_reason"] == "stop"
+    assert stats["turn_id"] == "t9"
+
+
+def test_request_middleware_ignores_feedback_on_first_call():
+    # fresh user message wins on call 1; behaviour feedback is mid-loop only
+    plugin_mod._LAST_RESPONSE_STATS["s-fb"] = {
+        "reasoning_tokens": 1022, "finish_reason": "stop", "turn_id": "t1",
+    }
+    req = {"model": "glm-5.3",
+           "messages": [{"role": "user", "content": "ok"}],
+           "reasoning_effort": "low"}
+    r1 = plugin_mod.adaptive_llm_request_middleware(
+        request=dict(req), session_id="s-fb", turn_id="t1",
+        api_call_count=1, provider="zai",
+    )
+    # "ok" cold-session → minimal → native low: same value = no rewrite
+    assert r1 is None or r1["request"]["reasoning_effort"] == "low"
+
+
+def test_request_middleware_applies_feedback_mid_loop():
+    # same session, call 2: revealed-hard feedback escalates to high
+    plugin_mod._LAST_RESPONSE_STATS["s-fb2"] = {
+        "reasoning_tokens": 1022, "finish_reason": "stop", "turn_id": "t1",
+    }
+    req = {"model": "glm-5.3",
+           "messages": [{"role": "user", "content": "ok"},
+                        {"role": "assistant", "tool_calls": [
+                            {"id": "c1", "type": "function",
+                             "function": {"name": "terminal", "arguments": "{}"}}]},
+                        {"role": "tool", "tool_call_id": "c1", "content": "done"}],
+           "reasoning_effort": "low"}
+    r2 = plugin_mod.adaptive_llm_request_middleware(
+        request=req, session_id="s-fb2", turn_id="t1",
+        api_call_count=2, provider="zai",
+    )
+    assert r2 is not None
+    assert r2["request"]["reasoning_effort"] == "high"
