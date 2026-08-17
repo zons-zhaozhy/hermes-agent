@@ -144,14 +144,67 @@ def test_middleware_skips_when_effort_already_at_target():
 
 
 def test_middleware_rewrites_top_level_reasoning_effort():
-    req = {"model": "m", "messages": [], "reasoning_effort": "medium"}
+    # top-level reasoning_effort is the PROVIDER-NATIVE scale, written by the
+    # transport via the provider profile. The plugin must reuse the same
+    # profile mapping (zai glm-5.3: minimal/low→low, medium/high→high,
+    # xhigh/max/ultra→max) instead of writing raw Hermes levels.
+    # Start from native low; complex msg → Hermes high → native high.
+    req = {"model": "glm-5.3", "messages": [], "reasoning_effort": "low"}
     result = plugin_mod.adaptive_llm_request_middleware(
         request=req,
-        user_message="why does this fail? analyze the root cause",
+        user_message="why does this fail? analyze the root cause",  # → high
+        provider="zai",
         session_id="s1", turn_id="t1", api_call_count=1,
     )
     assert result is not None
     assert result["request"]["reasoning_effort"] == "high"
+
+    # brevity → minimal; zai glm-5.3 native mapping: minimal → low
+    req2 = {"model": "glm-5.3", "messages": [], "reasoning_effort": "high"}
+    result2 = plugin_mod.adaptive_llm_request_middleware(
+        request=req2,
+        user_message="ok",
+        provider="zai",
+        session_id="s1", turn_id="t1", api_call_count=1,
+    )
+    assert result2 is not None
+    assert result2["request"]["reasoning_effort"] == "low"
+
+
+def test_middleware_never_writes_offscale_native_effort():
+    # INVARIANT: whatever lands in top-level reasoning_effort must be a value
+    # the provider profile itself would emit. Hermes-only levels (minimal,
+    # xhigh, ultra…) must never appear there for zai/kimi.
+    req = {"model": "glm-5.3", "messages": [], "reasoning_effort": "high"}
+    result = plugin_mod.adaptive_llm_request_middleware(
+        request=req,
+        user_message="ok",  # brevity → minimal on Hermes scale
+        provider="zai",
+        session_id="s1", turn_id="t1", api_call_count=1,
+    )
+    assert result["request"]["reasoning_effort"] in {"low", "high", "max"}
+
+    # kimi: only low/medium/high are legal wire values
+    req2 = {"model": "kimi-k2", "messages": [], "reasoning_effort": "medium"}
+    result2 = plugin_mod.adaptive_llm_request_middleware(
+        request=req2,
+        user_message="帮我排查这个死锁问题的根因，分析整个调用链路",  # → high
+        provider="kimi",
+        session_id="s1", turn_id="t1", api_call_count=1,
+    )
+    assert result2["request"]["reasoning_effort"] in {"low", "medium", "high"}
+
+
+def test_middleware_noop_when_profile_cannot_express_level():
+    # Unknown provider → no profile → top-level reasoning_effort untouched
+    req = {"model": "m", "messages": [], "reasoning_effort": "high"}
+    result = plugin_mod.adaptive_llm_request_middleware(
+        request=req,
+        user_message="why does this fail? analyze the root cause",
+        provider="no-such-provider",
+        session_id="s1", turn_id="t1", api_call_count=1,
+    )
+    assert result is None
 
 
 def test_middleware_noop_without_reasoning_fields():

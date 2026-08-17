@@ -302,38 +302,126 @@ def classify_effort(user_message: str, *, tool_errors: int = 0,
 
 # ── Middleware ───────────────────────────────────────────────────────────
 
-def _rewrite_reasoning(request: Dict[str, Any], effort: str) -> Optional[Dict[str, Any]]:
-    """Return rewritten request with effort applied, or None to keep as-is.
+def _translate_effort(level: str, provider: str, model: str) -> Optional[str]:
+    """Map a Hermes-scale effort onto the provider's native wire value.
 
-    Handles both wire shapes the transport emits:
-    * ``extra_body.reasoning = {"enabled": True, "effort": ...}`` (generic)
-    * top-level ``reasoning_effort`` (Kimi / TokenHub / LM Studio)
+    The middleware fires AFTER the transport built the request kwargs
+    (chat_completion_helpers.build_kwargs → conversation_loop
+    apply_llm_request_middleware), so a top-level ``reasoning_effort`` in
+    the request is already in the provider's native scale (zai glm-5.3:
+    low/high/max; kimi: low/medium/high — written by the provider profile's
+    build_api_kwargs_extras). Writing a raw Hermes level there would send
+    values the provider rejects.
 
-    Gemini's ``thinking_config`` is provider-specific and left untouched —
-    the generic ``extra_body.reasoning`` path covers the mainstream case.
+    Fix: run the SAME profile mapping the transport used. Whatever the
+    profile emits for top_level["reasoning_effort"] is by construction a
+    legal wire value for this provider+model.
 
     Returns:
-        New request dict, or None when there is nothing to rewrite.
+        Native effort string, or None when the provider has no profile or
+        cannot express *level* (caller treats that as no-op).
     """
-    changed = False
-    new = dict(request)
+    if not provider:
+        return None
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+    except Exception as exc:
+        logger.warning(
+            "adaptive-reasoning: provider profile lookup failed for %r: %s",
+            provider, exc, exc_info=True,
+        )
+        return None
+    if profile is None:
+        return None
+    try:
+        _eb, top_level = profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": level},
+            model=model,
+        )
+    except Exception as exc:
+        logger.warning(
+            "adaptive-reasoning: profile mapping failed for %r/%r: %s",
+            provider, model, exc, exc_info=True,
+        )
+        return None
+    return top_level.get("reasoning_effort")
 
-    extra_body = new.get("extra_body")
+
+def _effort_targets(
+    request: Dict[str, Any], level: str, provider: str, model: str,
+) -> Dict[str, str]:
+    """Compute which wire fields this plugin may rewrite, and their targets.
+
+    Shapes handled (mirroring what the transports emit):
+    * ``extra_body.reasoning.effort`` — passthrough shape (the OpenRouter
+      profile passes the full reasoning_config dict through), so the raw
+      Hermes level is legal there.
+    * top-level ``reasoning_effort`` — provider-native scale; rewritten
+      ONLY with the profile-translated value (see _translate_effort).
+    * top-level ``verbosity`` — OpenRouter's Claude effort lever (the OR
+      profile maps effort onto verbosity for reasoning-mandatory Claude
+      models); the profile emits it at Hermes scale, so pass through.
+
+    Anything else (Gemini thinking_config, Anthropic thinking budget,
+    kimi's extra_body.thinking toggle, unknown providers) is left untouched.
+
+    Returns:
+        Mapping of dotted field path → target value; empty = no-op.
+    """
+    targets: Dict[str, str] = {}
+    extra_body = request.get("extra_body")
     if isinstance(extra_body, dict):
         reasoning = extra_body.get("reasoning")
         if isinstance(reasoning, dict) and reasoning.get("enabled") is not False:
-            merged = dict(reasoning)
-            merged["effort"] = effort
-            eb = dict(extra_body)
-            eb["reasoning"] = merged
-            new["extra_body"] = eb
-            changed = True
+            targets["extra_body.reasoning.effort"] = level
 
-    if isinstance(new.get("reasoning_effort"), str):
-        new["reasoning_effort"] = effort
-        changed = True
+    if isinstance(request.get("reasoning_effort"), str):
+        native = _translate_effort(level, provider, model)
+        if isinstance(native, str):
+            targets["reasoning_effort"] = native
+    elif isinstance(request.get("verbosity"), str):
+        targets["verbosity"] = level
+    return targets
 
-    return new if changed else None
+
+def _rewrite_reasoning(
+    request: Dict[str, Any], level: str, provider: str, model: str,
+) -> Optional[Dict[str, Any]]:
+    """Return rewritten request with the adapted effort applied, or None.
+
+    Returns:
+        New request dict when any target field actually changes value,
+        else None.
+    """
+    targets = _effort_targets(request, level, provider, model)
+    if not targets:
+        return None
+
+    new = dict(request)
+    extra_target = targets.get("extra_body.reasoning.effort")
+    if extra_target is not None:
+        extra_body = new.get("extra_body")
+        reasoning = (extra_body or {}).get("reasoning") or {}
+        merged = dict(reasoning)
+        merged["effort"] = extra_target
+        eb = dict(extra_body or {})
+        eb["reasoning"] = merged
+        new["extra_body"] = eb
+
+    if "reasoning_effort" in targets and isinstance(new.get("reasoning_effort"), str):
+        new["reasoning_effort"] = targets["reasoning_effort"]
+    if "verbosity" in targets and isinstance(new.get("verbosity"), str):
+        new["verbosity"] = targets["verbosity"]
+
+    # No-op when nothing actually changed value
+    for path, value in targets.items():
+        old = request
+        for part in path.split("."):
+            old = old.get(part) if isinstance(old, dict) else None
+        if old != value:
+            return new
+    return None
 
 
 def adaptive_llm_request_middleware(**kwargs: Any) -> Optional[Dict[str, Any]]:
@@ -351,6 +439,12 @@ def adaptive_llm_request_middleware(**kwargs: Any) -> Optional[Dict[str, Any]]:
     session_id = str(kwargs.get("session_id") or "")
     turn_id = str(kwargs.get("turn_id") or "")
     api_call_count = int(kwargs.get("api_call_count") or 1)
+    provider = str(kwargs.get("provider") or "")
+    # The middleware call site passes model=agent.model, but tests / future
+    # call sites may omit it — the request payload itself carries the model.
+    model = str(kwargs.get("model") or "")
+    if not model:
+        model = str(request.get("model") or "")
     # The llm_request middleware call site (conversation_loop.py) does NOT
     # pass user_message (only the observer hook pre_api_request does). The
     # turn's user message is recoverable from the request payload itself:
@@ -370,33 +464,14 @@ def adaptive_llm_request_middleware(**kwargs: Any) -> Optional[Dict[str, Any]]:
     )
     level = _clamp(level, str(cfg["floor"]), str(cfg["ceiling"]))
 
-    rewritten = _rewrite_reasoning(request, level)
+    rewritten = _rewrite_reasoning(request, level, provider, model)
     if rewritten is not None:
-        _old = _current_effort(request)
-        if _old == level:
-            return None  # effort already at target — nothing to change
         logger.debug(
-            "adaptive-reasoning: effort %s → %s (tool_errors=%d)",
-            _old, level, tool_errors,
+            "adaptive-reasoning: effort → %s (tool_errors=%d)",
+            level, tool_errors,
         )
         return {"request": rewritten}
     return None
-
-
-def _current_effort(request: Dict[str, Any]) -> Optional[str]:
-    """Return the effort level already present in the request, if any.
-
-    Returns:
-        The effort string from ``extra_body.reasoning.effort`` or top-level
-        ``reasoning_effort``, else None.
-    """
-    extra_body = request.get("extra_body")
-    if isinstance(extra_body, dict):
-        reasoning = extra_body.get("reasoning")
-        if isinstance(reasoning, dict) and reasoning.get("enabled") is not False:
-            return str(reasoning.get("effort") or "") or None
-    re_val = request.get("reasoning_effort")
-    return str(re_val) if isinstance(re_val, str) else None
 
 
 def _last_user_message(request: Dict[str, Any]) -> str:
