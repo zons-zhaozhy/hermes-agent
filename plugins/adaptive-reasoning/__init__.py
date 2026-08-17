@@ -238,36 +238,82 @@ _TURN_ERRORS: Dict[str, int] = {}
 _LAST_RESPONSE_STATS: Dict[str, Dict[str, Any]] = {}
 
 
-def _extract_reasoning_tokens(response: Any) -> Optional[int]:
-    """Pull reasoning_tokens from a chat-completions response, if present.
+def _resp_field(response: Any, name: str) -> Any:
+    """Read a field from ANY response shape Hermes produces.
+
+    Non-streaming → pydantic ChatCompletion; streaming relay finalizer →
+    plain dict (_relay_final_response, agent/chat_completion_helpers.py);
+    streaming fallback / partial-stream stub → SimpleNamespace. Attribute
+    access alone is BLIND on the dict shape — measured defect this fixes.
 
     Args:
-        response: Provider response object (OpenAI-compatible).
+        response: Provider response (object or relay dict).
+        name: Field name to read.
+
+    Returns:
+        Field value, or None when absent.
+    """
+    if isinstance(response, dict):
+        return response.get(name)
+    return getattr(response, name, None)
+
+
+def _extract_reasoning_tokens(response: Any) -> Optional[int]:
+    """Pull reasoning_tokens from any response/usage shape, if present.
+
+    Follows agent/usage_pricing.py's dual-path precedent: chat-completions
+    nests it at usage.completion_tokens_details.reasoning_tokens; the
+    Responses API reports usage.output_tokens_details.reasoning_tokens.
+    Usage itself may be a pydantic object OR a dict (relay shape).
+
+    Args:
+        response: Provider response (pydantic, relay dict, or namespace).
 
     Returns:
         Reasoning token count, or None when the provider omits usage.
     """
-    usage = getattr(response, "usage", None)
-    details = getattr(usage, "completion_tokens_details", None)
-    value = getattr(details, "reasoning_tokens", None)
-    return value if isinstance(value, int) else None
+    usage = _resp_field(response, "usage")
+    if usage is None:
+        return None
+    for details_key in ("completion_tokens_details", "output_tokens_details"):
+        details = (
+            usage.get(details_key)
+            if isinstance(usage, dict)
+            else getattr(usage, details_key, None)
+        )
+        if details is None:
+            continue
+        value = (
+            details.get("reasoning_tokens")
+            if isinstance(details, dict)
+            else getattr(details, "reasoning_tokens", None)
+        )
+        if isinstance(value, int) and value > 0:
+            return value
+    return None
 
 
 def _extract_finish_reason(response: Any) -> Optional[str]:
-    """Best-effort finish_reason from response or streamed chunks.
+    """Best-effort finish_reason from any response shape.
 
     Args:
-        response: Provider response object.
+        response: Provider response; ``choices`` entries may be dicts
+            (relay) or objects (pydantic / SimpleNamespace stub).
 
     Returns:
         finish_reason string, or None when unavailable.
     """
-    fr = getattr(response, "finish_reason", None)
+    fr = _resp_field(response, "finish_reason")
     if isinstance(fr, str):
         return fr
-    choices = getattr(response, "choices", None)
+    choices = _resp_field(response, "choices")
     if choices:
-        fr = getattr(choices[0], "finish_reason", None)
+        first = choices[0]
+        fr = (
+            first.get("finish_reason")
+            if isinstance(first, dict)
+            else getattr(first, "finish_reason", None)
+        )
         if isinstance(fr, str):
             return fr
     return None
@@ -308,16 +354,24 @@ def _feedback_level(stats: Optional[Dict[str, Any]],
                     tool_errors: int, cfg: Dict[str, Any]) -> Optional[str]:
     """Derive a closed-loop effort correction from the last response.
 
-    Measured failure modes each rule defends against (eval_benchmark.py):
-    * reasoning_tokens >= feedback_hard_rt while the model was still
-      working (tool loop, not a final answer) → task genuinely hard; keep
-      high. (orbital-sort: low gave 24 tok → wrong; medium 34 → right —
-      revealed difficulty, invisible in the input.)
-    * finish_reason == "length" + high rt → reasoning ate the completion
-      budget (measured 1022/2047-tok starvations) → step DOWN so the
-      answer survives.
-    * low rt + clean finish after real work → easier than it looked;
-      step down.
+    Measured distribution (glm-5.3, coding endpoint, 2026-08-17) shapes
+    every rule — the earlier two-threshold design was REFUTED by data:
+    hard tasks at high effort hit rt=1999/finish=length — "revealed hard"
+    and "starving" are the SAME region on real hard tasks, so an
+    escalate-on-high-rt rule self-oscillates on 3-tier models ({low,high,
+    max}: medium maps to high — no middle to land on).
+
+    v4.1 rules (starvation-first, monotone — never oscillates):
+    * finish_reason == "length"          → "medium": reasoning ate the
+      answer budget (measured 1022/1999/2047 starvations); step DOWN so
+      the answer survives.
+    * rt == 0 + clean stop after work     → "low": confirmed trivial
+      (measured: hard task at low effort ran rt=0 ct=888 stop — low is
+      a SOFT constraint the model self-allocates under).
+    * rt in (0, hard_rt) + clean stop     → None: uninformative mid-band,
+      prior stands.
+    * rt >= hard_rt + clean stop          → "high": revealed hard AND the
+      budget held — genuinely needs the headroom.
 
     Args:
         stats: Last response stats for this session (may be None).
@@ -332,15 +386,18 @@ def _feedback_level(stats: Optional[Dict[str, Any]],
     rt = stats.get("reasoning_tokens")
     fr = stats.get("finish_reason")
     hard_threshold = int(cfg.get("feedback_hard_rt", 600) or 600)
-    clean_low_rt = int(cfg.get("feedback_clean_rt", 80) or 80)
 
-    if rt is not None and rt >= hard_threshold and tool_errors == 0:
-        if fr == "length":
-            return "medium"  # starvation: protect the answer
-        return "high"        # revealed-hard task, still in progress
-    if rt is not None and rt <= clean_low_rt and fr not in ("length", None) \
-            and tool_errors == 0:
-        return "low"         # confirmed easier than it looked
+    if rt is None and fr == "length":
+        # usage omitted (defensive): finish=length alone still means the
+        # answer was cut — protect it
+        return "medium"
+    if rt is not None and fr == "length":
+        return "medium"  # starvation — protect the answer, always first
+    if rt is not None and tool_errors == 0:
+        if rt == 0:
+            return "low"             # measured: even hard tasks self-serve at low
+        if rt >= hard_threshold:
+            return "high"            # budget held at high burn — real headroom need
     return None
 
 
@@ -661,9 +718,13 @@ def adaptive_llm_request_middleware(**kwargs: Any) -> Optional[Dict[str, Any]]:
     # first call of a turn (fresh user message wins).
     if api_call_count > 1:
         stats = _LAST_RESPONSE_STATS.get(session_id)
-        fb = _feedback_level(stats, tool_errors, cfg)
-        if fb is not None:
-            level = fb
+        # Staleness guard: stats from a PREVIOUS turn describe an old task
+        # (same session, new user message). Only the last call of THIS
+        # turn is a valid behaviour signal for the current difficulty.
+        if stats and stats.get("turn_id") == turn_id:
+            fb = _feedback_level(stats, tool_errors, cfg)
+            if fb is not None:
+                level = fb
 
     level = _clamp(level, str(cfg["floor"]), str(cfg["ceiling"]))
 

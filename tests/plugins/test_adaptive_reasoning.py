@@ -387,7 +387,7 @@ def test_clamp_bounds():
 # ── 4. v4 closed-loop feedback ───────────────────────────────────────────
 
 def _fb_cfg() -> Dict[str, Any]:
-    return {"feedback_hard_rt": 600, "feedback_clean_rt": 80}
+    return {"feedback_hard_rt": 600}
 
 
 def test_feedback_revealed_hard_keeps_high():
@@ -405,15 +405,24 @@ def test_feedback_starvation_steps_down():
 
 
 def test_feedback_confirmed_easy_steps_down():
-    # low rt + clean stop after real work → easier than it looked
-    stats = {"reasoning_tokens": 24, "finish_reason": "stop"}
+    # v4.1: rt == 0 with a clean stop → low (measured: hard task at low
+    # effort self-served rt=0 ct=888 stop — low is a soft constraint)
+    stats = {"reasoning_tokens": 0, "finish_reason": "stop"}
     assert plugin_mod._feedback_level(stats, 0, _fb_cfg()) == "low"
 
 
 def test_feedback_midband_returns_none():
-    # 300 rt is uninformative — prior stands
+    # 1..599 rt with clean stop is uninformative — prior stands
     stats = {"reasoning_tokens": 300, "finish_reason": "stop"}
     assert plugin_mod._feedback_level(stats, 0, _fb_cfg()) is None
+    stats = {"reasoning_tokens": 1, "finish_reason": "stop"}
+    assert plugin_mod._feedback_level(stats, 0, _fb_cfg()) is None
+
+
+def test_feedback_length_without_usage_still_steps_down():
+    # provider omitted usage but the answer was still cut — protect it
+    stats = {"reasoning_tokens": None, "finish_reason": "length"}
+    assert plugin_mod._feedback_level(stats, 0, _fb_cfg()) == "medium"
 
 
 def test_feedback_disabled_when_tool_errors():
@@ -473,9 +482,11 @@ def test_request_middleware_ignores_feedback_on_first_call():
 
 
 def test_request_middleware_applies_feedback_mid_loop():
-    # same session, call 2: revealed-hard feedback escalates to high
+    # A/B isolation: prior ("ok"+work history) = medium → zai native HIGH;
+    # same-turn confirmed-easy feedback (rt=0, stop) = low → native LOW.
+    # Only a FIRING feedback loop produces native low here.
     plugin_mod._LAST_RESPONSE_STATS["s-fb2"] = {
-        "reasoning_tokens": 1022, "finish_reason": "stop", "turn_id": "t1",
+        "reasoning_tokens": 0, "finish_reason": "stop", "turn_id": "t1",
     }
     req = {"model": "glm-5.3",
            "messages": [{"role": "user", "content": "ok"},
@@ -483,10 +494,79 @@ def test_request_middleware_applies_feedback_mid_loop():
                             {"id": "c1", "type": "function",
                              "function": {"name": "terminal", "arguments": "{}"}}]},
                         {"role": "tool", "tool_call_id": "c1", "content": "done"}],
-           "reasoning_effort": "low"}
+           "reasoning_effort": "high"}
     r2 = plugin_mod.adaptive_llm_request_middleware(
         request=req, session_id="s-fb2", turn_id="t1",
         api_call_count=2, provider="zai",
     )
     assert r2 is not None
-    assert r2["request"]["reasoning_effort"] == "high"
+    assert r2["request"]["reasoning_effort"] == "low"
+
+
+def test_request_middleware_rejects_stale_turn_stats():
+    # SAME stats but from a PREVIOUS turn (turn_id mismatch): feedback
+    # rejected → prior medium stands → zai native HIGH (never native low)
+    plugin_mod._LAST_RESPONSE_STATS["s-stale"] = {
+        "reasoning_tokens": 0, "finish_reason": "stop", "turn_id": "t-old",
+    }
+    req = {"model": "glm-5.3",
+           "messages": [{"role": "user", "content": "ok"},
+                        {"role": "assistant", "tool_calls": [
+                            {"id": "c1", "type": "function",
+                             "function": {"name": "terminal", "arguments": "{}"}}]},
+                        {"role": "tool", "tool_call_id": "c1", "content": "done"}],
+           "reasoning_effort": "high"}
+    r = plugin_mod.adaptive_llm_request_middleware(
+        request=req, session_id="s-stale", turn_id="t-new",
+        api_call_count=2, provider="zai",
+    )
+    # prior medium → zai native high == request's starting value → no-op;
+    # the ONLY failure mode would be a native LOW leaking through (stale
+    # easy-feedback applied). Assert the invariant, not the wrapper shape.
+    assert r is None or r["request"]["reasoning_effort"] == "high"
+
+
+def test_extractor_handles_relay_dict_shape():
+    # streaming main path: _relay_final_response returns a PLAIN DICT with
+    # dict choices — attribute access is blind on this shape (measured bug)
+    relay = {
+        "model": "glm-5.3",
+        "choices": [{"message": {"role": "assistant", "content": "x",
+                                 "reasoning_content": None, "tool_calls": None},
+                     "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 700,
+                  "completion_tokens_details": {"reasoning_tokens": 640}},
+    }
+    assert plugin_mod._extract_reasoning_tokens(relay) == 640
+    assert plugin_mod._extract_finish_reason(relay) == "stop"
+
+
+def test_extractor_handles_streaming_fallback_namespace():
+    # streaming fallback / partial stub: SimpleNamespace + pydantic-ish usage
+    from types import SimpleNamespace as NS
+    resp = NS(
+        id="stream-x", model="glm-5.3",
+        choices=[NS(index=0, message=NS(role="assistant", content="x"),
+                    finish_reason="length")],
+        usage=NS(completion_tokens=2047,
+                 completion_tokens_details=NS(reasoning_tokens=1990)),
+    )
+    assert plugin_mod._extract_reasoning_tokens(resp) == 1990
+    assert plugin_mod._extract_finish_reason(resp) == "length"
+
+
+def test_extractor_reads_responses_api_shape():
+    # Responses API reports output_tokens_details.reasoning_tokens
+    # (agent/usage_pricing.py dual-path precedent)
+    from types import SimpleNamespace as NS
+    resp = NS(
+        usage=NS(output_tokens_details=NS(reasoning_tokens=512)),
+        choices=[NS(finish_reason="stop")],
+    )
+    assert plugin_mod._extract_reasoning_tokens(resp) == 512
+
+
+def test_extractor_missing_usage_returns_none():
+    from types import SimpleNamespace as NS
+    resp = NS(choices=[NS(finish_reason="stop")], usage=None)
+    assert plugin_mod._extract_reasoning_tokens(resp) is None
