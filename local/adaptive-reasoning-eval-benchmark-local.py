@@ -2,30 +2,40 @@
 """Difficulty-classifier evaluation harness for the adaptive-reasoning plugin.
 
 Ground truth definition (measured, not guessed): a message's *sufficiency
-level* is the LOWEST effort at which glm-5.3 answers it correctly.
+level* is the LOWEST effort at which the eval model answers it correctly.
 - routing below sufficiency  -> accuracy loss (underthinking)
 - routing above sufficiency  -> wasted reasoning tokens (overthinking)
 
-The harness runs each benchmark message at low / medium / high, records
-correctness + reasoning tokens, and saves the grid to eval_results.json so
-classifier iterations are evaluated offline (free, reproducible).
+The harness runs each benchmark item at each effort level, records
+correctness + reasoning tokens, and saves the grid to a results file so
+classifier iterations can be evaluated offline (free, reproducible).
 
-已查重，无现有等价实现（rg 全库复核 0 命中；拦截器提示为关键词误报，
-health_check.py 等与本评估器功能无关）。
+Env-driven (no hardcoded credentials, endpoints, or models):
+    ADAPTIVE_EVAL_API_KEY   API key (required)
+    ADAPTIVE_EVAL_BASE_URL  OpenAI-compatible base URL (required)
+    ADAPTIVE_EVAL_MODEL     model id (required)
+    ADAPTIVE_EVAL_RESULTS   results file path (optional)
+    ADAPTIVE_EVAL_PLUGIN    path to the plugin __init__.py (optional;
+                            defaults to <repo>/plugins/adaptive-reasoning/
+                            __init__.py relative to this file)
 
 Usage:
-    python3 plugins/adaptive-reasoning/eval_benchmark.py run     # measure (API)
-    python3 plugins/adaptive-reasoning/eval_benchmark.py eval    # score classifiers
+    python3 eval_benchmark.py run     # measure (real API calls)
+    python3 eval_benchmark.py eval    # score classifiers offline
 """
 
 import json
-import subprocess
+import os
 import sys
 import time
 from pathlib import Path
 
 HERE = Path(__file__).parent
-RESULTS = HERE / "eval_results.json"
+RESULTS = Path(os.environ.get(
+    "ADAPTIVE_EVAL_RESULTS", str(HERE / "eval_results.json")))
+PLUGIN = Path(os.environ.get(
+    "ADAPTIVE_EVAL_PLUGIN",
+    str(HERE.parent / "plugins" / "adaptive-reasoning" / "__init__.py")))
 
 # ── Benchmark: 8 categories × known-answer items ──────────────────────────
 BENCH = [
@@ -70,19 +80,21 @@ BENCH = [
 LEVELS = ["low", "medium", "high"]
 
 
-def _key() -> str:
-    out = subprocess.run(
-        ["zsh", "-c", "source ~/.zshrc >/dev/null 2>&1; echo -n $GLM_API_KEY"],
-        capture_output=True, text=True,
-    ).stdout.strip()
-    if len(out) < 20:
-        raise SystemExit("GLM_API_KEY not found")
-    return out
+def _require_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise SystemExit(
+            f"{name} not set — export it before running the eval harness")
+    return value
 
 
 def run() -> None:
     from openai import OpenAI
-    client = OpenAI(api_key=_key(), base_url="https://open.bigmodel.cn/api/coding/paas/v4")
+    client = OpenAI(
+        api_key=_require_env("ADAPTIVE_EVAL_API_KEY"),
+        base_url=_require_env("ADAPTIVE_EVAL_BASE_URL"),
+    )
+    model = _require_env("ADAPTIVE_EVAL_MODEL")
     grid = {}
     for cat, prompt, accepts in BENCH:
         row = {}
@@ -90,7 +102,7 @@ def run() -> None:
             t0 = time.time()
             try:
                 r = client.chat.completions.create(
-                    model="glm-5.3",
+                    model=model,
                     messages=[{"role": "user", "content": prompt}],
                     reasoning_effort=level,
                     max_tokens=2048,
@@ -122,7 +134,7 @@ def sufficiency(entry: dict) -> str:
 
 def eval_classifiers() -> None:
     import importlib.util
-    spec = importlib.util.spec_from_file_location("ar", HERE / "__init__.py")
+    spec = importlib.util.spec_from_file_location("ar", PLUGIN)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
@@ -136,7 +148,7 @@ def eval_classifiers() -> None:
             print(f"{entry['cat']:<12} {'NEVER':<11} - model wrong at all levels, excluded")
             continue
         pred = mod.classify_effort(prompt)
-        # minimal/low share the lowest rung: zai wire maps both to native low
+        # minimal/low share the lowest rung: wire maps both to native low
         if pred == "minimal":
             pred = "low"
         idx = {"low": 0, "medium": 1, "high": 2}
