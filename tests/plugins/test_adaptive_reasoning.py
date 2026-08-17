@@ -56,14 +56,14 @@ def _fresh_config_cache(monkeypatch, tmp_path):
 
 
 # ── 1. classify_effort: signal router ────────────────────────────────────
-# Expected values derived independently from the design:
-#   brevity-only message           → minimal
-#   short plain message            → low
-#   medium plain message           → low (no signals → default-low band)
-#   one complexity keyword         → medium
-#   keyword + code fence           → high
-#   two keywords                   → high
-#   very long message (≥600 chars) → high
+# v2 expected values derived independently from the measured-benchmark design:
+#   brevity-only message              → minimal
+#   short plain message               → low
+#   medium plain message              → low (no signals → baseline-low)
+#   work-shaped (len>120) + keyword   → medium (NEVER high upfront — measured:
+#                                       high starves completion budget)
+#   keyword + code fence, work-shaped → medium
+#   brevity/short + tool errors       → rescue escalation (per 2 errors)
 
 def test_brevity_message_is_minimal():
     assert plugin_mod.classify_effort("ok") == "minimal"
@@ -72,8 +72,10 @@ def test_brevity_message_is_minimal():
 
 
 def test_brevity_with_keyword_still_escalates():
-    # "retry" alone is brevity, but a debug keyword must not be silenced
-    assert plugin_mod.classify_effort("debug") == "medium"
+    # v3: "debug" alone in a COLD session is conversational (nothing to
+    # debug yet) → low; with work history the keyword escalates → medium
+    assert plugin_mod.classify_effort("debug") == "low"
+    assert plugin_mod.classify_effort("debug", work_depth=1) == "medium"
 
 
 def test_short_plain_message_is_low():
@@ -87,22 +89,33 @@ def test_medium_plain_message_stays_low():
 
 
 def test_single_keyword_is_medium():
-    assert plugin_mod.classify_effort("help me debug this") == "medium"
-    assert plugin_mod.classify_effort("帮我排查这个问题") == "medium"
+    # v3: keyword needs context or work-shape; cold short → low
+    assert plugin_mod.classify_effort("help me debug this") == "low"
+    assert plugin_mod.classify_effort("帮我排查这个问题") == "low"
+    assert plugin_mod.classify_effort("help me debug this", work_depth=1) == "medium"
 
 
-def test_keyword_plus_code_fence_is_high():
-    assert plugin_mod.classify_effort("debug this:\n```\ntraceback\n```") == "high"
+def test_keyword_plus_code_fence_is_medium():
+    # v3: no upfront high; code fence is technical → medium with context
+    msg = "debug this:\n```\ntraceback\n```"
+    assert plugin_mod.classify_effort(msg) == "low"
+    assert plugin_mod.classify_effort(msg, work_depth=1) == "medium"
 
 
-def test_two_keywords_are_high():
-    assert plugin_mod.classify_effort("analyze and review the failure") == "high"
+def test_two_keywords_work_shaped_is_medium():
+    # v2: keyword count no longer escalates to high (measured failure mode);
+    # sample must be work-shaped: len > low_max_chars (120)
+    msg = ("analyze and review the failure of this migration, then refactor "
+           "the affected modules and document the root cause found thoroughly")
+    assert len(msg) > 120
+    assert plugin_mod.classify_effort(msg) == "medium"
 
 
-def test_long_message_is_high():
+def test_long_message_stays_low():
+    # v2: length alone is NOT difficulty (long-easy benchmark category)
     msg = "word " * 130  # 650 chars, no keywords
     assert len(msg) >= 600
-    assert plugin_mod.classify_effort(msg) == "high"
+    assert plugin_mod.classify_effort(msg) == "low"
 
 
 def test_unknown_levels_clamp_to_medium_index():
@@ -119,25 +132,77 @@ def _base_request() -> Dict[str, Any]:
     }
 
 
+def _work_request() -> Dict[str, Any]:
+    """A request whose history carries work signals (v3 context input)."""
+    return {
+        "model": "test-model",
+        "messages": [
+            {"role": "user", "content": "help me debug the failing migration"},
+            {"role": "assistant", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "exit 1: migration failed"},
+            {"role": "user", "content": "hi"},
+        ],
+        "extra_body": {"reasoning": {"enabled": True, "effort": "medium"}},
+    }
+
+
 def test_middleware_rewrites_extra_body_effort():
+    # v3: work context in history (tool result present) + short complex
+    # message routes medium — context, not just text length
+    req = _work_request()
+    req["messages"][-1] = {
+        "role": "user",
+        "content": "why does this fail? analyze the root cause",
+    }
+    # start from low so the medium rewrite is observable (same-value = no-op)
+    req["extra_body"]["reasoning"]["effort"] = "low"
     result = plugin_mod.adaptive_llm_request_middleware(
-        request=_base_request(),
-        user_message="help me debug this failing migration, review the architecture",
+        request=req,
         session_id="s1", turn_id="t1", api_call_count=1,
     )
     assert result is not None
-    assert result["request"]["extra_body"]["reasoning"]["effort"] == "high"
+    assert result["request"]["extra_body"]["reasoning"]["effort"] == "medium"
     # messages untouched — cache prefix integrity
-    assert result["request"]["messages"] == [{"role": "user", "content": "hi"}]
+    assert result["request"]["messages"] == req["messages"]
     # original request not mutated
-    assert _base_request()["extra_body"]["reasoning"]["effort"] == "medium"
+    assert _work_request()["extra_body"]["reasoning"]["effort"] == "medium"
+
+
+def test_middleware_brevity_inherits_work_context():
+    # v3 core fix: "ok" mid-task inherits session difficulty → medium,
+    # instead of the isolated-benchmark answer (minimal). Request carries
+    # low so the rewrite is observable.
+    req = _work_request()
+    req["messages"][-1] = {"role": "user", "content": "ok"}
+    req["extra_body"]["reasoning"]["effort"] = "low"
+    result = plugin_mod.adaptive_llm_request_middleware(
+        request=req,
+        session_id="s1", turn_id="t1", api_call_count=1,
+    )
+    assert result is not None
+    assert result["request"]["extra_body"]["reasoning"]["effort"] == "medium"
+
+
+def test_middleware_brevity_cold_session_is_minimal():
+    # v3: "ok" with NO work history is a true ack → minimal
+    req = _base_request()
+    req["messages"] = [{"role": "user", "content": "ok"}]
+    result = plugin_mod.adaptive_llm_request_middleware(
+        request=req,
+        session_id="s1", turn_id="t1", api_call_count=1,
+    )
+    assert result is not None
+    assert result["request"]["extra_body"]["reasoning"]["effort"] == "minimal"
 
 
 def test_middleware_skips_when_effort_already_at_target():
-    # classify → medium, request already carries medium → no rewrite needed
+    # v3: "ok" mid-task → medium; request already carries medium → no rewrite
+    req = _work_request()
+    req["messages"][-1] = {"role": "user", "content": "ok"}
     result = plugin_mod.adaptive_llm_request_middleware(
-        request=_base_request(),
-        user_message="help me debug this",
+        request=req,
         session_id="s1", turn_id="t1", api_call_count=1,
     )
     assert result is None
@@ -148,11 +213,17 @@ def test_middleware_rewrites_top_level_reasoning_effort():
     # transport via the provider profile. The plugin must reuse the same
     # profile mapping (zai glm-5.3: minimal/low→low, medium/high→high,
     # xhigh/max/ultra→max) instead of writing raw Hermes levels.
-    # Start from native low; complex msg → Hermes high → native high.
-    req = {"model": "glm-5.3", "messages": [], "reasoning_effort": "low"}
+    # Start from native low; work context + complex msg → Hermes medium → native high.
+    req = {"model": "glm-5.3", "messages": [
+        {"role": "user", "content": "help me debug the failing migration and analyze the root cause"},
+        {"role": "assistant", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}
+        ]},
+        {"role": "tool", "tool_call_id": "c1", "content": "exit 1"},
+        {"role": "user", "content": "why does this fail? analyze the root cause"},
+    ], "reasoning_effort": "low"}
     result = plugin_mod.adaptive_llm_request_middleware(
         request=req,
-        user_message="why does this fail? analyze the root cause",  # → high
         provider="zai",
         session_id="s1", turn_id="t1", api_call_count=1,
     )
@@ -293,10 +364,9 @@ def test_stale_turn_state_is_dropped():
 def test_ceiling_caps_adaptive_effort():
     cfg = dict(DEFAULT_CFG)
     cfg["ceiling"] = "medium"
-    # Very complex message would give high, clamped to medium
-    level = plugin_mod.classify_effort(
-        "analyze and review the architecture failure", cfg=cfg
-    )
+    # v2: rescue path (4 tool errors) escalates brevity minimal → medium+,
+    # ceiling clamps the rescue back to medium
+    level = plugin_mod.classify_effort("ok", tool_errors=6, cfg=cfg)
     assert plugin_mod._clamp(level, cfg["floor"], cfg["ceiling"]) == "medium"
 
 

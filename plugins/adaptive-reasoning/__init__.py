@@ -271,21 +271,77 @@ def _forget_stale_turns(session_id: str, turn_id: str) -> None:
 
 # ── Complexity classification ────────────────────────────────────────────
 
+def _session_work_depth(messages: Optional[List[Dict[str, Any]]]) -> int:
+    """Count work signals in the conversation history visible to this call.
+
+    ``request["messages"]`` is the full API-bound history: assistant
+    tool_calls, tool results, and all user messages. Work signals:
+      * tool results (role == "tool")            — the loop is doing work
+      * assistant tool_calls entries             — the model chose to act
+      * user messages carrying complexity cues   — the topic is work
+
+    Returns:
+        Count of work signals (0 for a cold/pure-chat history).
+    """
+    if not isinstance(messages, list):
+        return 0
+    depth = 0
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "tool":
+            depth += 1
+            continue
+        if role == "assistant" and msg.get("tool_calls"):
+            depth += 1
+            continue
+        if role == "user":
+            content = msg.get("content")
+            text = content if isinstance(content, str) else ""
+            if isinstance(content, list):
+                text = " ".join(
+                    str(p.get("text") or "")
+                    for p in content if isinstance(p, dict)
+                )
+            if _COMPLEXITY_KEYWORDS_EN.search(text) or _COMPLEXITY_KEYWORDS_ZH.search(text):
+                depth += 1
+    return depth
+
 def classify_effort(user_message: str, *, tool_errors: int = 0,
-                    cfg: Optional[Dict[str, Any]] = None) -> str:
+                    cfg: Optional[Dict[str, Any]] = None,
+                    work_depth: int = 0) -> str:
     """Return the adaptive effort level for this API call.
 
-    Deterministic signal router (no LLM round trip):
+    Classifier v3 — CONTEXT-AWARE, evaluated on the measured benchmark
+    (eval_benchmark.py, glm-5.3 A/B grid). v2's single-message text
+    routing failed on the benchmark's own noise: "ok" measured
+    sufficiency=medium in isolation, but in a REAL session "ok" inherits
+    the session's difficulty (it means "keep working", not "new trivial
+    question"). Difficulty without context is unclassifiable — the
+    middleware sees the full history in ``request["messages"]``, so we
+    use it.
 
-    * Base from message shape (length + complexity keywords + technical
-      markers vs brevity markers).
-    * In-turn escalation: every 2 accumulated tool errors bumps one step
-      (a loop that keeps failing is a hard task regardless of phrasing).
+    Measured findings (v2 eval) that carry over:
+    1. low is a SOFT constraint (glm-5.3 self-allocates 0-240 tok) —
+       route the MEAN, don't micro-manage.
+    2. Keyword→high upfront KILLS answers (2047-tok starvation on the
+       zh debug task). Never escalate to high from text alone.
+    3. Tool errors are the only ground-truth difficulty signal → rescue.
+
+    v3 policy — text sets the PRIOR, context corrects it:
+    * brevity + work history (work_depth > 0)  → medium  ("ok" mid-task
+      means CONTINUE the work, inherits its difficulty)
+    * brevity + cold session (work_depth == 0) → minimal (true ack)
+    * work cues + (work-shaped OR history shows work) → medium
+    * otherwise → low baseline (model self-allocates under soft low)
 
     Args:
         user_message: The turn's user message text.
         tool_errors: Failed tool calls accumulated this turn so far.
-        cfg: Tuning config (defaults used when None).
+        cfg: Tuning config.
+        work_depth: Work signals in the visible conversation history
+            (``_session_work_depth(request["messages"])``).
 
     Returns:
         Effort level string, NOT yet clamped to floor/ceiling.
@@ -293,7 +349,6 @@ def classify_effort(user_message: str, *, tool_errors: int = 0,
     cfg = cfg or _default_config()
     msg = (user_message or "").strip()
     low_max = int(cfg.get("low_max_chars", 120) or 120)
-    high_min = int(cfg.get("high_min_chars", 600) or 600)
 
     kw_hits = (
         len(set(_COMPLEXITY_KEYWORDS_EN.findall(msg)))
@@ -304,17 +359,19 @@ def classify_effort(user_message: str, *, tool_errors: int = 0,
     n = len(msg)
 
     if brevity and not kw_hits:
-        level = "minimal"
-    elif n <= low_max and not kw_hits and not technical:
-        level = "low"
-    elif n >= high_min or kw_hits >= 2 or (kw_hits >= 1 and technical):
-        level = "high"
-    elif kw_hits == 1 or technical:
+        if work_depth > 0:
+            # "ok"/"继续" mid-task = keep working → inherit task difficulty
+            level = "medium"
+        else:
+            level = "minimal"
+    elif (kw_hits or technical) and (n > low_max or work_depth > 0):
+        # work cue on a work-shaped message or within a work session
         level = "medium"
     else:
+        # chat-shaped cold: low baseline; glm-5.3 self-allocates
         level = "low"
 
-    # In-turn escalation: failing tool loop ⇒ harder than phrasing suggests.
+    # Rescue: turn-local tool errors are the ground-truth difficulty signal
     steps = tool_errors // 2
     if steps > 0:
         idx = min(_effort_index(level) + steps, len(EFFORT_SCALE) - 1)
@@ -478,11 +535,16 @@ def adaptive_llm_request_middleware(**kwargs: Any) -> Optional[Dict[str, Any]]:
     _forget_stale_turns(session_id, turn_id)
     tool_errors = _error_count_for_turn(session_id, turn_id)
 
+    # v3: classify WITH conversation context — request["messages"] is the
+    # full API-bound history (user msgs, assistant tool_calls, tool results).
+    work_depth = _session_work_depth(request.get("messages"))
+
     cfg = _resolve_config()
     level = classify_effort(
         user_message,
         tool_errors=tool_errors,
         cfg=cfg,
+        work_depth=work_depth,
     )
     level = _clamp(level, str(cfg["floor"]), str(cfg["ceiling"]))
 
