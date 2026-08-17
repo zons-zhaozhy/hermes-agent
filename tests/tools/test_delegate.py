@@ -91,7 +91,9 @@ class TestDelegateRequirements(unittest.TestCase):
 
         desc = _build_top_level_description()
         # Compaction ceiling: the old description was ~4,000 chars.
-        self.assertLessEqual(len(desc), 2210)
+        # 2320 = upstream 2199 (LIVE ORCHESTRATION steer/stop) + pinned-
+        # provider no-fallback contract (184cddb449) carried by our fork.
+        self.assertLessEqual(len(desc), 2320)
         # Contracts only the top-level text carries:
         for keyword in (
             "background",          # async semantics
