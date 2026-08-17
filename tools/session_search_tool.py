@@ -50,6 +50,14 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # the handful of distinct sessions a typical query returns.
 _DISCOVER_SCAN_LIMIT = 300
 
+# Per-message content cap for READ and SCROLL responses.  Tool output
+# messages (terminal, search) can exceed 30K chars; returning them in
+# full to the model inflates context for marginal value — the agent only
+# needs the summary shape to decide whether to scroll further.  Individual
+# messages are annotated with content_truncated + original_content_chars so
+# the agent knows detail is available on demand.
+_SESSION_MESSAGE_CONTENT_LIMIT = 2000
+
 # Raw FTS rows are only a discovery-plan input. The final response hydrates
 # its own anchored message window and bookends after lineage deduplication.
 _DISCOVER_SEARCH_FIELDS = (
@@ -401,7 +409,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
         logging.error("get_messages failed for %s: %s", session_id, e, exc_info=True)
         return tool_error(f"failed to load session: {e}", success=False)
 
-    shaped = [_shape_message(m) for m in rows]
+    shaped = [_shape_message(m, max_content_len=_SESSION_MESSAGE_CONTENT_LIMIT) for m in rows]
     total = len(shaped)
     truncated = total > head + tail
     window = shaped[:head] + shaped[-tail:] if truncated else shaped
@@ -601,7 +609,7 @@ def _scroll(
             "title": session_meta.get("title"),
         },
         "window": window,
-        "messages": [_shape_message(m, anchor_id=around_message_id) for m in messages],
+        "messages": [_shape_message(m, max_content_len=_SESSION_MESSAGE_CONTENT_LIMIT, anchor_id=around_message_id) for m in messages],
         "messages_before": view.get("messages_before", 0),
         "messages_after": view.get("messages_after", 0),
     }

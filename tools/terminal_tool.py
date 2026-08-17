@@ -201,6 +201,13 @@ def _check_vercel_sandbox_requirements(config: dict[str, Any]) -> bool:
 _disk_usage_cache: dict = {"timestamp": 0.0, "result": False}
 _DISK_USAGE_CACHE_TTL = 300.0  # seconds
 
+# Recent-terminal-command tracking for duplicate detection.
+# Same command string executed within this window triggers a warning.
+# The command still runs (side effects may differ) — the warning is advisory.
+_TERMINAL_REPEAT_WINDOW = 3  # number of recent commands to check against
+_recent_terminal_commands: list = []
+_terminal_repeat_lock = threading.Lock()
+
 
 def _check_disk_usage_warning():
     """Check if total disk usage exceeds warning threshold.
@@ -3483,6 +3490,23 @@ def terminal_tool(
                 result_dict["sudo_auth_failed"] = True
             if sudo_cache_cleared:
                 result_dict["sudo_cache_cleared"] = True
+
+            # ── Duplicate command advisory ─────────────────────────────
+            # Check if the exact same command was recently executed.
+            # Advisory only — the command already ran successfully.
+            with _terminal_repeat_lock:
+                cmd_key = command.strip()
+                if cmd_key in _recent_terminal_commands:
+                    result_dict["duplicate_command_warning"] = (
+                        f"This command was recently executed in this session. "
+                        f"If you need the same output, refer to the earlier "
+                        f"terminal result already in context instead of "
+                        f"re-running."
+                    )
+                _recent_terminal_commands.append(cmd_key)
+                # Keep the window bounded.
+                if len(_recent_terminal_commands) > _TERMINAL_REPEAT_WINDOW:
+                    _recent_terminal_commands.pop(0)
 
             return json.dumps(result_dict, ensure_ascii=False)
 
