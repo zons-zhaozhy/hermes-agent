@@ -28,7 +28,29 @@ signal-based router that is free and reproducible):
   * IN-TURN ESCALATION (api_call_count > 1, i.e. the tool loop):
     - tool errors accumulate via the post_tool_call hook → effort escalates
       (a failing tool loop IS a hard task, regardless of phrasing)
-  * Never exceeds the configured ceiling / drops below the configured floor.
+
+MEASURED EFFECT (glm-5.3, 2026-08-17, real API A/B)
+==================================================
+The effort dial is REAL on glm-5.3: ``low`` → reasoning_tokens = 0 (thinking
+fully off), ``high`` → 26-395 tokens (server-side). Verified that medium
+(default, no plugin) spends 6-183 reasoning tokens even on "What is the
+capital of France?"-class turns.
+
+KNOWN LIMIT — measured, not guessed: surface signals (length/keywords) have
+a blind spot for SHORT-AND-HARD prompts (e.g. "Sort Mars, Venus, Europa,
+Titan by orbital period"): classifier routes low (short, no keywords), but
+the task is cognitively hard. On such prompts the plugin can COST accuracy
+vs. a static medium (real loss observed: low → wrong, medium/high → right).
+Mitigations already built in:
+  * tool-error escalation rescues agentic tasks (errors → step up)
+  * /reasoning <level> still overrides per-session (plugin clamps within
+    floor/ceiling only; raise ``floor`` to ``medium`` in config to disable
+    downgrades entirely while keeping escalation)
+If 100% accuracy on adversarial short prompts matters more than token
+savings, set ``floor: medium``.
+
+The plugin NEVER:
+  * exceeds the configured ceiling / drops below the configured floor.
 
 SAFETY
 ======
