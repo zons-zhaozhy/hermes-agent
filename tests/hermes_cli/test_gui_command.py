@@ -260,6 +260,127 @@ def test_gui_does_not_retry_after_packaged_executable_exists(tmp_path, monkeypat
     assert "Desktop GUI build failed" in capsys.readouterr().out
 
 
+# ── npm ci Electron-download failure → mirror retry ───────────────────
+
+# Verbatim signatures from a real failure (macOS, npm 10.9.8, Electron 40):
+#   npm error path /path/to/repo/apps/desktop/node_modules/electron
+#   npm error command failed
+#   npm error command sh -c node install.js
+#   npm error RequestError: connect ETIMEDOUT 20.205.243.166:443
+_REAL_NPM_ELECTRON_TIMEOUT = """npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.
+npm error code 1
+npm error path /Users/stan/code/ai/github/fork/hermes-agent/apps/desktop/node_modules/electron
+npm error command failed
+npm error command sh -c node install.js
+npm error RequestError: connect ETIMEDOUT 20.205.243.166:443
+npm error     at TLSSocket.socketErrorListener (node:_http_client:575:5)
+npm error A complete log of this run can be found in: /Users/stan/.npm/_logs/debug-0.log
+"""
+
+
+def test_npm_failure_is_electron_download_matches_real_timeout_output():
+    result = subprocess.CompletedProcess(
+        ["npm", "ci"], 1, stdout="", stderr=_REAL_NPM_ELECTRON_TIMEOUT
+    )
+    assert cli_main._npm_failure_is_electron_download(result) is True
+
+
+def test_npm_failure_is_electron_download_rejects_unrelated_failure():
+    # A build failure in some other package: mentions neither electron's path
+    # nor install.js — must NOT trigger the mirror retry.
+    result = subprocess.CompletedProcess(
+        ["npm", "ci"], 1, stdout="", stderr="npm error code 1\nnpm error path /repo/node_modules/esbuild\nnpm error command failed\nnpm error command sh -c node build.js\n"
+    )
+    assert cli_main._npm_failure_is_electron_download(result) is False
+
+
+def test_npm_failure_is_electron_download_requires_network_error():
+    # Electron's install.js fails for a NON-network reason (e.g. bad checksum
+# on disk). The mirror can't help; retry must not fire.
+    result = subprocess.CompletedProcess(
+        ["npm", "ci"],
+        1,
+        stdout="",
+        stderr="npm error path /repo/node_modules/electron\nnpm error command sh -c node install.js\nnpm error ELCHECKSUM mismatch\n",
+    )
+    assert cli_main._npm_failure_is_electron_download(result) is False
+
+
+def test_gui_retries_npm_install_with_fallback_mirror_on_electron_timeout(
+    tmp_path, monkeypatch, capsys
+):
+    """npm ci died downloading Electron from github.com (transactional rollback
+    removed the staged package). The repair branch keyed on disk state can't
+    run, so the install itself must be retried once with the fallback mirror.
+    """
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch)
+    monkeypatch.delenv("ELECTRON_MIRROR", raising=False)
+
+    install_fail = subprocess.CompletedProcess(
+        ["npm", "ci"], 1, stdout="", stderr=_REAL_NPM_ELECTRON_TIMEOUT
+    )
+    install_ok = subprocess.CompletedProcess(["npm", "install"], 0)
+    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
+    launch_ok = subprocess.CompletedProcess(["/usr/bin/npm"], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch(
+             "hermes_cli.main._run_npm_install_deterministic",
+             side_effect=[install_fail, install_ok],
+         ) as mock_install, \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main._register_linux_desktop_entry"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 0
+    # Exactly two installs: the failing ci + ONE mirror retry.
+    assert mock_install.call_count == 2
+    retry_env = mock_install.call_args_list[1].kwargs["env"]
+    assert retry_env["ELECTRON_MIRROR"] == cli_main._ELECTRON_FALLBACK_MIRROR
+    out = capsys.readouterr().out
+    assert "fallback mirror" in out
+    # And the pack still ran after the repair.
+    assert mock_run.call_args_list[0].args[0] == ["/usr/bin/npm", "run", "pack"]
+
+
+def test_gui_respects_user_pinned_electron_mirror_no_retry(
+    tmp_path, monkeypatch, capsys
+):
+    """User already set ELECTRON_MIRROR: their choice is authoritative. The
+    fallback retry must not fire (retrying with the same broken mirror is
+    pointless) and the original failure stands.
+    """
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch)
+    monkeypatch.setenv("ELECTRON_MIRROR", "https://my-mirror.example.com/electron/")
+
+    install_fail = subprocess.CompletedProcess(
+        ["npm", "ci"], 1, stdout="", stderr=_REAL_NPM_ELECTRON_TIMEOUT
+    )
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch(
+             "hermes_cli.main._run_npm_install_deterministic",
+             return_value=install_fail,
+         ) as mock_install, \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code != 0
+    # Exactly ONE install — no retry.
+    assert mock_install.call_count == 1
+    assert "Run manually" in capsys.readouterr().out
+
+
 
 
 # ── electronDist (re)download helper tests (#47266) ───────────────────
