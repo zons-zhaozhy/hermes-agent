@@ -589,7 +589,7 @@ def _sanitize_plugin_names(raw: list) -> list:
         else:
             junk.append(item)
     if junk:
-        logger.warning(
+        logger.error(
             "plugins config list contains %d malformed entries (stray characters "
             "from a corrupted config write — real plugin names were likely "
             "displaced); ignoring: %r",
