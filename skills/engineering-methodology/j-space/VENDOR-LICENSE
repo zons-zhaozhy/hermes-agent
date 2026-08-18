@@ -1,0 +1,10 @@
+Vendored from: https://github.com/Tiger3807861189/J-Space-Cognition-Suite-V3.6
+Commit: main branch (2026-08-18)
+License: Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
+
+This is a verbatim copy of the upstream J-Space Cognition Suite v3.6,
+vendored for bundled distribution with Hermes Agent. Modifications are
+noted below.
+
+Modifications:
+- None (verbatim copy as of vendoring date).
