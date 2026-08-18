@@ -253,9 +253,8 @@ class TestNFKCNormalisation:
     def test_fullwidth_homograph_is_caught(self):
         # Full-width latin letters (ｃ U+FF43 etc.) are compatibility variants
         # that NFKC folds to ASCII; without normalisation they bypass the
-        # keyword-based exfil patterns.  read_secrets is scoped strict-only
-        # (not all) to avoid false-positives on teaching examples in AGENTS.md.
-        findings = scan_for_threats("ｃａｔ ~/.hermes/.env", scope="strict")
+        # keyword-based exfil patterns.
+        findings = scan_for_threats("ｃａｔ ~/.hermes/.env", scope="all")
         assert "read_secrets" in findings
 
 
