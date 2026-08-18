@@ -1261,9 +1261,10 @@ def _get_disabled_set() -> set:
     """
     try:
         from hermes_cli.config import load_config
+        from hermes_cli.plugins import _sanitize_plugin_names
         config = load_config()
         disabled = cfg_get(config, "plugins", "disabled", default=[])
-        return set(disabled) if isinstance(disabled, list) else set()
+        return set(_sanitize_plugin_names(disabled)) if isinstance(disabled, list) else set()
     except Exception:
         return set()
 
@@ -1291,13 +1292,15 @@ def ensure_basic_auth_plugin_enabled_in_config(cfg: dict) -> bool:
 
     Returns True when ``plugins.disabled`` was modified.
     """
+    from hermes_cli.plugins import _sanitize_plugin_names
     plugins_cfg = cfg.get("plugins")
     if not isinstance(plugins_cfg, dict):
         return False
     disabled = plugins_cfg.get("disabled")
     if not isinstance(disabled, list):
         return False
-    if not (set(disabled) & _BASIC_AUTH_PLUGIN_KEYS):
+    disabled_set = set(_sanitize_plugin_names(disabled))
+    if not (disabled_set & _BASIC_AUTH_PLUGIN_KEYS):
         return False
     plugins_cfg["disabled"] = sorted(
         set(disabled) - _BASIC_AUTH_PLUGIN_KEYS
@@ -1313,12 +1316,13 @@ def _get_enabled_set() -> set:
     """
     try:
         from hermes_cli.config import load_config
+        from hermes_cli.plugins import _sanitize_plugin_names
         config = load_config()
         plugins_cfg = config.get("plugins", {})
         if not isinstance(plugins_cfg, dict):
             return set()
         enabled = plugins_cfg.get("enabled", [])
-        return set(enabled) if isinstance(enabled, list) else set()
+        return set(_sanitize_plugin_names(enabled)) if isinstance(enabled, list) else set()
     except Exception:
         return set()
 
