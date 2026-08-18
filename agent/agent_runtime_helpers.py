@@ -73,6 +73,45 @@ def _ra():
     return run_agent
 
 
+# ---------------------------------------------------------------------------
+# Log throttle — suppress repeated identical warnings within a time window.
+#
+# The pre-call sanitizer runs on every API call and emits warnings when it
+# heals poisoned messages.  In a long session with a dead stream this fires
+# every turn (2100+/day), drowning genuine errors in noise.  The throttle
+# emits the *first* occurrence at WARNING level, then downgrades to DEBUG
+# with a suppression count until the window expires or the key changes.
+# ---------------------------------------------------------------------------
+
+_throttle_timestamps: dict[str, float] = {}
+_throttle_counts: dict[str, int] = {}
+_THROTTLE_WINDOW_S = 90.0
+
+
+def _throttled_warning(throttle_key: str, msg: str) -> None:
+    """Emit *msg* at WARNING once per window; subsequent calls -> DEBUG.
+
+    Contract:
+      Preconditions: throttle_key is a non-empty str; msg is a non-empty str
+      Postconditions: first call in window logs at WARNING; subsequent log at DEBUG
+    """
+    import logging as _logging
+    _logger = _logging.getLogger(__name__)
+    now = time.time()
+    last = _throttle_timestamps.get(throttle_key, 0.0)
+    if now - last >= _THROTTLE_WINDOW_S:
+        _throttle_timestamps[throttle_key] = now
+        _throttle_counts[throttle_key] = 0
+        _logger.warning(msg)
+    else:
+        _throttle_counts[throttle_key] = _throttle_counts.get(throttle_key, 0) + 1
+        _logger.debug(
+            "%s [suppressed %d more in %.0fs window]",
+            msg, _throttle_counts[throttle_key], now - last,
+        )
+
+
+
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
     {"todo", "session_search", "memory", "clarify", "read_terminal", "read_preview", "read_window_below", "setup_mcp", "delegate_task"}
 )
@@ -1995,7 +2034,7 @@ def dump_api_request_debug(
         agent._vprint(f"{agent.log_prefix}🧾 Request debug dump written to: {dump_file}")
 
         if env_var_enabled("HERMES_DUMP_REQUEST_STDOUT"):
-            print(json.dumps(_redacted_payload, ensure_ascii=False, indent=2, default=str))
+            logger.debug("request dump (stdout): %s", json.dumps(_redacted_payload, ensure_ascii=False, indent=2, default=str))
 
         return dump_file
     except Exception as dump_error:
@@ -3545,13 +3584,14 @@ def repair_empty_non_final_messages(
             repaired.append(msg)
 
     if healed:
-        _ra().logger.warning(
+        _throttled_warning(
+            "sanitizer:heal_empty",
             "Pre-call sanitizer: healed %d empty non-final message(s) by "
             "substituting placeholder content — an empty-content turn was in "
             "the transcript and would 400 the request ('messages must have "
             "non-empty content' / INVALID_REQUEST_BODY). Self-recovering the "
-            "poisoned transcript in memory; no restart needed.",
-            healed,
+            "poisoned transcript in memory; no restart needed."
+            % healed,
         )
         return repaired
     return messages
@@ -3653,11 +3693,11 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
                 name = getattr(fn, "name", None) if fn else None
             if isinstance(name, str) and name.strip():
                 continue
-            _ra().logger.warning(
+            _throttled_warning(
+                "sanitizer:repair_empty_name",
                 "Pre-call sanitizer: repairing tool_call with empty "
-                "function.name -> %r (id=%s)",
-                _EMPTY_NAME_SENTINEL,
-                _ra().AIAgent._get_tool_call_id_static(tc),
+                "function.name -> %r (id=%s)"
+                % (_EMPTY_NAME_SENTINEL, _ra().AIAgent._get_tool_call_id_static(tc)),
             )
             if isinstance(fn, dict):
                 fn["name"] = _EMPTY_NAME_SENTINEL
