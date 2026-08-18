@@ -325,9 +325,20 @@ def get_last_audit_feedback(session_id: str = "") -> Optional[str]:
         return None
 
     cutoff = time.time() - 3600  # 1 hour freshness window
+    # 2026-08-18 优化：文件 append-only 且 freshness 窗口仅 1 小时——目标条目
+    # 必然在尾部。只读尾部 _TAIL_BYTES 窗口，避免每 turn 全量 readlines() 一个
+    # 无界增长的 jsonl（实测 11.4MB/7392 行 ≈ 最坏 150ms/turn）。
+    _TAIL_BYTES = 262_144  # 256KB ≈ 170 条 × 均重 1.5KB，远超 1h 产出量
     try:
-        with open(audit_file, encoding="utf-8") as f:
-            lines = f.readlines()
+        with open(audit_file, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - _TAIL_BYTES))
+            raw = f.read().decode("utf-8", errors="replace")
+        lines = raw.splitlines()
+        # 窗口可能从行中间开始——丢掉首个残行（除非窗口覆盖了整个文件）
+        if size > _TAIL_BYTES and lines:
+            lines = lines[1:]
     except OSError:
         return None
 
