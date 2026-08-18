@@ -1025,9 +1025,11 @@ class ReadThinkGate:
                     )
                     return False
                 else:
-                    # 无 LLM judge 但调查多样化达标 -> 标记四轴完成
-                    # (LLM judge 路径在 approved 分支中调用 mark_four_axis_complete)
-                    self.mark_four_axis_complete()
+                    # 无 LLM judge 但调查多样化达标 → 不自动标记四轴完成。
+                    # 四轴由内容检测（_four_axis_found）自然累积，或由 LLM judge 显式通过。
+                    # 之前这里错误地调用 mark_four_axis_complete() 导致 diversity 替代四轴，
+                    # 严格模式下 write_file 被四轴形同虚设。
+                    pass
                 # 四轴闸门——严格模式下四轴不齐不解锁。
                 # 但只对核心代码编辑工具（write_file/patch/execute_code）强制要求。
                 # terminal 即使被动态 gated（含文件写入），也不要求四轴——
