@@ -21047,6 +21047,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_entry: Any,
         source: Any,
         final_response: str,
+        conversation_history: Optional[list] = None,
     ) -> None:
         """Run the goal judge after a gateway turn and, if still active,
         enqueue a continuation prompt for the same session.
@@ -21075,10 +21076,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         try:
-            from hermes_cli.goals import gather_background_processes as _gather_bg
+            from hermes_cli.goals import (
+                gather_background_processes as _gather_bg,
+                extract_tool_calls_summary as _extract_tcs,
+            )
             _bg_procs = _gather_bg()
+            _tcs = _extract_tcs(conversation_history)
         except Exception:
             _bg_procs = None
+            _tcs = None
 
         # evaluate_after_turn calls judge_goal() which makes a synchronous
         # HTTP request to the auxiliary LLM.  Running it on the event-loop
@@ -21094,6 +21100,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 final_response or "",
                 user_initiated=True,
                 background_processes=_bg_procs,
+                tool_calls_summary=_tcs,
             ),
         )
         msg = decision.get("message") or ""
@@ -21151,6 +21158,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("post-turn session resolution failed: %s", exc)
             return
 
+        # Extract conversation history for goal judge tool-call detection.
+        _conv_msgs = None
+        if isinstance(agent_result, dict):
+            _conv_msgs = agent_result.get("messages")
+        if not _conv_msgs:
+            try:
+                _sk = getattr(source, "session_key", None)
+                if _sk:
+                    _active = getattr(self, "_active_agents", {}).get(_sk)
+                    if _active is not None:
+                        _conv_msgs = getattr(_active, "_session_messages", None)
+            except Exception:
+                logger.warning("goal continuation: fallback history extraction failed")
+
         # Empty interrupted/errored responses must not drive /goal, but an
         # in-flight /loop tick still needs to be released and rescheduled.
         if final_text.strip():
@@ -21159,6 +21180,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_entry=session_entry,
                     source=source,
                     final_response=final_text,
+                    conversation_history=_conv_msgs,
                 )
             except Exception as exc:
                 logger.debug("goal continuation hook failed: %s", exc)
