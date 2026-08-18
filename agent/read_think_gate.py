@@ -1096,6 +1096,7 @@ class ReadThinkGate:
                 )
             if done < needed:
                 # ── 漏洞 6 修复：推理轮数用 self._reasoning_rounds 而非硬编码 1 ──
+                remaining_reads = needed - done
                 return (
                     "[ReadThink Gate — 推理阶段 · 标准任务] 工具 '%s' 暂时不可用。\n\n"
                     "动手前必须搞清楚：\n"
@@ -1105,8 +1106,10 @@ class ReadThinkGate:
                     "  4. 你打算怎么改？这是最优方案吗？有没有更稳妥的做法？\n\n"
                     "用 search_files 搜调用方和同类实现，用 read_file 读目标文件全貌，\n"
                     "用 codegraph/gitnexus 追依赖链。搞清楚再动手。\n\n"
-                    "（调查次数：%d/%d，推理轮数：%d/%d）"
-                    % (tool_name, done, needed,
+                    "【通过诊断】还需要 %d 次只读调查（当前 %d/%d）+ 至少 %d 字分析。\n"
+                    "（推理轮数：%d/%d）"
+                    % (tool_name, remaining_reads, done, needed,
+                       profile.min_reasoning_chars,
                        self._reasoning_rounds, profile.max_reasoning_rounds)
                 )
             # 调查次数达标但缺少搜索类工具——不是 read_file 堆数量就够的
@@ -1116,6 +1119,7 @@ class ReadThinkGate:
                     "已做 %d 次只读调查（read_file），但还没用搜索类工具。\n"
                     "用 search_files 搜调用方和同类实现，或用 web_search 查外部文档——\n"
                     "搞清楚全局关系，不能只盯着单个文件。\n\n"
+                    "【通过诊断】再做 1 次搜索类工具调用（search_files/web_search）即可通过此关。\n"
                     "（调查次数：%d/%d，推理轮数：%d/%d）"
                     % (tool_name, done, done, needed,
                        self._reasoning_rounds, profile.max_reasoning_rounds)
@@ -1132,8 +1136,9 @@ class ReadThinkGate:
                     "  3. 根因定位：区分症状位置与根因位置（文件+行号），修复目标必须是根因\n"
                     "  4. 风险矩阵：枚举最坏场景（触发条件+影响范围+可恢复性），覆盖六类风险\n\n"
                     "四轴的输出就是 commit message 的 body。即写即用。\n\n"
+                    "【通过诊断】补齐缺轴「%s」的输出即可通过——在接下来的回复中直接写出对应段落。\n"
                     "（推理轮数：%d/%d）"
-                    % (tool_name, "、".join(missing),
+                    % (tool_name, "、".join(missing), "、".join(missing),
                        self._reasoning_rounds, profile.max_reasoning_rounds)
                 )
             return (
@@ -1143,8 +1148,12 @@ class ReadThinkGate:
                 "  ▸ 哪些既有程序与它有关系？它们是怎么做的？\n"
                 "  ▹ 你的改动方案是什么？为什么是最优的？（对比过的替代方案）\n\n"
                 "用充分的分析填满回复——这不是走流程，是确保改对。\n\n"
+                "【通过诊断】调查次数已达标（%d/%d），但推理量不足（当前 %d 字 < 需要 %d 字）。\n"
+                "在回复中写出上述分析，达到 %d 字即可通过。\n"
                 "（推理轮数：%d/%d）"
-                % (tool_name, done, self._reasoning_rounds, profile.max_reasoning_rounds)
+                % (tool_name, done, done, needed, content_len,
+                   profile.min_reasoning_chars, profile.min_reasoning_chars,
+                   self._reasoning_rounds, profile.max_reasoning_rounds)
             )
 
         if done == 0:

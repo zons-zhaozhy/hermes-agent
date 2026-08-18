@@ -232,3 +232,65 @@ class TestHelperFunctions:
         )
         # "全部通过" (4 chars) checked first, found in text
         assert result == "全部通过"
+
+
+# ── Invariant 9: tri-state annotation ──────────────────────────
+
+
+class TestTriStateGate:
+    """Invariant 9: factual assertions must carry source annotation."""
+
+    def _activate(self, mod):
+        for _ in range(8):
+            mod._on_post_tool_call(tool_name="read_file")
+
+    def test_assertion_without_tag_triggers(self, mod):
+        self._activate(mod)
+        result = mod._on_transform_llm_output(
+            response_text="修复了 XXX 漏洞，根因是 YYY 模块。"
+        )
+        assert result != ""
+        assert "[实测]" not in "修复了 XXX 漏洞"  # original has no tag
+        assert "三态标注" in result
+
+    def test_assertion_with_verified_tag_passes(self, mod):
+        self._activate(mod)
+        result = mod._on_transform_llm_output(
+            response_text="修复了 XXX 漏洞 [实测]，根因是 YYY [推断]。"
+        )
+        assert result == ""
+
+    def test_assertion_with_documented_tag_passes(self, mod):
+        self._activate(mod)
+        result = mod._on_transform_llm_output(
+            response_text="根据文档，原因是 ZZZ [文档]。"
+        )
+        assert result == ""
+
+    def test_assertion_with_unverified_tag_passes(self, mod):
+        self._activate(mod)
+        result = mod._on_transform_llm_output(
+            response_text="推测根因是 AAA [未查证]。"
+        )
+        assert result == ""
+
+    def test_no_assertion_no_trigger(self, mod):
+        self._activate(mod)
+        result = mod._on_transform_llm_output(
+            response_text="接下来需要做 XYZ 和 ABC。"
+        )
+        assert result == ""
+
+    def test_git_log_in_context_passes(self, mod):
+        self._activate(mod)
+        result = mod._on_transform_llm_output(
+            response_text="修复了 bug，git log 显示是 commit abc 引入的。"
+        )
+        assert result == ""
+
+    def test_below_threshold_no_trigger(self, mod):
+        result = mod._on_transform_llm_output(
+            response_text="修复了 XXX 漏洞，根因是 YYY。"
+        )
+        assert result == ""
+

@@ -1,5 +1,5 @@
 """
-jspace-guard plugin v1.0 — J-Space 不变量硬化。
+jspace-guard plugin v1.1 — J-Space 不变量硬化。
 
 把结构化思考的关键不变量从软提醒提升到代码拦截：
 
@@ -15,12 +15,18 @@ jspace-guard plugin v1.0 — J-Space 不变量硬化。
   依据：J-Space Loop Ledger —— 完成 = 回读 Goal + Verified + 覆盖说明，
   不是"我觉得做完了"。
 
+不变量 9 (tri-state-gate):
+  回复包含事实性断言但不标注结论来源
+  → 注入提醒：结论应带 [实测]/[文档]/[推断]/[未查证] 三态标注。
+  依据：实事求是原则——每个事实性结论标注来源，不编造。
+
 设计原则：
   - transform_llm_output 只追加不替换，不修改模型原始回复
   - 只在 ≥ ACTIVATION_THRESHOLD 次工具调用后激活（短任务不需要此层门控）
   - 纯字符串检测，不用正则
   - 不变量 6: 检测"验证类断言词" + "覆盖范围词"同时/缺失
   - 不变量 8: 检测"完成类断言词" + 本轮是否有 todo/read 回读
+  - 不变量 9: 检测"事实性断言词" + "三态标注词"同时/缺失
 """
 
 import logging
@@ -86,6 +92,37 @@ _GOAL_WARNING = (
     "但本轮未检测到回读目标/TODO 的行为。\n"
     "完成前必须：read_file 重读 Goal / read todo 列表 / 对照原始需求确认无遗漏。\n"
     "不回读目标的完成声明 = 猜测式收工。"
+)
+
+# ── 不变量 9: tri-state annotation ──────────────────────────────
+
+# 事实性断言词——出现意味着模型在做事实声明
+FACT_ASSERTION_WORDS = frozenset({
+    "修复了", "已修复", "修复完成", "解决了", "已解决",
+    "实测", "实际测试", "测试确认",
+    "根因是", "原因是", "定位到", "问题出在",
+    "结果为", "实测结果",
+    "固定了", "修复了 bug",
+})
+
+# 有效三态标注——出现说明模型在标注结论来源
+TRI_STATE_TAGS = frozenset({
+    "[实测]", "[文档]", "[推断]", "[未查证]",
+    "[verified]", "[documented]", "[inferred]", "[unverified]",
+})
+
+# 已有标注模式的宽松检测——回复中包含这些模式说明已有来源说明
+ANNOTATION_IN_CONTEXT = frozenset({
+    "实测验证", "日志显示", "断言", "断言显示",
+    "工具输出", "函数返回", "测试输出",
+    "git diff", "git log",
+})
+
+_TRI_STATE_WARNING = (
+    "\n[J-SPACE-GUARD: 三态标注] 回复包含事实性断言（%s），"
+    "但未标注结论来源。\n"
+    "每个事实性结论应标注来源：[实测] 代码跑出来的 / [文档] 文档写的 / [推断] 推导的 / [未查证] 没查过。\n"
+    "例：「修复了 XXX 漏洞 [实测]」「根因是 YYY [推断]」"
 )
 
 
@@ -170,6 +207,32 @@ def _check_goal_rebase_gate(text: str, turn_tools: set) -> str:
     return _GOAL_WARNING % assertion
 
 
+def _check_tri_state_gate(text: str) -> str:
+    """Check invariant 9: factual assertions without source annotation.
+
+    Returns warning text if violated, empty string if OK.
+    """
+    # 先检查是否有三态标注——全文有就放行
+    if _contains_any(text, TRI_STATE_TAGS):
+        return ""
+
+    # 如果已有上下文标注模式，放行
+    if _contains_any(text, ANNOTATION_IN_CONTEXT):
+        return ""
+
+    # 检查是否有事实性断言
+    assertion = _find_assertion_word(text, FACT_ASSERTION_WORDS)
+    if not assertion:
+        return ""
+
+    # 违反：有断言无来源
+    logger.info(
+        "jspace-guard: tri-state-gate triggered (assertion='%s')",
+        assertion,
+    )
+    return _TRI_STATE_WARNING % assertion
+
+
 # ── 钩子 ──────────────────────────────────────────────────────
 
 def _on_post_tool_call(**kwargs):
@@ -202,6 +265,11 @@ def _on_transform_llm_output(**kwargs):
     if w:
         warnings.append(w)
 
+    # 不变量 9: 事实性断言须带三态标注
+    w = _check_tri_state_gate(response_text)
+    if w:
+        warnings.append(w)
+
     if warnings:
         logger.info(
             "jspace-guard: %d invariant(s) violated (calls=%d)",
@@ -218,6 +286,6 @@ def register(ctx):
     ctx.register_hook("post_tool_call", _on_post_tool_call)
     ctx.register_hook("transform_llm_output", _on_transform_llm_output)
     logger.info(
-        "jspace-guard v1.0 registered (activation=%d)",
+        "jspace-guard v1.1 registered (activation=%d)",
         ACTIVATION_THRESHOLD,
     )
