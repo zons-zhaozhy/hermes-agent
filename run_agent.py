@@ -7572,6 +7572,11 @@ class AIAgent:
         # has it; gemma3 / qwen3-coder don't. Cached per (model, base_url).
         if base_url_host_matches(self._base_url_lower, "ollama.com"):
             return self._ollama_supports_thinking_cached()
+        # Z.AI / BigModel.cn (glm-5.3, glm-5-turbo, glm-5.2): all support
+        # extra_body.reasoning with effort levels (glm-5.3: low/high/max;
+        # glm-5-turbo: thinking.type enabled/disabled).
+        if base_url_host_matches(self._base_url_lower, "bigmodel.cn"):
+            return True
         if not self._is_openrouter_url():
             return False
         if base_url_host_matches(self._base_url_lower, "api.mistral.ai"):
