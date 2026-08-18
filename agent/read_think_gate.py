@@ -704,7 +704,16 @@ class ReadThinkGate:
             if self.config.use_llm_classifier and user_message:
                 detected = _classify_via_llm(user_message, history_summary) or "normal"
             else:
-                detected = detect_complexity(user_message) if user_message else "normal"
+                # 2026-08-18 修复：use_llm_classifier=False 时必须真正绕过 LLM。
+                # 此前 else 分支调 detect_complexity()，其内部无条件优先
+                # _classify_via_llm()，导致 config.yaml 的 false 被架空——
+                # 每 turn 仍烧一次同步 LLM 调用（timeout=10s，阻塞回合启动），
+                # 实测日志 110 次 "LLM classified" 均发生在 false 配置下。
+                detected = (
+                    _fallback_detect(user_message.lower())
+                    if user_message
+                    else "normal"
+                )
             self._active_complexity = detected
             self._active_profile = self.config.get_profile(detected)
             if detected != "normal":
