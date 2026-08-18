@@ -13851,18 +13851,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 except Exception:
                     pass
         snapshot = self._pending_edit_snapshots.pop(tool_call_id, None)
-        try:
-            from agent.display import render_edit_diff_with_delta
+        if self._inline_diffs_enabled:
+            try:
+                from agent.display import render_edit_diff_with_delta
 
-            render_edit_diff_with_delta(
-                function_name,
-                function_result,
-                function_args=function_args,
-                snapshot=snapshot,
-                print_fn=_cprint,
-            )
-        except Exception:
-            logger.debug("Edit diff preview failed for %s", function_name, exc_info=True)
+                render_edit_diff_with_delta(
+                    function_name,
+                    function_result,
+                    function_args=function_args,
+                    snapshot=snapshot,
+                    print_fn=_cprint,
+                )
+            except Exception:
+                logger.warning("Edit diff preview failed for %s", function_name, exc_info=True)
 
     # ====================================================================
     # Voice mode methods
