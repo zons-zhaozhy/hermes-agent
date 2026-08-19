@@ -1,59 +1,86 @@
-"""Tests for yinyang-restate-guard plugin.
+"""Tests for yinyang-restate-guard plugin (LLM judge 版).
 
 行为契约：
-- 质疑信号词命中 → 注入复述守则；普通消息/空 → None
-- 会话内第 4 次质疑起静默（上限 3）
+- judge 判 True（质疑）→ 注入复述守则
+- judge 判 False / None（fail-open）→ None
+- 同一消息 hash 去重 → 第二次不调 judge
+- judge_calls 超 30 → 不再调
+- 提醒超 3 次 → None
 - env 开关 → None
+- 钩子内部异常 → None（fail-open）
 """
-
 import importlib
 
 import pytest
 
+plugin = importlib.import_module("plugins.yinyang-restate-guard")
 from plugins._shared_state import clear_session
 
 
 @pytest.fixture(autouse=True)
-def _clean_state():
+def _reset():
     clear_session("s1")
     yield
     clear_session("s1")
 
 
-@pytest.fixture
-def plugin():
-    return importlib.import_module("plugins.yinyang-restate-guard")
+def _msg(text):
+    return {"session_id": "s1", "user_message": text}
 
 
-def test_challenge_detected(plugin):
-    assert plugin.is_challenge("你这个说法不对") is True
-    assert plugin.is_challenge("你是不是瞎扯") is True
+def test_judge_true_triggers(monkeypatch):
+    monkeypatch.setattr(plugin, "is_challenge", lambda m: True)
+    out = plugin.on_pre_llm_call(**_msg("你说得不对"))
+    assert out is not None and "复述" in out["context"]
 
 
-def test_plain_message_not_challenge(plugin):
-    assert plugin.is_challenge("帮我看看这个文件") is False
-    assert plugin.is_challenge("") is False
+def test_judge_false_silent(monkeypatch):
+    monkeypatch.setattr(plugin, "is_challenge", lambda m: False)
+    assert plugin.on_pre_llm_call(**_msg("继续")) is None
 
 
-def test_reminder_injected_on_challenge(plugin):
-    out = plugin.on_pre_llm_call(session_id="s1", user_message="结论错了")
-    assert out is not None
-    assert "复述" in out["context"]
+def test_judge_none_fail_open(monkeypatch):
+    monkeypatch.setattr(plugin, "is_challenge", lambda m: None)
+    assert plugin.on_pre_llm_call(**_msg("嗯")) is None
 
 
-def test_no_injection_on_plain(plugin):
-    assert plugin.on_pre_llm_call(session_id="s1", user_message="继续") is None
+def test_dedup_same_message(monkeypatch):
+    calls = []
+    monkeypatch.setattr(plugin, "is_challenge",
+                        lambda m: calls.append(m) or True)
+    assert plugin.on_pre_llm_call(**_msg("同一句质疑")) is not None
+    assert plugin.on_pre_llm_call(**_msg("同一句质疑")) is None
+    assert len(calls) == 1
 
 
-def test_max_three_reminders(plugin):
+def test_max_judge_calls(monkeypatch):
+    calls = []
+    monkeypatch.setattr(plugin, "is_challenge",
+                        lambda m: calls.append(m) or False)
+    for i in range(35):
+        plugin.on_pre_llm_call(**_msg(f"msg {i}"))
+    assert len(calls) == 30
+
+
+def test_max_reminders(monkeypatch):
+    monkeypatch.setattr(plugin, "is_challenge", lambda m: True)
     for i in range(5):
-        out = plugin.on_pre_llm_call(session_id="s1", user_message="又错了")
+        out = plugin.on_pre_llm_call(**_msg(f"质疑 {i}"))
         if i < 3:
             assert out is not None
         else:
             assert out is None
 
 
-def test_env_disable(monkeypatch, plugin):
+def test_env_disable(monkeypatch):
     monkeypatch.setenv("YINYANG_RESTATE_GUARD_DISABLE", "1")
-    assert plugin.on_pre_llm_call(session_id="s1", user_message="错了") is None
+    monkeypatch.setattr(plugin, "is_challenge", lambda m: True)
+    assert plugin.on_pre_llm_call(**_msg("不对")) is None
+
+
+def test_hook_exception_fail_open(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(plugin, "is_challenge", boom)
+    assert plugin.on_pre_llm_call(**_msg("质疑")) is None

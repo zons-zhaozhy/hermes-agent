@@ -28,6 +28,7 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
+from plugins._llm_judge import llm_judge_bool
 from plugins._shared_state import get_session_state
 
 logger = logging.getLogger(__name__)
@@ -86,24 +87,11 @@ def _is_major_decision(text: str) -> Optional[bool]:
       Postconditions: 返回 True/False/None；绝不 raise
     """
     assert text, "text must be non-empty"
-    try:
-        from agent.auxiliary_client import call_llm
-        resp = call_llm(
-            task="devil_advocate_audit",
-            messages=[
-                {"role": "system", "content": _JUDGE_SYSTEM},
-                {"role": "user", "content": text[:4000]},
-            ],
-            max_tokens=32,
-            temperature=0.0,
-            timeout=_JUDGE_TIMEOUT,
-        )
-        content = (resp.choices[0].message.content or "").replace(" ", "").lower()
-        return '"decision":true' in content
-    except Exception as e:
-        logger.warning("devil-advocate-audit judge failed: %s", e,
-                       exc_info=True)
-        return None
+    return llm_judge_bool(
+        task="devil_advocate_audit",
+        system=_JUDGE_SYSTEM,
+        text=text,
+    )
 
 
 def on_post_tool_call(**kwargs) -> None:
