@@ -86,6 +86,7 @@ def needs_boundary_audit(text: str) -> Optional[bool]:
         system=_JUDGE_SYSTEM,
         text=text,
         true_key="needs_audit",
+        timeout=8.0,
     )
 
 

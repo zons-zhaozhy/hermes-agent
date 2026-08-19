@@ -37,7 +37,7 @@ _NAMESPACE = "devil_advocate_audit"
 
 _MAX_REMINDERS = 2
 _MAX_JUDGE_CALLS = 30
-_JUDGE_TIMEOUT = 20.0
+_JUDGE_TIMEOUT = 8.0  # 慢调用截断：fail-open 漏一次提醒 << 用户等 13s
 
 _JUDGE_SYSTEM = (
     "你是决策审查哨兵。判断下面这条会话消息是否构成'重大方案定稿或决策承诺'——"
@@ -91,6 +91,7 @@ def _is_major_decision(text: str) -> Optional[bool]:
         task="devil_advocate_audit",
         system=_JUDGE_SYSTEM,
         text=text,
+        timeout=_JUDGE_TIMEOUT,
     )
 
 

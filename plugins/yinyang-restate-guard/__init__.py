@@ -71,6 +71,7 @@ def is_challenge(message: str) -> Optional[bool]:
         system=_JUDGE_SYSTEM,
         text=message,
         true_key="challenge",
+        timeout=8.0,
     )
 
 
