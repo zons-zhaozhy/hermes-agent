@@ -23,6 +23,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import sqlite3
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from plugins._llm_judge import llm_judge_bool
@@ -75,6 +77,47 @@ def is_challenge(message: str) -> Optional[bool]:
     )
 
 
+def _record_face_slap(message: str, sid: str) -> None:
+    """把判为质疑的真实用户消息写入 outcomes.db face_slaps 表。
+
+    供 judge_eval.py 评测集回流：真实打脸样例自动进 CASES。
+    WAL + IMMEDIATE 事务，多进程并发安全；fail-open（任何异常只记日志）。
+
+    Contract:
+      Preconditions: message 非空 str
+      Postconditions: 成功插入一行或静默失败，绝不 raise
+    """
+    try:
+        import sqlite3
+        from hermes_constants import get_hermes_home
+
+        db = get_hermes_home() / "outcomes.db"
+        h = hashlib.sha1(message.encode("utf-8")).hexdigest()[:16]
+        conn = sqlite3.connect(str(db), timeout=5)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS face_slaps (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    msg_hash TEXT UNIQUE,
+                    session_id TEXT,
+                    message TEXT NOT NULL,
+                    timestamp TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "INSERT OR IGNORE INTO face_slaps (msg_hash, session_id, message, timestamp) "
+                "VALUES (?, ?, ?, ?)",
+                (h, sid, message[:2000],
+                 datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning("yinyang face_slap record failed (fail-open): %s", e)
+
+
 def _state(sid: str) -> Dict[str, Any]:
     return get_session_state(sid, _NAMESPACE)
 
@@ -104,6 +147,7 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
         st["judge_calls"] = int(st.get("judge_calls", 0)) + 1
         if is_challenge(user_message) is not True:
             return None
+        _record_face_slap(user_message, sid)
         st["count"] = int(st.get("count", 0)) + 1
         return {"context": _REMINDER}
     except Exception as e:
