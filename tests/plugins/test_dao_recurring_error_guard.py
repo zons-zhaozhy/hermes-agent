@@ -16,7 +16,10 @@ from plugins._shared_state import clear_session
 
 
 @pytest.fixture(autouse=True)
-def _clean_state():
+def _clean_state(tmp_path, monkeypatch):
+    # 隔离持久层：HERMES_HOME 指向 tmp（conftest 已设 HERMES_HOME，但
+    # get_hermes_home 可能读 override——显式指回 tmp 确保零写 ~/.hermes）
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     clear_session("s1")
     yield
     clear_session("s1")
@@ -88,3 +91,41 @@ def test_env_disable(monkeypatch, plugin):
     for _ in range(3):
         plugin.on_post_tool_call(**_err())
     assert plugin.on_pre_llm_call(session_id="s1") is None
+
+
+def test_persist_across_sessions(plugin, tmp_path):
+    """跨会话累计：同指纹（terminal×ImportError）s1 计 3 次后，s2 计 1 次 → 累计 4。"""
+    for _ in range(3):
+        plugin.on_post_tool_call(**_err())
+    clear_session("s1")
+    plugin.on_post_tool_call(
+        session_id="s2", tool_name="terminal",
+        args={"command": "x"},
+        result={"error": "ImportError: no module named bar"},
+        status="error",
+    )
+    counts = plugin._load_persist()
+    assert counts.get("terminal×ImportError", {}).get("n") == 4
+    clear_session("s2")
+
+
+def test_persist_window_decay(plugin):
+    """14 天窗口外条目衰减：写旧 ts → load 返回空。"""
+    plugin._save_persist({"terminal×Timeout": {"n": 9, "ts": 1}})
+    assert plugin._load_persist() == {}
+
+
+def test_persist_corrupt_fail_open(plugin):
+    """持久文件损坏 → fail-open 返回空 dict，不抛异常。"""
+    plugin._persist_path().parent.mkdir(parents=True, exist_ok=True)
+    plugin._persist_path().write_text("NOT-JSON{", encoding="utf-8")
+    assert plugin._load_persist() == {}
+
+
+def test_reminder_includes_total(plugin):
+    """提醒文本含跨会话累计。"""
+    for _ in range(3):
+        plugin.on_post_tool_call(**_err())
+    out = plugin.on_pre_llm_call(session_id="s1")
+    assert out is not None
+    assert "跨会话累计" in out["context"]

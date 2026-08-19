@@ -24,11 +24,15 @@ Set DAO_RECURRING_ERROR_GUARD_DISABLE=1 to turn off.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
+import time
+from pathlib import Path
 from typing import Any, Dict, Optional
 
+from hermes_constants import get_hermes_home
 from plugins._shared_state import get_session_state
 
 logger = logging.getLogger(__name__)
@@ -57,9 +61,62 @@ _CODIFICATION_TERMINAL = re.compile(
 
 _THRESHOLD = 3
 
+# 跨会话持久层：道生法的"重复"天然跨会话——同一错误明天换会话再现才是
+# 真重复。指纹有限（工具×10类），文件不会膨胀。fail-open：读失败=空计数。
+_PERSIST_WINDOW = 14 * 86400  # 14 天窗口外的指纹衰减掉
+
+
+def _persist_path() -> Path:
+    return get_hermes_home() / "dao_recurring_error_guard.json"
+
+
+def _load_persist() -> Dict[str, Dict[str, int]]:
+    """读取跨会话累计计数（fail-open：损坏/缺失 → 空 dict）。
+
+    持久格式：{fingerprint: {"n": 累计次数, "ts": 最后出现时间戳}}。
+    Contract:
+      Preconditions: 无
+      Postconditions: 返回 dict；异常时记日志并返回 {}；窗口外条目已衰减
+    """
+    try:
+        p = _persist_path()
+        if not p.exists():
+            return {}
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {}
+        now = time.time()
+        out: Dict[str, Dict[str, int]] = {}
+        for k, v in data.items():
+            if isinstance(v, dict) and isinstance(v.get("n"), int):
+                if now - float(v.get("ts", 0)) <= _PERSIST_WINDOW:
+                    out[str(k)] = {"n": v["n"], "ts": int(v.get("ts", 0))}
+        return out
+    except Exception as e:
+        logger.warning("dao-recurring-error-guard persist read failed: %s", e,
+                       exc_info=True)
+        return {}
+
+
+def _save_persist(counts: Dict[str, Dict[str, int]]) -> None:
+    """原子写跨会话计数（tmp+rename；失败仅记日志不影响主流程）。"""
+    try:
+        p = _persist_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(counts), encoding="utf-8")
+        tmp.replace(p)
+    except Exception as e:
+        logger.warning("dao-recurring-error-guard persist write failed: %s", e,
+                       exc_info=True)
+
+
+def _persist_key(tool: str, cls: str) -> str:
+    return f"{tool}×{cls}"
+
 _REMINDER = (
-    "[DaoRecurringErrorGuard] 道生法检查点：本会话「{tool}×{cls}」类错误已出现 {n} 次，"
-    "且尚未见沉淀动作。\n"
+    "[DaoRecurringErrorGuard] 道生法检查点：本会话「{tool}×{cls}」类错误已出现 {n} 次"
+    "（14天跨会话累计 {total} 次），且尚未见沉淀动作。\n"
     "  铁律：同一问题出现第二次，第三次必须成规则——写脚本/skill/配置修复类，"
     "禁止再逐个手工处理。\n"
     "  现在停下来回答：这个错误的共性根因是什么？写成什么规则？"
@@ -127,10 +184,20 @@ def on_post_tool_call(**kwargs) -> None:
     counts = st.get("counts", {})
     counts[key] = counts.get(key, 0) + 1
     st["counts"] = counts
+    # 跨会话累计：同一指纹 14 天窗口内累计（沉淀后由会话内 codified 静默）
+    pdata = _load_persist()
+    now = int(time.time())
+    entry = pdata.get(key)
+    if entry is None or now - entry.get("ts", 0) > _PERSIST_WINDOW:
+        entry = {"n": 0, "ts": now}
+    entry["n"] = entry.get("n", 0) + 1
+    entry["ts"] = now
+    pdata[key] = entry
+    _save_persist(pdata)
 
 
 def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
-    """达到阈值且未见沉淀 → 注入道生法提醒。"""
+    """达到阈值且未见沉淀 → 注入道生法提醒（含跨会话累计）。"""
     if _plugin_disabled():
         return None
     sid = kwargs.get("session_id", "") or kwargs.get("task_id", "")
@@ -141,7 +208,9 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
         return None
     key, n = sorted(over.items(), key=lambda kv: -kv[1])[0]
     tool, cls = key.split("×", 1)
-    return {"context": _REMINDER.format(tool=tool, cls=cls, n=n)}
+    total = _load_persist().get(key, {}).get("n", n)
+    return {"context": _REMINDER.format(tool=tool, cls=cls, n=n,
+                                        total=total)}
 
 
 def register(ctx) -> None:
