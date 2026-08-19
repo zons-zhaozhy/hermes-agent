@@ -129,3 +129,28 @@ def test_reminder_includes_total(plugin):
     out = plugin.on_pre_llm_call(session_id="s1")
     assert out is not None
     assert "跨会话累计" in out["context"]
+
+
+def test_bump_persist_concurrent_multiprocess(plugin):
+    """并发安全：N 个真实子进程并发 bump 同一指纹 → 计数恰好=N（零丢失）。"""
+    import os
+    import subprocess
+    import sys
+
+    n_proc = 12
+    code = (
+        "import os,sys\n"
+        "sys.path.insert(0, os.getcwd())\n"
+        "os.environ.setdefault('HERMES_HOME', sys.argv[1])\n"
+        "import importlib\n"
+        "g = importlib.import_module('plugins.dao-recurring-error-guard')\n"
+        "g._bump_persist_count('terminal×ImportError')\n"
+    )
+    procs = [
+        subprocess.Popen([sys.executable, "-c", code, os.environ["HERMES_HOME"]])
+        for _ in range(n_proc)
+    ]
+    for pr in procs:
+        assert pr.wait() == 0
+    counts = plugin._load_persist()
+    assert counts["terminal×ImportError"]["n"] == n_proc

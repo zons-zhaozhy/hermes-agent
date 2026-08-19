@@ -24,6 +24,7 @@ Set DAO_RECURRING_ERROR_GUARD_DISABLE=1 to turn off.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
@@ -111,6 +112,53 @@ def _save_persist(counts: Dict[str, Dict[str, int]]) -> None:
                        exc_info=True)
 
 
+def _bump_persist_count(key: str) -> None:
+    """锁内读改写：跨进程互斥（fcntl.flock 独占锁）+ 原子替换。
+
+    多进程 gateway 并发下，load→+1→save 若非临界区会丢计数
+    （后写覆盖前写）。flock 独占锁保证读改写串行化。
+    fail-open：任何异常记日志后静默——最坏丢一次计数，不崩不阻塞主流程。
+
+    Contract:
+      Preconditions: key 为非空指纹字符串
+      Postconditions: 持久文件中 key 的 n 恰好 +1（或异常时不变）
+    """
+    try:
+        p = _persist_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = p.with_suffix(".lock")
+        with open(lock_path, "w") as lockf:
+            fcntl.flock(lockf.fileno(), fcntl.LOCK_EX)
+            try:
+                # 锁内读（含窗口衰减）
+                data: Dict[str, Dict[str, int]] = {}
+                if p.exists():
+                    raw = json.loads(p.read_text(encoding="utf-8"))
+                    if isinstance(raw, dict):
+                        now = time.time()
+                        data = {
+                            str(k): {"n": v["n"], "ts": int(v.get("ts", 0))}
+                            for k, v in raw.items()
+                            if isinstance(v, dict) and isinstance(v.get("n"), int)
+                            and now - float(v.get("ts", 0)) <= _PERSIST_WINDOW
+                        }
+                now = int(time.time())
+                entry = data.get(key)
+                if entry is None or now - entry.get("ts", 0) > _PERSIST_WINDOW:
+                    entry = {"n": 0, "ts": now}
+                entry["n"] = entry.get("n", 0) + 1
+                entry["ts"] = now
+                data[key] = entry
+                tmp = p.with_suffix(".tmp")
+                tmp.write_text(json.dumps(data), encoding="utf-8")
+                tmp.replace(p)
+            finally:
+                fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)
+    except Exception as e:
+        logger.warning("dao-recurring-error-guard persist bump failed: %s", e,
+                       exc_info=True)
+
+
 def _persist_key(tool: str, cls: str) -> str:
     return f"{tool}×{cls}"
 
@@ -184,16 +232,8 @@ def on_post_tool_call(**kwargs) -> None:
     counts = st.get("counts", {})
     counts[key] = counts.get(key, 0) + 1
     st["counts"] = counts
-    # 跨会话累计：同一指纹 14 天窗口内累计（沉淀后由会话内 codified 静默）
-    pdata = _load_persist()
-    now = int(time.time())
-    entry = pdata.get(key)
-    if entry is None or now - entry.get("ts", 0) > _PERSIST_WINDOW:
-        entry = {"n": 0, "ts": now}
-    entry["n"] = entry.get("n", 0) + 1
-    entry["ts"] = now
-    pdata[key] = entry
-    _save_persist(pdata)
+    # 跨会话累计：flock 锁内读改写，多进程 gateway 并发安全
+    _bump_persist_count(key)
 
 
 def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
