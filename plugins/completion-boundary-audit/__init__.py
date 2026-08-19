@@ -1,9 +1,13 @@
 """completion-boundary-audit plugin — 反面检查检查点（反者道之动）
 
-transform_llm_output 钩子：
-用 LLM judge 语义判定最终回复是否"包含交付完成声明且未披露任何未验证
-边界"（人话语义不可穷举，禁关键词/正则匹配），命中则在回复末尾追加自
-检红牌，强制暴露本结论未验证的边界。
+judge 判定最终回复是否"包含交付完成声明且未披露任何未验证边界"（人话语义
+不可穷举，禁关键词/正则匹配），命中不修改用户可见回复，只记入会话状态；
+下一轮 pre_llm_call 把红牌注入给 agent（与 reply-certainty-checker 同范式），
+强制 agent 在下一轮补披露未验证边界。
+
+设计修正史：
+- v1 transform_llm_output 直接把红牌追加到用户可见回复尾部 → 污染用户
+  输出，"该由 agent 补的边界"被甩给用户看。改为记状态→下轮注入给 agent。
 
 设计依据：落实笔记-七心法七功法.md 第五节——把用户"完成了吗"式人工
 纠偏变成 agent 自检。与 UX 审计铁律（"完成了吗"=追加审查信号）同构。
@@ -11,8 +15,8 @@ transform_llm_output 钩子：
 成本控制：回复 hash 去重 + judge 调用每会话硬上限 30 + 红牌每会话
 上限 3 + 短回复（<80字符，闲聊）直接跳过 + fail-open。
 
-缓存安全：只在最终回复文本尾部追加，不改 system prompt、不改历史消息、
-不换 toolset —— per-conversation prompt caching 不受影响。
+缓存安全：不改 system prompt、不改历史消息、不换 toolset——
+per-conversation prompt caching 不受影响（注入走 request-scoped context）。
 
 ACTIVATION: 需在 config.yaml plugins.enabled 中添加 "completion-boundary-audit"。
 Set COMPLETION_BOUNDARY_AUDIT_DISABLE=1 to turn off.
@@ -36,6 +40,7 @@ _NAMESPACE = "completion_boundary_audit"
 _MIN_LENGTH = 80
 _MAX_REMINDERS = 3
 _MAX_JUDGE_CALLS = 30
+_JUDGE_TIMEOUT = 8.0
 
 _JUDGE_SYSTEM = (
     "你是交付审查哨兵。判断下面这条 AI 最终回复是否同时满足："
@@ -45,20 +50,11 @@ _JUDGE_SYSTEM = (
     "只回答 JSON：{\"needs_audit\": true} 或 {\"needs_audit\": false}"
 )
 
-_REMINDER = (
-    "\n\n"
-    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    "⚠️ 反面检查（completion-boundary-audit）：本次回复包含交付完成声明，"
-    "但未声明任何未验证边界。\n"
-    "  强制补充：本结论未验证的边界是什么？（至少列出：\n"
-    "    • 哪些路径/环境/方向未实测\n"
-    "    • 验证只覆盖到哪里，之外是推断还是实测\n"
-    "    • 最可能的失败场景与触发条件）\n"
-    "  观复两问（功法五）：\n"
-    "    • 此事的反面何时来？（成功之后紧接着的衰减/回归/反噬）\n"
-    "    • 此事处于循环哪段？（起始上升/平台衰减/末期清算）\n"
-    "  依据：交付验证铁律——报成功必报边界，未列边界=未审计。\n"
-    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+_INJECT = (
+    "【反面检查】你的上一条回复包含交付完成声明，但未披露任何未验证边界。"
+    "本轮回复必须补充：1) 哪些路径/环境/方向未实测；2) 验证覆盖到哪里、"
+    "之外是推断还是实测；3) 最可能的失败场景与触发条件。"
+    "依据：交付验证铁律——报成功必报边界，未列边界=未审计。"
 )
 
 
@@ -86,20 +82,23 @@ def needs_boundary_audit(text: str) -> Optional[bool]:
         system=_JUDGE_SYSTEM,
         text=text,
         true_key="needs_audit",
-        timeout=8.0,
+        timeout=_JUDGE_TIMEOUT,
     )
 
 
 def register(ctx) -> None:
-    """注册 transform_llm_output 钩子（与 reply-certainty-checker 同范式）。"""
+    """注册 transform_llm_output（检测+记状态）与 pre_llm_call（注入）。
+
+    Contract:
+      Postconditions: 两个钩子均已注册；钩子内部任何异常不外泄（fail-open）
+    """
 
     def audit_boundary(response_text, session_id=None, model=None,
                        platform=None, **kwargs) -> Optional[str]:
-        """judge 判"完成声明+无边界"→ 追加红牌；其余透传 None。
+        """judge 判"完成声明+无边界"→ 记状态供下轮注入；用户可见回复零改动。
 
         Contract:
-          Postconditions: 返回 None 或 text+_REMINDER（前缀=原文本）；
-                          任何内部异常不破坏原回复（返回 None）
+          Postconditions: 恒返回 None（绝不修改用户回复）；异常不外泄
         """
         if _plugin_disabled():
             return None
@@ -107,7 +106,8 @@ def register(ctx) -> None:
             text = response_text or ""
             if len(text) < _MIN_LENGTH:
                 return None
-            st = _state(session_id or "")
+            sid = session_id or ""
+            st = _state(sid)
             if int(st.get("count", 0)) >= _MAX_REMINDERS:
                 return None
             if int(st.get("judge_calls", 0)) >= _MAX_JUDGE_CALLS:
@@ -121,14 +121,38 @@ def register(ctx) -> None:
                 return None
             seen.add(h)
             st["judge_calls"] = int(st.get("judge_calls", 0)) + 1
-            if needs_boundary_audit(text) is not True:
-                return None
-            st["count"] = int(st.get("count", 0)) + 1
-            return text + _REMINDER
+            if needs_boundary_audit(text) is True:
+                st["count"] = int(st.get("count", 0)) + 1
+                st["pending_reminder"] = True
+                logger.info(
+                    "completion-boundary-audit: 完成声明未披露边界已标记"
+                    "（下轮注入红牌）"
+                )
+            return None
         except Exception as e:  # 绝不因插件自身错误破坏回复
             logger.warning("completion-boundary-audit skipped: %s", e,
                            exc_info=True)
         return None  # 透传
 
+    def inject_reminder(**kwargs) -> Optional[Dict[str, Any]]:
+        """上一轮被标记 → 注入反面检查红牌给 agent。
+
+        Contract:
+          Postconditions: 返回 None 或 {"context": str}；注入一次即消费标记
+        """
+        if _plugin_disabled():
+            return None
+        try:
+            sid = kwargs.get("session_id") or ""
+            st = _state(sid)
+            if not st.get("pending_reminder"):
+                return None
+            del st["pending_reminder"]
+            return {"context": _INJECT}
+        except Exception as exc:  # fail-open
+            logger.warning("completion-boundary-audit inject failed: %s", exc)
+            return None
+
     ctx.register_hook("transform_llm_output", audit_boundary)
+    ctx.register_hook("pre_llm_call", inject_reminder)
     logger.info("completion-boundary-audit registered")
