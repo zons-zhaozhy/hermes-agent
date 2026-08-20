@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import time
 import pytest
 from pathlib import Path
@@ -273,6 +274,86 @@ class TestRealPruning:
 # =========================================================================
 # CheckpointManager — restoring
 # =========================================================================
+
+class TestStoreLock:
+    """Cross-process mutex between the checkpoint write path and gc."""
+
+    def test_lock_mutually_excludes_holders(self, checkpoint_base):
+        """Contract: two processes cannot hold the store flock at once."""
+        import fcntl
+        from tools.checkpoint_manager import _store_lock
+        store = checkpoint_base / "store"
+        store.mkdir(parents=True)
+        with _store_lock(store):
+            # A second flock from another process must block; verify via a
+            # raw non-blocking probe on the same lock file.
+            probe = open(store / "store.lock", "a+")
+            try:
+                try:
+                    fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # noqa: 探测锁竞争,失败即预期
+                    blocked = False
+                except OSError:  # noqa: EWOULDBLOCK=锁被占,这正是断言目标
+                    blocked = True
+                assert blocked, "second holder acquired the store lock"
+            finally:
+                probe.close()
+
+    def test_lock_released_on_exception(self, checkpoint_base):
+        """Contract: flock released even when the body raises."""
+        import fcntl
+        from tools.checkpoint_manager import _store_lock
+        store = checkpoint_base / "store"
+        store.mkdir(parents=True)
+        with pytest.raises(RuntimeError):
+            with _store_lock(store):
+                raise RuntimeError("boom")
+        probe = open(store / "store.lock", "a+")
+        try:
+            fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # must not raise
+        finally:
+            probe.close()
+
+    def test_concurrent_gc_never_deletes_inflight_checkpoint_blobs(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """Regression (2026-08-20): ``git gc --prune=now`` from a prune pass
+        raced ``git add -A`` → ``write-tree`` in another process and deleted
+        the not-yet-committed loose blobs, failing the checkpoint with
+        ``invalid object``. With the store flock both paths serialize and the
+        checkpoint always succeeds.
+        """
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        m = CheckpointManager(enabled=True, max_snapshots=50)
+        m.ensure_checkpoint(str(work_dir), "initial")
+
+        script = (
+            "import sys, time\n"
+            "from tools.checkpoint_manager import prune_checkpoints\n"
+            f"prune_checkpoints(retention_days=0, checkpoint_base=__import__('pathlib').Path({str(checkpoint_base)!r}))\n"
+            "print('prune-done', flush=True)\n"
+        )
+        procs = [
+            subprocess.Popen(
+                [sys.executable, "-c", script],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                cwd=str(Path(__file__).resolve().parents[2]),
+            )
+            for _ in range(2)
+        ]
+        try:
+            # Interleave real checkpoints with concurrent prune passes.
+            ok_count = 0
+            for i in range(4):
+                (work_dir / "main.py").write_text(f"race-{i}\n")
+                m.new_turn()
+                if m.ensure_checkpoint(str(work_dir), f"race-{i}"):
+                    ok_count += 1
+        finally:
+            for p in procs:
+                out, err = p.communicate(timeout=60)
+                assert "prune-done" in out, f"prune process failed: {err}"
+        assert ok_count == 4, "checkpoint lost the gc race despite the store lock"
+
 
 class TestRestore:
     def test_restore_unknown_hash_fails(self, mgr, work_dir):

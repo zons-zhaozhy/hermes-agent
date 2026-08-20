@@ -56,8 +56,14 @@ import re
 import shutil
 import subprocess
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
+
+try:  # POSIX only — checkpoint flock degrades to no-op on Windows
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore[assignment]  # noqa: 平台降级哨兵,非吞异常
 from hermes_cli._subprocess_compat import windows_hide_flags
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -158,6 +164,48 @@ _STALE_LOCK_AGE = _GIT_TIMEOUT * 2
 # How many times to retry a git command whose lock file is contended.
 _LOCK_RETRY_ATTEMPTS = 3
 _LOCK_RETRY_DELAY = 0.5
+
+# Store-level cross-process mutex. Concurrent Hermes processes (CLI +
+# gateway + cron, 5-6 on this machine) checkpoint into one shared store.
+# ``git gc --prune=now`` from a prune pass deletes unreachable objects
+# *immediately* — including loose blobs another process just wrote via
+# ``git add -A`` but has not yet committed (write-tree then fails with
+# "invalid object", observed 2026-08-20 11:23-12:58). This flock makes
+# the checkpoint write path and the gc path mutually exclusive.
+_STORE_LOCK_NAME = "store.lock"
+
+
+@contextmanager
+def _store_lock(store: Path):
+    """Contract:
+    Preconditions: store directory exists (callers init it first).
+    Postconditions: exactly one holder across processes for the whole
+    ``with`` body; flock released even on exception; Windows (no fcntl)
+    degrades to no-op — same behaviour as pre-lock.
+    """
+    if fcntl is None:
+        yield
+        return
+    lock_path = store / _STORE_LOCK_NAME
+    lock_file = None
+    try:
+        lock_file = open(lock_path, "a+")
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    except OSError as exc:
+        # Unopenable lock file must never break checkpointing itself.
+        logger.warning("Checkpoint store lock unavailable (%s) — proceeding unlocked", exc)
+        if lock_file is not None:
+            lock_file.close()
+            lock_file = None
+    try:
+        yield
+    finally:
+        if lock_file is not None:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)  # noqa: 释放已持有的锁,失败无副作用可忽略
+            except OSError:  # noqa: 进程退出即释放,unlock失败无泄漏风险
+                pass
+            lock_file.close()
 
 
 def _clear_stale_lock(target: Path) -> bool:
@@ -1338,7 +1386,12 @@ class CheckpointManager:
     # ------------------------------------------------------------------
 
     def _take(self, working_dir: str, reason: str) -> bool:
-        """Take a snapshot.  Returns True on success."""
+        """Take a snapshot.  Returns True on success.
+
+        Runs under the store-wide flock: another process's ``gc --prune=now``
+        must not delete this snapshot's freshly-written loose blobs between
+        ``git add -A`` and ``commit-tree`` (the "invalid object" race).
+        """
         store = _store_path(CHECKPOINT_BASE)
 
         err = _init_store(store, working_dir)
@@ -1346,6 +1399,15 @@ class CheckpointManager:
             logger.debug("Checkpoint store init failed: %s", err)
             return False
 
+        with _store_lock(store):
+            return self._take_locked(store, working_dir, reason)
+
+    def _take_locked(self, store: Path, working_dir: str, reason: str) -> bool:
+        """Contract:
+        Preconditions: caller holds the store flock (or fcntl unavailable).
+        Postconditions: returns True iff a new commit landed on the project
+        ref; index/ref state is consistent for the next _take.
+        """
         _touch_project(store, working_dir)
 
         # Quick size guard — don't try to snapshot enormous directories
@@ -1877,8 +1939,29 @@ def prune_checkpoints(
     if not base.exists():
         return result
 
-    size_before = _dir_size_bytes(base)
+    store = _store_path(base)
+    with _store_lock(store):
+        return _prune_checkpoints_locked(
+            base=base, store=store, result=result,
+            retention_days=retention_days,
+            delete_orphans=delete_orphans,
+            orphan_allowlist=orphan_allowlist,
+            max_total_size_mb=max_total_size_mb,
+            size_before=_dir_size_bytes(base),
+        )
 
+
+def _prune_checkpoints_locked(
+    base: Path, store: Path, result: Dict[str, int],
+    retention_days: int, delete_orphans: bool,
+    orphan_allowlist: Optional[set], max_total_size_mb: int,
+    size_before: int,
+) -> Dict[str, int]:
+    """Contract:
+    Preconditions: caller holds the store flock; base exists.
+    Postconditions: never raises; result counts reflect completed deletions;
+    gc runs exactly once per invocation while holding the lock.
+    """
     # --- Legacy pre-v2 per-project shadow repos (kept directly under base) ---
     # Pre-v2 layout: ``base/<hash>/HEAD`` etc.  We treat these exactly as the
     # v1 pruner did so behaviour is unchanged for anyone still on that layout
