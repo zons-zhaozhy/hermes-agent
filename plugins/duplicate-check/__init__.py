@@ -14,29 +14,35 @@ v2.0 改进:
   HERMES_DUPCHECK_DISABLE=1  完全禁用
   HERMES_DUPCHECK_WARN_ONLY=1  仅警告不阻断
 """
+import fnmatch
+import logging
 import subprocess
 import os
-import re
 import time
 from typing import Any, Dict, List, Optional, Set
+
+logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════
 # 配置
 # ═══════════════════════════════════════════
 
-# 以下模式的文件免检（测试文件/构建产物等）
-_SKIP_PATTERNS = [
-    r"^test_.*\.py$",        # test_foo.py
-    r".*_test\.py$",         # foo_test.py
-    r"^conftest\.py$",       # pytest fixtures
-    r"^__init__\.py$",       # package marker
-    r"^setup\.py$",          # package setup
-    r"^migrations/",         # Django alembic 迁移
-    r"^\.",                  # 隐藏文件
+# 以下通配模式的文件免检（测试文件/构建产物等；fnmatch 语义，零正则）
+_SKIP_GLOBS = [
+    "test_*.py",             # test_foo.py
+    "*_test.py",             # foo_test.py
+    "conftest.py",           # pytest fixtures
+    "__init__.py",           # package marker
+    "setup.py",              # package setup
+    "migrations/*",          # Django alembic 迁移
+    "*alembic/versions/*",   # alembic 迁移文件——任意深度,revision链唯一命名,查重无意义(003 曾被误拦)
 ]
 
 # 以下文件名前缀不参与匹配（太通用）
-_NOISE_PREFIXES = {"test", "tmp", "temp", "util", "helper", "common", "base"}
+_NOISE_PREFIXES = {"test", "tmp", "temp", "util", "helper", "common", "base",
+                   # 纯结构目录名——非功能关键词,拿去搜函数名必误中
+                   "app", "src", "lib", "backend", "frontend", "server",
+                   "client", "api", "core", "main", "versions", "alembic"}
 
 # git ls-files 缓存
 _cache: Dict[str, Dict[str, Any]] = {}
@@ -51,10 +57,11 @@ def _warn_only() -> bool:
 
 
 def _should_skip(path: str) -> bool:
-    """检查是否属于免检模式。"""
-    basename = os.path.basename(path)
-    for pat in _SKIP_PATTERNS:
-        if re.match(pat, basename) or re.match(pat, path):
+    """检查是否属于免检模式（fnmatch 通配，零正则）。"""
+    if os.path.basename(path).startswith("."):
+        return True
+    for pat in _SKIP_GLOBS:
+        if fnmatch.fnmatch(path, pat) or fnmatch.fnmatch(os.path.basename(path), pat):
             return True
     return False
 
@@ -85,7 +92,8 @@ def _is_new_python_file(tool_name: str, args: Any, cwd: str) -> Optional[str]:
         real_full = os.path.realpath(full)
         if not real_full.startswith(real_cwd + os.sep) and real_full != real_cwd:
             return None
-    except OSError:
+    except OSError as e:
+        logger.warning("realpath 解析失败(%s): %s", path, e)
         return None
     return path
 
@@ -134,7 +142,8 @@ def _get_cached_ls_files(cwd: str) -> List[str]:
             f.strip() for f in result.stdout.splitlines()
             if f.strip() and not _should_skip(f.strip())
         ]
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        logger.warning("git ls-files 不可用(%s),本次跳过库内查重", e)
         files = []
 
     if cwd not in _cache:
@@ -162,16 +171,21 @@ def _search_duplicates(path: str, cwd: str) -> List[str]:
     name_no_ext = os.path.splitext(basename)[0]
 
     def _stem_set(name: str) -> Set[str]:
-        # snake/kebab 分词 + camelCase 拆分
-        words = re.split(r"[_\-]", name.lower())
+        # 纯 str 扫描，语义与旧正则实现严格等价：
+        # lower → 按 _/- 分词 → 每词提取纯字母段 → ≥4 字符保留
+        # （旧实现先 lower 再 findall，camelCase 分支从不触发=死代码，此处固化真实行为）
         stems: Set[str] = set()
-        for w in words:
-            if len(w) < 4:
-                continue
-            # 拆 camelCase（对混合命名）
-            for piece in re.findall(r"[a-z]+|[A-Z][a-z]*", w):
-                if len(piece) >= 4:
-                    stems.add(piece.lower())
+        for w in name.lower().replace("-", "_").split("_"):
+            piece = ""
+            for ch in w:
+                if ch.isalpha():
+                    piece += ch
+                else:
+                    if len(piece) >= 4:
+                        stems.add(piece)
+                    piece = ""
+            if len(piece) >= 4:
+                stems.add(piece)
         return stems
 
     new_stems = _stem_set(name_no_ext)
@@ -213,17 +227,13 @@ def _search_duplicates(path: str, cwd: str) -> List[str]:
                 for f in existing[:3]:
                     warnings.append(
                         "函数/类名含关键词 '{0}': 已有 {1}".format(pattern, f))
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                pass
+            except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+                logger.warning("rg 搜索不可用(%s),跳过函数名查重", e)
 
     elapsed_ms = int((time.time() - start) * 1000)
     if elapsed_ms > 500:
         # 性能日志：超过500ms告警
-        try:
-            print("[dupcheck] 查重耗时 {0}ms (files={1})".format(
-                elapsed_ms, len(all_files)), flush=True)
-        except Exception:
-            pass
+        logger.warning("查重耗时 %sms (files=%s)", elapsed_ms, len(all_files))
 
     return warnings
 
@@ -284,7 +294,8 @@ def _on_pre_tool_call(
     msg = "\n".join(lines)
 
     if _warn_only():
-        print(msg)
+        # warn-only 模式：写日志而非阻断（走 logging，不再用 print）
+        logger.warning("查重命中但 warn-only 模式放行:\n%s", msg)
         return None
 
     return {"action": "block", "message": msg}
