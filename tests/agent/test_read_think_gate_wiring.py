@@ -268,22 +268,19 @@ class TestSequentialGateWiring:
 # A2 end-to-end: four-axis-complete content writes the marker
 # ---------------------------------------------------------------------------
 class TestFourAxisMarkerE2E:
-    def test_four_axis_content_writes_marker(self, tmp_path, monkeypatch):
+    """四轴 marker 现在通过 LLM judge 验证后写入（非关键词匹配）。"""
+
+    def test_mark_four_axis_complete_writes_marker(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         from agent.read_think_gate import _four_axis_marker_path
 
         gate = ReadThinkGate(ReadThinkGateConfig(enabled=True))
-        content = (
-            "影响面 [源码确认]: agent/tool_executor.py 调用方。"
-            "原意图 git log 851bdcf641 双防线设计。"
-            "根因: SimpleNamespace 丢 content。"
-            "风险: 并发竞争导致 marker 永不写入，写工具全拦。"
-        )
-        gate.check_batch(content, ["write_file"], [{"path": "/tmp/a.py"}])
+        gate.mark_four_axis_complete()
         marker = _four_axis_marker_path()
-        assert marker.exists(), "four-axis-complete content must write the marker"
+        assert marker.exists(), "mark_four_axis_complete must write the marker"
         data = json.loads(marker.read_text())
         assert data["verified"] is True
+        assert data["source"] == "llm_judge"
         assert len(data["axes"]) == 4
 
     def test_reset_for_turn_clears_marker(self, tmp_path, monkeypatch):
@@ -291,12 +288,8 @@ class TestFourAxisMarkerE2E:
         from agent.read_think_gate import _four_axis_marker_path
 
         gate = ReadThinkGate(ReadThinkGateConfig(enabled=True))
-        gate.check_batch(
-            "影响面 [源码确认] 原意图 git log 根因 x 风险: 并发竞争",
-            ["write_file"],
-            [{"path": "/tmp/a.py"}],
-        )
-        assert _four_axis_marker_path().exists()
+        gate.mark_four_axis_complete()
+        assert _four_axis_marker_path().exists(), "marker must exist after mark"
         gate.reset_for_turn("next turn", None)
         assert not _four_axis_marker_path().exists(), "reset_for_turn must clear the marker"
 

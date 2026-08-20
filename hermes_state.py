@@ -1486,6 +1486,7 @@ def apply_database_pragmas(
         "temp_store",
         "wal_autocheckpoint",
         "journal_size_limit",
+        "busy_timeout",
     ):
         raw_value = cfg_get(cfg, "database", pragma_name, default=None)
         if raw_value is None:
@@ -1504,6 +1505,15 @@ def apply_database_pragmas(
             conn.execute(f"PRAGMA {pragma_name}={value}")
         except sqlite3.OperationalError:
             pass
+
+    # busy_timeout default: 5000ms (5s). Without this, SQLite returns
+    # SQLITE_BUSY immediately on lock contention — combined with
+    # acquire_patience_s=5.0 in the lease acquisition path, the
+    # Python retry loop gets the full 5s budget to let the holder finish.
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+    except sqlite3.OperationalError as exc:
+        logger.warning("%s: failed to set busy_timeout: %s", db_label, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -6635,7 +6645,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         on_wait=None,
         wait_notice_interval_seconds: float = 15.0,
         should_abort=None,
-        acquire_patience_s: float = 0.5,
+        acquire_patience_s: float = 5.0,
     ) -> bool:
         """Wait for a cross-process turn lease without holding a SQLite lock.
 

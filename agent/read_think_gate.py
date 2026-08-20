@@ -58,32 +58,10 @@ def _four_axis_marker_path() -> Path:
 
     return get_hermes_home() / "cache" / "four_axis_gate.json"
 
-# 四轴关键词模式——用于从 assistant_content 中检测四轴证据。
-# 每轴独立判定，track 含"或"关系。
-# Keyword-based four-axis detection — no regex, no backtracking risk.
-# re.search caused catastrophic backtracking (sre_ucs2_match CPU 100%)
-# on certain content patterns. Simple substring matching is O(n) and safe.
-_FOUR_AXIS_KEYWORDS: dict[str, list[str]] = {
-    "影响面": [
-        "[源码确认]", "[搜索推断]",
-        "caller", "consumer", "importer",
-        "调用方", "依赖此接口",
-    ],
-    "原意图": [
-        "git log",
-        "前置条件", "后置条件", "副作用约定", "不变量",
-    ],
-    "根因": [
-        "症状位置", "根因位置",
-        "根因", "上游", "数据源头", "配置源",
-        "阻断方案", "入口校验", "配置强制", "启动报错",
-    ],
-    "风险": [
-        "静默数据损坏", "向后不兼容", "缓存失效",
-        "并发竞争", "异常路径被吞", "第三方依赖超时",
-        "触发条件", "影响范围", "可恢复",
-    ],
-}
+# 四轴检测已升级为 LLM 语义判断（_judge_investigation 的 A/B/C/D 四维度
+# 完全覆盖 影响面/原意图/根因/风险 的语义空间）。
+# 保留标签列表供 _missing_axes 和 _build_block_message 展示信息。
+_FOUR_AXIS_LABELS = ["影响面", "原意图", "根因", "风险"]
 
 
 # 四轴闸门只对直接代码编辑工具强制要求。
@@ -739,40 +717,34 @@ class ReadThinkGate:
         return self._read_only_count >= 1
 
     def _scan_four_axis(self, content: str | None) -> None:
-        """扫描 assistant 回复文本，检测四轴证据并累积到 self._four_axis_found。
+        """四轴检测已升级为 LLM 语义判断——此方法保留为空操作。
 
-        每轴独立判定：该轴的任一模式匹配即标记为 found。
-        四轴全部 found 时写入 marker 文件，供 pre_tool_call 插件读取。
+        四轴验证现在由 _judge_investigation 的四维度（代码理解/关系分析/既有模式/方案评估）
+        覆盖。当 LLM judge 通过时，调用方通过 mark_four_axis_complete() 写入 marker。
         """
-        if not content:
-            return
-        # 四轴关键词通常在结论部分。对超长文本只扫描尾部 8KB，
-        # 避免超大 content 做全文扫描的 CPU 开销。
-        scan_text = content if len(content) <= 8192 else content[-8192:]
-        for axis, keywords in _FOUR_AXIS_KEYWORDS.items():
-            if axis in self._four_axis_found:
-                continue
-            for kw in keywords:
-                if kw in scan_text:
-                    self._four_axis_found.add(axis)
-                    logger.info(
-                        "read-think gate: four-axis '%s' detected — %d/4 axes found",
-                        axis, len(self._four_axis_found),
-                    )
-                    break
-        # 四轴全部到位 → 写入 marker 文件
-        if len(self._four_axis_found) == 4:
-            try:
-                _marker = _four_axis_marker_path()
-                _marker.parent.mkdir(parents=True, exist_ok=True)
-                _marker.write_text(json.dumps({
-                    "verified": True,
-                    "timestamp": time.time(),
-                    "axes": sorted(self._four_axis_found),
-                }))
-                logger.info("read-think gate: four-axis complete — marker written")
-            except Exception:
-                logger.warning("read-think gate: failed to write four-axis marker", exc_info=True)
+        pass
+
+    def mark_four_axis_complete(self) -> None:
+        """LLM judge 通过后调用——标记四轴完成并写入 marker 文件。
+
+        Contract:
+          Preconditions: gate 处于活跃状态，LLM judge 已判定 APPROVED
+          Postconditions: _four_axis_complete() == True, marker 文件存在且 verified=True
+        """
+        self._four_axis_found = set(_FOUR_AXIS_LABELS)
+        assert self._four_axis_complete(), "mark_four_axis_complete failed to set all axes"
+        try:
+            _marker = _four_axis_marker_path()
+            _marker.parent.mkdir(parents=True, exist_ok=True)
+            _marker.write_text(json.dumps({
+                "verified": True,
+                "source": "llm_judge",
+                "timestamp": time.time(),
+                "axes": sorted(self._four_axis_found),
+            }))
+            logger.info("read-think gate: four-axis complete via LLM judge — marker written")
+        except Exception:
+            logger.warning("read-think gate: failed to write four-axis marker", exc_info=True)
 
     def _four_axis_complete(self) -> bool:
         """四轴是否全部检测到。"""
@@ -780,7 +752,7 @@ class ReadThinkGate:
 
     def _missing_axes(self) -> list[str]:
         """返回尚未检测到的轴名称列表。"""
-        return [a for a in _FOUR_AXIS_KEYWORDS if a not in self._four_axis_found]
+        return [a for a in _FOUR_AXIS_LABELS if a not in self._four_axis_found]
 
     def _has_diverse_investigation(self, profile: ComplexityProfile) -> bool:
         """调查是否包含搜索类工具，而非只有 read_file/skill_view 堆数量。
@@ -1040,8 +1012,9 @@ class ReadThinkGate:
                         )
                         return False
                     else:
-                        # judge 通过——重置状态
+                        # judge 通过——重置状态 + 标记四轴完成
                         self._judge_fail_count = 0
+                        self.mark_four_axis_complete()
                 elif not self._has_diverse_investigation(profile):
                     # 无 LLM judge 时：调查必须包含搜索类工具（search_files/web_search/web_extract），
                     # 不能只是 read_file 堆数量。防止三连 read_file 凑数过关。
@@ -1051,6 +1024,12 @@ class ReadThinkGate:
                         self._read_only_count, self._active_complexity,
                     )
                     return False
+                else:
+                    # 无 LLM judge 但调查多样化达标 → 不自动标记四轴完成。
+                    # 四轴由内容检测（_four_axis_found）自然累积，或由 LLM judge 显式通过。
+                    # 之前这里错误地调用 mark_four_axis_complete() 导致 diversity 替代四轴，
+                    # 严格模式下 write_file 被四轴形同虚设。
+                    pass
                 # 四轴闸门——严格模式下四轴不齐不解锁。
                 # 但只对核心代码编辑工具（write_file/patch/execute_code）强制要求。
                 # terminal 即使被动态 gated（含文件写入），也不要求四轴——
@@ -1119,6 +1098,7 @@ class ReadThinkGate:
                 )
             if done < needed:
                 # ── 漏洞 6 修复：推理轮数用 self._reasoning_rounds 而非硬编码 1 ──
+                remaining_reads = needed - done
                 return (
                     "[ReadThink Gate — 推理阶段 · 标准任务] 工具 '%s' 暂时不可用。\n\n"
                     "动手前必须搞清楚：\n"
@@ -1128,8 +1108,10 @@ class ReadThinkGate:
                     "  4. 你打算怎么改？这是最优方案吗？有没有更稳妥的做法？\n\n"
                     "用 search_files 搜调用方和同类实现，用 read_file 读目标文件全貌，\n"
                     "用 codegraph/gitnexus 追依赖链。搞清楚再动手。\n\n"
-                    "（调查次数：%d/%d，推理轮数：%d/%d）"
-                    % (tool_name, done, needed,
+                    "【通过诊断】还需要 %d 次只读调查（当前 %d/%d）+ 至少 %d 字分析。\n"
+                    "（推理轮数：%d/%d）"
+                    % (tool_name, remaining_reads, done, needed,
+                       profile.min_reasoning_chars,
                        self._reasoning_rounds, profile.max_reasoning_rounds)
                 )
             # 调查次数达标但缺少搜索类工具——不是 read_file 堆数量就够的
@@ -1139,6 +1121,7 @@ class ReadThinkGate:
                     "已做 %d 次只读调查（read_file），但还没用搜索类工具。\n"
                     "用 search_files 搜调用方和同类实现，或用 web_search 查外部文档——\n"
                     "搞清楚全局关系，不能只盯着单个文件。\n\n"
+                    "【通过诊断】再做 1 次搜索类工具调用（search_files/web_search）即可通过此关。\n"
                     "（调查次数：%d/%d，推理轮数：%d/%d）"
                     % (tool_name, done, done, needed,
                        self._reasoning_rounds, profile.max_reasoning_rounds)
@@ -1155,8 +1138,9 @@ class ReadThinkGate:
                     "  3. 根因定位：区分症状位置与根因位置（文件+行号），修复目标必须是根因\n"
                     "  4. 风险矩阵：枚举最坏场景（触发条件+影响范围+可恢复性），覆盖六类风险\n\n"
                     "四轴的输出就是 commit message 的 body。即写即用。\n\n"
+                    "【通过诊断】补齐缺轴「%s」的输出即可通过——在接下来的回复中直接写出对应段落。\n"
                     "（推理轮数：%d/%d）"
-                    % (tool_name, "、".join(missing),
+                    % (tool_name, "、".join(missing), "、".join(missing),
                        self._reasoning_rounds, profile.max_reasoning_rounds)
                 )
             return (
@@ -1166,8 +1150,12 @@ class ReadThinkGate:
                 "  ▸ 哪些既有程序与它有关系？它们是怎么做的？\n"
                 "  ▹ 你的改动方案是什么？为什么是最优的？（对比过的替代方案）\n\n"
                 "用充分的分析填满回复——这不是走流程，是确保改对。\n\n"
+                "【通过诊断】调查次数已达标（%d/%d），但推理量不足（当前 %d 字 < 需要 %d 字）。\n"
+                "在回复中写出上述分析，达到 %d 字即可通过。\n"
                 "（推理轮数：%d/%d）"
-                % (tool_name, done, self._reasoning_rounds, profile.max_reasoning_rounds)
+                % (tool_name, done, done, needed, content_len,
+                   profile.min_reasoning_chars, profile.min_reasoning_chars,
+                   self._reasoning_rounds, profile.max_reasoning_rounds)
             )
 
         if done == 0:

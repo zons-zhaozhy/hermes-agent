@@ -1,0 +1,17 @@
+name: completion-boundary-audit
+version: "1.0.0"
+description: |
+  反面检查检查点（心法一：反者道之动）——最终回复含交付完成声明
+  （已完成/全部修复/all tests pass 等）却无任何未验证边界声明时，
+  在回复末尾追加自检红牌，强制暴露"本结论未验证的边界"。
+
+  设计依据：~/knowledge-base/classics/落实笔记-七心法七功法.md 第五节。
+  与 UX 审计铁律（"完成了吗"=追加审查信号）同构——把用户人工纠偏
+  变成 agent 自检。
+
+  缓存安全：只追加最终回复文本，不动 system prompt/历史/toolset。
+  只对 >80 字符的长回复触发，闲聊确认不误伤。
+  关闭：COMPLETION_BOUNDARY_AUDIT_DISABLE=1
+author: stan
+hooks:
+  - transform_llm_output

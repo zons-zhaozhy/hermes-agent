@@ -1,0 +1,19 @@
+name: jspace-guard
+version: "1.1.0"
+description: |
+  J-Space 不变量硬化——把结构化思考的关键不变量从软提醒提升到代码拦截。
+
+  不变量 6 (coverage-gate): 声称验证/完成/通过但不说覆盖了什么
+    → 注入警告：验证必须带覆盖范围说明。
+
+  不变量 8 (goal-rebase-gate): 声称任务完成但未回读目标/TODO
+    → 注入警告：完成前必须回读 Goal 和 todo 列表。
+
+  不变量 9 (tri-state-gate): 事实性断言不带三态标注
+    → 注入提醒：结论应带 [实测]/[文档]/[推断]/[未查证]。
+
+  设计：transform_llm_output 只追加不替换，不修改模型原始回复。
+  只在≥8 次工具调用后激活（短任务不需要此层门控）。
+author: stan (based on Tiger3807861189/J-Space-Cognition-Suite-V3.6, Apache-2.0)
+hooks:
+  - transform_llm_output

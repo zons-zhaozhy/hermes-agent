@@ -57,8 +57,9 @@ def _mock_mode(mode):
         yield
 
 
-def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
+def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None, **kwargs):
     """Minimal mock dispatcher reused across tests."""
+    # **kwargs: 生产签名带 enabled_tools 等可选参数，mock 全吸收
     if function_name == "terminal":
         return json.dumps({"output": "mock", "exit_code": 0})
     if function_name == "read_file":

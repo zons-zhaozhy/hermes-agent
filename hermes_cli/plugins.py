@@ -567,6 +567,37 @@ def _env_enabled(name: str) -> bool:
     return env_var_enabled(name)
 
 
+def _sanitize_plugin_names(raw: list) -> list:
+    """Filter malformed entries out of a plugins enabled/disabled list.
+
+    Guards against the observed corruption class where a config write
+    iterated a bare string (e.g. ``list += "+source-code-write-guard"``)
+    and splattered single characters into the list, silently displacing
+    every real plugin name. Real plugin names are always multi-char and
+    never start with ``+``; anything else is junk and gets dropped with
+    a warning so the damage is visible instead of silent.
+
+    Preconditions: ``raw`` is already isinstance-checked as a list.
+    Postconditions: every returned item is a str with len > 1 that does
+    not start with '+'; junk entries are logged exactly once per call.
+    """
+    clean: list = []
+    junk: list = []
+    for item in raw:
+        if isinstance(item, str) and len(item) > 1 and not item.startswith("+"):
+            clean.append(item)
+        else:
+            junk.append(item)
+    if junk:
+        logger.error(
+            "plugins config list contains %d malformed entries (stray characters "
+            "from a corrupted config write — real plugin names were likely "
+            "displaced); ignoring: %r",
+            len(junk), junk[:12],
+        )
+    return clean
+
+
 def _get_disabled_plugins() -> set:
     """Read the disabled plugins list from config.yaml.
 
@@ -578,7 +609,7 @@ def _get_disabled_plugins() -> set:
         from hermes_cli.config import load_config
         config = load_config()
         disabled = cfg_get(config, "plugins", "disabled", default=[])
-        return set(disabled) if isinstance(disabled, list) else set()
+        return set(_sanitize_plugin_names(disabled)) if isinstance(disabled, list) else set()
     except Exception:
         return set()
 
@@ -608,7 +639,7 @@ def _get_enabled_plugins() -> Optional[set]:
         enabled = plugins_cfg.get("enabled")
         if not isinstance(enabled, list):
             return None
-        return set(enabled)
+        return set(_sanitize_plugin_names(enabled))
     except Exception:
         return None
 
@@ -5088,8 +5119,10 @@ class PluginManager:
         Context is ALWAYS injected into the user message, never the
         system prompt.  This preserves the prompt cache prefix — the
         system prompt stays identical across turns so cached tokens
-        are reused.  All injected context is ephemeral — never
-        persisted to session DB.
+        are reused.  Injections never pollute the stored transcript
+        ``content``; the exact API-sent bytes (injections included)
+        are captured in the ``api_content`` sidecar column on the same
+        row so replay reproduces the sent prefix byte-for-byte (#48677).
         """
         # Most legacy observer hooks carry the shared telemetry marker. Gateway
         # platform events define event-local additive envelopes instead: injecting

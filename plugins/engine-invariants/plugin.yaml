@@ -1,0 +1,19 @@
+name: engine-invariants
+version: "1.0.0"
+description: |
+  引擎正确性不变量注册表（借鉴 deepseek-harness invariants companion 模式）。
+
+  Hermes 已有强大的消息序列修复器（sanitize_api_messages /
+  repair_message_sequence），但修复器是静默工作的——上游引擎 bug
+  持续产生孤儿消息时，没有任何信号暴露"修复器正在高频工作"。
+
+  本插件是修复器的检验器：post_llm_call 时对最终 conversation_history
+  跑不变量注册表（工具配对/角色交替/孤儿检测），违反记结构化日志 +
+  会话累计计数。检测到违反 = 修复器没跑到（host-fed/legacy/resumed
+  历史来源）或修复器自身漏修——两种都是引擎健康信号。
+
+  只检测不修复：修复归 sanitize_api_messages，职责不重叠。
+  关闭：ENGINE_INVARIANTS_DISABLE=1
+author: stan
+hooks:
+  - post_llm_call

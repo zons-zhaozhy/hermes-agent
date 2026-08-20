@@ -1,0 +1,13 @@
+name: yinyang-restate-guard
+version: "1.0.0"
+description: |
+  阴阳冲和检查点（心法三：复述后再反驳）——用户消息含质疑/反驳/
+  纠正信号时，注入守则：反驳前必须先复述对方立场至对方视角成立，
+  再指出分歧。承认错误也算复述（先承认具体错在哪句再修正）。
+
+  会话内最多提醒 3 次，之后视为已内化。
+  信号词有限集合，宁窄勿宽。
+  关闭：YINYANG_RESTATE_GUARD_DISABLE=1
+author: stan
+hooks:
+  - pre_llm_call

@@ -1,0 +1,7 @@
+name: source-code-write-guard
+version: "1.0.0"
+description: "拦截 terminal 中 python3 内联脚本绕过 patch 写源码文件，强制走 diff 可见工具"
+author: stan
+kind: standalone
+hooks:
+  - pre_tool_call
