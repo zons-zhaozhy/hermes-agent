@@ -53,7 +53,12 @@ def _plugin_disabled() -> bool:
 
 
 def _iter_tool_call_ids(msg: Dict[str, Any]) -> List[str]:
-    """提取 assistant 消息的 tool_call id 列表（OpenAI 格式）。"""
+    """提取 assistant 消息的 tool_call id 列表（OpenAI 格式）。
+
+    Contract:
+      Preconditions: msg 为 dict（tool_calls 缺失/非 list 均合法）
+      Postconditions: 返回有效 id 的 str 列表；绝不 raise
+    """
     calls = msg.get("tool_calls") or []
     if not isinstance(calls, list):
         return []
