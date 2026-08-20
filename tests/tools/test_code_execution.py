@@ -50,8 +50,9 @@ from tools.code_execution_tool import (
 from tools.registry import registry
 
 
-def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
+def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None, **kwargs):
     """Mock dispatcher that returns canned responses for each tool."""
+    # **kwargs: 生产签名带 enabled_tools 等可选参数，mock 全吸收
     if function_name == "terminal":
         cmd = function_args.get("command", "")
         return json.dumps({"output": f"mock output for: {cmd}", "exit_code": 0})
@@ -286,7 +287,7 @@ else:
     print(f"OK {N}/{N}")
 '''
 
-        def slow_mock(function_name, function_args, task_id=None, user_task=None):
+        def slow_mock(function_name, function_args, task_id=None, user_task=None, **kwargs):
             import time as _t
             if function_name == "terminal":
                 _t.sleep(0.05)  # ensure requests overlap on the socket

@@ -754,12 +754,18 @@ def _rpc_server_loop(
                         tool_args.pop(param, None)
 
                 # Dispatch through the standard tool handler.
+                # Pass the session-scoped allow-list explicitly: without it,
+                # handle_function_call falls back to the process-global
+                # _last_resolved_tool_names, which can belong to a different
+                # session in multi-session processes (gateway) and falsely
+                # reject tools that already passed the loop-level guard above.
                 # Suppress stdout/stderr from internal tool handlers so
                 # their status prints don't leak into the CLI spinner.
                 try:
                     with thread_scoped_silence():
                         result = handle_function_call(
-                            tool_name, tool_args, task_id=task_id
+                            tool_name, tool_args, task_id=task_id,
+                            enabled_tools=sorted(allowed_tools),
                         )
                 except Exception as exc:
                     logger.error("Tool call failed in sandbox: %s", exc, exc_info=True)
@@ -1031,10 +1037,13 @@ def _rpc_poll_loop(
                             tool_args.pop(param, None)
 
                     # Dispatch through the standard tool handler
+                    # enabled_tools: 会话级工具集显式传递（同本地 UDS 路径，
+                    # 防 fallback 到进程全局 _last_resolved_tool_names）
                     try:
                         with thread_scoped_silence():
                             tool_result = handle_function_call(
-                                tool_name, tool_args, task_id=task_id
+                                tool_name, tool_args, task_id=task_id,
+                                enabled_tools=sorted(allowed_tools),
                             )
                     except Exception as exc:
                         logger.error("Tool call failed in remote sandbox: %s",
