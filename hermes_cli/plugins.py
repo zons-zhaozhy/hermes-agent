@@ -5119,8 +5119,10 @@ class PluginManager:
         Context is ALWAYS injected into the user message, never the
         system prompt.  This preserves the prompt cache prefix — the
         system prompt stays identical across turns so cached tokens
-        are reused.  All injected context is ephemeral — never
-        persisted to session DB.
+        are reused.  Injections never pollute the stored transcript
+        ``content``; the exact API-sent bytes (injections included)
+        are captured in the ``api_content`` sidecar column on the same
+        row so replay reproduces the sent prefix byte-for-byte (#48677).
         """
         # Most legacy observer hooks carry the shared telemetry marker. Gateway
         # platform events define event-local additive envelopes instead: injecting
