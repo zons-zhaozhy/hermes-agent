@@ -168,12 +168,23 @@ class TestZaiGLM53Contract:
         )
         assert top_level == {"reasoning_effort": "low"}
 
-    @pytest.mark.parametrize("effort", ["medium", "high", ""])
-    def test_mid_efforts_map_to_high(self, zai_profile, effort):
+    @pytest.mark.parametrize(
+        ("effort", "expected"),
+        [("medium", "medium"), ("high", "high")],
+    )
+    def test_mid_efforts(self, zai_profile, effort, expected):
+        """GLM-5.3 has the graded scale (#91789): medium passes through."""
         extra_body, top_level = zai_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort}, model="glm-5.3",
         )
-        assert top_level == {"reasoning_effort": "high"}
+        assert top_level == {"reasoning_effort": expected}
+
+    def test_no_effort_preference_omits_field(self, zai_profile):
+        """Empty effort leaves the server default untouched (no field)."""
+        extra_body, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": ""}, model="glm-5.3",
+        )
+        assert top_level == {}
 
     @pytest.mark.parametrize(
         "model",

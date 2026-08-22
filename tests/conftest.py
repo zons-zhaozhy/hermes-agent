@@ -1742,6 +1742,25 @@ def _isolate_computer_use_approval_state():
         pass
 
 
+@pytest.fixture
+def short_tmp_path(tmp_path):
+    """Return a short tmp_path for AF_UNIX socket bind tests.
+
+    macOS caps ``sun_path`` at 104 bytes. pytest's default basetemp on
+    macOS lives under ``/var/folders/<long_hash>/T/pytest-of-<user>/...``
+    (≈90+ bytes before the test's own subdirs), so any test that binds a
+    Unix socket under ``tmp_path`` fails with ``AF_UNIX path too long``
+    while passing on Linux CI. This fixture provides a ``tmp_path``-
+    compatible ``Path`` rooted in ``/tmp`` (10 bytes prefix) so socket
+    paths stay well under the limit.
+    """
+    import shutil, uuid
+    base = Path(f"/tmp/hermes-tmp-{uuid.uuid4().hex[:8]}")
+    base.mkdir()
+    yield base
+    shutil.rmtree(base, ignore_errors=True)
+
+
 @pytest.fixture(autouse=True)
 def _moa_caches_isolated():
     """Clear module-level MoA cold-start caches before each test.

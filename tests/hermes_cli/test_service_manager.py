@@ -209,6 +209,20 @@ def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
         """
         return 0o1730 if sys.platform.startswith("darwin") else 0o3730
 
+    def _accepted_setgid_dir_modes() -> set[int]:
+        """Modes the chmod(0o3730) call may legitimately land as.
+
+        darwin is heterogeneous BY VOLUME: /System/Volumes and
+        /private/var/folders (TMPDIR, pytest's default basetemp) honor
+        S_ISGID on directories, while /private/tmp strips it (measured:
+        same chmod lands 0o3730 vs 0o1730 depending on path). Linux CI
+        always keeps the setgid bit. Production s6 layout is Linux-only,
+        so on darwin either landing is acceptable.
+        """
+        if sys.platform.startswith("darwin"):
+            return {0o3730, 0o1730}
+        return {0o3730}
+
     svc_dir = tmp_path / "gateway-foo"
     svc_dir.mkdir()
 
@@ -217,9 +231,9 @@ def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
     # Top-level event/ — s6-svlisten1 event subscription dir.
     event = svc_dir / "event"
     assert event.is_dir(), "missing top-level event/"
-    assert stat.S_IMODE(event.stat().st_mode) == _expected_setgid_dir_mode(), (
-        f"event/ mode = {oct(event.stat().st_mode)}, want "
-        f"{oct(_expected_setgid_dir_mode())}"
+    assert stat.S_IMODE(event.stat().st_mode) in _accepted_setgid_dir_modes(), (
+        f"event/ mode = {oct(event.stat().st_mode)}, want one of "
+        f"{[oct(m) for m in sorted(_accepted_setgid_dir_modes())]}"
     )
 
     # supervise/ dir.
@@ -230,7 +244,7 @@ def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
     # supervise/event/.
     supervise_event = supervise / "event"
     assert supervise_event.is_dir(), "missing supervise/event/"
-    assert stat.S_IMODE(supervise_event.stat().st_mode) == _expected_setgid_dir_mode()
+    assert stat.S_IMODE(supervise_event.stat().st_mode) in _accepted_setgid_dir_modes()
 
     # supervise/control FIFO.
     control = supervise / "control"
