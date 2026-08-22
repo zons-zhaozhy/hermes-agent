@@ -2211,6 +2211,23 @@ class AIAgent:
             # at the end of the scan (see append_messages_batch).
             _batch_rows: List[Dict[str, Any]] = []
             _batch_msgs: List[Dict] = []
+            # Cron runs are flat, headless, non-resumable sessions whose full
+            # transcript (per-run skill scaffolding + tool/reasoning noise) is
+            # persisted only so `list_cron_job_runs` can preview them — the
+            # run's actual result lives in the job's on-disk output dir
+            # (scheduler._job_output_dir). Persisting the whole transcript
+            # bloats the DB with ~35MB/run pile: full SKILL.md scaffolds (up to
+            # 80KB each), tool outputs, and assistant reasoning/tool_calls are
+            # all pure process noise with no replay value. Downgrade cron
+            # persistence to just the durable surface: user instructions
+            # (skill scaffolds collapsed to their invocation) + assistant
+            # final-content reports. Skip tool messages and their producing
+            # assistant(tool_calls) rows together so replay role alternation
+            # never sees an orphan tool_calls with no tool response.
+            _downgrade_cron = (
+                getattr(self, "_session_db", None) is not None
+                and getattr(self, "platform", None) == "cron"
+            )
             for _msg_idx in range(_scan_start, len(messages)):
                 msg = messages[_msg_idx]
                 if not isinstance(msg, dict):
@@ -2236,6 +2253,38 @@ class AIAgent:
                     continue
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
+                # --- cron persistence downgrade -------------------------------
+                # Drop the run's process noise from the durable transcript: tool
+                # results and the assistant(tool_calls) rows that produced them
+                # (skipped together to keep replay role alternation valid), and
+                # collapse skill scaffolds to their invocation instead of the
+                # full SKILL.md body. Only the final assistant content report and
+                # plain user instructions survive. The cron run's real output is
+                # already on disk (scheduler._job_output_dir), so nothing user
+                # -facing is lost — this only stops persisting a ~35MB/run pile.
+                if _downgrade_cron and role == "tool":
+                    continue
+                if _downgrade_cron and role == "assistant" and msg.get("tool_calls"):
+                    continue
+                if _downgrade_cron and role == "user" and isinstance(content, str):
+                    from agent.skill_commands import (
+                        _SKILL_INVOCATION_PREFIX,
+                        describe_skill_invocation,
+                        extract_user_instruction_from_skill_message,
+                    )
+
+                    if content.startswith(_SKILL_INVOCATION_PREFIX):
+                        _desc = describe_skill_invocation(content)
+                        if _desc:
+                            content = _desc
+                        else:
+                            content = extract_user_instruction_from_skill_message(content) or content[:200]
+                        # The collapsed content differs from what the API actually
+                        # sent (the full scaffold). Drop any api_content sidecar so
+                        # replay of a cron transcript does not resurrect the whole
+                        # SKILL.md body — the run is non-resumable anyway.
+                        msg.pop("api_content", None)
+                # --- end cron persistence downgrade ----------------------------
                 # api_content sidecar: the exact bytes sent to the API when
                 # they differ from the clean content (stamped by the turn
                 # prologue for prefetch/plugin injections). Written verbatim

@@ -6943,3 +6943,70 @@ class TestMemoryContextSanitization:
         assert "memory-context" not in result.lower()
         assert "stale observation" not in result
         assert "how is the honcho working" in result
+
+
+class TestCronPersistenceDowngrade:
+    """Cron runs persist only the durable surface: user instructions (skill
+    scaffolds collapsed to their invocation) + assistant final-content
+    reports. Tool results and their producing assistant(tool_calls) rows are
+    process noise dropped from the store — the run's real output lives in
+    scheduler._job_output_dir, and `list_cron_job_runs` previews from the
+    first user message, so nothing user-facing is lost."""
+
+    def _make_cron_agent(self, agent):
+        agent._session_db = MagicMock()
+        agent._session_db_created = True
+        agent.session_id = "cron_job1_1690000000"
+        agent.platform = "cron"
+        agent._last_flushed_db_idx = 0
+        return agent
+
+    def _flushed_contents(self, agent, messages):
+        agent._flush_messages_to_session_db(messages, [])
+        assert agent._session_db.append_messages_batch.called
+        return [
+            m["content"]
+            for m in agent._session_db.append_messages_batch.call_args.kwargs[
+                "messages"
+            ]
+        ]
+
+    def test_skips_tool_and_tool_calls_rows_keeps_final_report(self, agent):
+        self._make_cron_agent(agent)
+        skill = "[IMPORTANT: The user has invoked the \"some-skill\" skill, indicating the user has requested that skill's contents to be loaded into the context. The full skill content is loaded below.]\n\n# some-skill\n\nLots of skill body text " + "x" * 4000
+        tool_calls_msg = {"role": "assistant", "content": None, "tool_calls": [{"function": {"name": "web_search", "arguments": "{}"}}]}
+        tool_msg = {"role": "tool", "content": "search result " + "y" * 2000}
+        final_report = {"role": "assistant", "content": "Done. The health check passed."}
+        messages = [
+            {"role": "user", "content": skill},
+            tool_calls_msg,
+            tool_msg,
+            final_report,
+        ]
+        contents = self._flushed_contents(agent, messages)
+        # Only the skill scaffold (collapsed) + final report survive.
+        assert len(contents) == 2
+        # Skill scaffold collapsed to its invocation, not the full body.
+        assert contents[0].startswith("/some-skill")
+        assert "Lots of skill body text" not in contents[0]
+        assert "x" * 4000 not in contents[0]
+        assert contents[1] == "Done. The health check passed."
+
+    def test_non_cron_persists_full_transcript(self, agent):
+        agent._session_db = MagicMock()
+        agent._session_db_created = True
+        agent.session_id = "session-123"
+        agent.platform = "cli"
+        agent._last_flushed_db_idx = 0
+        skill = "[IMPORTANT: The user has invoked the \"some-skill\" skill, indicating the user has requested that skill's contents to be loaded into the context. The full skill content is loaded below.]\n\n# some-skill\n\nbody " + "z" * 3000
+        messages = [
+            {"role": "user", "content": skill},
+            {"role": "assistant", "content": None, "tool_calls": [{"function": {"name": "web_search", "arguments": "{}"}}]},
+            {"role": "tool", "content": "result"},
+            {"role": "assistant", "content": "Done"},
+        ]
+        contents = self._flushed_contents(agent, messages)
+        assert len(contents) == 4
+        assert "z" * 3000 in contents[0]
+        assert contents[2] == "result"
+
