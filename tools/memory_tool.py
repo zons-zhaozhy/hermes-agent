@@ -1347,21 +1347,42 @@ def _build_memory_schema_overrides() -> Dict[str, Any]:
     target_schema["enum"] = targets
 
     description = MEMORY_SCHEMA["description"]
+    # Anchor on the stable leading fragment of the TARGETS sentence; upstream
+    # and fork wording of the parenthetical tail has drifted before, so match
+    # either variant to stay robust.
+    _targets_variants = (
+        # current schema wording
+        "TARGETS: 'user' = who the user is; 'memory' = your notes "
+        "(environment, conventions, tool quirks, lessons).",
+        # legacy wording kept for compatibility with older schema text
+        "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
+        "notes (environment, conventions, tool quirks, lessons).",
+    )
+    _targets_replacement = {
+        _targets_variants[0]: (
+            "TARGET: only 'memory' is enabled for personal notes (environment, conventions, "
+            "tool quirks, lessons)."
+        ),
+        _targets_variants[1]: (
+            "TARGET: only 'user' is enabled for user profile facts (name, role, preferences, style)."
+        ),
+    }
     if targets == ["memory"]:
         target_schema["description"] = "The enabled built-in store: 'memory' for personal notes."
-        description = description.replace(
-            "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
-            "notes (environment, conventions, tool quirks, lessons).",
-            "TARGET: only 'memory' is enabled for personal notes (environment, conventions, "
-            "tool quirks, lessons).",
-        )
+        for variant in _targets_variants:
+            if variant in description:
+                description = description.replace(
+                    variant, _targets_replacement[_targets_variants[0]]
+                )
+                break
     elif targets == ["user"]:
         target_schema["description"] = "The enabled built-in store: 'user' for user profile."
-        description = description.replace(
-            "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
-            "notes (environment, conventions, tool quirks, lessons).",
-            "TARGET: only 'user' is enabled for user profile facts (name, role, preferences, style).",
-        )
+        for variant in _targets_variants:
+            if variant in description:
+                description = description.replace(
+                    variant, _targets_replacement[_targets_variants[1]]
+                )
+                break
 
     return {"description": description, "parameters": parameters}
 

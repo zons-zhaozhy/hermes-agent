@@ -4196,6 +4196,47 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # measured from then, not from the start of the write.
         compression_deadline: Optional[float] = None
 
+        # Clamp the SQLite-level busy_timeout to this write's patience
+        # budget (e12e46fd36 raised the process default to 5000ms so routine
+        # 20s writers inherit the lease-acquisition patience; but a single
+        # BEGIN IMMEDIATE then sleeps up to 5s inside SQLite's busy handler,
+        # blowing through sub-second budgets like
+        # _ACTIVITY_WRITE_PATIENCE_S=0.5 before the Python jitter loop ever
+        # gets to check its deadline (#76354). Fail fast at the SQLite layer
+        # and let this loop own the total budget; restore on exit. The clamp
+        # must also hold across retry sleeps so the deadline check between
+        # attempts actually bounds wall time.
+        try:
+            _prev_busy_ms = self._conn.execute(
+                "PRAGMA busy_timeout"
+            ).fetchone()[0]
+            _clamped_ms = max(0, min(int(_prev_busy_ms or 0), int(patience_s * 1000)))
+            if _clamped_ms != _prev_busy_ms:
+                self._conn.execute(f"PRAGMA busy_timeout={_clamped_ms}")
+            else:
+                _prev_busy_ms = None
+        except sqlite3.Error:
+            _prev_busy_ms = None
+        try:
+            return self._execute_write_loop(
+                fn, deadline, patience_s, compression_deadline
+            )
+        finally:
+            if _prev_busy_ms is not None:
+                try:
+                    self._conn.execute(f"PRAGMA busy_timeout={_prev_busy_ms}")
+                except sqlite3.Error:
+                    pass
+
+    def _execute_write_loop(
+        self,
+        fn: Callable[[sqlite3.Connection], T],
+        deadline: float,
+        patience_s: float,
+        compression_deadline: Optional[float],
+    ) -> T:
+        """Retry loop body of :meth:`_execute_write` (busy_timeout clamped)."""
+
         # Transient engine-level error observed on contended WAL appends
         # (dual gateway/agent writers; FTS5 trigram sync holds the write
         # lock). The identical write succeeds standalone, so it is
