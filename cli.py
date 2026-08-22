@@ -16695,6 +16695,30 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         "on exit.",
                         agent_thread.ident,
                     )
+                    # The abandoned thread's run_conversation finally never
+                    # ran, so its durable turn lease is still held and its
+                    # refresher keeps renewing it. Any successor turn would
+                    # stall acquiring the lease for up to wait_seconds (30 min
+                    # default). Force-release this agent's lease now so the
+                    # next user message can immediately re-acquire it. The
+                    # release is holder-qualified, so a late release/refresh
+                    # from the abandoned thread cannot clobber a successor's
+                    # lease (#cross-process turn lease interrupt stall).
+                    try:
+                        _force_released = getattr(
+                            self.agent, "force_release_session_turn_lease", None
+                        )
+                        if callable(_force_released):
+                            _agent_session = getattr(
+                                self.agent, "session_id", None
+                            )
+                            _force_released(_agent_session)
+                    except Exception:
+                        logger.debug(
+                            "Failed to force-release turn lease after "
+                            "interrupt stall",
+                            exc_info=True,
+                        )
             else:
                 # Normal completion: agent thread should be done already,
                 # but guard against edge cases.

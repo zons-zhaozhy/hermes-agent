@@ -8652,7 +8652,13 @@ class AIAgent:
                     session_id,
                     _durable_holder,
                     ttl_seconds=_lease_ttl,
-                    wait_seconds=1800.0,
+                    wait_seconds=float(
+                        getattr(
+                            self,
+                            "_session_turn_lease_wait_seconds",
+                            300.0,
+                        )
+                    ),
                     on_wait=_on_session_turn_lease_wait,
                     should_abort=lambda: getattr(self, "_interrupt_requested", False),
                 ):
@@ -8978,6 +8984,47 @@ class AIAgent:
         """
         result = self.run_conversation(message, stream_callback=stream_callback)
         return result["final_response"]
+
+    def force_release_session_turn_lease(self, session_id: Optional[str] = None) -> bool:
+        """Force-release the turn lease this agent currently holds.
+
+        Callable from another thread (e.g. the CLI input handler) after an
+        interrupt left the owning agent thread stuck past its grace window:
+        the agent thread became a daemon and its ``run_conversation`` finally
+        never ran, so the durable lease is never released and any successor
+        turn would stall acquiring it for up to ``wait_seconds`` (default 300).
+
+        The release is holder-qualified (``WHERE conversation_id = ? AND
+        holder = ?``), so a late release/refresh from the abandoned thread
+        cannot delete a successor's lease. Returns True if a lease row was
+        actually removed, False otherwise (no holder recorded, no session, or
+        write failed) — callers should treat False as "nothing to force".
+        """
+        try:
+            db = getattr(self, "_session_db", None)
+            if db is None:
+                return False
+            holder = getattr(self, "_active_session_turn_lease_holder", None)
+            sid = session_id or getattr(self, "session_id", None)
+            if not holder or not sid:
+                return False
+            db.release_session_turn_lease(sid, holder)
+            if getattr(self, "_active_session_turn_lease_holder", None) == holder:
+                self._active_session_turn_lease_holder = None
+                self._active_session_turn_lease_ttl_seconds = None
+            logger.info(
+                "Forced release of session turn lease for %s (holder %s)",
+                sid,
+                holder,
+            )
+            return True
+        except Exception:
+            logger.warning(
+                "force_release_session_turn_lease failed for %s",
+                session_id,
+                exc_info=True,
+            )
+            return False
 
     def _run_codex_app_server_turn(
         self,

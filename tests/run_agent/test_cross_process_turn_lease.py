@@ -635,3 +635,87 @@ def test_flush_messages_to_session_db_fences_stale_holder_on_live_db(tmp_path):
     second.release_session_turn_lease("shared", next_holder)
     first.close()
     second.close()
+
+
+class _ForceReleaseDB(_DB):
+    """Tracks release calls; simulates holder-qualified removal failure."""
+
+    def __init__(self, *, raise_on_release=False):
+        super().__init__()
+        self.release_calls = []
+        self.raise_on_release = raise_on_release
+
+    def release_session_turn_lease(self, session_id, holder):
+        if self.raise_on_release:
+            raise RuntimeError("boom")
+        self.release_calls.append((session_id, holder))
+
+
+def _agent_with_lease(db, *, holder="pid=99:turn=abc", session_id="sess-1"):
+    agent = _agent_with_db(db, session_id=session_id)
+    if holder is not None:
+        agent._active_session_turn_lease_holder = holder
+    else:
+        agent._active_session_turn_lease_holder = None
+    agent._active_session_turn_lease_ttl_seconds = 300.0
+    return agent
+
+
+def test_force_release_releases_held_lease_and_clears_holder():
+    db = _ForceReleaseDB()
+    agent = _agent_with_lease(db, holder="pid=9:turn=x", session_id="s1")
+    assert agent.force_release_session_turn_lease() is True
+    assert db.release_calls == [("s1", "pid=9:turn=x")]
+    assert agent._active_session_turn_lease_holder is None
+    assert agent._active_session_turn_lease_ttl_seconds is None
+
+
+def test_force_release_with_explicit_session_id():
+    db = _ForceReleaseDB()
+    agent = _agent_with_lease(db, holder="pid=9:turn=y", session_id="agent-sid")
+    assert agent.force_release_session_turn_lease("explicit-sid") is True
+    assert db.release_calls == [("explicit-sid", "pid=9:turn=y")]
+
+
+def test_force_release_with_no_holder_returns_false():
+    db = _ForceReleaseDB()
+    agent = _agent_with_lease(db, holder=None, session_id="s2")
+    assert agent.force_release_session_turn_lease() is False
+    assert db.release_calls == []
+
+
+def test_force_release_with_no_session_returns_false():
+    db = _ForceReleaseDB()
+    agent = _agent_with_lease(db, holder="pid=9:turn=z", session_id=None)
+    assert agent.force_release_session_turn_lease() is False
+    assert db.release_calls == []
+
+
+def test_force_release_swallows_release_error_and_returns_false():
+    db = _ForceReleaseDB(raise_on_release=True)
+    agent = _agent_with_lease(db, holder="pid=9:turn=w", session_id="s3")
+    assert agent.force_release_session_turn_lease() is False
+    # Holder attr left intact on failure so caller can retry.
+    assert agent._active_session_turn_lease_holder == "pid=9:turn=w"
+
+
+def test_force_release_through_real_db_releases_for_successor(tmp_path):
+    """After a force release, a successor holder can immediately acquire."""
+    path = tmp_path / "state.db"
+    db = SessionDB(path)
+    db.create_session("shared", source="test")
+    holder_a = "pid=100:turn=a"
+    assert db.try_acquire_session_turn_lease("shared", holder_a, ttl_seconds=300)
+
+    agent = _agent_with_db(db, session_id="shared")
+    agent._active_session_turn_lease_holder = holder_a
+    agent._active_session_turn_lease_ttl_seconds = 300.0
+    assert agent.force_release_session_turn_lease() is True
+
+    holder_b = "pid=200:turn=b"
+    assert db.try_acquire_session_turn_lease(
+        "shared", holder_b, ttl_seconds=300
+    ) is True
+    assert db.get_compression_lock_holder("shared") is None  # sanity: no lock leak
+    db.release_session_turn_lease("shared", holder_b)
+    db.close()
