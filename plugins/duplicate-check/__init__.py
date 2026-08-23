@@ -99,12 +99,16 @@ def _is_new_python_file(tool_name: str, args: Any, cwd: str) -> Optional[str]:
 
 
 def _extract_functional_keywords(path: str) -> List[str]:
-    """从文件路径中提取有意义的功能关键词。
+    """从**文件名**（非全路径）中提取有意义的功能关键词。
 
+    只用 basename：目录名（loom/capabilities/protocols 等）是结构信息而非
+    功能语义，混入关键词后策略2的 rg `(def|class)\\s+\\w*(kw)` 会在全库
+    目录引用上系统性误中（2026-08-23 实测：qcc.py/risk_classify_step.py
+    /graph_penetration_step.py 三连误报，提示文件 penetration 关键词零命中）。
     排除通用前缀（test/base/common等），只保留领域相关的词。
     """
-    # 标准化路径：去掉扩展名，替换分隔符
-    clean = os.path.splitext(path)[0]
+    # 只取文件名（去扩展名）——目录段不参与关键词提取
+    clean = os.path.splitext(os.path.basename(path))[0]
     clean = clean.replace("-", "_").replace("/", "_")
 
     parts = clean.split("_")
