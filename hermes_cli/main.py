@@ -12182,6 +12182,43 @@ def _try_termux_fast_tui_launch() -> bool:
 
 def cmd_memory(args):
     sub = getattr(args, "memory_command", None)
+    if sub == "history":
+        from tools import memory_ledger
+
+        rows = memory_ledger.list_entries(
+            target=getattr(args, "target", None),
+            limit=getattr(args, "limit", None),
+        )
+        if not rows:
+            print("\n  No memory ledger entries yet.\n")
+            return
+        print(f"\n  Memory ledger — {len(rows)} most recent entries (newest first):\n")
+        for r in rows:
+            ts = (r.get("ts") or "")[:19].replace("T", " ")
+            size = r.get("size")
+            delta = r.get("delta")
+            delta_s = f"{delta:+,}" if isinstance(delta, int) else "?"
+            print(
+                f"  {r.get('id', '?')}  {ts}  {r.get('action', '?'):<8}"
+                f"  {r.get('target', '?'):<6}  {delta_s} chars"
+            )
+        print(
+            "\n  Roll back an entry with `hermes memory rollback <id>`.\n"
+        )
+        return
+    if sub == "rollback":
+        from tools import memory_ledger
+
+        entry_id = getattr(args, "entry_id", None)
+        if not entry_id:
+            print("\n  Usage: hermes memory rollback <id>  (see `hermes memory history`)\n")
+            return
+        ok, msg = memory_ledger.rollback_entry(entry_id)
+        if ok:
+            print(f"\n  ✓ {msg}\n")
+        else:
+            print(f"\n  ✗ rollback failed — {msg}\n")
+        return
     if sub == "off":
         from hermes_cli.config import load_config, save_config
 
@@ -12230,12 +12267,22 @@ def cmd_memory(args):
                 return
 
         for f, desc in existing:
+            try:
+                from tools import memory_ledger as _ledger
+
+                _ledger.record_mutation(
+                    "reset", f[:-3], _ledger.read_target(f[:-3]), ""
+                )
+            except Exception:
+                pass
             (mem_dir / f).unlink()
             print(f"  ✓ Deleted {f} ({desc})")
 
         print(
             "\n  Memory reset complete. New sessions will start with a blank slate."
         )
+        print("  (Pre-reset snapshots recorded in the ledger —")
+        print("   `hermes memory history` + `hermes memory rollback <id>` to recover.)")
         print(f"  Files were in: {display_hermes_home()}/memories/\n")
     else:
         from hermes_cli.memory_setup import memory_command

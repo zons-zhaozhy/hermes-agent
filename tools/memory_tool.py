@@ -384,10 +384,31 @@ class MemoryStore:
         self._set_entries(target, fresh)
         return bak
 
-    def save_to_disk(self, target: str):
-        """Persist entries to the appropriate file. Called after every mutation."""
+    def save_to_disk(self, target: str, action: str = "update"):
+        """Persist entries to the appropriate file. Called after every mutation.
+
+        Records a before/after snapshot into the memory ledger (best-effort,
+        never blocks the write — see tools/memory_ledger.py). *action* is the
+        mutating operation name for the ledger trail.
+        """
         get_memory_dir().mkdir(parents=True, exist_ok=True)
-        self._write_file(self._path_for(target), self._entries_for(target))
+        path = self._path_for(target)
+        try:
+            from tools import memory_ledger as _ledger
+
+            before = _ledger.read_target(target)
+        except Exception:  # noqa: BLE001 — ledger is best-effort only
+            before = None
+        self._write_file(path, self._entries_for(target))
+        if before is not None or path.exists():
+            try:
+                from tools import memory_ledger as _ledger
+
+                _ledger.record_mutation(
+                    action, target, before, _ledger.read_target(target)
+                )
+            except Exception:  # noqa: BLE001 — never block the mutation
+                pass
 
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":
@@ -466,7 +487,7 @@ class MemoryStore:
 
             entries.append(content)
             self._set_entries(target, entries)
-            self.save_to_disk(target)
+            self.save_to_disk(target, action="add")
 
         return self._success_response(target, "Entry added.")
 
@@ -537,7 +558,7 @@ class MemoryStore:
 
             entries[idx] = new_content
             self._set_entries(target, entries)
-            self.save_to_disk(target)
+            self.save_to_disk(target, action="replace")
 
         return self._success_response(target, "Entry replaced.")
 
@@ -579,7 +600,7 @@ class MemoryStore:
             idx = matches[0][0]
             entries.pop(idx)
             self._set_entries(target, entries)
-            self.save_to_disk(target)
+            self.save_to_disk(target, action="remove")
 
         return self._success_response(target, "Entry removed.")
 
@@ -688,7 +709,7 @@ class MemoryStore:
 
             # Commit.
             self._set_entries(target, working)
-            self.save_to_disk(target)
+            self.save_to_disk(target, action="batch")
 
         return self._success_response(target, f"Applied {len(operations)} operation(s).")
 

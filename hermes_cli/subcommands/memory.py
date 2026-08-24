@@ -50,4 +50,22 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
         default="all",
         help="Which store to reset: 'all' (default), 'memory', or 'user'",
     )
+    _hist = memory_sub.add_parser(
+        "history",
+        help="Show memory write history (ledger entries)",
+    )
+    _hist.add_argument(
+        "--target",
+        choices=["memory", "user"],
+        default=None,
+        help="Filter by store",
+    )
+    _hist.add_argument(
+        "-n", "--limit", type=int, default=20, help="Number of entries (default 20)"
+    )
+    _rb = memory_sub.add_parser(
+        "rollback",
+        help="Roll back a memory write by ledger entry id",
+    )
+    _rb.add_argument("entry_id", help="Ledger entry id from `hermes memory history`")
     memory_parser.set_defaults(func=cmd_memory)
