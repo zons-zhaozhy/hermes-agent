@@ -245,6 +245,11 @@ def _on_post_tool_call(**kwargs):
 
 def _on_transform_llm_output(**kwargs):
     """Scan response for invariant violations; append warnings if found."""
+    # cron 会话豁免：无人值守推送直接投给用户，内部审计噪音禁止混入。
+    # 两条路径全覆盖：定时调度 platform="cron"；手动 run 的 delegation 会话
+    # session_id 形如 "cron_<job_id>_..."。
+    if kwargs.get("platform") == "cron" or str(kwargs.get("session_id", "")).startswith("cron_"):
+        return ""
     # 未达激活阈值——短任务不需要此门控
     if _state.tool_call_count < ACTIVATION_THRESHOLD:
         return ""

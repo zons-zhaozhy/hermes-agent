@@ -5353,7 +5353,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # live registry aliases (registered during discover_mcp_tools),
             # but discovery hasn't run yet at this point, so exclude them.
             mcp_names = set((CLI_CONFIG.get("mcp_servers") or {}).keys())
-            invalid = [t for t in toolsets if not validate_toolset(t) and t not in mcp_names]
+            # Plugin-provided toolsets (e.g. decision_tree) resolve via the
+            # live registry, which plugin discovery fills in later. Use the
+            # persisted last-launch key set (non-blocking) so early validation
+            # doesn't false-positive on plugin toolsets the resolver itself
+            # just emitted. Mirrors _get_plugin_toolset_keys() in
+            # hermes_cli.tools_config.
+            plugin_ts_keys = set()
+            try:
+                from hermes_cli.plugins import get_plugin_toolset_keys_nowait
+
+                plugin_ts_keys = get_plugin_toolset_keys_nowait()
+            except Exception:
+                plugin_ts_keys = set()
+            invalid = [
+                t
+                for t in toolsets
+                if not validate_toolset(t) and t not in mcp_names and t not in plugin_ts_keys
+            ]
             if invalid:
                 self._console_print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
         

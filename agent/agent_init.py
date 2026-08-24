@@ -1823,11 +1823,16 @@ def init_agent(
     # ReadThinkGate 配置版初始化——覆盖 agent_init 前段的默认实例，
     # 读 config.yaml → read_think_gate 段（enabled/max_reasoning_rounds 等）。
     try:
-        agent._read_think_gate = ReadThinkGate(
-            ReadThinkGateConfig.from_mapping(
-                _agent_cfg.get("read_think_gate", {})
-            )
+        _rtg_cfg = ReadThinkGateConfig.from_mapping(
+            _agent_cfg.get("read_think_gate", {})
         )
+        # cron 会话豁免：无人值守任务无法应答门控问询，被拦=管线写不进台账。
+        # 闸门面向交互编码会话；cron 一律关停（scheduler.py:5460 platform="cron"）。
+        # frozen dataclass → dataclasses.replace 重建。
+        if getattr(agent, "platform", "") == "cron":
+            import dataclasses as _dc
+            _rtg_cfg = _dc.replace(_rtg_cfg, enabled=False)
+        agent._read_think_gate = ReadThinkGate(_rtg_cfg)
     except Exception as _dg_err:
         _ra().logger.warning("Read-think gate config ignored: %s", _dg_err)
         agent._read_think_gate = ReadThinkGate()
