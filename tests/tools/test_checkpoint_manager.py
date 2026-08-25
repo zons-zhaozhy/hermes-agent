@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from tools.checkpoint_manager import (
     CheckpointManager,
+    SnapshotFailedError,
     _shadow_repo_path,
     _init_store,
     _run_git,
@@ -169,6 +170,37 @@ class TestTakeCheckpoint:
         mgr.new_turn()
         (work_dir / "main.py").write_text("print('modified')\n")
         assert mgr.ensure_checkpoint(str(work_dir), "turn 2") is True
+
+    def test_failed_snapshot_trips_circuit_breaker(self, mgr, work_dir, monkeypatch):
+        """A directory whose snapshot really failed (git-add error/timeout)
+        must not be retried next turn — each retry blocks the calling tool
+        for the full git timeout.
+
+        Contract: Preconditions — _take monkeypatched to raise
+        SnapshotFailedError.  Postconditions — first call returns False and
+        records the failure; after new_turn() (dedup reset) the call still
+        returns False without invoking _take again; benign False (no
+        changes) does NOT trip the breaker.
+        """
+        calls = []
+
+        def failing_take(directory, reason="auto"):
+            calls.append(directory)
+            raise SnapshotFailedError("git add -A timed out")
+
+        monkeypatch.setattr(mgr, "_take", failing_take)
+        assert mgr.ensure_checkpoint(str(work_dir), "turn 1") is False
+        assert len(calls) == 1
+        mgr.new_turn()
+        assert mgr.ensure_checkpoint(str(work_dir), "turn 2") is False
+        assert len(calls) == 1  # circuit breaker: no second attempt
+
+        # Benign False (e.g. "no changes") must NOT trip the breaker.
+        monkeypatch.setattr(mgr, "_take", lambda d, reason="auto": False)
+        mgr._snapshot_failed_dirs.clear()
+        mgr.new_turn()
+        assert mgr.ensure_checkpoint(str(work_dir), "benign") is False
+        assert str(work_dir) not in mgr._snapshot_failed_dirs
 
 
 # =========================================================================

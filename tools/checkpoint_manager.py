@@ -931,6 +931,18 @@ def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> Optional[str]:
 # CheckpointManager
 # ---------------------------------------------------------------------------
 
+class SnapshotFailedError(Exception):
+    """A checkpoint snapshot attempt failed for a real reason (git error or
+    timeout) — distinct from benign skips like "no changes since last
+    snapshot".  ensure_checkpoint catches this to trip its per-directory
+    circuit breaker.
+
+    Contract:
+      Postconditions: raised only on genuine snapshot-failure paths inside
+      CheckpointManager._take_locked.
+    """
+
+
 class CheckpointManager:
     """Manages automatic filesystem checkpoints.
 
@@ -965,6 +977,9 @@ class CheckpointManager:
         self.max_total_size_mb = max(0, int(max_total_size_mb))
         self.max_file_size_mb = max(0, int(max_file_size_mb))
         self._checkpointed_dirs: Set[str] = set()
+        # Circuit-breaker set (process-lifetime): directories whose snapshot
+        # failed.  See ensure_checkpoint for why retries must not happen.
+        self._snapshot_failed_dirs: Set[str] = set()
         self._git_available: Optional[bool] = None  # lazy probe
 
     # ------------------------------------------------------------------
@@ -1098,10 +1113,29 @@ class CheckpointManager:
         if abs_dir in self._checkpointed_dirs:
             return False
 
+        # Circuit breaker: a directory whose snapshot already failed (e.g.
+        # ``git add -A`` timed out on a multi-GB working dir) must not be
+        # retried every turn — each retry blocks the calling tool call for
+        # the full git timeout (60s+).  Observed in the wild: three
+        # concurrent sessions on a 7 GB directory burned 60s per write tool.
+        if abs_dir in self._snapshot_failed_dirs:
+            return False
+
         self._checkpointed_dirs.add(abs_dir)
 
         try:
             return self._take(abs_dir, reason)
+        except SnapshotFailedError as e:
+            # Real failure (git error/timeout): trip the circuit breaker so
+            # this directory is never retried in this process — each retry
+            # blocks the calling tool for the full git timeout.
+            self._snapshot_failed_dirs.add(abs_dir)
+            logger.warning(
+                "Checkpoint for %s failed (%s) — snapshots for this "
+                "directory are disabled for the rest of this process",
+                abs_dir, e,
+            )
+            return False
         except Exception as e:
             logger.debug("Checkpoint failed (non-fatal): %s", e)
             return False
@@ -1478,7 +1512,9 @@ class CheckpointManager:
         )
         if not ok:
             logger.debug("Checkpoint git-add failed: %s", err)
-            return False
+            raise SnapshotFailedError(
+                f"git add -A failed for {working_dir}: {err}"
+            )
 
         if self.max_file_size_mb > 0:
             self._drop_oversize_from_index(store, working_dir, index_file)
