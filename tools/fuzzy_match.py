@@ -30,7 +30,7 @@ Usage:
 """
 
 import re
-from typing import Tuple, Optional, List, Callable
+from typing import Tuple, Optional, List, Callable, Dict
 from difflib import SequenceMatcher
 
 UNICODE_MAP = {
@@ -1074,6 +1074,53 @@ def _map_normalized_positions(original: str, normalized: str,
     return original_matches
 
 
+# Prescreen gate: deliberately BELOW the exact 0.3 SequenceMatcher gate —
+# bigram Dice underestimates short lines (whitespace/word-boundary shifts),
+# so the cheap stage must over-recall; the exact re-score applies 0.3.
+_PRESERVE_DICE_GATE = 0.2
+# How many prescreen survivors get the exact (expensive) ratio re-score.
+_RESCORE_CANDIDATES = 50
+
+
+def _char_bigram_counts(s: str) -> Dict[str, int]:
+    """Multiset of adjacent character pairs for Dice similarity.
+
+    Contract:
+      Postconditions: returns {} iff len(s) < 2.
+    """
+    counts: Dict[str, int] = {}
+    for i in range(len(s) - 1):
+        bg = s[i:i + 2]
+        counts[bg] = counts.get(bg, 0) + 1
+    return counts
+
+
+def _dice_bigram_similarity(a_counts: Dict[str, int], a_len: int,
+                            b: str, b_len: int) -> float:
+    """Sørensen–Dice coefficient over character bigrams, in [0, 1].
+
+    Uses multiset intersection so repeated bigrams count once each — a
+    plain set intersection over-credits repetitive lines.
+
+    Contract:
+      Preconditions: a_counts built from a string of length a_len >= 2,
+                     b_len == len(b).
+      Postconditions: 0.0 <= result <= 1.0.
+    """
+    b_counts = _char_bigram_counts(b)
+    if not b_counts:
+        return 0.0
+    intersection = 0
+    if len(a_counts) <= len(b_counts):
+        for bg, c in a_counts.items():
+            intersection += min(c, b_counts.get(bg, 0))
+    else:
+        for bg, c in b_counts.items():
+            intersection += min(c, a_counts.get(bg, 0))
+    total = (a_len - 1) + (b_len - 1)
+    return (2.0 * intersection / total) if total else 0.0
+
+
 def _visualize_whitespace(line: str) -> str:
     """Render leading whitespace visibly (→ = tab, · = space).
 
@@ -1112,12 +1159,39 @@ def find_closest_lines(old_string: str, content: str, context_lines: int = 2, ma
             return ""
         anchor = candidates[0]
 
-    # Score each line in content by similarity to anchor
-    scored = []
+    # Two-stage scoring. Stage 1 (cheap, linear in total chars): char-bigram
+    # Dice similarity with a length-band prune — the Dice upper bound
+    # 2*min(len)/ (len_a+len_b) prunes obviously-wrong lines without touching
+    # them, and bigram Dice tracks SequenceMatcher.ratio() closely.  Stage 2
+    # re-scores only the top candidates with the exact ratio, so the final
+    # ranking/gate (ratio > 0.3) is unchanged for anything that matters.
+    anchor_bigrams = _char_bigram_counts(anchor)
+    anchor_len = len(anchor)
+    if not anchor_bigrams:
+        return ""
+
+    prescreened = []  # (dice, i)
     for i, line in enumerate(content_lines):
         stripped = line.strip()
         if not stripped:
             continue
+        line_len = len(stripped)
+        # Length-band prune: max possible Dice for these lengths.
+        if 2 * min(anchor_len, line_len) / (anchor_len + line_len) <= _PRESERVE_DICE_GATE:
+            continue
+        dice = _dice_bigram_similarity(anchor_bigrams, anchor_len, stripped, line_len)
+        if dice > _PRESERVE_DICE_GATE:
+            prescreened.append((dice, i))
+
+    if not prescreened:
+        return ""
+
+    # Exact re-score on the strongest prescreen candidates only.
+    prescreened.sort(key=lambda x: -x[0])
+    candidates = prescreened[:_RESCORE_CANDIDATES]
+    scored = []
+    for dice, i in candidates:
+        stripped = content_lines[i].strip()
         ratio = SequenceMatcher(None, anchor, stripped).ratio()
         if ratio > 0.3:
             scored.append((ratio, i))
