@@ -4206,15 +4206,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # and let this loop own the total budget; restore on exit. The clamp
         # must also hold across retry sleeps so the deadline check between
         # attempts actually bounds wall time.
+        # Both PRAGMA touches hold self._lock: they touch self._conn outside
+        # the write transaction and must not race close() (use-after-close
+        # SIGSEGV class — see get_compression_lock_holder).
         try:
-            _prev_busy_ms = self._conn.execute(
-                "PRAGMA busy_timeout"
-            ).fetchone()[0]
-            _clamped_ms = max(0, min(int(_prev_busy_ms or 0), int(patience_s * 1000)))
-            if _clamped_ms != _prev_busy_ms:
-                self._conn.execute(f"PRAGMA busy_timeout={_clamped_ms}")
-            else:
-                _prev_busy_ms = None
+            with self._lock:
+                if self._conn is None:
+                    raise sqlite3.OperationalError("connection closed")
+                _prev_busy_ms = self._conn.execute(
+                    "PRAGMA busy_timeout"
+                ).fetchone()[0]
+                _clamped_ms = max(0, min(int(_prev_busy_ms or 0), int(patience_s * 1000)))
+                if _clamped_ms != _prev_busy_ms:
+                    self._conn.execute(f"PRAGMA busy_timeout={_clamped_ms}")
+                else:
+                    _prev_busy_ms = None
         except sqlite3.Error:
             _prev_busy_ms = None
         try:
@@ -4224,7 +4230,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         finally:
             if _prev_busy_ms is not None:
                 try:
-                    self._conn.execute(f"PRAGMA busy_timeout={_prev_busy_ms}")
+                    with self._lock:
+                        if self._conn is None:
+                            raise sqlite3.OperationalError("connection closed")
+                        self._conn.execute(f"PRAGMA busy_timeout={_prev_busy_ms}")
                 except sqlite3.Error:
                     pass
 
@@ -7078,11 +7087,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if not session_id:
             return None
         now = time.time()
-        row = self._conn.execute(
-            "SELECT holder FROM compression_locks "
-            "WHERE session_id = ? AND expires_at >= ?",
-            (session_id, now),
-        ).fetchone()
+        # Must hold self._lock: close() swaps+closes self._conn under the
+        # same lock, and a concurrent lock-free SELECT here is the
+        # use-after-close SIGSEGV (crash Python-2026-08-25-112939: execute
+        # on one thread vs pysqlite_connection_close/lru_cache_tp_clear on
+        # another).
+        with self._lock:
+            if self._conn is None:
+                return None
+            row = self._conn.execute(
+                "SELECT holder FROM compression_locks "
+                "WHERE session_id = ? AND expires_at >= ?",
+                (session_id, now),
+            ).fetchone()
         if row is None:
             return None
         return row["holder"] if isinstance(row, sqlite3.Row) else row[0]
@@ -7154,13 +7171,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         from agent.session_activity import ActivityProvenance
 
         # No-op fast path: skip the transaction when there is nothing to
-        # clear. Read-only, no write lock.
+        # clear. Read-only, but must still hold self._lock: close() closes
+        # self._conn under the same lock and a lock-free SELECT here is the
+        # use-after-close SIGSEGV class (see get_compression_lock_holder).
         try:
-            row = self._conn.execute(
-                "SELECT last_activity_description, last_activity_provenance "
-                "FROM sessions WHERE id = ?",
-                (session_id,),
-            ).fetchone()
+            with self._lock:
+                if self._conn is None:
+                    return
+                row = self._conn.execute(
+                    "SELECT last_activity_description, last_activity_provenance "
+                    "FROM sessions WHERE id = ?",
+                    (session_id,),
+                ).fetchone()
         except sqlite3.Error:
             row = None
         if row is not None:
@@ -13392,19 +13414,22 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         no handoff record.
         """
         try:
-            cur = self._conn.execute(
-                "SELECT handoff_state, handoff_platform, handoff_error "
-                "FROM sessions WHERE id = ?",
-                (session_id,),
-            )
-            row = cur.fetchone()
-            if not row:
-                return None
-            return {
-                "state": row["handoff_state"],
-                "platform": row["handoff_platform"],
-                "error": row["handoff_error"],
-            }
+            with self._lock:
+                if self._conn is None:
+                    return None
+                cur = self._conn.execute(
+                    "SELECT handoff_state, handoff_platform, handoff_error "
+                    "FROM sessions WHERE id = ?",
+                    (session_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "state": row["handoff_state"],
+                    "platform": row["handoff_platform"],
+                    "error": row["handoff_error"],
+                }
         except Exception:
             return None
 
@@ -13414,15 +13439,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         Used by the gateway's handoff watcher.
         """
         try:
-            cur = self._conn.execute(
-                "SELECT s.*, "
-                "COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved "
-                "FROM sessions s "
-                "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
-                "WHERE s.handoff_state = 'pending' "
-                "ORDER BY s.started_at ASC"
-            )
-            return [self._session_row_dict(r) for r in cur.fetchall()]
+            with self._lock:
+                if self._conn is None:
+                    return []
+                cur = self._conn.execute(
+                    "SELECT s.*, "
+                    "COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved "
+                    "FROM sessions s "
+                    "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
+                    "WHERE s.handoff_state = 'pending' "
+                    "ORDER BY s.started_at ASC"
+                )
+                return [self._session_row_dict(r) for r in cur.fetchall()]
         except Exception:
             return []
 
