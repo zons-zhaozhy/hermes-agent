@@ -94,7 +94,12 @@ def _ensure_file_checkpoint(
 
     resolved_path = _resolve_path_for_task(file_path, effective_task_id or "default")
     work_dir = agent._checkpoint_mgr.get_working_dir_for_path(str(resolved_path))
-    agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
+    # Snapshot only the file this tool is about to mutate — not the whole
+    # repository (a full-tree git add -A measured 220s on a 7 GB tree).
+    agent._checkpoint_mgr.ensure_checkpoint(
+        work_dir, f"before {function_name}",
+        staging_paths=[str(resolved_path)],
+    )
 
 
 def _budget_for_agent(agent) -> BudgetConfig:

@@ -1087,12 +1087,31 @@ class CheckpointManager:
                 skipped.append(rel)
         return {"success": True, "restore": restore, "skipped": skipped}
 
-    def ensure_checkpoint(self, working_dir: str, reason: str = "auto") -> bool:
-        """Take a checkpoint if enabled and not already done this turn.
+    def ensure_checkpoint(self, working_dir: str, reason: str = "auto",
+                          *, staging_paths: Optional[List[str]] = None) -> bool:
+        """Ensure a checkpoint exists for this turn.
+
+        Args:
+          working_dir: project root the checkpoint ref belongs to.
+          reason: free-form label stored in the commit message.
+          staging_paths: when set, only these files (absolute paths under
+            ``working_dir``) are staged — used by file tools so a patch of
+            one file snapshots exactly that file instead of scanning the
+            whole repository (``git add -A`` over a multi-GB tree measured
+            220s in the wild).  ``None`` stages the full tree (terminal
+            destructive commands, /rollback flows).
 
         Returns True if a checkpoint was taken, False otherwise.
         Never raises — all errors are silently logged.
         """
+        staging = [str(_normalize_path(p)) for p in staging_paths] if staging_paths else None
+        # A file that doesn't exist yet has no pre-write state to protect —
+        # benign skip (never trips the breaker, never runs git).
+        if staging:
+            staging = [p for p in staging if os.path.exists(p)]
+            if not staging:
+                return False
+        dedup_key = (str(_normalize_path(working_dir)), tuple(staging) if staging else ())
         if not self.enabled:
             return False
 
@@ -1110,7 +1129,7 @@ class CheckpointManager:
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
 
-        if abs_dir in self._checkpointed_dirs:
+        if dedup_key in self._checkpointed_dirs:
             return False
 
         # Circuit breaker: a directory whose snapshot already failed (e.g.
@@ -1121,10 +1140,10 @@ class CheckpointManager:
         if abs_dir in self._snapshot_failed_dirs:
             return False
 
-        self._checkpointed_dirs.add(abs_dir)
+        self._checkpointed_dirs.add(dedup_key)
 
         try:
-            return self._take(abs_dir, reason)
+            return self._take(abs_dir, reason, staging_paths=staging)
         except SnapshotFailedError as e:
             # Real failure (git error/timeout): trip the circuit breaker so
             # this directory is never retried in this process — each retry
@@ -1442,12 +1461,13 @@ class CheckpointManager:
     # Internal
     # ------------------------------------------------------------------
 
-    def _take(self, working_dir: str, reason: str) -> bool:
+    def _take(self, working_dir: str, reason: str,
+              *, staging_paths: Optional[List[str]] = None) -> bool:
         """Take a snapshot.  Returns True on success.
 
         Runs under the store-wide flock: another process's ``gc --prune=now``
         must not delete this snapshot's freshly-written loose blobs between
-        ``git add -A`` and ``commit-tree`` (the "invalid object" race).
+        ``git add`` and ``commit-tree`` (the "invalid object" race).
         """
         store = _store_path(CHECKPOINT_BASE)
 
@@ -1457,9 +1477,11 @@ class CheckpointManager:
             return False
 
         with _store_lock(store):
-            return self._take_locked(store, working_dir, reason)
+            return self._take_locked(store, working_dir, reason,
+                                     staging_paths=staging_paths)
 
-    def _take_locked(self, store: Path, working_dir: str, reason: str) -> bool:
+    def _take_locked(self, store: Path, working_dir: str, reason: str,
+                     *, staging_paths: Optional[List[str]] = None) -> bool:
         """Contract:
         Preconditions: caller holds the store flock (or fcntl unavailable).
         Postconditions: returns True iff a new commit landed on the project
@@ -1467,8 +1489,10 @@ class CheckpointManager:
         """
         _touch_project(store, working_dir)
 
-        # Quick size guard — don't try to snapshot enormous directories
-        if _dir_file_count(working_dir) > _MAX_FILES:
+        # Quick size guard — don't snapshot enormous directories.  Only
+        # applies to full-tree staging; targeted staging of a handful of
+        # files is cheap regardless of tree size.
+        if staging_paths is None and _dir_file_count(working_dir) > _MAX_FILES:
             logger.debug("Checkpoint skipped: >%d files in %s", _MAX_FILES, working_dir)
             return False
 
@@ -1502,18 +1526,37 @@ class CheckpointManager:
             # First snapshot for this project.
             index_file.parent.mkdir(parents=True, exist_ok=True)
 
-        # Stage with per-project index.  Include a per-stage file-size filter
-        # via ``core.bigFileThreshold`` is not what we want — instead, we
-        # rely on the exclude file for broad patterns and post-stage prune
-        # any path whose size exceeds max_file_size_mb.
+        # Stage with per-project index.  Full-tree mode (-A) for terminal
+        # destructive commands; targeted mode stages only the files Hermes is
+        # about to write — a one-file patch must not scan a multi-GB tree
+        # (git add -A measured 220s on 7 GB in the wild).
+        if staging_paths:
+            # Relative paths under working_dir; ignore paths outside it.
+            rel_paths = []
+            for sp in staging_paths:
+                try:
+                    rel = os.path.relpath(sp, working_dir)
+                except ValueError:
+                    continue
+                if not rel.startswith(".."):
+                    rel_paths.append(rel)
+            if not rel_paths:
+                logger.debug("Checkpoint staging_paths all outside %s", working_dir)
+                return False
+            # -f: the file Hermes is about to write must be snapshotted even
+            # if the project's .gitignore excludes it — the snapshot's job is
+            # protecting agent writes, not honouring repo ignore policy.
+            add_args = ["add", "-A", "-f", "--"] + rel_paths
+        else:
+            add_args = ["add", "-A"]
         ok, _, err = _run_git(
-            ["add", "-A"], store, working_dir,
+            add_args, store, working_dir,
             timeout=_GIT_TIMEOUT * 2, index_file=index_file,
         )
         if not ok:
             logger.debug("Checkpoint git-add failed: %s", err)
             raise SnapshotFailedError(
-                f"git add -A failed for {working_dir}: {err}"
+                f"git add failed for {working_dir}: {err}"
             )
 
         if self.max_file_size_mb > 0:
