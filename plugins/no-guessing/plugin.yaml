@@ -1,0 +1,8 @@
+name: no-guessing
+version: "1.0.0"
+description: 瞎猜根治闸门——报错后禁原样重试/同错两次必换策略/服务名必须先过--list注册表核验,机械强制不靠自觉。
+author: stan
+hooks:
+  - pre_tool_call
+  - post_tool_call
+  - pre_llm_call
