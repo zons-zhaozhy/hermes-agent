@@ -37,6 +37,126 @@ logger = logging.getLogger(__name__)
 
 _STATE_PREFIX = "no_guessing"
 
+# ============ 累教不改升级机制（0826 用户拍板：三级惩罚阶梯） ============
+# L1 默认: 拦截+正解提示
+# L2 累犯(30天窗口内同规则>=3次): 拦截消息前置累犯警告+注入针对性上下文
+# L3 顽劣(30天窗口内同规则>=8次): 收窄放行面, 14天无新违规降级
+_VIOLATION_WINDOW_DAYS = 30
+_DEMOTION_WINDOW_DAYS = 14
+_L2_THRESHOLD = 3
+_L3_THRESHOLD = 8
+_L3_SLEEP_LIMIT = 3  # L3 时 R5 的 sleep 上限从 10s 收窄到 3s
+
+
+def _db_path():
+    """Contract: 返回 outcomes.db 路径（复用既有库, 不新建）。"""
+    import os
+    from pathlib import Path
+    home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
+    return Path(home) / "outcomes.db"
+
+
+def _ensure_violations_table(conn):
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS violations ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " rule TEXT NOT NULL,"
+        " command TEXT NOT NULL,"
+        " level TEXT,"
+        " session_id TEXT,"
+        " timestamp TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_viol_rule_ts ON violations(rule, timestamp)"
+    )
+
+
+def _record_violation(rule, command, level, session_id):
+    """写入前科档。Contract: 失败静默(库不可用不阻断拦截), 返回是否成功。"""
+    import sqlite3
+    import datetime
+    try:
+        conn = sqlite3.connect(_db_path(), timeout=5)
+        try:
+            _ensure_violations_table(conn)
+            conn.execute(
+                "INSERT INTO violations (rule, command, level, session_id, timestamp) "
+                "VALUES (?,?,?,?,?)",
+                (rule, command[:500], level, session_id,
+                 datetime.datetime.now().isoformat(timespec="seconds")),
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: D5 — 档案失败不阻断拦截主流程
+        logger.warning("no-guessing: violations 记档失败 %s", e)
+        return False
+
+
+def _violation_stats(rule):
+    """查询规则前科。Contract: 返回 (window_count_30d, last_ts, days_since_last); 库不可用返回 (0,None,None)。"""
+    import sqlite3
+    import datetime
+    try:
+        conn = sqlite3.connect(_db_path(), timeout=5)
+        try:
+            _ensure_violations_table(conn)
+            cutoff = (
+                datetime.datetime.now()
+                - datetime.timedelta(days=_VIOLATION_WINDOW_DAYS)
+            ).isoformat(timespec="seconds")
+            row = conn.execute(
+                "SELECT COUNT(*), MAX(timestamp) FROM violations "
+                "WHERE rule=? AND timestamp>=?",
+                (rule, cutoff),
+            ).fetchone()
+            cnt, last = row[0] or 0, row[1]
+            days = None
+            if last:
+                days = (
+                    datetime.datetime.now()
+                    - datetime.datetime.fromisoformat(last)
+                ).days
+            return cnt, last, days
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: D5
+        logger.warning("no-guessing: violations 查档失败 %s", e)
+        return 0, None, None
+
+
+def _current_level(rule):
+    """Contract: 返回 'L1'|'L2'|'L3'——L3 需 30 天窗口计数>=8 且最近一次违规在 14 天内。"""
+    cnt, _last, days_since = _violation_stats(rule)
+    if cnt >= _L3_THRESHOLD and days_since is not None and days_since <= _DEMOTION_WINDOW_DAYS:
+        return "L3"
+    if cnt >= _L2_THRESHOLD:
+        return "L2"
+    return "L1"
+
+
+def _block_with_escalation(rule, command, base_message, session_id):
+    """统一拦截出口：升级消息 + 记档 + L2 注入上下文。
+    Contract: 总是返回 block dict; 副作用=violations 表新增一行。"""
+    level = _current_level(rule)
+    cnt, last, _days = _violation_stats(rule)
+    _record_violation(rule, command, level, session_id)
+    msg = base_message
+    if level != "L1":
+        msg = (
+            f"⚠ [累犯升级 {level}] 规则 {rule} 30 天内第 {cnt + 1} 次违规"
+            f"（上次: {last}）。再犯将收窄放行面——这条规则你已证明靠不住，"
+            f"必须从源头改习惯。\n\n{base_message}"
+        )
+    out = {"action": "block", "message": msg}
+    if level == "L2":
+        out["context"] = (
+            f"[累犯上下文] 规则 {rule} 已违规 {cnt} 次（30 天窗口），"
+            f"最近一次 {last}。本次拦截为第 {cnt + 1} 次。"
+        )
+    return out
+
 
 def _state(session_id):
     """Contract: 返回本插件命名空间的会话状态 dict。"""
@@ -113,18 +233,18 @@ def _check_raw_logs(command: str):
     return _BLOCK_RAW_LOGS
 
 
-def _check_sleep_wait(command: str):
-    """规则5：纯 sleep 干等（sleep 出现且无 background 字段配合）→ block。
-    允许: sleep 短暂等待页面渲染(≤10s 且命令含其他实质操作)；拦: sleep 30/60 干等。
+def _check_sleep_wait(command: str, sleep_limit: int = 10):
+    """规则5：纯 sleep 干等。L3 时 sleep_limit 收窄到 _L3_SLEEP_LIMIT(3s)。
+    允许: 短暂等待页面渲染(≤limit 且命令含其他实质操作)；拦: sleep 30/60 干等。
     """
     import re as _re
     m = _re.search(r"sleep (\d+)", command)
     if not m:
         return None
     secs = int(m.group(1))
-    if secs <= 10 and _re.search(r"(curl|js\(|goto|new_tab|fill|click|fetch)", command):
+    if secs <= sleep_limit and _re.search(r"(curl|js\(|goto|new_tab|fill|click|fetch)", command):
         return None  # 短等待+实质操作，放行
-    if secs <= 10 and "&&" in command:
+    if secs <= sleep_limit and "&&" in command:
         return None  # 组合命令里的短间隔，放行
     return _BLOCK_SLEEP_LOOP
 
@@ -181,15 +301,16 @@ def _on_pre_tool_call(**kwargs):
         return {}
     command = _normalize(args["command"])
     state = _state(kwargs.get("session_id", ""))
+    sid = kwargs.get("session_id", "")
 
     # 规则1：与上次失败命令逐字相同
     if command == state.get("last_failed_command"):
-        return {"action": "block", "message": _BLOCK_IDENTICAL}
+        return _block_with_escalation("R1", command, _BLOCK_IDENTICAL, sid)
 
     # 规则2：同命令累计失败 >= 2 次
     fail_counts = state.setdefault("fail_counts", {})
     if fail_counts.get(command, 0) >= 2:
-        return {"action": "block", "message": _BLOCK_TWICE}
+        return _block_with_escalation("R2", command, _BLOCK_TWICE, sid)
 
     # 规则3：服务名必须出现在本会话 --list 注册表输出里
     if _needs_name_verification(command):
@@ -197,10 +318,9 @@ def _on_pre_tool_call(**kwargs):
         if not registry_output:
             names = _extract_service_names(command)
             if names:
-                return {
-                    "action": "block",
-                    "message": _BLOCK_UNVERIFIED_NAME.format(names=",".join(names[:5])),
-                }
+                return _block_with_escalation(
+                    "R3", command,
+                    _BLOCK_UNVERIFIED_NAME.format(names=",".join(names[:5])), sid)
         else:
             # 服务名=注册表每行首列令牌（--list 输出为表格：服务 仓库 Dockerfile ...）
             # 首列提取防止仓库名(如 loom)冒充服务名(loom-backend)通过
@@ -211,25 +331,26 @@ def _on_pre_tool_call(**kwargs):
                     service_names.add(toks[0])
             for name in _extract_service_names(command):
                 if name not in service_names:
-                    return {
-                        "action": "block",
-                        "message": _BLOCK_UNVERIFIED_NAME.format(names=name),
-                    }
+                    return _block_with_escalation(
+                        "R3", command,
+                        _BLOCK_UNVERIFIED_NAME.format(names=name), sid)
 
     # 规则4：docker logs 裸奔
     msg = _check_raw_logs(command)
     if msg:
-        return {"action": "block", "message": msg}
+        return _block_with_escalation("R4", command, msg, sid)
 
-    # 规则5：纯 sleep 干等轮询
-    msg = _check_sleep_wait(command)
+    # 规则5：纯 sleep 干等轮询（L3 收窄 sleep 上限）
+    msg = _check_sleep_wait(
+        command,
+        sleep_limit=_L3_SLEEP_LIMIT if _current_level("R5") == "L3" else 10)
     if msg:
-        return {"action": "block", "message": msg}
+        return _block_with_escalation("R5", command, msg, sid)
 
     # 规则6：诊断命令 2>/dev/null 吞错
     msg = _check_swallowed_stderr(command)
     if msg:
-        return {"action": "block", "message": msg}
+        return _block_with_escalation("R6", command, msg, sid)
 
     return {}
 
