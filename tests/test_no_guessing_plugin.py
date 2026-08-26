@@ -105,6 +105,9 @@ def test_r5_background_sleep_allowed():
 
 def test_r6_diagnostic_stderr_swallowed_blocked():
     assert _pre("curl -s localhost:9222/json 2>/dev/null", "s10").get("action") == "block"
+    # 真机 0826 误拦修复: grep/ls 常规检索的 stderr 丢弃不拦
+    assert not _pre("grep -rln FOO ~/.hermes/ 2>/dev/null | head", "s10")
+    assert not _pre("ls /nonexistent 2>/dev/null", "s10")
     assert not _pre("npm run build 2>/dev/null", "s10")
 
 
