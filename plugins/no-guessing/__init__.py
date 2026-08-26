@@ -214,10 +214,12 @@ _BLOCK_SWALLOW_ERR = (
 
 
 def _is_diagnostic_command(command: str) -> bool:
-    """Contract: 只判定诊断类命令（日志/健康/网络/DB 探测），编译构建不在此列。"""
+    """Contract: 只判定诊断类命令（日志/健康/网络/DB 探测），编译构建不在此列。
+    真机 0826 实锤误拦: grep 的 stderr 几乎无诊断价值（2>/dev/null 只防「文件不存在」噪声），
+    grep/ls/cat 类常规检索不拦。"""
     diagnostic_markers = (
         "docker logs", "docker compose logs", "curl ", "psql", "redis-cli",
-        "kubectl logs", "lsof ", "ps aux", "journalctl", "health", "grep ",
+        "kubectl logs", "lsof ", "ps aux", "journalctl", "health",
     )
     return any(m in command for m in diagnostic_markers)
 
