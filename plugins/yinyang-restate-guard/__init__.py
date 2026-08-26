@@ -27,10 +27,58 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from plugins._llm_judge import llm_judge_bool
+from plugins._llm_judge import llm_judge_bool, llm_judge_multi
 from plugins._shared_state import get_session_state
 
 logger = logging.getLogger(__name__)
+
+
+# —— 用户侧合并判定（yinyang + devil 共用一次 LLM 调用）——
+# 两插件同为 pre_llm_call、同一 user_message 输入，合并成一次 multi judge。
+# 判定语义与各自独立时完全一致，仅省掉一次串行调用。
+
+USER_SIDE_SYSTEM = (
+    "你是对话信号哨兵。对下面这条用户消息同时判定两个维度：\\n"
+    "1. challenge：消息是否在质疑、反驳或纠正 AI 的某个说法/结论/行为"
+    "（含直接指出错误、表达不认同、要求纠正）。"
+    "单纯提问、补充信息、闲聊、下达新任务不算。\\n"
+    "2. decision：消息是否构成'重大方案定稿或决策承诺'——即：即将拍板采用某"
+    "技术方案/架构选型/上生产部署/模型替换/大规模重构等影响面大且难回退的"
+    "决策。只是讨论、提问、调研、汇报进度不算。\\n"
+    "只回答一个 JSON 对象，含全部键："
+    "{\\\"challenge\\\": true/false, \\\"decision\\\": true/false}"
+)
+
+USER_SIDE_KEYS = ["challenge", "decision"]
+
+# 进程级结果缓存：同一消息（sha1 前 16 位）只判一次，yinyang/devil 共享。
+# 插件均在同一进程内运行；缓存无淘汰（每会话 judge 硬上限 30 条兜底）。
+_USER_SIDE_CACHE: Dict[str, Dict[str, Optional[bool]]] = {}
+
+
+def judge_user_side(message: str, timeout: float = 8.0) -> Dict[str, Optional[bool]]:
+    """一次调用同时判定 challenge/decision 两维度；异常 → 全 None。
+
+    同一消息进程内只发起一次真实调用（缓存命中直接返回），供
+    yinyang/devil 两个 pre_llm_call 钩子共享，消除重复调用。
+
+    Contract:
+      Preconditions: message 为非空 str
+      Postconditions: 返回 dict 恰含两键（True/False/None）；绝不 raise
+    """
+    assert message, "message must be non-empty"
+    h = hashlib.sha1(message.encode("utf-8")).hexdigest()[:16]
+    if h in _USER_SIDE_CACHE:
+        return _USER_SIDE_CACHE[h]
+    result = llm_judge_multi(
+        task="user_side_guards",
+        system=USER_SIDE_SYSTEM,
+        text=message,
+        keys=USER_SIDE_KEYS,
+        timeout=timeout,
+    )
+    _USER_SIDE_CACHE[h] = result
+    return result
 
 _NAMESPACE = "yinyang_restate_guard"
 
@@ -145,7 +193,8 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
             return None
         seen.add(h)
         st["judge_calls"] = int(st.get("judge_calls", 0)) + 1
-        if is_challenge(user_message) is not True:
+        # 合并判定：challenge/decision 一次调用（与 devil-advocate-audit 共享缓存）
+        if judge_user_side(user_message).get("challenge") is not True:
             return None
         _record_face_slap(user_message, sid)
         st["count"] = int(st.get("count", 0)) + 1

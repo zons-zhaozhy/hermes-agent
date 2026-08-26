@@ -26,10 +26,28 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import sys
 from typing import Any, Dict, Optional
 
 from plugins._llm_judge import llm_judge_bool
 from plugins._shared_state import get_session_state
+# 用户侧合并判定：challenge/decision 一次调用（唯一出入口收拢）。
+# 延迟导入：避免插件间循环依赖；yinyang 未启用时 judge_user_side 不可用，
+# 此时本插件回退独立判定（llm_judge_bool 原路径）。
+from importlib import import_module as _import_module
+
+
+def _judge_user_side(message: str):
+    # 运行时插件模块名 = hermes_plugins.<slug>（连字符转下划线，
+    # 见 hermes_cli/plugins.py _directory_module_name）；依次尝试两个命名空间。
+    for modname in ("hermes_plugins.yinyang_restate_guard",
+                    "plugins.yinyang_restate_guard"):
+        try:
+            mod = sys.modules.get(modname) or _import_module(modname)
+            return mod.judge_user_side(message)
+        except Exception as e:
+            logger.warning("user-side merge via %s unavailable: %s", modname, e)
+    return None
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +149,14 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
             return None
         _seen_hash(sid).add(h)
         st["judge_calls"] = _count(sid, "judge_calls") + 1
-        if _is_major_decision(text) is not True:
+        # 合并判定：优先走 yinyang 的多键一次调用；两插件各自 hash 去重仍生效，
+        # 但合并结果同时供 yinyang 消费（见 yinyang on_pre_llm_call 侧缓存）。
+        merged = _judge_user_side(text)
+        if merged is None:
+            # 合并通道不可用（yinyang 未启用等）→ 回退原独立判定
+            if _is_major_decision(text) is not True:
+                return None
+        elif merged.get("decision") is not True:
             return None
         st["count"] = _count(sid) + 1
         return {"context": _REMINDER}
