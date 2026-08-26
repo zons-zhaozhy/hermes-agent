@@ -71,6 +71,72 @@ _NAME_CHECK_MARKERS = ("deploy.sh cloud", "cloud-svc-run", "build.sh")
 # 永不拦截的只读标志
 _READONLY_PASSES = ("--list", "-h", "--help")
 
+# 规则4：长日志未预过滤——docker logs / docker compose logs 必须带 --tail / -f 配合 grep，
+# 或本身含 grep/awk/head 管道。裸 docker logs 会把全量日志灌进上下文。
+_BLOCK_RAW_LOGS = (
+    "[NO-GUESSING BLOCK] docker logs 裸奔未预过滤——全量日志会撑爆上下文。\n"
+    "先预过滤: docker logs {name} --tail 100 2>&1 | grep -E 'ERROR|WARN' | head -20\n"
+    "或按关键词取根因行，禁止拉完整堆栈。"
+)
+
+# 规则5：纯 sleep 干等轮询（长任务铁律：>60s 或 network 一律 background+notify）
+_BLOCK_SLEEP_LOOP = (
+    "[NO-GUESSING BLOCK] 检测到 sleep 干等轮询。铁律：长任务(>60s/含网络)一律 "
+    "background=true + notify_on_complete=true，用 process wait/poll 管理，禁止 sleep 干等。"
+)
+
+# 规则6：诊断命令吞错——2>/dev/null 会把报错证据扔掉，违反 log-first 诊断纪律
+# （仅拦诊断类命令；编译/构建输出重定向属正常用法不拦）
+_BLOCK_SWALLOW_ERR = (
+    "[NO-GUESSING BLOCK] 诊断命令带 2>/dev/null——报错信息是定位根因的第一证据，禁止吞掉。\n"
+    "诊断一律 2>&1 保留错误流；确要过滤输出用 grep 管道而非丢弃 stderr。"
+)
+
+
+def _is_diagnostic_command(command: str) -> bool:
+    """Contract: 只判定诊断类命令（日志/健康/网络/DB 探测），编译构建不在此列。"""
+    diagnostic_markers = (
+        "docker logs", "docker compose logs", "curl ", "psql", "redis-cli",
+        "kubectl logs", "lsof ", "ps aux", "journalctl", "health", "grep ",
+    )
+    return any(m in command for m in diagnostic_markers)
+
+
+def _check_raw_logs(command: str):
+    """规则4：docker logs 无 --tail 且无 grep/awk/head/tail 管道 → block。"""
+    if "docker logs" not in command and "docker compose logs" not in command:
+        return None
+    if "--tail" in command or "--since" in command:
+        return None
+    if any(p in command for p in ("grep", "awk", "head", "tail -", "| tail")):
+        return None
+    return _BLOCK_RAW_LOGS
+
+
+def _check_sleep_wait(command: str):
+    """规则5：纯 sleep 干等（sleep 出现且无 background 字段配合）→ block。
+    允许: sleep 短暂等待页面渲染(≤10s 且命令含其他实质操作)；拦: sleep 30/60 干等。
+    """
+    import re as _re
+    m = _re.search(r"sleep (\d+)", command)
+    if not m:
+        return None
+    secs = int(m.group(1))
+    if secs <= 10 and _re.search(r"(curl|js\(|goto|new_tab|fill|click|fetch)", command):
+        return None  # 短等待+实质操作，放行
+    if secs <= 10 and "&&" in command:
+        return None  # 组合命令里的短间隔，放行
+    return _BLOCK_SLEEP_LOOP
+
+
+def _check_swallowed_stderr(command: str):
+    """规则6：诊断类命令重定向 stderr 到 /dev/null → block。"""
+    if "2>/dev/null" not in command and "2>/dev/null" not in command.replace(" ", ""):
+        return None
+    if not _is_diagnostic_command(command):
+        return None
+    return _BLOCK_SWALLOW_ERR
+
 
 def _normalize(command: str) -> str:
     """归一化：压缩空白。Contract: 幂等，不改变语义令牌。"""
@@ -149,6 +215,22 @@ def _on_pre_tool_call(**kwargs):
                         "action": "block",
                         "message": _BLOCK_UNVERIFIED_NAME.format(names=name),
                     }
+
+    # 规则4：docker logs 裸奔
+    msg = _check_raw_logs(command)
+    if msg:
+        return {"action": "block", "message": msg}
+
+    # 规则5：纯 sleep 干等轮询
+    msg = _check_sleep_wait(command)
+    if msg:
+        return {"action": "block", "message": msg}
+
+    # 规则6：诊断命令 2>/dev/null 吞错
+    msg = _check_swallowed_stderr(command)
+    if msg:
+        return {"action": "block", "message": msg}
+
     return {}
 
 

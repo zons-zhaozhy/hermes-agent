@@ -1,6 +1,6 @@
 name: no-guessing
 version: "1.0.0"
-description: 瞎猜根治闸门——报错后禁原样重试/同错两次必换策略/服务名必须先过--list注册表核验,机械强制不靠自觉。
+description: 瞎猜根治闸门——R1失败后禁原样重试/R2同错2次必换策略/R3服务名先过--list注册表核验/R4 docker logs禁裸奔/R5禁sleep干等轮询/R6诊断禁2>/dev/null吞错+失败后注入纪律提醒。
 author: stan
 hooks:
   - pre_tool_call
