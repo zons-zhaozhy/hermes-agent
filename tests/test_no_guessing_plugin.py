@@ -84,6 +84,23 @@ def test_r4_raw_docker_logs_blocked():
 def test_r5_sleep_wait_blocked():
     assert _pre("sleep 30", "s9").get("action") == "block"
     assert not _pre("sleep 3 && curl -s localhost/health", "s9")
+    # 真机 0826 暴露的误拦修复: 纯短 sleep 放行
+    assert not _pre("sleep 3", "s9")
+    assert not _pre("sleep 5", "s9")
+
+
+def test_r5_background_sleep_allowed():
+    """真机暴露: background=true 的 sleep 是合法长任务姿势, 永不拦。"""
+    r = m._on_pre_tool_call(
+        tool_name="terminal",
+        args={"command": "sleep 30", "background": True},
+        session_id="s9b")
+    assert not r
+    r = m._on_pre_tool_call(
+        tool_name="terminal",
+        args={"command": "sleep 120", "background": True, "notify_on_complete": True},
+        session_id="s9b")
+    assert not r
 
 
 def test_r6_diagnostic_stderr_swallowed_blocked():
