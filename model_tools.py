@@ -1168,6 +1168,16 @@ def _emit_post_tool_call_hook(
     """
     if _post_tool_call_hook_suppressed.get():
         return
+    # Contract: Postconditions — every post_tool_call callback receives
+    # ``args`` as a dict. Some dispatch paths (bridge/malformed/cancelled)
+    # pass the raw JSON string; normalize at this single funnel instead of
+    # eight per-plugin isinstance guards.
+    if not isinstance(function_args, dict):
+        try:
+            parsed_args = json.loads(function_args) if function_args else {}
+        except (json.JSONDecodeError, TypeError):
+            parsed_args = {}
+        function_args = parsed_args if isinstance(parsed_args, dict) else {}
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook
         if not has_hook("post_tool_call"):
