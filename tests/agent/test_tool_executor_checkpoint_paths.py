@@ -32,7 +32,7 @@ def test_relative_file_checkpoint_uses_task_workspace(tmp_path, monkeypatch):
     _ensure_file_checkpoint(
         agent,
         "write_file",
-        {"path": "test_permissions2.txt"},
+        {"path": "existing.txt"},  # pre-existing file: has pre-write state
         "gateway-session",
     )
 

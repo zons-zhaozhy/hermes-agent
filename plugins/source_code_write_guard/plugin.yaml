@@ -1,6 +1,6 @@
 name: source-code-write-guard
 version: "1.0.0"
-description: "拦截 terminal 中 python3 内联脚本绕过 patch 写源码文件，强制走 diff 可见工具"
+description: "拦截 terminal 中 python3 内联脚本/shell 重定向/in-place 编辑绕过 patch 写源码文件；唯一例外（escape hatch）：写入目标是护栏自身文件（plugins/、agent/read_think_gate.py 等）时放行——按写入目标判定，非关键词匹配（2026-08-26 修复）"
 author: stan
 kind: standalone
 hooks:

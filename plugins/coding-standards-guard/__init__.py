@@ -213,29 +213,55 @@ _SECRET_NAME_KEYWORDS = frozenset({
 })
 
 
-def _check_hardcoded_secret(tree: ast.AST, lines: List[str], skip_tests: bool = True) -> List[Violation]:
-    """R007: password="xxx" 直接赋值字面量。"""
-    violations = []
+def _iter_name_value_pairs(tree: ast.AST):
+    """产出 (name_lower, value_node) 对 — 覆盖所有硬编码值出现形态。
+
+    形态覆盖：Assign 顶层、AnnAssign、调用 kwarg、dict 字面量 value。
+    """
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    yield target.id.lower(), node.value, node
+                elif isinstance(target, ast.Attribute):
+                    yield target.attr.lower(), node.value, node
+                elif isinstance(target, (ast.Tuple, ast.List)):
+                    for elt in target.elts:
+                        if isinstance(elt, ast.Name):
+                            yield elt.id.lower(), node.value, node
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            if node.value is not None:
+                yield node.target.id.lower(), node.value, node
+        elif isinstance(node, ast.Call):
+            for kw in node.keywords:
+                if kw.arg:
+                    yield kw.arg.lower(), kw.value, node
+        elif isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values):
+                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    yield key.value.lower(), value, node
+
+
+def _check_hardcoded_secret(tree: ast.AST, lines: List[str], skip_tests: bool = True) -> List[Violation]:
+    """R007: password="xxx" 直接赋值/kwarg/dict 值字面量。
+
+    Contract:
+      Preconditions: tree 为合法 AST
+      Postconditions: 返回的每条 Violation 的 value 均为非空 str 字面量且非 ${...} 占位
+    """
+    violations = []
+    for name, value, node in _iter_name_value_pairs(tree):
+        if not any(kw in name for kw in _SECRET_NAME_KEYWORDS):
             continue
-        for target in node.targets:
-            name = ""
-            if isinstance(target, ast.Name):
-                name = target.id.lower()
-            elif isinstance(target, ast.Attribute):
-                name = target.attr.lower()
-            if not any(kw in name for kw in _SECRET_NAME_KEYWORDS):
-                continue
-            if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-                val = node.value.value
-                if val and not val.startswith("${"):
-                    violations.append(Violation(
-                        rule_id="R007", line=node.lineno, col=node.col_offset,
-                        severity="error",
-                        message=f"硬编码密码/密钥: {name} = '{val[:20]}...' — 必须从 .env 读取",
-                        snippet=_snippet(lines, node.lineno),
-                    ))
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            val = value.value
+            if val and not val.startswith("${"):
+                violations.append(Violation(
+                    rule_id="R007", line=node.lineno, col=node.col_offset,
+                    severity="error",
+                    message=f"硬编码密码/密钥: {name} = '{val[:20]}...' — 必须从 .env 读取",
+                    snippet=_snippet(lines, node.lineno),
+                ))
     return violations
 
 
@@ -341,18 +367,16 @@ def _looks_like_ip_literal(s: str) -> bool:
 
 
 def _check_hardcoded_ip(tree: ast.AST, lines: List[str]) -> List[Violation]:
-    """R010: HOST = "192.168.1.1" / URL = "localhost:5432"。"""
+    """R010: HOST = "192.168.1.1" / connect(host="10.0.0.1") / {"host": "localhost:5432"}。"""
     violations = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-            val = node.value.value
+    for _name, value, node in _iter_name_value_pairs(tree):
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            val = value.value
             if _looks_like_ip_literal(val):
                 violations.append(Violation(
                     rule_id="R010", line=node.lineno, col=node.col_offset,
-                    severity="warning",
-                    message=f"硬编码 IP/端口: {_assign_target_names(node)} = '{val}' — 必须从 .env 读取",
+                    severity="error",
+                    message=f"硬编码 IP/端口: '{val}' — 必须从 .env 读取",
                     snippet=_snippet(lines, node.lineno),
                 ))
     return violations
@@ -367,19 +391,17 @@ _DB_URL_PREFIXES = ("postgresql://", "mysql://", "oracle://", "mongodb://",
 
 
 def _check_hardcoded_db_url(tree: ast.AST, lines: List[str]) -> List[Violation]:
-    """R011: DATABASE_URL = "postgresql://user:pass@host/db"。"""
+    """R011: DATABASE_URL = "postgresql://user:pass@host/db" — 含 kwarg/dict 形态。"""
     violations = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-            val = node.value.value.lower()
+    for _name, value, node in _iter_name_value_pairs(tree):
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            val = value.value.lower()
             for prefix in _DB_URL_PREFIXES:
                 if val.startswith(prefix):
                     violations.append(Violation(
                         rule_id="R011", line=node.lineno, col=node.col_offset,
                         severity="error",
-                        message=f"硬编码数据库连接串: {_assign_target_names(node)} — 必须从 .env 读取",
+                        message=f"硬编码数据库连接串: '{value.value[:40]}' — 必须从 .env 读取",
                         snippet=_snippet(lines, node.lineno),
                     ))
                     break
@@ -394,25 +416,23 @@ _DEPLOY_PATH_PREFIXES = ("/opt/", "/var/", "/etc/", "/usr/local/", "/srv/",)
 
 
 def _check_hardcoded_deploy_path(tree: ast.AST, lines: List[str]) -> List[Violation]:
-    """R012: DEPLOY_DIR = "/opt/ontox/deploy" 等硬编码部署路径。"""
+    """R012: DEPLOY_DIR = "/opt/ontox/deploy" 等硬编码部署路径 — 含 kwarg/dict 形态。"""
     violations = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
+    path_keywords = ("dir", "path", "home", "root", "deploy", "data",
+                     "config", "log", "cache", "cert")
+    for name, value, node in _iter_name_value_pairs(tree):
+        if not any(kw in name for kw in path_keywords):
             continue
-        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-            val = node.value.value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            val = value.value
             for prefix in _DEPLOY_PATH_PREFIXES:
                 if val.startswith(prefix) and len(val) > len(prefix):
-                    name = _assign_target_names(node).lower()
-                    path_keywords = ("dir", "path", "home", "root", "deploy", "data",
-                                     "config", "log", "cache", "cert")
-                    if any(kw in name for kw in path_keywords):
-                        violations.append(Violation(
-                            rule_id="R012", line=node.lineno, col=node.col_offset,
-                            severity="warning",
-                            message=f"硬编码部署路径: {_assign_target_names(node)} = '{val}' — 必须从 .env 或相对路径读取",
-                            snippet=_snippet(lines, node.lineno),
-                        ))
+                    violations.append(Violation(
+                        rule_id="R012", line=node.lineno, col=node.col_offset,
+                        severity="error",
+                        message=f"硬编码部署路径: {name} = '{val}' — 必须从 .env 或相对路径读取",
+                        snippet=_snippet(lines, node.lineno),
+                    ))
                     break
     return violations
 
@@ -789,6 +809,85 @@ def _check_raise_without_cause(tree: ast.AST, lines: List[str]) -> List[Violatio
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# R021: 正则使用 — 减少正则，优先 str 方法 / 结构化解析
+# ═══════════════════════════════════════════════════════════════════════
+
+_REGEX_FUNC_ATTRS = frozenset({
+    "match", "fullmatch", "search", "split", "sub", "subn", "findall", "finditer",
+})
+
+# 合法消费方：被调用对象本身是 re 模块（re.match）或已编译 pattern（p.match）。
+# 已编译 pattern 无法从 AST 区分，按命名约定识别。
+_PATTERN_NAME_HINTS = ("re_", "regex", "pattern", "pat_", "rx")
+
+
+def _is_regex_call(func: ast.expr) -> bool:
+    """Contract:
+      Preconditions: func 为任意 AST 表达式
+      Postconditions: True 当且仅当调用形如 re.xxx(...) / <re_/pattern 变量>.xxx(...)
+    """
+    if not isinstance(func, ast.Attribute):
+        return False
+    if func.attr not in _REGEX_FUNC_ATTRS:
+        return False
+    if isinstance(func.value, ast.Name) and func.value.id == "re":
+        return True
+    if isinstance(func.value, ast.Name):
+        low = func.value.id.lower()
+        return any(low.startswith(h) or h in low for h in _PATTERN_NAME_HINTS)
+    if isinstance(func.value, ast.Call):
+        # re.compile(...).match(...) 链式
+        callee = func.value.func
+        if isinstance(callee, ast.Attribute) and callee.attr == "compile":
+            if isinstance(callee.value, ast.Name) and callee.value.id == "re":
+                return True
+    return False
+
+
+def _line_has_regex_ok(lines: List[str], lineno: int) -> bool:
+    if 1 <= lineno <= len(lines):
+        if "# re-ok" in lines[lineno - 1]:
+            return True
+    return False
+
+
+def _check_regex_usage(tree: ast.AST, lines: List[str]) -> List[Violation]:
+    """R021: re.sub/re.match/re.compile 等正则使用 — 正则是最后手段。
+
+    优先顺序：str.startswith/endswith/split/replace/in、str 方法组合、
+    结构化解析（json/csv/xml/ast）、pathlib。确需正则时行尾加 `# re-ok` 显式豁免。
+    """
+    violations = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and _is_regex_call(node.func):
+            if _line_has_regex_ok(lines, node.lineno):
+                continue
+            attr = node.func.attr if isinstance(node.func, ast.Attribute) else "regex"
+            violations.append(Violation(
+                rule_id="R021", line=node.lineno, col=node.col_offset,
+                severity="error",
+                message=f"正则使用 {attr}() — 正则是最后手段，优先 str 方法/结构化解析；"
+                        f"确需正则请行尾加 `# re-ok` 显式豁免并写明理由",
+                snippet=_snippet(lines, node.lineno),
+            ))
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            mod = ""
+            if isinstance(node, ast.Import):
+                imported_re = any(alias.name == "re" for alias in node.names)
+            else:
+                imported_re = node.module == "re" or (node.module or "").startswith("re.")
+            if imported_re and not _line_has_regex_ok(lines, node.lineno):
+                violations.append(Violation(
+                    rule_id="R021", line=node.lineno, col=node.col_offset,
+                    severity="warning",
+                    message="import re — 先确认 str 方法/结构化解析无法解决；"
+                            "确需正则请在使用处加 `# re-ok` 并将 import 行也加 `# re-ok`",
+                    snippet=_snippet(lines, node.lineno),
+                ))
+    return violations
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # 规则注册表 — 集中管理所有编码规范
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -815,6 +914,8 @@ _RULES = [
     ("R019",      _check_sys_exit_in_function,      "函数内 sys.exit() — 非入口函数"),
     # ── 其他（1 条）──
     ("R006",      _check_import_star,               "from X import * — 禁止星号导入"),
+    # ── 正则使用系列（1 条）──
+    ("R021",      _check_regex_usage,               "正则使用 — 优先 str 方法/结构化解析，豁免=re-ok"),
 ]
 
 
