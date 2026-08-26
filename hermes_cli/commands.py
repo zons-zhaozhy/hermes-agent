@@ -211,6 +211,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch"),
     CommandDef("refine", "Review this conversation now and save lessons to memory/skills", "Session",
                args_hint="[focus instructions]"),
+    CommandDef("review", "Spawn an independent subagent to review the work just discussed (PR, code, docs)", "Session",
+               args_hint="[review instructions]"),
     CommandDef("loop", "Re-run a prompt on a recurring interval in this session", "Session",
                aliases=("proactive",),
                args_hint="[interval] <prompt> [--times N] [--until <condition>] | status | pause | resume | stop",
@@ -1373,7 +1375,9 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     position ~50/52, so without curation the 50-slash cap silently
 #     clamps it off native slashes and breaks Telegram↔Slack parity
 #     (test_telegram_parity fails loudly to force this decision).
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "pause", "audit", "whoami", "platform"})
+#   - review: upstream's independent-reviewer command rides /hermes review
+#     for the same cap reason (registry keeps growing).
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "audit", "whoami", "platform"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
