@@ -5456,6 +5456,12 @@ def _try_main_agent_model_fallback(
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Last-resort fallback to the user's main agent provider + model.
 
+    Guarded by ``auxiliary.allow_main_model_fallback`` (default True).
+    Set it to False in config.yaml when the main model runs on a
+    rate-limited shared plan and auxiliary judges must never contend
+    with it — judge callers already fail-open on None, so disabling
+    this safety net is safe for them.
+
     Used after the configured fallback_chain is exhausted (or empty) for
     users with an explicit auxiliary provider.  This is the "safety net"
     layer: if nothing the user asked for can serve the request, try the
@@ -5492,6 +5498,24 @@ def _try_main_agent_model_fallback(
             return None, None, ""
         main_provider, main_model = _agg_provider, _agg_model
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
+        return None, None, ""
+
+    # Plan-protection gate (issue: judges must not contend with the main
+    # model on a rate-limited shared plan). Default True preserves the
+    # historical safety net; set auxiliary.allow_main_model_fallback=false
+    # to keep auxiliary traffic off the main model entirely.
+    try:
+        from hermes_cli.config import load_config_readonly
+        _cfg_all = load_config_readonly()
+    except ImportError:
+        _cfg_all = None
+    _aux_all = (_cfg_all.get("auxiliary", {}) if isinstance(_cfg_all, dict) else {})
+    if _aux_all.get("allow_main_model_fallback") is False:
+        logger.info(
+            "Auxiliary %s: main-model fallback disabled by "
+            "auxiliary.allow_main_model_fallback; giving up (reason=%s)",
+            task or "call", reason,
+        )
         return None, None, ""
 
     # Identity + scope semantics owned by agent.backend_identity (#72468):
