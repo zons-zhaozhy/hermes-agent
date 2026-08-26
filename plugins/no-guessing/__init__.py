@@ -233,10 +233,14 @@ def _check_raw_logs(command: str):
     return _BLOCK_RAW_LOGS
 
 
-def _check_sleep_wait(command: str, sleep_limit: int = 10):
+def _check_sleep_wait(command: str, sleep_limit: int = 10, is_background: bool = False):
     """规则5：纯 sleep 干等。L3 时 sleep_limit 收窄到 _L3_SLEEP_LIMIT(3s)。
-    允许: 短暂等待页面渲染(≤limit 且命令含其他实质操作)；拦: sleep 30/60 干等。
+    允许: 短暂等待页面渲染(≤limit 且命令含其他实质操作)；
+          background=true 的 sleep（合法长任务姿势, 由 process wait/poll 管理）。
+    拦: 前台大秒数 sleep 干等。
     """
+    if is_background:
+        return None  # background 长任务是正解姿势，永不拦
     import re as _re
     m = _re.search(r"sleep (\d+)", command)
     if not m:
@@ -246,6 +250,8 @@ def _check_sleep_wait(command: str, sleep_limit: int = 10):
         return None  # 短等待+实质操作，放行
     if secs <= sleep_limit and "&&" in command:
         return None  # 组合命令里的短间隔，放行
+    if secs <= sleep_limit:
+        return None  # 短 sleep 本身无害（页面渲染等待等场景），放行
     return _BLOCK_SLEEP_LOOP
 
 
@@ -340,10 +346,11 @@ def _on_pre_tool_call(**kwargs):
     if msg:
         return _block_with_escalation("R4", command, msg, sid)
 
-    # 规则5：纯 sleep 干等轮询（L3 收窄 sleep 上限）
+    # 规则5：纯 sleep 干等轮询（background 长任务放行; L3 收窄 sleep 上限）
     msg = _check_sleep_wait(
         command,
-        sleep_limit=_L3_SLEEP_LIMIT if _current_level("R5") == "L3" else 10)
+        sleep_limit=_L3_SLEEP_LIMIT if _current_level("R5") == "L3" else 10,
+        is_background=bool(args.get("background")))
     if msg:
         return _block_with_escalation("R5", command, msg, sid)
 
