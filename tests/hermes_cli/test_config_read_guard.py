@@ -50,6 +50,9 @@ ALLOWLIST = {
 EXCLUDED_DIR_PARTS = {
     "tests", ".venv", ".git", ".worktrees", "node_modules", "website",
     "docs", "scripts", "examples", "apps",
+    # Local code-intelligence index: hundreds of thousands of small files,
+    # zero Python source. Walking it dominates the scan (~9s sys time).
+    ".codegraph",
     # Compiled bytecode is not source. Sibling test processes also create
     # and delete these directories while this scan walks the tree.
     "__pycache__",
