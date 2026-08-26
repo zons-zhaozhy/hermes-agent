@@ -1,8 +1,11 @@
-"""no-guessing 插件单测——瞎猜根治闸门六规则 + 回归。
+"""no-guessing 插件单测——瞎猜根治闸门六规则 + 升级机制 + 回归。
 运行: cd ~/code/ai/github/fork/hermes-agent && python3 -m pytest tests/test_no_guessing_plugin.py -q
 """
+import os
 import sys
+import tempfile
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -98,3 +101,69 @@ def test_reminder_after_failure():
 def test_readonly_never_blocked():
     assert not _pre("grep -rn foo src/", "s12")
     assert not _pre("bash deploy/build.sh --list", "s12")
+
+
+# ============ 升级机制：三级惩罚阶梯 ============
+
+def test_escalation_l1_to_l2_to_l3():
+    """累犯3次→L2警告;8次→L3;记档连续可查。用临时HERMES_HOME隔离。"""
+    with tempfile.TemporaryDirectory() as td:
+        with mock.patch.dict(os.environ, {"HERMES_HOME": td}):
+            sid = "esc1"
+            # 第1-2次: L1 纯拦截
+            r = _pre("sleep 30", sid)
+            assert r["action"] == "block" and "累犯" not in r["message"]
+            _pre("sleep 30", sid)
+            _pre("sleep 30", sid)  # 第3次触发时按已记2次算 → L2
+            r = _pre("sleep 30", sid)
+            assert "L2" in r["message"] and "累犯" in r["message"], r["message"][:80]
+            # 补到 8 次 → L3
+            for _ in range(5):
+                _pre("sleep 30", sid)
+            r = _pre("sleep 30", sid)
+            assert "L3" in r["message"], r["message"][:80]
+            # 记档数=触发次数, 每条带 level
+            cnt, _last, _d = m._violation_stats("R5")
+            assert cnt == 10  # 3(L1)+1(L2过渡)+... 逐次记档累计
+
+
+def test_escalation_l3_narrows_sleep_limit():
+    """R5 达到 L3 后, sleep 5(原放行区间)也被拦。"""
+    with tempfile.TemporaryDirectory() as td:
+        with mock.patch.dict(os.environ, {"HERMES_HOME": td}):
+            sid = "esc2"
+            with mock.patch.object(m, "_violation_stats",
+                                   return_value=(8, "2026-08-26T00:00:00", 0)):
+                assert m._current_level("R5") == "L3"
+            # 直接播种前科再验证收窄: 清档案后写8条
+            for i in range(8):
+                m._record_violation("R5", f"sleep 30 #{i}", "L1", sid)
+            assert m._current_level("R5") == "L3"
+            # sleep 5 && 实质操作 原本放行(limit=10), L3 下被拦(limit=3)
+            assert _pre("sleep 5 && curl -s localhost/health", sid)["action"] == "block"
+
+
+def test_escalation_rules_independent():
+    """R5 前科不影响 R4 判级。"""
+    with tempfile.TemporaryDirectory() as td:
+        with mock.patch.dict(os.environ, {"HERMES_HOME": td}):
+            for i in range(5):
+                m._record_violation("R5", f"sleep 30 #{i}", "L1", "esc3")
+            assert m._current_level("R5") == "L2"
+            assert m._current_level("R4") == "L1"
+
+
+def test_escalation_demotes_after_clean_window():
+    """最近一次违规>14天 → 不再L3（降级条件可验证）。"""
+    with tempfile.TemporaryDirectory() as td:
+        with mock.patch.dict(os.environ, {"HERMES_HOME": td}):
+            with mock.patch.object(m, "_violation_stats",
+                                   return_value=(10, "2026-07-01T00:00:00", 56)):
+                assert m._current_level("R5") == "L2"  # 计数够但太旧, 不进L3
+
+
+def test_escalation_records_even_when_db_missing():
+    """库不可用时拦截不崩、照常返回 block。"""
+    with mock.patch.dict(os.environ, {"HERMES_HOME": "/nonexistent-xyz"}):
+        r = _pre("sleep 30", "esc4")
+        assert r["action"] == "block"
