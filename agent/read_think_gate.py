@@ -58,8 +58,36 @@ def _four_axis_marker_path() -> Path:
 
     return get_hermes_home() / "cache" / "four_axis_gate.json"
 
-# 四轴检测已升级为 LLM 语义判断（_judge_investigation 的 A/B/C/D 四维度
-# 完全覆盖 影响面/原意图/根因/风险 的语义空间）。
+# 四轴关键词表（2026-08-26 恢复：e12e46fd3 删除后 use_llm_judge=false 时四轴无解锁路径）。
+# 子串匹配 O(n) 无回溯（历史上 re.search 曾致灾难性回溯 CPU 100%，禁用正则）。
+_FOUR_AXIS_KEYWORDS: dict[str, list[str]] = {
+    "影响面": [
+        "[源码确认]", "[搜索推断]",
+        "caller", "consumer", "importer",
+        "调用方", "依赖此接口",
+        "影响面清单",
+    ],
+    "原意图": [
+        "git log",
+        "前置条件", "后置条件", "副作用约定", "不变量",
+        "原意图溯源",
+    ],
+    "根因": [
+        "症状位置", "根因位置",
+        "根因", "上游", "数据源头", "配置源",
+        "阻断方案", "入口校验", "配置强制", "启动报错",
+        "根因定位",
+    ],
+    "风险": [
+        "静默数据损坏", "向后不兼容", "缓存失效",
+        "并发竞争", "异常路径被吞", "第三方依赖超时",
+        "触发条件", "影响范围", "可恢复",
+        "风险矩阵",
+    ],
+}
+
+# 四轴检测支持 LLM 语义判断（_judge_investigation 的 A/B/C/D 四维度
+# 完全覆盖 影响面/原意图/根因/风险 的语义空间）与关键词内容扫描双路径。
 # 保留标签列表供 _missing_axes 和 _build_block_message 展示信息。
 _FOUR_AXIS_LABELS = ["影响面", "原意图", "根因", "风险"]
 
@@ -717,12 +745,49 @@ class ReadThinkGate:
         return self._read_only_count >= 1
 
     def _scan_four_axis(self, content: str | None) -> None:
-        """四轴检测已升级为 LLM 语义判断——此方法保留为空操作。
+        """扫描 assistant 回复文本，检测四轴证据并累积到 self._four_axis_found。
 
-        四轴验证现在由 _judge_investigation 的四维度（代码理解/关系分析/既有模式/方案评估）
-        覆盖。当 LLM judge 通过时，调用方通过 mark_four_axis_complete() 写入 marker。
+        每轴独立判定：该轴的任一关键词命中即标记为 found（O(n) 子串匹配，无正则回溯）。
+        四轴全部 found 时写入 marker 文件，供 pre_tool_call 插件读取。
+
+        Contract:
+          Preconditions: content 为本 turn assistant 回复文本（可能为 None）
+          Postconditions: _four_axis_found 仅增不减；四轴齐时 marker 文件存在且 verified=True
+        2026-08-26 修复：e12e46fd3 将此方法改为空操作并赌 use_llm_judge 恒开，
+        但用户配置 use_llm_judge=false（config.yaml:911）→ 四轴无任何解锁路径，
+        patch 永远被拦（误报）。恢复关键词扫描 = 恢复「judge 显式通过或内容检测
+        自然累积」双路径不变量（check_batch :1029 注释）。judge 开启时行为不变。
         """
-        pass
+        if not content:
+            return
+        # 四轴关键词通常在结论部分。对超长文本只扫描尾部 8KB，
+        # 避免超大 content 做全文扫描的 CPU 开销。
+        scan_text = content if len(content) <= 8192 else content[-8192:]
+        for axis, keywords in _FOUR_AXIS_KEYWORDS.items():
+            if axis in self._four_axis_found:
+                continue
+            for kw in keywords:
+                if kw in scan_text:
+                    self._four_axis_found.add(axis)
+                    logger.info(
+                        "read-think gate: four-axis '%s' detected — %d/4 axes found",
+                        axis, len(self._four_axis_found),
+                    )
+                    break
+        # 四轴全部到位 → 写入 marker 文件
+        if len(self._four_axis_found) == 4:
+            try:
+                _marker = _four_axis_marker_path()
+                _marker.parent.mkdir(parents=True, exist_ok=True)
+                _marker.write_text(json.dumps({
+                    "verified": True,
+                    "source": "content_scan",
+                    "timestamp": time.time(),
+                    "axes": sorted(self._four_axis_found),
+                }))
+                logger.info("read-think gate: four-axis complete via content scan — marker written")
+            except Exception:
+                logger.warning("read-think gate: failed to write four-axis marker", exc_info=True)
 
     def mark_four_axis_complete(self) -> None:
         """LLM judge 通过后调用——标记四轴完成并写入 marker 文件。
