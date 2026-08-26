@@ -1220,23 +1220,35 @@ def _render_tool_calls_block(tool_calls_summary: Optional[str]) -> str:
 
 
 def extract_tool_calls_summary(history: Optional[List[Dict[str, Any]]]) -> Optional[str]:
-    """Extract a brief summary of tool calls from the last assistant turn.
+    """Extract a brief summary of tool calls from the last agent turn.
 
-    Looks at the most recent assistant message with tool_calls and produces
-    a human-readable summary like "3 calls: terminal, read_file, search_files".
-    Returns None when no tool calls were made or history is unavailable.
+    The turn is delimited by the most recent user message: every assistant
+    message after it belongs to this turn (a turn is typically many assistant
+    messages — tool-call rounds followed by a final text summary). Produces a
+    summary like "3 call(s): terminal, read_file, search_files". Returns None
+    when history is unavailable.
+
+    Contract:
+        Preconditions: history is a list of role-keyed message dicts (or None).
+        Postconditions: returns None iff history is falsy; otherwise a str that
+        is "0 calls (text-only response)" when the turn made no tool calls.
     """
     if not history:
         return None
     try:
-        for msg in reversed(history):
+        # Find the start of the current turn: the last user message.
+        turn_start = 0
+        for i in range(len(history) - 1, -1, -1):
+            if history[i].get("role") == "user":
+                turn_start = i + 1
+                break
+        names: list[str] = []
+        for msg in history[turn_start:]:
             if msg.get("role") != "assistant":
                 continue
             tcs = msg.get("tool_calls")
             if not tcs:
-                # This is the last assistant message but it had no tool calls.
-                return "0 calls (text-only response)"
-            names: list[str] = []
+                continue
             for tc in tcs:
                 if isinstance(tc, dict):
                     fn = tc.get("function", {})
@@ -1244,9 +1256,9 @@ def extract_tool_calls_summary(history: Optional[List[Dict[str, Any]]]) -> Optio
                         name = fn.get("name", "")
                         if name:
                             names.append(name)
-            if not names:
-                return "0 calls (text-only response)"
-            return f"{len(names)} call(s): {', '.join(names)}"
+        if not names:
+            return "0 calls (text-only response)"
+        return f"{len(names)} call(s): {', '.join(names)}"
     except Exception:
         return None
     return None
