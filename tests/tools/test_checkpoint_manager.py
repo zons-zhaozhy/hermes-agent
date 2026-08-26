@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from tools.checkpoint_manager import (
     CheckpointManager,
+    SnapshotFailedError,
     _shadow_repo_path,
     _init_store,
     _run_git,
@@ -169,6 +170,82 @@ class TestTakeCheckpoint:
         mgr.new_turn()
         (work_dir / "main.py").write_text("print('modified')\n")
         assert mgr.ensure_checkpoint(str(work_dir), "turn 2") is True
+
+    def test_failed_snapshot_trips_circuit_breaker(self, mgr, work_dir, monkeypatch):
+        """A directory whose snapshot really failed (git-add error/timeout)
+        must not be retried next turn — each retry blocks the calling tool
+        for the full git timeout.
+
+        Contract: Preconditions — _take monkeypatched to raise
+        SnapshotFailedError.  Postconditions — first call returns False and
+        records the failure; after new_turn() (dedup reset) the call still
+        returns False without invoking _take again; benign False (no
+        changes) does NOT trip the breaker.
+        """
+        calls = []
+
+        def failing_take(directory, reason="auto", **kwargs):
+            calls.append(directory)
+            raise SnapshotFailedError("git add -A timed out")
+
+        monkeypatch.setattr(mgr, "_take", failing_take)
+        assert mgr.ensure_checkpoint(str(work_dir), "turn 1") is False
+        assert len(calls) == 1
+        mgr.new_turn()
+        assert mgr.ensure_checkpoint(str(work_dir), "turn 2") is False
+        assert len(calls) == 1  # circuit breaker: no second attempt
+
+        # Benign False (e.g. "no changes") must NOT trip the breaker.
+        monkeypatch.setattr(mgr, "_take", lambda d, reason="auto", **kw: False)
+        mgr._snapshot_failed_dirs.clear()
+        mgr.new_turn()
+        assert mgr.ensure_checkpoint(str(work_dir), "benign") is False
+        assert str(work_dir) not in mgr._snapshot_failed_dirs
+
+    def test_staging_paths_snapshots_only_target_file(self, mgr, work_dir):
+        """Targeted staging: only the named file lands in the snapshot, and
+        a huge directory is still checkpointable because the file-count
+        guard only applies to full-tree staging.
+
+        Contract: Preconditions — work_dir contains multiple files.
+        Postconditions — checkpoint taken (True); the snapshot commit
+        contains exactly the staged file's path; sibling files absent.
+        """
+        target = work_dir / "main.py"
+        assert mgr.ensure_checkpoint(
+            str(work_dir), "before patch", staging_paths=[str(target)]
+        ) is True
+        ckpts = mgr.list_checkpoints(str(work_dir))
+        assert ckpts, "expected at least one checkpoint"
+        # Verify staged content via the store index for this project.
+        from tools.checkpoint_manager import _project_hash, _index_path, _store_path, CHECKPOINT_BASE
+        idx = _index_path(_store_path(CHECKPOINT_BASE), _project_hash(str(work_dir)))
+        import subprocess
+        out = subprocess.run(
+            ["git", "--git-dir", str(_store_path(CHECKPOINT_BASE)),
+             "ls-files", "--cached"],
+            capture_output=True, text=True,
+            env={**os.environ, "GIT_INDEX_FILE": str(idx)},
+        )
+        staged = [l for l in out.stdout.splitlines() if l.strip()]
+        assert staged == ["main.py"], f"expected only main.py staged, got {staged}"
+
+    def test_staging_paths_bypasses_file_count_guard(self, mgr, work_dir, monkeypatch):
+        """Targeted staging must not be skipped for huge directories.
+
+        Contract: Preconditions — _dir_file_count monkeypatched to a huge
+        number.  Postconditions — full-tree staging skips (False); targeted
+        staging still takes a checkpoint (True).
+        """
+        import tools.checkpoint_manager as cm
+        monkeypatch.setattr(cm, "_dir_file_count", lambda p: 10_000_000)
+        monkeypatch.setattr(cm, "_MAX_FILES", 50_000)
+        assert mgr.ensure_checkpoint(str(work_dir), "full") is False
+        mgr.new_turn()
+        assert mgr.ensure_checkpoint(
+            str(work_dir), "targeted",
+            staging_paths=[str(work_dir / "main.py")],
+        ) is True
 
 
 # =========================================================================

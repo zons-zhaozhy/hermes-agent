@@ -182,6 +182,32 @@ test("R012 /opt/",
 test("允许: 相对路径",
      "DATA_DIR = './data'", None)
 
+print("硬编码系列 — kwarg/AnnAssign/dict 形态（_iter_name_value_pairs 扩面）")
+test("R007 kwarg password",
+     "connect(password='my_secret_123')", "R007")
+test("R007 dict db_password",
+     "CFG = {'db_password': 'abc123'}", "R007")
+test("R010 kwarg host",
+     "connect(host='192.168.1.5')", "R010")
+test("R010 AnnAssign localhost:5432",
+     "HOST: str = 'localhost:5432'", "R010")
+test("R011 dict url",
+     "CFG = {'url': 'postgresql://u:p@h/d'}", "R011")
+test("R012 kwarg deploy_dir",
+     "f(deploy_dir='/opt/ontox/x')", "R012")
+test("允许: kwarg 非字面量",
+     "connect(password=os.environ['PW'])", None)
+
+print("R021: 正则使用")
+test("R021 re.sub",
+     "import re\nx = re.sub('a', 'b', s)", "R021")
+test("R021 re.compile 链式",
+     "m = re.compile(r'\\d+').match(s)", "R021")
+test("R021 豁免 # re-ok",
+     "import re  # re-ok 确需提取数字\nx = re.match(r'\\d+', s)  # re-ok", None)
+test("允许: str.replace",
+     "x = s.replace('a', 'b')", None)
+
 # ═══════════════════════════════════════════════════════════════════════
 # 安全 + 代码质量
 # ═══════════════════════════════════════════════════════════════════════
