@@ -28,6 +28,7 @@ Contract:
   Invariants: plugin never raises out of hooks; never blocks --list itself.
 """
 
+import json
 import logging
 import shlex
 
@@ -368,6 +369,14 @@ def _on_post_tool_call(**kwargs):
     tool_name = kwargs.get("tool_name", "")
     args = kwargs.get("args", {})
     result = kwargs.get("result", {}) or {}
+    if isinstance(result, str):
+        # terminal 等工具的 result 以 JSON 字符串传入钩子；解析成 dict 再取字段
+        try:
+            result = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            result = {}
+    if not isinstance(result, dict):
+        result = {}
     if not _is_terminal_with_command(tool_name, args):
         return {}
     command = _normalize(args["command"])
