@@ -367,9 +367,15 @@ def _on_pre_tool_call(**kwargs):
 def _on_post_tool_call(**kwargs):
     tool_name = kwargs.get("tool_name", "")
     args = kwargs.get("args", {})
-    result = kwargs.get("result", {}) or {}
+    if not isinstance(args, dict):
+        return {}
+    result = kwargs.get("result")
     if not _is_terminal_with_command(tool_name, args):
         return {}
+    # 工具结果可能是 str（部分工具返回纯文本）——非 dict 无 exit_code 可读，
+    # 归一为 dict 再取值，禁止对 str 调 .get() 崩溃（errors.log 曾 2709x WARNING）。
+    if not isinstance(result, dict):
+        result = {"exit_code": 0, "output": str(result or "")}
     command = _normalize(args["command"])
     exit_code = result.get("exit_code", 0)
     output = str(result.get("output", ""))

@@ -194,6 +194,19 @@ def _search_duplicates(path: str, cwd: str) -> List[str]:
 
     new_stems = _stem_set(name_no_ext)
 
+    # 区分性过滤（0824 误报根因修复）：一个词干若已出现在同目录 ≥3 个
+    # 其他文件名中，它是项目级通用词（hermes/state/common…），不具区分性，
+    # 命中只能是误报。hermes_state_cold vs hermes_bootstrap 共享 "hermes"、
+    # vs hermes_state* 共享 "state"，均为结构性噪声而非等价实现信号。
+    stem_file_count: Dict[str, int] = {}
+    for f in all_files:
+        if f == path or os.path.dirname(f) != os.path.dirname(path):
+            continue
+        for s in _stem_set(os.path.splitext(os.path.basename(f))[0]):
+            stem_file_count[s] = stem_file_count.get(s, 0) + 1
+    generic_stems = {s for s, n in stem_file_count.items() if n >= 3}
+    new_stems = new_stems - generic_stems
+
     for kw in keywords[:2]:
         for f in all_files:
             if f == path:
