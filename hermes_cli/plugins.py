@@ -5339,6 +5339,20 @@ class PluginManager:
         # monolithic compatibility contract (#64176).
         if hook_name != "gateway_platform_event":
             kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
+        # Contract: Postconditions — for pre_tool_call / post_tool_call every
+        # callback receives ``args`` as a dict. Dispatch paths that bypass
+        # model_tools._emit_post_tool_call_hook (cron, gateway, query mode via
+        # lifecycle.invoke_hook) can pass the raw JSON string; normalize here
+        # at the dispatch funnel so no callback re-assumes dict (companion to
+        # 1a36d6fa54 which fixed only the model_tools funnel).
+        if hook_name in ("pre_tool_call", "post_tool_call"):
+            raw_args = kwargs.get("args")
+            if not isinstance(raw_args, dict):
+                try:
+                    parsed = json.loads(raw_args) if isinstance(raw_args, str) and raw_args else {}
+                except json.JSONDecodeError:
+                    parsed = {}
+                kwargs["args"] = parsed if isinstance(parsed, dict) else {}
         callbacks = self._hooks.get(hook_name, [])
         results: List[Any] = []
         for cb in callbacks:
