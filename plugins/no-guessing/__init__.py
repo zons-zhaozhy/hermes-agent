@@ -28,6 +28,7 @@ Contract:
   Invariants: plugin never raises out of hooks; never blocks --list itself.
 """
 
+import json
 import logging
 import shlex
 
@@ -369,13 +370,18 @@ def _on_post_tool_call(**kwargs):
     args = kwargs.get("args", {})
     if not isinstance(args, dict):
         return {}
-    result = kwargs.get("result")
+    result = kwargs.get("result", {}) or {}
+    if isinstance(result, str):
+        # terminal 等工具的 result 以 JSON 字符串传入钩子；解析成 dict 再取字段
+        try:
+            result = json.loads(result)
+        except (json.JSONDecodeError, TypeError) as e:
+            logging.warning("no-guessing: result JSON 解析失败按空dict: %s", e)
+            result = {}
+    if not isinstance(result, dict):
+        result = {}
     if not _is_terminal_with_command(tool_name, args):
         return {}
-    # 工具结果可能是 str（部分工具返回纯文本）——非 dict 无 exit_code 可读，
-    # 归一为 dict 再取值，禁止对 str 调 .get() 崩溃（errors.log 曾 2709x WARNING）。
-    if not isinstance(result, dict):
-        result = {"exit_code": 0, "output": str(result or "")}
     command = _normalize(args["command"])
     exit_code = result.get("exit_code", 0)
     output = str(result.get("output", ""))

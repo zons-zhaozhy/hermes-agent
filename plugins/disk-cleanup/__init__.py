@@ -21,6 +21,7 @@ needs to remember to run commands.
 from __future__ import annotations
 
 import logging
+import json
 import re
 import shlex
 import threading
@@ -70,12 +71,21 @@ def _drain(task_id: str, session_id: str) -> Set[str]:
 
 
 def _attempt_track(path_str: str, task_id: str, session_id: str) -> None:
-    """Best-effort auto-track. Never raises."""
+    """Best-effort auto-track. Never raises.
+
+    Contract:
+      Preconditions: path_str 是任意字符串（可能超长/含换行/非法字节）。
+      Postconditions: 本函数绝不向上抛异常——所有 OSError（含超长路径的
+      [Errno 63] ENAMETOOLONG）在 exists() 探测处就地消化，只记 debug 日志。
+    """
     try:
         p = Path(path_str).expanduser()
-    except Exception:
-        return
-    if not p.exists():
+        if not p.exists():
+            return
+    except OSError:
+        # 超长/非法路径触发 ENAMETOOLONG 等——best-effort 语义下静默放弃，
+        # 不让钩子分发器把 WARNING 刷进 errors.log（历史缺陷：156 条 Errno 63）。
+        logger.debug("disk-cleanup: skip unstat-able path (%d chars)", len(path_str))
         return
     category = dg.guess_category(p)
     if category is None:
@@ -115,8 +125,19 @@ def _extract_paths_from_terminal(args: Dict[str, Any], result: str) -> Set[str]:
         except ValueError:
             pass
     # Only scan the result text if it's a reasonable size (avoid 50KB dumps).
+    # result 可能是 JSON 字符串（terminal 工具的钩子负载形态）：JSON 内换行是
+    # 字面 \n 两字符，正则的 [^\s]+ 会把它当普通字符吞掉，跨"行"匹配出
+    # /tmp/foo.md\n---\ndeleg_* 超长伪路径。先解码 JSON 取 output 字段再扫描。
     if isinstance(result, str) and len(result) < 4096:
-        for match in _TERMINAL_PATH_REGEX.findall(result):
+        scan_text = result
+        if result.lstrip().startswith("{"):
+            try:
+                parsed = json.loads(result)
+                if isinstance(parsed, dict) and isinstance(parsed.get("output"), str):
+                    scan_text = parsed["output"]
+            except (json.JSONDecodeError, ValueError):
+                pass
+        for match in _TERMINAL_PATH_REGEX.findall(scan_text):
             paths.add(match)
     return paths
 
