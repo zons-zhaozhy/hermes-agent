@@ -112,7 +112,15 @@ def _extract_tables_from_sql(sql: str) -> Set[str]:
     insert_pattern = re.findall(
         r"\bINTO\s+([a-zA-Z_][a-zA-Z0-9_]*)", sql, re.IGNORECASE
     )
-    return set(from_pattern + update_pattern + insert_pattern)
+    # DROP TABLE table_name / TRUNCATE [TABLE] table_name / ALTER TABLE table_name
+    # 2026-08-28 审计修复：DDL 同样针对具体表，漏判使 DROP 绕过 schema 铁律
+    ddl_pattern = re.findall(
+        r"\b(?:DROP\s+TABLE|TRUNCATE(?:\s+TABLE)?|ALTER\s+TABLE)\s+"
+        r"(?:IF\s+EXISTS\s+)?([a-zA-Z_][a-zA-Z0-9_.]*)",
+        sql,
+        re.IGNORECASE,
+    )
+    return set(from_pattern + update_pattern + insert_pattern + ddl_pattern)
 
 
 def _extract_db_client(cmd: str) -> str:

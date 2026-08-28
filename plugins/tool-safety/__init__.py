@@ -207,10 +207,31 @@ def on_pre_tool_call(**kwargs) -> Optional[Dict[str, Any]]:
                     ),
                 }
 
+    # ── Check 4: catastrophic delete commands ─────────────────────
+    # 2026-08-28 审计修复：rm -rf 指向根/家目录此前无任何插件拦截
+    if tool_name == "terminal":
+        cmd = str(args.get("command", "")).strip()
+        for rm_token in cmd.split():
+            if not rm_token.startswith(("rm", "-")):
+                continue
+            if rm_token in ("rm", "rm -r", "rm -rf", "rm -fr", "rm -f") or (
+                rm_token.startswith("-") and "r" in rm_token and "f" in rm_token
+            ):
+                # 找到 rm/-rf 后的第一个非选项参数即目标
+                idx = cmd.split().index(rm_token) if rm_token in cmd.split() else -1
+                toks = cmd.split()
+                target = next((t for t in toks[idx + 1:] if not t.startswith("-")), "")
+                norm = os.path.expanduser(target).rstrip("/")
+                if norm in ("/", "", ".") or norm == os.path.expanduser("~").rstrip("/"):
+                    return {
+                        "action": "block",
+                        "message": (
+                            "[ToolSafety] 灾难性删除命令被拦截：rm -rf 指向根目录或家目录。\n"
+                            "  修复: 明确列出要删除的具体子路径；确需清空请逐项确认后操作。"
+                        ),
+                    }
+
     return None
-
-
-# ── Registration ──────────────────────────────────────────────────────
 
 def register(ctx) -> None:
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
