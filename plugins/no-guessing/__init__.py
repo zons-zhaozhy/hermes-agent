@@ -418,7 +418,60 @@ def _on_pre_tool_call(**kwargs):
     if msg:
         return _block_with_escalation("R6", command, msg, sid)
 
+    # 规则7：脚本间接执行封堵——0829 实锤绕过：write_file 写 .sh 藏
+    # build.sh 命令,再 bash <file>.sh 规避 R3 关键词扫描。间接执行不得豁免
+    # 同等注册表验证。
+    msg = _check_script_indirection(command)
+    if msg:
+        return _block_with_escalation("R7", command, msg, sid)
+
     return {}
+
+
+def _check_script_indirection(command: str):
+    """Contract: bash/sh 执行本地 .sh 脚本且脚本内容含 build.sh/deploy.sh
+    调用时,要求脚本内服务名已通过注册表验证;否则拦截。
+    读不到脚本文件(OSError/超大>100KB)→放行(不加重误拦)。
+    """
+    import shlex as _shlex
+    from pathlib import Path as _Path
+    try:
+        tokens = _shlex.split(command)
+    except ValueError:
+        return None
+    script_paths = []
+    for i, t in enumerate(tokens):
+        if t.endswith(".sh") and (i == 0 or tokens[i - 1] in ("bash", "sh", "sudo", "zsh")):
+            script_paths.append(t)
+    for sp in script_paths:
+        try:
+            path = _Path(sp)
+            if not path.exists() or path.stat().st_size > 100_000:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            # 只检查含 build.sh/deploy.sh 调用的行（docker compose 行是
+            # 部署动作但不含服务注册语义,其服务名参数也一并提取即可）
+            deploy_lines = [
+                ln for ln in text.splitlines()
+                if _needs_name_verification(ln)
+            ]
+            if not deploy_lines:
+                continue
+            names = _load_registry_names()
+            needed = set()
+            for ln in deploy_lines:
+                needed.update(_extract_service_names(ln))
+            needed.discard("docker"); needed.discard("compose")
+            missing = [n for n in needed if n not in names]
+            if missing:
+                return (
+                    "[NO-GUESSING BLOCK R7] 间接执行脚本 {sp} 内含 build.sh/"
+                    "deploy.sh 调用但服务名 {missing} 未经验证——把命令藏进"
+                    "脚本文件规避 R3 属绕过行为,禁止。请先跑 --list 并原路执行。"
+                ).format(sp=sp, missing=",".join(sorted(missing)[:5]))
+        except OSError:
+            continue
+    return None
 
 
 def _on_post_tool_call(**kwargs):
