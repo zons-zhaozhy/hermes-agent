@@ -91,63 +91,42 @@ def _is_sed_write(tool_name: str, args: dict) -> bool:
     return False
 
 
-def _on_pre_tool_call(**kwargs) -> None:
-    """pre_tool_call 回调：检测 sed 写入操作，写入状态文件。"""
+_BLOCK_MESSAGE = """\
+[patch-first] terminal 中检测到 sed/脚本写入源文件，已拦截（硬闸门，非提醒）。
+
+文件修改唯一合法通道：
+  - 修改已有文件 → patch 工具（fuzzy matching，返回 unified diff）
+  - 新建文件 → write_file 工具
+
+sed 仅允许只读查找（sed -n 'N,Mp' file / sed -n '/pattern/p' file）。
+若此拦截为误报：在 patch 工具中完成该修改，不要换通道绕过。\
+"""
+
+
+def _on_pre_tool_call(**kwargs):
+    """pre_tool_call 回调：检测 sed 写入操作，硬拦截（返回 block）。
+
+    Contract:
+      Preconditions: kwargs 含 tool_name(str)、args(dict)
+      Postconditions: 检测到 sed 写入时返回
+        {"action": "block", "message": _BLOCK_MESSAGE}（工具不执行）；
+        否则返回 None（放行）
+    """
     tool_name = kwargs.get("tool_name", "")
     args = kwargs.get("args", {})
 
     if _is_sed_write(tool_name, args):
-        try:
-            payload = {
-                "tool_name": tool_name,
-                "command": str(args.get("command", args.get("code", "")))[:200],
-                "timestamp": time.time(),
-            }
-            with open(_STATE_FILE, "w") as f:
-                json.dump(payload, f)
-            logger.debug("patch-first: 检测到 sed 写入操作 [%s]", tool_name)
-        except OSError as e:
-            logger.warning("patch-first: 写入状态文件失败: %s", e)
-
-
-def _on_pre_llm_call(**kwargs) -> dict:
-    """pre_llm_call 回调：如果有 sed 写入待提醒，注入 patch 优先提醒。"""
-    if not os.path.exists(_STATE_FILE):
-        return {}
-
-    try:
-        with open(_STATE_FILE) as f:
-            payload = json.load(f)
-    except (json.JSONDecodeError, KeyError, OSError) as e:
-        try:
-            os.remove(_STATE_FILE)
-        except OSError:
-            logger.warning("patch-first: 状态文件清理失败")
-        logger.warning("patch-first: 状态文件读取失败: %s", e)
-        return {}
-
-    # 超过 60 秒视为过期
-    if time.time() - payload.get("timestamp", 0) > 60:
-        try:
-            os.remove(_STATE_FILE)
-        except OSError:
-            logger.debug("patch-first: 过期状态文件清理失败")
-        return {}
-
-    try:
-        os.remove(_STATE_FILE)
-    except OSError:
-        logger.warning("patch-first: 状态文件清理失败")
-
-    logger.info(
-        "patch-first: 注入 patch 优先提醒 (工具=%s)",
-        payload.get("tool_name", "?"),
-    )
-    return {"context": _REMINDER}
+        command = str(args.get("command", args.get("code", "")))
+        logger.info(
+            "patch-first: blocked terminal sed/script write [%s] cmd=%s",
+            tool_name,
+            command,
+        )
+        return {"action": "block", "message": _BLOCK_MESSAGE}
+    return None
 
 
 def register(ctx):
     """插件入口。"""
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
-    ctx.register_hook("pre_llm_call", _on_pre_llm_call)
-    logger.info("patch-first 插件已注册——修改方式纪律拦截就绪")
+    logger.info("patch-first 插件已注册——sed/脚本写入硬拦截就绪")

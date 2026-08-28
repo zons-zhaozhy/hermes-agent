@@ -4,4 +4,3 @@ description: 代码/文档修改纪律拦截——检测到sed/脚本批量替�
 author: stan
 hooks:
   - pre_tool_call
-  - pre_llm_call
