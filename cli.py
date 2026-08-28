@@ -13253,9 +13253,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             from hermes_cli.goals import extract_tool_calls_summary as _extract_tcs
             _bg_procs = _gather_bg()
             _tcs = _extract_tcs(self.conversation_history or [])
-        except Exception:
+        except Exception as exc:
+            # Fail-open but loud: silent None here removes the tool-calls
+            # block from the judge prompt, which the judge then reads as
+            # "zero verification commands" and votes CONTINUE indefinitely
+            # (observed 2026-08-26: 74-turn dead loop).
+            logging.warning("goal judge context extraction failed: %s", exc)
             _bg_procs = None
             _tcs = None
+        else:
+            logging.info("goal judge tool_calls_summary=%r", _tcs)
 
         decision = mgr.evaluate_after_turn(
             last_response,

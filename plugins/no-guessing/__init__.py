@@ -368,12 +368,15 @@ def _on_pre_tool_call(**kwargs):
 def _on_post_tool_call(**kwargs):
     tool_name = kwargs.get("tool_name", "")
     args = kwargs.get("args", {})
+    if not isinstance(args, dict):
+        return {}
     result = kwargs.get("result", {}) or {}
     if isinstance(result, str):
         # terminal 等工具的 result 以 JSON 字符串传入钩子；解析成 dict 再取字段
         try:
             result = json.loads(result)
-        except (json.JSONDecodeError, TypeError):
+        except (json.JSONDecodeError, TypeError) as e:
+            logging.warning("no-guessing: result JSON 解析失败按空dict: %s", e)
             result = {}
     if not isinstance(result, dict):
         result = {}
