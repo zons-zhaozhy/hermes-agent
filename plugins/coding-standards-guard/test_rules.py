@@ -254,6 +254,23 @@ test("违规: Exception+pass",
 test("违规: except+return None 无日志",
      "try:\n    do_something()\nexcept Exception:\n    return None", "R008")
 
+# 复合场景之外的独立规则用例须插在结果打印之前
+_R022_CASES = [
+    ("R022 违规: print 消息截断",
+     'def f(msg):\n    print(f"派发: {msg[:120]}")', "R022"),
+    ("R022 违规: logger 参数截断",
+     'import logging\nlogger = logging.getLogger(__name__)\ndef f(e):\n    logger.warning("失败: %s", str(e)[-300:])', "R022"),
+    ("R022 违规: raise 消息截断",
+     'def f(e):\n    raise RuntimeError(f"err {str(e)[:300]}") from e', "R022"),
+    ("R022 合法: 非诊断切片(data[:8000] 赋值)",
+     'def f(data):\n    body = data[:8000]\n    return body', None),
+    ("R022 合法: 截断+trunc-ok 豁免",
+     'def f(msg):\n    print(f"{msg[:100]}")  # trunc-ok 回灌LLM功能性上限', None),
+]
+print("R022: 诊断输出截断")
+for _name, _code, _expect in _R022_CASES:
+    test(_name, _code, _expect)
+
 print("\n" + "=" * 60)
 print(f"结果: {PASS_COUNT}/{PASS_COUNT + FAIL_COUNT} 通过, {FAIL_COUNT}/{PASS_COUNT + FAIL_COUNT} 失败")
 if FAIL_COUNT == 0:

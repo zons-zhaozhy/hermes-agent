@@ -37,6 +37,12 @@
   ── 其他 ──
   R006  import *                         — 禁止 from X import *
 
+  ── 正则使用系列（1 条）──
+  R021  正则使用                          — 优先 str 方法/结构化解析，豁免=re-ok
+
+  ── 诊断输出系列（1 条）──
+  R022  诊断输出截断                      — print/logger/raise 消息 [:N] 切片，豁免=trunc-ok
+
 ACTIVATION: ON by default. Set CODING_STANDARDS_GUARD_DISABLE=1 to turn off.
 """
 from __future__ import annotations
@@ -888,7 +894,67 @@ def _check_regex_usage(tree: ast.AST, lines: List[str]) -> List[Violation]:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 规则注册表 — 集中管理所有编码规范
+# R022: 诊断输出截断 — print/logger/raise 消息里的切片
+# ═══════════════════════════════════════════════════════════════════════
+
+_DIAG_FUNC_HINTS = ("print", "log", "logger", "warning", "error", "info",
+                    "debug", "critical", "exception")
+
+
+def _is_diag_call(func: ast.expr) -> bool:
+    """Contract:
+      Preconditions: func 为任意 AST 表达式
+      Postconditions: True 当且仅当调用目标名含 print/log/logger/warning/
+      error/info/debug/critical/exception（日志与打印类调用）
+    """
+    if isinstance(func, ast.Name):
+        return func.id in _DIAG_FUNC_HINTS
+    if isinstance(func, ast.Attribute):
+        return func.attr in _DIAG_FUNC_HINTS
+    return False
+
+
+def _check_diag_truncation(tree: ast.AST, lines: List[str]) -> List[Violation]:
+    """R022: print/logger/raise 消息里出现 [:N] / [-N:] 切片 — 诊断证据被截断。
+
+    教训(2026-08-28):dispatch 派发行 issue[:120] 切掉证据尾部,排障 20 分钟
+    找不到根因。截断就是埋坑——诊断输出必须全文;回灌 LLM 的功能性上限
+    须单独注明且日志侧同步落全文。豁免=行尾 `# trunc-ok` 加理由。
+    """
+    violations = []
+    for node in ast.walk(tree):
+        # print(...)/logger.xxx(...) 参数里含 Subscript 切片
+        if isinstance(node, ast.Call) and _is_diag_call(node.func):
+            for arg in node.args:
+                for sub in ast.walk(arg):
+                    if isinstance(sub, ast.Subscript) and isinstance(sub.slice, ast.Slice):
+                        if "# trunc-ok" in lines[sub.lineno - 1]:
+                            continue
+                        violations.append(Violation(
+                            rule_id="R022", line=sub.lineno, col=sub.col_offset,
+                            severity="error",
+                            message="诊断输出截断 [:N] — 截断就是埋坑(实测排障被误导20分钟);"
+                                    "诊断消息必须全文;确属功能性上限请行尾 `# trunc-ok` 加理由,"
+                                    "且日志侧同步落全文",
+                            snippet=_snippet(lines, sub.lineno),
+                        ))
+        # raise Xxx(...) 消息里含切片
+        if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
+            for arg in node.exc.args:
+                for sub in ast.walk(arg):
+                    if isinstance(sub, ast.Subscript) and isinstance(sub.slice, ast.Slice):
+                        if "# trunc-ok" in lines[sub.lineno - 1]:
+                            continue
+                        violations.append(Violation(
+                            rule_id="R022", line=sub.lineno, col=sub.col_offset,
+                            severity="error",
+                            message="异常消息截断 [:N] — 报错信息是定位根因的第一证据,"
+                                    "禁止切片;确需上限行尾 `# trunc-ok` 加理由",
+                            snippet=_snippet(lines, sub.lineno),
+                        ))
+    return violations
+
+
 # ═══════════════════════════════════════════════════════════════════════
 
 _RULES = [
@@ -916,6 +982,8 @@ _RULES = [
     ("R006",      _check_import_star,               "from X import * — 禁止星号导入"),
     # ── 正则使用系列（1 条）──
     ("R021",      _check_regex_usage,               "正则使用 — 优先 str 方法/结构化解析，豁免=re-ok"),
+    # ── 诊断输出系列（1 条）──
+    ("R022",      _check_diag_truncation,           "诊断输出截断 — print/logger/raise 消息切片，豁免=trunc-ok"),
 ]
 
 
