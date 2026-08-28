@@ -188,7 +188,7 @@ _REMINDER_AFTER_FAIL = (
 )
 
 # 触发服务名核验的命令片段（按子串判断，集合小且稳定）
-_NAME_CHECK_MARKERS = ("deploy.sh cloud", "cloud-svc-run", "build.sh")
+_NAME_CHECK_MARKERS = ("deploy.sh cloud", "cloud-svc-run", "build.sh", "deploy.sh local", "deploy.sh build")
 # 永不拦截的只读标志
 _READONLY_PASSES = ("--list", "-h", "--help")
 
@@ -282,7 +282,11 @@ def _extract_service_names(command: str):
         return []
     known_subcommands = {"cloud", "cloud-run", "cloud-svc-run", "local", "run",
                          "build", "up", "down", "restart", "logs", "status",
-                         "deploy.sh", "build.sh", "bash"}
+                         "deploy.sh", "build.sh", "bash",
+                         # 0828 实锤误拦修复: git/循环/管道等通用 shell 令牌不是服务名
+                         "git", "add", "commit", "push", "pull", "cd", "for",
+                         "in", "do", "done", "if", "then", "fi", "while",
+                         "echo", "sh", "xargs", "grep", "tail", "head"}
     names = []
     for tok in tokens:
         if tok.startswith("-") or tok in known_subcommands or tok.endswith((".sh", ".yml", ".yaml")):
@@ -298,9 +302,70 @@ def _is_terminal_with_command(tool_name: str, args: dict) -> bool:
 
 
 def _needs_name_verification(command: str) -> bool:
+    """Contract: 只在命令真正调用 build.sh/deploy.sh(可执行令牌)时触发核验。
+    0828 实锤误拦修复: 'git add deploy/build.sh'/'bash -n x.sh && ...' 只是
+    文本引用文件路径, 子串匹配 'build.sh' 会误伤一切 git/验证类命令。"""
     if any(p in command for p in _READONLY_PASSES):
         return False
-    return any(m in command for m in _NAME_CHECK_MARKERS)
+    if not any(m in command for m in _NAME_CHECK_MARKERS):
+        return False
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    # build.sh/deploy.sh 必须作为被调用的脚本令牌出现(而非 git add/编辑对象)
+    invoking = any(
+        tok.endswith(("build.sh", "deploy.sh"))
+        and (i == 0 or tokens[i - 1] in ("bash", "sh", "sudo", "source", "."))
+        for i, tok in enumerate(tokens)
+    )
+    return invoking
+
+
+def _registry_cache_path():
+    """Contract: 返回注册表持久化缓存路径（与 outcomes.db 同目录）。"""
+    import os
+    from pathlib import Path
+    home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
+    return Path(home) / "no_guessing_registry.txt"
+
+
+def _load_registry_names():
+    """读已验证服务名集合：会话内存态优先，文件缓存兜底（24h TTL）。
+
+    根因修复（2026-08-29 实锤）：post 写入的会话内存态在部分钩子链路下
+    pre 读不到（session_id 传递缺陷），导致 --list 成功后仍误拦 R3。
+    文件持久化对会话切换/进程重启/session_id 漂移全部免疫。
+    Contract: 返回 set[str]；不可用返回空 set（回退拦截行为）。
+    """
+    state_names = set()
+    state = get_session_state("", namespace=_STATE_PREFIX)
+    cached = state.get("registry_output", "")
+    if cached:
+        state_names = _names_from_registry_text(cached)
+    if state_names:
+        return state_names
+    try:
+        import time
+        path = _registry_cache_path()
+        if not path.exists():
+            return set()
+        age_h = (time.time() - path.stat().st_mtime) / 3600
+        if age_h > 24:
+            return set()  # 陈旧注册表不可作为放行证据
+        return _names_from_registry_text(path.read_text(encoding="utf-8"))
+    except OSError:
+        return set()
+
+
+def _names_from_registry_text(text):
+    """从 --list 表格输出提取服务名（每行首列，跳过表头）。"""
+    names = set()
+    for line in (text or "").splitlines():
+        toks = line.split()
+        if toks and toks[0] not in ("服务", "----", "Service"):
+            names.add(toks[0])
+    return names
 
 
 def _on_pre_tool_call(**kwargs):
@@ -323,22 +388,13 @@ def _on_pre_tool_call(**kwargs):
 
     # 规则3：服务名必须出现在本会话 --list 注册表输出里
     if _needs_name_verification(command):
-        registry_output = state.get("registry_output", "")
-        if not registry_output:
-            names = _extract_service_names(command)
-            if names:
-                return _block_with_escalation(
-                    "R3", command,
-                    _BLOCK_UNVERIFIED_NAME.format(names=",".join(names[:5])), sid)
+        names = _extract_service_names(command)
+        if not names:
+            pass
         else:
-            # 服务名=注册表每行首列令牌（--list 输出为表格：服务 仓库 Dockerfile ...）
-            # 首列提取防止仓库名(如 loom)冒充服务名(loom-backend)通过
-            service_names = set()
-            for line in state["registry_output"].splitlines():
-                toks = line.split()
-                if toks and toks[0] not in ("服务", "----", "Service"):
-                    service_names.add(toks[0])
-            for name in _extract_service_names(command):
+            # 会话内存态 + 文件持久化双通道（0829 修复:会话态丢失不再误拦）
+            service_names = _load_registry_names()
+            for name in names:
                 if name not in service_names:
                     return _block_with_escalation(
                         "R3", command,
@@ -388,9 +444,14 @@ def _on_post_tool_call(**kwargs):
     state = _state(kwargs.get("session_id", ""))
 
     if "--list" in command and exit_code == 0 and len(output) > 50:
-        # 注册表输出采集（保留最新一份）
+        # 注册表输出采集（保留最新一份）——会话内存态 + 文件持久化双写
+        # （0829 修复:内存态在钩子链路下可能丢失,文件是 pre 侧兜底数据源）
         state["registry_output"] = output
         state.pop("last_failed_command", None)
+        try:
+            _registry_cache_path().write_text(output, encoding="utf-8")
+        except OSError as e:
+            logging.warning("no-guessing: 注册表缓存写盘失败 %s", e)
         return {}
 
     if exit_code != 0:
