@@ -2119,7 +2119,26 @@ def init_agent(
     _compression_cfg = _agent_cfg.get("compression", {})
     if not isinstance(_compression_cfg, dict):
         _compression_cfg = {}
-    compression_threshold = float(_compression_cfg.get("threshold", 0.50))
+    # Threshold default must come from DEFAULT_CONFIG (single source of
+    # truth), never an inline literal. Explicitness is judged against the
+    # user's RAW config.yaml (before deep-merge with defaults): a threshold
+    # present in the raw file means the user set it deliberately, and the
+    # small-context floor must not silently override it.
+    from hermes_cli.config import DEFAULT_CONFIG as _DEFAULT_CONFIG
+    from hermes_cli.config import read_user_config_raw
+    _default_compression = _DEFAULT_CONFIG.get("compression", {}) or {}
+    _threshold_default = _default_compression.get("threshold", 0.50)
+    compression_threshold = float(
+        _compression_cfg.get("threshold", _threshold_default)
+    )
+    try:
+        _raw_user_cfg = read_user_config_raw() or {}
+    except Exception:
+        _raw_user_cfg = {}
+    _raw_compression = _raw_user_cfg.get("compression", {}) or {}
+    compression_explicit_threshold = isinstance(
+        _raw_compression, dict,
+    ) and "threshold" in _raw_compression
     # Per-model/route compaction-threshold override. Codex gpt-5.4 / gpt-5.5
     # raise to 85% (the Codex backend caps both families at 272K, so the
     # default 50% would compact at ~136K — half the usable context). Gated by
@@ -2790,6 +2809,7 @@ def init_agent(
         agent.context_compressor = ContextCompressor(
             model=agent.model,
             threshold_percent=compression_threshold,
+            explicit_threshold=compression_explicit_threshold,
             protect_first_n=compression_protect_first,
             protect_last_n=compression_protect_last,
             summary_target_ratio=compression_target_ratio,

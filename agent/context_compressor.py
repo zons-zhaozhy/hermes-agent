@@ -2261,9 +2261,15 @@ class ContextCompressor(ContextEngine):
             # and BEFORE threshold_tokens is derived (deferred here from
             # __init__ along with the resolution itself, #32221).
             # _base_threshold_percent already has the per-model override
-            # applied, so the floor stacks on top of it.
-            self.threshold_percent = self._effective_threshold_percent(
-                self._resolved_context_length, self._base_threshold_percent,
+            # applied, so the floor stacks on top of it. Skipped entirely
+            # when the user explicitly configured the threshold — the
+            # trigger must be exactly context_length x threshold then.
+            self.threshold_percent = (
+                self._base_threshold_percent
+                if getattr(self, "explicit_threshold", False)
+                else self._effective_threshold_percent(
+                    self._resolved_context_length, self._base_threshold_percent,
+                )
             )
             self._emit_init_summary_once()
         return self._resolved_context_length
@@ -2901,8 +2907,14 @@ class ContextCompressor(ContextEngine):
             model, self.model_thresholds, _config_pct,
         )
         self._base_threshold_percent = _new_base
-        self.threshold_percent = self._effective_threshold_percent(
-            context_length, _new_base,
+        # Same explicit-threshold bypass as _resolve_context_length: a user
+        # who set compression.threshold must get context_length x threshold.
+        self.threshold_percent = (
+            _new_base
+            if getattr(self, "explicit_threshold", False)
+            else self._effective_threshold_percent(
+                context_length, _new_base,
+            )
         )
         # max_tokens=None here means "caller didn't specify" → keep the existing
         # output reservation. A switch that genuinely changes the output budget
@@ -3130,7 +3142,14 @@ class ContextCompressor(ContextEngine):
         proactive_prune_min_reclaim_tokens: int = 4096,
         min_tail_user_messages: int = 1,
         tail_mode: str = "legacy",
+        explicit_threshold: bool = False,
     ):
+        # Explicit user-configured threshold flag: True means the user set
+        # compression.threshold (or model_thresholds) in their config.yaml.
+        # The small-context floor (75% raise-only) is then SKIPPED so the
+        # trigger point is exactly context_length x threshold. The floor
+        # only protects users relying on the DEFAULT_CONFIG default.
+        self.explicit_threshold = bool(explicit_threshold)
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
