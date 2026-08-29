@@ -249,10 +249,18 @@ JUDGE_USER_PROMPT_TEMPLATE = (
     "terminal/test/build calls) but the agent claims completion, this is "
     "almost certainly premature — return CONTINUE.\n"
     "- TRAJECTORY DRIFT: if the turn trajectory above shows the agent "
-    "spending many consecutive turns on the same sub-problem or repeating "
-    "similar local fixes while the goal's TOTAL scope (e.g. N of M items) "
-    "stays unchanged, return CONTINUE with a reason explicitly telling the "
-    "agent to break out and batch-push the main line.\n"
+    "spending many consecutive turns on the same sub-problem — judge "
+    "repetition counts SEMANTICALLY (same table/file/symptom recurring, "
+    "even when the wording differs) — while the goal's TOTAL scope "
+    "(e.g. N of M items) stays unchanged, return CONTINUE with a reason "
+    "explicitly telling the agent to break out and batch-push the main "
+    "line. Trajectory entries marked [judge unreachable] are not "
+    "verdicts; skip them when counting repetition.\n"
+    "- PROGRESS CLAIMS NEED OBJECTIVE GROUNDING: 'progress N/M' or "
+    "'ledger updated' claims are only evidence when the response shows "
+    "the actual command output that produced the number. Self-reported "
+    "progress numbers with no tool output behind them are assertions, "
+    "not evidence — treat them as unverified.\n"
     "- If the agent explains the goal is blocked / unachievable / needs user "
     "input, treat it as DONE with the reason describing the block.\n\n"
     "Is the goal satisfied — done, continue, or wait?"
@@ -1253,11 +1261,20 @@ def _render_turn_trajectory_block(turn_reasons: Optional[List[str]]) -> str:
     """
     if not turn_reasons:
         return ""
-    recent = turn_reasons[-20:]
-    lines = [f"  {i}. {r}" for i, r in enumerate(recent, start=1)]
+    reasons = [str(r).strip() for r in turn_reasons if str(r).strip()][-20:]
+    full_count = min(5, len(reasons))
+    lines = []
+    for i, r in enumerate(reasons, start=1):
+        r_flat = r.replace("\n", " ")
+        if i <= len(reasons) - full_count:
+            lines.append(f"  {i}. {r_flat[:80]}{'…' if len(r_flat) > 80 else ''}  (truncated)")
+        else:
+            lines.append(f"  {i}. {r_flat}")
     return (
-        "Turn trajectory (judge reasons, oldest→newest, last "
-        f"{len(recent)} turns):\n" + "\n".join(lines) + "\n\n"
+        "Turn trajectory (judge reasons, oldest→newest; most recent "
+        f"{full_count} turn(s) in full, older ones head-truncated; entries "
+        "marked [judge unreachable] had no verdict and don't count as "
+        "evidence):\n" + "\n".join(lines) + "\n\n"
     )
 
 
@@ -2112,9 +2129,16 @@ class GoalManager:
         state.last_verdict = verdict
         state.last_reason = reason
         # Record the trajectory so the NEXT judge call can see drift across
-        # turns. Cap at 20 (mirrors from_json) to bound state size.
-        if verdict == "continue" and reason and str(reason).strip():
-            state.turn_reasons = (state.turn_reasons + [str(reason).strip()])[-20:]
+        # turns. Cap at 20 (mirrors from_json) to bound state size. Transport
+        # failures get a sentinel — they had no verdict and must not masquerade
+        # as drift evidence in the next judge call.
+        if reason and str(reason).strip():
+            entry = (
+                "[judge unreachable — no verdict this turn]"
+                if transport_failed
+                else str(reason).strip()
+            )
+            state.turn_reasons = (state.turn_reasons + [entry])[-20:]
 
         # Track consecutive judge parse failures. Reset on any usable reply,
         # including API / transport errors (parse_failed=False) so a flaky
@@ -2401,6 +2425,9 @@ def run_kanban_goal_loop(
         max_turns = DEFAULT_MAX_TURNS
 
     last_response = first_response or ""
+    # Per-turn judge reasons (local, capped at 20) so the judge can see the
+    # trajectory across turns and detect drift — mirrors GoalState.turn_reasons.
+    kanban_turn_reasons: List[str] = []
     # The first turn already consumed one unit of budget.
     turns_used = 1
     nudged_to_finalize = False
@@ -2437,9 +2464,20 @@ def run_kanban_goal_loop(
         # The kanban worker loop has no wait-barrier concept (workers finish
         # via kanban_complete / kanban_block, not by parking), so a WAIT
         # verdict is treated as CONTINUE here.
-        verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
+        verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(
+            goal_text,
+            last_response,
+            turn_reasons=kanban_turn_reasons or None,
+        )
         if verdict == "wait":
             verdict = "continue"
+        if reason and str(reason).strip():
+            kanban_turn_reasons.append(
+                "[judge unreachable — no verdict this turn]"
+                if _transport_failed
+                else str(reason).strip()
+            )
+            del kanban_turn_reasons[:-20]
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
 
         if verdict == "done":
