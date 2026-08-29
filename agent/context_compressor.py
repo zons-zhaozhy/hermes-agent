@@ -5523,7 +5523,14 @@ This compaction should PRIORITISE preserving all information related to the focu
             # marker — retrying once the provider recovers is strictly better
             # than dropping context (#29559, #25585, #94448). Mirrors the
             # auth-failure carve-out; independent of abort_on_summary_failure.
-            if _is_streaming_closed:
+            # Timeout precedence (see the cooldown ladder above): a timed-out
+            # request ALSO matches _is_connection_error (APITimeoutError is a
+            # connection-error subclass), but a deadline exhaustion is the
+            # structural repeat-offender class handled by the escalating
+            # timeout cooldown, NOT by aborting the session. Only a genuine
+            # mid-stream close (peer drop, chunked read failure) without
+            # timeout semantics gets the abort flag.
+            if _is_streaming_closed and not _is_timeout:
                 self._last_summary_network_failure = True
             elif _is_empty_content:
                 self._last_summary_empty_content_failure = True
