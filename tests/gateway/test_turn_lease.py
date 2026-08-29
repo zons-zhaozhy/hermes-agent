@@ -55,7 +55,11 @@ def test_alias_key_turn_waits_and_order_is_preserved():
             registry.release(token)
 
         t1 = asyncio.create_task(turn("key-a", 1, hold=0.05))
-        await asyncio.sleep(0.01)  # let turn 1 take the lease
+        # Event-driven sync instead of a wall-clock sleep: under a loaded
+        # parallel test runner 10ms is not always enough for t1 to acquire
+        # the lease, which made the ordering assertion flaky.
+        while "load:key-a" not in events:
+            await asyncio.sleep(0.005)
         t2 = asyncio.create_task(turn("key-b", 1, hold=0))
         await asyncio.gather(t1, t2)
         return events
@@ -200,7 +204,9 @@ async def test_full_dispatch_rejects_lease_timeout_without_running_goal_hook(
     runner._post_turn_goal_continuation = AsyncMock()
 
     try:
-        response = await asyncio.wait_for(runner._handle_message(_event()), timeout=1)
+        # 5s outer bound: under a loaded parallel runner the 0.02s lease
+        # timeout plus queue bookkeeping can exceed a 1s wall clock.
+        response = await asyncio.wait_for(runner._handle_message(_event()), timeout=5)
     finally:
         assert runner._turn_leases.release(holder) is True
 

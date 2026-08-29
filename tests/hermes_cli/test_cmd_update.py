@@ -85,7 +85,23 @@ def _patch_gateway_discovery():
     """
     with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
          patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
-         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]):
+         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
+         patch(
+             # macOS launchd fleet restart: derived from the DEFAULT install
+             # root (not the sandboxed HERMES_HOME), so a dev box with a real
+             # ai.hermes.gateway LaunchAgent leaks into these tests — the
+             # mocked subprocess can't verify the restart and the fail-closed
+             # contract (#78574) exits 1. Empty labels = clean no-op.
+             "hermes_cli.gateway.launchd_gateway_labels_for_install",
+             return_value=[],
+         ), \
+         patch(
+             # Current-profile path: _restart_launchd_gateway_after_update
+             # bypasses the label enumeration above and talks to the REAL
+             # launchctl directly — same leak, same isolation need.
+             "hermes_cli.update_cmd._restart_launchd_gateway_after_update",
+             return_value=([], []),
+         ):
         yield
 
 

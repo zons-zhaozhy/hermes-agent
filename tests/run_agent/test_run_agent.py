@@ -65,6 +65,18 @@ def agent():
             "run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")
         ),
         patch("run_agent.check_toolset_requirements", return_value={}),
+        # This file tests the conversation loop, not the ReadThinkGate — gate
+        # default is enabled and would pre-empt write_file fixtures with its
+        # own block (same pattern as tests/run_agent/test_tool_call_guardrail_
+        # runtime.py::_make_agent).
+        patch(
+            "hermes_cli.config.load_config",
+            return_value={"read_think_gate": {"enabled": False}},
+        ),
+        patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"read_think_gate": {"enabled": False}},
+        ),
         patch("run_agent.OpenAI"),
     ):
         a = AIAgent(

@@ -12,7 +12,19 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.main import cmd_update
+
+# Keep the update pipeline's gateway-restart phase off THIS machine's real
+# launchd services — same isolation as test_cmd_update.py::_patch_gateway_discovery.
+@pytest.fixture(autouse=True)
+def _no_real_launchd():
+    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
+         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
+         patch("hermes_cli.gateway.launchd_gateway_labels_for_install", return_value=[]), \
+         patch("hermes_cli.update_cmd._restart_launchd_gateway_after_update", return_value=([], [])):
+        yield
 
 
 def _make_run_side_effect(
