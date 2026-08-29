@@ -108,15 +108,18 @@ CONTINUATION_PROMPT_TEMPLATE = (
 CONTINUATION_PROMPT_MINIMAL_TEMPLATE = (
     "[Continuing toward your standing goal — turn {turn}]\n"
     "{reason}\n\n"
-    "Take the next concrete step. Operating discipline (mandatory):\n"
-    "- Do NOT ask the user whether to continue an established plan — execute it.\n"
-    "- Do NOT end a turn with a summary/plan only; every turn must advance the "
-    "work with real tool output.\n"
-    "- Before any file-writing tool call, emit the required pre-write evidence "
-    "(impact list, intent, root cause, risk matrix) immediately adjacent to the "
-    "call so guard windows stay valid.\n"
-    "- For ledger-style goals, report progress as 'PROGRESS: N/M' on the last "
-    "line of your response; N must never decrease."
+    "Before acting this turn:\n"
+    "1. DIRECTION CHECK — recall the goal and your progress ledger/todo: is "
+    "your next action the highest-leverage step toward the goal's TOTAL "
+    "progress (not just a visible local action)? If recent turns have been "
+    "circling one sub-problem, break out and batch-push the main line.\n"
+    "2. METHOD CHECK — was last turn's approach scientific and efficient? "
+    "No thrashing (same error retried), no rabbit-holing (one symptom "
+    "monopolizing turns), no fake evidence (claims without tool output). "
+    "Correct course now if so.\n"
+    "3. Report progress against the total (e.g. ledger N/M) when it applies.\n"
+    "Then take the next concrete step. Do NOT claim the goal is complete "
+    "without concrete, verifiable evidence."
 )
 
 # Used when the goal carries a structured completion contract. The contract
@@ -233,6 +236,7 @@ JUDGE_USER_PROMPT_TEMPLATE = (
     "Agent's most recent response:\n{response}\n\n"
     "{background_block}"
     "{tool_calls_block}"
+    "{turn_trajectory_block}"
     "Current time: {current_time}\n\n"
     "Decision rules:\n"
     "- DONE requires concrete evidence in the response above — a command "
@@ -246,6 +250,19 @@ JUDGE_USER_PROMPT_TEMPLATE = (
     "- If the tool calls section shows zero verification commands (no "
     "terminal/test/build calls) but the agent claims completion, this is "
     "almost certainly premature — return CONTINUE.\n"
+    "- TRAJECTORY DRIFT: if the turn trajectory above shows the agent "
+    "spending many consecutive turns on the same sub-problem — judge "
+    "repetition counts SEMANTICALLY (same table/file/symptom recurring, "
+    "even when the wording differs) — while the goal's TOTAL scope "
+    "(e.g. N of M items) stays unchanged, return CONTINUE with a reason "
+    "explicitly telling the agent to break out and batch-push the main "
+    "line. Trajectory entries marked [judge unreachable] are not "
+    "verdicts; skip them when counting repetition.\n"
+    "- PROGRESS CLAIMS NEED OBJECTIVE GROUNDING: 'progress N/M' or "
+    "'ledger updated' claims are only evidence when the response shows "
+    "the actual command output that produced the number. Self-reported "
+    "progress numbers with no tool output behind them are assertions, "
+    "not evidence — treat them as unverified.\n"
     "- If the agent explains the goal is blocked / unachievable / needs user "
     "input, treat it as DONE with the reason describing the block.\n\n"
     "Is the goal satisfied — done, continue, or wait?"
@@ -260,6 +277,7 @@ JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "Agent's most recent response:\n{response}\n\n"
     "{background_block}"
     "{tool_calls_block}"
+    "{turn_trajectory_block}"
     "Current time: {current_time}\n\n"
     "Decision: For each numbered criterion above, find concrete "
     "evidence in the agent's response that the criterion is "
@@ -283,6 +301,7 @@ JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE = (
     "Agent's most recent response:\n{response}\n\n"
     "{background_block}"
     "{tool_calls_block}"
+    "{turn_trajectory_block}"
     "Current time: {current_time}\n\n"
     "Decision rules:\n"
     "- The goal is DONE only when the Verification criterion is satisfied AND "
@@ -611,6 +630,10 @@ class GoalState:
     # 401 every call — track them separately so the loop auto-pauses instead
     # of burning every turn budget slot on an unreachable judge.
     consecutive_transport_failures: int = 0   # judge API/transport errors in a row
+    # Per-turn judge reasons (oldest→newest), capped. Lets the judge see the
+    # trajectory across turns and detect drift (many turns on one sub-problem
+    # while total scope stalls). Backwards-compatible: defaults to empty.
+    turn_reasons: List[str] = field(default_factory=list)
     # User-added criteria appended mid-loop via the /subgoal command.
     # When non-empty the judge prompt and continuation prompt both
     # include them so the agent works toward them and the judge factors
@@ -680,6 +703,7 @@ class GoalState:
             paused_reason=data.get("paused_reason"),
             consecutive_parse_failures=int(data.get("consecutive_parse_failures", 0) or 0),
             consecutive_transport_failures=int(data.get("consecutive_transport_failures", 0) or 0),
+            turn_reasons=[str(r) for r in (data.get("turn_reasons") or []) if str(r).strip()][-20:],
             subgoals=subgoals,
             waiting_on_pid=(int(data["waiting_on_pid"]) if data.get("waiting_on_pid") else None),
             waiting_on_session=(str(data["waiting_on_session"]) if data.get("waiting_on_session") else None),
@@ -1237,6 +1261,33 @@ def _render_tool_calls_block(tool_calls_summary: Optional[str]) -> str:
     return f"Tool calls this turn: {tool_calls_summary.strip()}\n\n"
 
 
+def _render_turn_trajectory_block(turn_reasons: Optional[List[str]]) -> str:
+    """Render the per-turn judge reasons so the judge can detect trajectory
+    drift (many turns spent on one sub-problem while total scope stalls).
+
+    Empty/None means unavailable (old call sites / first turns) — return
+    empty string so the prompt section is skipped, mirroring
+    ``_render_tool_calls_block`` backward compatibility.
+    """
+    if not turn_reasons:
+        return ""
+    reasons = [str(r).strip() for r in turn_reasons if str(r).strip()][-20:]
+    full_count = min(5, len(reasons))
+    lines = []
+    for i, r in enumerate(reasons, start=1):
+        r_flat = r.replace("\n", " ")
+        if i <= len(reasons) - full_count:
+            lines.append(f"  {i}. {r_flat[:80]}{'…' if len(r_flat) > 80 else ''}  (truncated)")
+        else:
+            lines.append(f"  {i}. {r_flat}")
+    return (
+        "Turn trajectory (judge reasons, oldest→newest; most recent "
+        f"{full_count} turn(s) in full, older ones head-truncated; entries "
+        "marked [judge unreachable] had no verdict and don't count as "
+        "evidence):\n" + "\n".join(lines) + "\n\n"
+    )
+
+
 def extract_tool_calls_summary(history: Optional[List[Dict[str, Any]]]) -> Optional[str]:
     """Extract a brief summary of tool calls from the last agent turn.
 
@@ -1291,6 +1342,7 @@ def judge_goal(
     background_processes: Optional[List[Dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
     tool_calls_summary: Optional[str] = None,
+    turn_reasons: Optional[List[str]] = None,
 ) -> Tuple[str, str, bool, Optional[Dict[str, Any]], bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
@@ -1355,6 +1407,7 @@ def judge_goal(
     clean_subgoals = [s.strip() for s in (subgoals or []) if s and s.strip()]
     background_block = _render_background_block(background_processes)
     tool_calls_block = _render_tool_calls_block(tool_calls_summary)
+    turn_trajectory_block = _render_turn_trajectory_block(turn_reasons)
     current_time = datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
     if contract is not None and not contract.is_empty():
@@ -1371,6 +1424,7 @@ def judge_goal(
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
             background_block=background_block,
             tool_calls_block=tool_calls_block,
+            turn_trajectory_block=turn_trajectory_block,
             current_time=current_time,
         )
     elif clean_subgoals:
@@ -1383,6 +1437,7 @@ def judge_goal(
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
             background_block=background_block,
             tool_calls_block=tool_calls_block,
+            turn_trajectory_block=turn_trajectory_block,
             current_time=current_time,
         )
     else:
@@ -1391,6 +1446,7 @@ def judge_goal(
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
             background_block=background_block,
             tool_calls_block=tool_calls_block,
+            turn_trajectory_block=turn_trajectory_block,
             current_time=current_time,
         )
 
@@ -2095,9 +2151,21 @@ class GoalManager:
             background_processes=background_processes,
             contract=state.contract if state.has_contract() else None,
             tool_calls_summary=tool_calls_summary,
+            turn_reasons=state.turn_reasons or None,
         )
         state.last_verdict = verdict
         state.last_reason = reason
+        # Record the trajectory so the NEXT judge call can see drift across
+        # turns. Cap at 20 (mirrors from_json) to bound state size. Transport
+        # failures get a sentinel — they had no verdict and must not masquerade
+        # as drift evidence in the next judge call.
+        if reason and str(reason).strip():
+            entry = (
+                "[judge unreachable — no verdict this turn]"
+                if transport_failed
+                else str(reason).strip()
+            )
+            state.turn_reasons = (state.turn_reasons + [entry])[-20:]
 
         # Track consecutive judge parse failures. Reset on any usable reply,
         # including API / transport errors (parse_failed=False) so a flaky
@@ -2390,6 +2458,9 @@ def run_kanban_goal_loop(
         max_turns = DEFAULT_MAX_TURNS
 
     last_response = first_response or ""
+    # Per-turn judge reasons (local, capped at 20) so the judge can see the
+    # trajectory across turns and detect drift — mirrors GoalState.turn_reasons.
+    kanban_turn_reasons: List[str] = []
     # The first turn already consumed one unit of budget.
     turns_used = 1
     nudged_to_finalize = False
@@ -2426,9 +2497,20 @@ def run_kanban_goal_loop(
         # The kanban worker loop has no wait-barrier concept (workers finish
         # via kanban_complete / kanban_block, not by parking), so a WAIT
         # verdict is treated as CONTINUE here.
-        verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
+        verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(
+            goal_text,
+            last_response,
+            turn_reasons=kanban_turn_reasons or None,
+        )
         if verdict == "wait":
             verdict = "continue"
+        if reason and str(reason).strip():
+            kanban_turn_reasons.append(
+                "[judge unreachable — no verdict this turn]"
+                if _transport_failed
+                else str(reason).strip()
+            )
+            del kanban_turn_reasons[:-20]
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
 
         if verdict == "done":
