@@ -1089,7 +1089,7 @@ def _begin_tool_execution(
                 effective_task_id,
             )
         except Exception:
-            pass
+            logger.warning("checkpoint preflight failed for %s", function_name, exc_info=True)
 
     if function_name == "terminal" and agent._checkpoint_mgr.enabled:
         try:
