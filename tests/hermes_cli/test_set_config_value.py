@@ -6,11 +6,13 @@ import os
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from hermes_cli.config import (
     config_command,
     cron_model_drift_guard_enabled,
     set_config_value,
+    unset_config_value,
 )
 
 
@@ -103,6 +105,37 @@ class TestConfigYamlRouting:
         set_config_value("terminal.docker_image", "python:3.12")
         config = _read_config(_isolated_hermes_home)
         assert "python:3.12" in config
+
+    def test_dotted_model_id_set_and_unset_as_single_key(self, _isolated_hermes_home):
+        """Model ids containing dots (glm-5.3) must be one literal dict key.
+
+        Regression: _set_nested used to split the key naively, writing
+        providers.zai.models.glm-5.3.context_length as glm-5 → 3 →
+        context_length — a dead nested key the runtime lookup (which does
+        models.get("glm-5.3")) never reads.
+        """
+        # Real-world configs already contain the flat model key (e.g. written
+        # by the provider wizard); the greedy split anchors on it when it
+        # exists as a mapping. Seed it the way the wizard would, then verify
+        # both set and unset address the literal dotted key.
+        set_config_value("providers.zai.models", "{}")
+        cfgp = _isolated_hermes_home / "config.yaml"
+        cfg = yaml.safe_load(cfgp.read_text())
+        cfg["providers"]["zai"]["models"] = {"glm-5.3": {}}
+        cfgp.write_text(yaml.safe_dump(cfg, allow_unicode=True))
+        set_config_value("providers.zai.models.glm-5.3.context_length", "600000")
+        loaded = yaml.safe_load((_isolated_hermes_home / "config.yaml").read_text())
+        assert loaded["providers"]["zai"]["models"]["glm-5.3"] == {
+            "context_length": 600000
+        }
+        unset_config_value("providers.zai.models.glm-5.3")
+        # Empty-parent pruning (documented _unset_nested behavior) removes
+        # the now-empty models/zai/providers chain — the dotted key itself
+        # must simply not exist anywhere.
+        reloaded = yaml.safe_load(
+            (_isolated_hermes_home / "config.yaml").read_text()
+        )
+        assert not reloaded or "glm-5.3" not in str(reloaded)
 
     def test_cron_script_timeout_is_recognized(self, _isolated_hermes_home, capsys):
         """The script timeout read by cron must be accepted by config set."""

@@ -1017,6 +1017,42 @@ def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
     return missing
 
 
+def _split_dotted_key_greedy(config, dotted_key: str) -> List[str]:
+    """Contract:
+    Preconditions: ``config`` is a dict/list tree; ``dotted_key`` is a non-empty string.
+    Postconditions: returns path segments where, at each dict level, the longest
+    run of consecutive raw segments that already exists as a literal dict key is
+    kept as ONE segment (so model ids containing dots, e.g. ``glm-5.3``, are
+    addressed as a single key when they already exist in config). Keys that do
+    not exist yet are split naively, preserving legacy path-creation behavior.
+    """
+    raw_parts = dotted_key.split(".")
+    parts: List[str] = []
+    current = config
+    i = 0
+    while i < len(raw_parts):
+        if not isinstance(current, dict):
+            parts.extend(raw_parts[i:])
+            break
+        # Longest-first: try to consume as many raw segments as one literal key.
+        matched = False
+        for j in range(len(raw_parts), i, -1):
+            candidate = ".".join(raw_parts[i:j])
+            if candidate in current:
+                parts.append(candidate)
+                current = current[candidate]
+                i = j
+                matched = True
+                break
+        if not matched:
+            parts.append(raw_parts[i])
+            current = None  # Unknown territory: fall back to naive split below.
+            parts.extend(raw_parts[i + 1:])
+            break
+    assert parts, "greedy dotted-key split must produce at least one segment"
+    return parts
+
+
 def _set_nested(config, dotted_key: str, value):
     """Set a value at an arbitrarily nested dotted key path.
 
@@ -1024,6 +1060,11 @@ def _set_nested(config, dotted_key: str, value):
       _set_nested(c, "a.b.c", 1)     → c["a"]["b"]["c"] = 1
       _set_nested(c, "a.0.b", 1)     → c["a"][0]["b"] = 1
       _set_nested(c, "providers.1", "x") → c["providers"][1] = "x"
+
+    Keys containing dots (e.g. model ids like ``glm-5.3``) are matched
+    greedily against existing dict keys first, so ``providers.zai.models.glm-5.3``
+    addresses the literal ``glm-5.3`` key rather than splitting into
+    ``glm-5`` → ``3`` (see _split_dotted_key_greedy).
 
     Intermediate dicts are created on demand.  List indices are parsed
     from numeric path segments; the referenced index must already exist
@@ -1039,7 +1080,7 @@ def _set_nested(config, dotted_key: str, value):
     destroying list-typed config like ``custom_providers`` whenever a
     caller used an indexed path.
     """
-    parts = dotted_key.split(".")
+    parts = _split_dotted_key_greedy(config, dotted_key)
     current = config
     for part in parts[:-1]:
         if isinstance(current, list):
@@ -1117,8 +1158,13 @@ def _get_nested(config, dotted_key: str):
 
 
 def _unset_nested(config, dotted_key: str) -> bool:
-    """Remove a dotted-path value from nested dict/list config data."""
-    parts = dotted_key.split(".")
+    """Remove a dotted-path value from nested dict/list config data.
+
+    Keys containing dots are matched greedily against existing dict keys
+    first (see _split_dotted_key_greedy), so ``providers.zai.models.glm-5.3``
+    addresses a literal ``glm-5.3`` key.
+    """
+    parts = _split_dotted_key_greedy(config, dotted_key)
     if not parts:
         return False
 
