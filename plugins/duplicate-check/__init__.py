@@ -228,6 +228,23 @@ def _search_duplicates(path: str, cwd: str) -> List[str]:
         # 只用 ≥6 字符的关键词——短词（fix/check/verify/utils）在全库
         # 几乎必然命中，导致大量误报。
         strong_kws = [k for k in keywords if len(k) >= 6][:2]
+        # 区分性过滤（0829 误报根因修复）：与策略1同口径——一个关键词若已
+        # 命中全库 ≥3 个文件（progress/ledger/engine 等项目级通用词），
+        # 它不具区分性，拿去搜只能误报。gen_progress_ledger 三连误报根因。
+        distinctive_kws = []
+        for kw in strong_kws:
+            try:
+                cnt = subprocess.run(
+                    ["rg", "-l", "--no-heading", "--type", "py",
+                     r"(def|class)\s+\w*{0}\w*".format(kw)],
+                    capture_output=True, text=True, timeout=8, cwd=cwd,
+                )
+                hits = [f for f in cnt.stdout.splitlines() if f.strip()]
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                hits = []
+            if len(hits) < 3:
+                distinctive_kws.append(kw)
+        strong_kws = distinctive_kws
         if strong_kws:
             pattern = "|".join(strong_kws)
             try:
