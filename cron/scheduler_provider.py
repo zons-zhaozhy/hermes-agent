@@ -490,7 +490,7 @@ def resolve_cron_scheduler() -> "CronScheduler":
         from hermes_cli.config import cfg_get, load_config
         name = (cfg_get(load_config(), "cron", "provider", default="") or "").strip()
     except Exception:
-        pass
+        logger.warning("cron provider config read failed; using builtin scheduler", exc_info=True)
 
     if not name or name in ("builtin", "in-process", "inprocess"):
         return InProcessCronScheduler()

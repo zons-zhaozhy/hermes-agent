@@ -54,3 +54,33 @@ def _suppress_concurrent_hermes_gate(request, monkeypatch):
         lambda *_a, **_k: [],
         raising=False,
     )
+
+
+@pytest.fixture
+def no_real_launchd():
+    """Keep the update pipeline's gateway-restart phase off THIS machine's
+    real launchd services.
+
+    On a macOS dev host with real ``ai.hermes.gateway*`` LaunchAgents (e.g.
+    a sibling profile), the update flow's genuine launchctl discovery and
+    restart leaks live services into tests and the fail-closed restart
+    contract makes every update test exit(1). Update-flow test files opt in
+    with ``pytestmark = pytest.mark.usefixtures("no_real_launchd")`` so the
+    isolation logic lives in ONE place instead of being copy-pasted per file.
+    """
+    from unittest.mock import patch
+
+    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
+         patch(
+             "hermes_cli.gateway.find_profile_gateway_processes",
+             return_value=[],
+         ), \
+         patch(
+             "hermes_cli.gateway.launchd_gateway_labels_for_install",
+             return_value=[],
+         ), \
+         patch(
+             "hermes_cli.update_cmd._restart_launchd_gateway_after_update",
+             return_value=([], []),
+         ):
+        yield

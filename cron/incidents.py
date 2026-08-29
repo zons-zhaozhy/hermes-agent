@@ -23,6 +23,7 @@ connect and a missing database never raises (directories are created).
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import sqlite3
 import threading
@@ -32,6 +33,8 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
+
+logger = logging.getLogger(__name__)
 
 # Optional test override (mirrors ``cron.executions.EXECUTIONS_FILE``).
 EXECUTIONS_FILE: Optional[Path] = None
@@ -74,7 +77,7 @@ def _db_path() -> Path:
         if _EXEC_OVERRIDE is not None:
             return Path(_EXEC_OVERRIDE)
     except Exception:
-        pass
+        logger.warning("executions override import failed; using default path", exc_info=True)
     if EXECUTIONS_FILE is not None:
         return Path(EXECUTIONS_FILE)
     return get_hermes_home().resolve() / "cron" / "executions.db"

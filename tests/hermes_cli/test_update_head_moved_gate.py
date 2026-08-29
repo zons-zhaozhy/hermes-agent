@@ -15,16 +15,8 @@ import pytest
 
 from hermes_cli import main as hermes_main
 
-# Keep the update pipeline's gateway-restart phase off THIS machine's real
-# launchd services — same isolation as test_cmd_update.py::_patch_gateway_discovery.
-@pytest.fixture(autouse=True)
-def _no_real_launchd():
-    from unittest.mock import patch
-    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
-         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
-         patch("hermes_cli.gateway.launchd_gateway_labels_for_install", return_value=[]), \
-         patch("hermes_cli.update_cmd._restart_launchd_gateway_after_update", return_value=([], [])):
-        yield
+# Shared isolation (see tests/hermes_cli/conftest.py::no_real_launchd).
+pytestmark = pytest.mark.usefixtures("no_real_launchd")
 
 
 
