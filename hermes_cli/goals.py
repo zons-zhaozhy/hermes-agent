@@ -108,7 +108,15 @@ CONTINUATION_PROMPT_TEMPLATE = (
 CONTINUATION_PROMPT_MINIMAL_TEMPLATE = (
     "[Continuing toward your standing goal — turn {turn}]\n"
     "{reason}\n\n"
-    "Take the next concrete step."
+    "Take the next concrete step. Operating discipline (mandatory):\n"
+    "- Do NOT ask the user whether to continue an established plan — execute it.\n"
+    "- Do NOT end a turn with a summary/plan only; every turn must advance the "
+    "work with real tool output.\n"
+    "- Before any file-writing tool call, emit the required pre-write evidence "
+    "(impact list, intent, root cause, risk matrix) immediately adjacent to the "
+    "call so guard windows stay valid.\n"
+    "- For ledger-style goals, report progress as 'PROGRESS: N/M' on the last "
+    "line of your response; N must never decrease."
 )
 
 # Used when the goal carries a structured completion contract. The contract
@@ -230,6 +238,8 @@ JUDGE_USER_PROMPT_TEMPLATE = (
     "- DONE requires concrete evidence in the response above — a command "
     "output line, test result summary, file contents excerpt, or URL. The "
     "evidence must directly prove the goal's outcome is achieved.\n"
+    "- If the response ends with a ledger marker 'PROGRESS: N/M' and N < M, "
+    "the goal is NOT done — return CONTINUE.\n"
     "- Self-reported claims like 'done', 'complete', 'all tests pass', "
     "'successfully deployed' are NOT evidence by themselves. If the response "
     "contains only assertions without verifiable proof, return CONTINUE.\n"
@@ -639,6 +649,12 @@ class GoalState:
     # must ALL pass before the judge may declare the goal done. Empty by
     # default — a goal with no gates behaves exactly as before.
     gates: List[GoalGate] = field(default_factory=list)
+    # Ledger-style progress marker parsed from the agent's last response
+    # ("PROGRESS: N/M" on the last line). Lets the judge and continuation
+    # prompt carry a structured, non-decreasing progress signal for
+    # ledger-style long goals. Backwards-compatible: absent in old rows → 0/0.
+    progress_num: int = 0
+    progress_den: int = 0
 
     def to_json(self) -> str:
         data = asdict(self)
@@ -676,6 +692,8 @@ class GoalState:
                 for g in (data.get("gates") or [])
                 if isinstance(g, dict) and str(g.get("command") or "").strip()
             ],
+            progress_num=int(data.get("progress_num", 0) or 0),
+            progress_den=int(data.get("progress_den", 0) or 0),
         )
 
     # --- contract helpers -------------------------------------------------
@@ -2053,6 +2071,23 @@ class GoalManager:
                 }
             return gate_decision
 
+        # Parse ledger-style progress marker ("PROGRESS: N/M" last line) from
+        # the agent's response BEFORE the judge runs, so state carries a
+        # structured, non-decreasing signal for ledger-style long goals.
+        _m = None
+        for _ln in reversed((last_response or "").strip().splitlines()):
+            _s = _ln.strip()
+            if _s.upper().startswith("PROGRESS:"):
+                import re as _re
+                _m = _re.match(r"PROGRESS:\s*(\d+)\s*/\s*(\d+)", _s, _re.IGNORECASE)
+                break
+        if _m:
+            new_num, new_den = int(_m.group(1)), int(_m.group(2))
+            # Non-decreasing guard: N may never regress; denominator may grow
+            # when the ledger's total is re-counted, never shrink below done.
+            state.progress_num = max(state.progress_num, new_num)
+            state.progress_den = max(state.progress_den, new_den)
+
         verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
             state.goal,
             last_response,
@@ -2228,9 +2263,15 @@ class GoalManager:
         # force_full is used by context-compression recovery to re-inject
         # the goal after history was lost.
         if self._state.turns_used > 1 and not force_full:
+            reason_text = reason or "Continue working toward the goal."
+            if self._state.progress_den > 0:
+                reason_text = (
+                    f"{reason_text} "
+                    f"(ledger progress: {self._state.progress_num}/{self._state.progress_den})"
+                )
             return CONTINUATION_PROMPT_MINIMAL_TEMPLATE.format(
                 turn=self._state.turns_used,
-                reason=reason or "Continue working toward the goal.",
+                reason=reason_text,
             )
 
         # First continuation: inject the full goal text + instructions.
