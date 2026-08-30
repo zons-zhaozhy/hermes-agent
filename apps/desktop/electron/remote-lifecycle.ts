@@ -913,7 +913,13 @@ finally:
 sys.exit(result.returncode if result is not None else 1)
 `.trim()
 
-  return `python3 -c ${shq(script)} ${shq(mutexPath)} ${shq(command)}`
+  // mutexPath must arrive as an expandRemotePath() product — a shell-quoted
+  // fragment like '"$HOME"'/….path'. Re-wrapping it with shq() stores the
+  // quote characters literally, so the lock file lands at a relative
+  // `'<cwd-local>` path (observed as apps/desktop/'/var/… junk trees) and the
+  // update mutex silently guards the wrong path. Embed it raw, exactly like
+  // the reservation/lockPath assignments below do.
+  return `python3 -c ${shq(script)} ${mutexPath} ${shq(command)}`
 }
 
 /**

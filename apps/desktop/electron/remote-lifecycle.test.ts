@@ -827,6 +827,27 @@ test('buildSpawnCommand atomically reserves the ownership slot through spawn and
   assert.ok(cmd.indexOf('lock_json') > cmd.indexOf('serve --isolated'))
 })
 
+test('buildSpawnCommand embeds the update mutex path raw, never double-quoted', () => {
+  // Regression: withRemoteUpdateMutex once wrapped its mutexPath argument in
+  // shq() even though callers pass an expandRemotePath() product that is
+  // ALREADY a shell-quoted fragment. The extra quotes became literal path
+  // characters, so the flock mutex guarded a relative `'<cwd>` path instead
+  // of the install root — silently breaking cross-updater mutual exclusion
+  // and littering the test cwd with apps/desktop/'/var/… junk trees.
+  const cmd = buildSpawnCommand('/x/hermes', '', {
+    hermesHome: '~/custom-home',
+    logPath: '/var/log/hermes/spawn.log'
+  })
+
+  // The mutex must appear as the pre-quoted $HOME-based fragment, e.g.
+  // … .hermes-update-in-progress.mutex'"$HOME"'/custom-home/…
+  assert.match(cmd, /\.hermes-update-in-progress\.mutex["']\$\{?HOME\}?["']/)
+  // And it must NOT be wrapped in a second layer of single quotes — the
+  // double-quoted form `mutex'` / `'…mutex'` is the bug's fingerprint.
+  assert.doesNotMatch(cmd, /'["']\$HOME["']/)
+  assert.doesNotMatch(cmd, /\.hermes-update-in-progress\.mutex'["']/)
+})
+
 test.skipIf(process.platform === 'win32')('detached backend does not inherit the update mutex descriptor', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'hermes-update-mutex-'))
   const hermesPath = path.join(directory, 'hermes')
