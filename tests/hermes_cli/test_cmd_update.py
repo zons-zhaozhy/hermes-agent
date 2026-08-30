@@ -85,7 +85,23 @@ def _patch_gateway_discovery():
     """
     with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
          patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
-         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]):
+         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
+         patch(
+             # macOS launchd fleet restart: derived from the DEFAULT install
+             # root (not the sandboxed HERMES_HOME), so a dev box with a real
+             # ai.hermes.gateway LaunchAgent leaks into these tests — the
+             # mocked subprocess can't verify the restart and the fail-closed
+             # contract (#78574) exits 1. Empty labels = clean no-op.
+             "hermes_cli.gateway.launchd_gateway_labels_for_install",
+             return_value=[],
+         ), \
+         patch(
+             # Current-profile path: _restart_launchd_gateway_after_update
+             # bypasses the label enumeration above and talks to the REAL
+             # launchctl directly — same leak, same isolation need.
+             "hermes_cli.update_cmd._restart_launchd_gateway_after_update",
+             return_value=([], []),
+         ):
         yield
 
 
@@ -301,9 +317,53 @@ class TestCmdUpdateBranchFallback:
         expected_git_cmd = (
             ["git", "-c", "windows.appendAtomically=false"] if hm._is_windows() else ["git"]
         )
-        sync_mock.assert_called_once_with(expected_git_cmd, PROJECT_ROOT)
+        sync_mock.assert_called_once_with(
+            expected_git_cmd,
+            PROJECT_ROOT,
+            assume_yes=False,
+            input_fn=None,
+        )
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_yes_on_fork_without_upstream_does_not_claim_up_to_date(
+        self, mock_run, _mock_which, capsys
+    ):
+        """#97052 review: genuine fork, no upstream remote, HEAD == origin/main,
+        --yes. The prompt is skipped without mutating remotes, and because the
+        official repo was never consulted the completion line must not claim
+        plain "Already up to date!"."""
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ), patch.object(
+            update_cmd, "_has_upstream_remote", return_value=False
+        ), patch.object(
+            update_cmd, "_should_skip_upstream_prompt", return_value=False
+        ), patch.object(
+            update_cmd, "_add_upstream_remote"
+        ) as add_remote, patch.object(
+            update_cmd, "_mark_skip_upstream_prompt"
+        ) as mark_skip, patch("builtins.input") as stdin_input:
+            cmd_update(SimpleNamespace(yes=True))
+
+        stdin_input.assert_not_called()
+        add_remote.assert_not_called()
+        mark_skip.assert_not_called()
+        captured = capsys.readouterr()
+        assert "Skipping upstream setup (non-interactive run)." in captured.out
+        assert "official repo not checked" in captured.out
+        assert "Already up to date!" not in captured.out
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")

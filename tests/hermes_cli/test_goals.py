@@ -166,7 +166,11 @@ class TestGoalManager:
         assert "build the migration tool" not in prompt_later  # goal NOT repeated
         assert "turn 2" in prompt_later
         assert "tests not passing yet" in prompt_later
-        assert len(prompt_later) < len(prompt_first)  # minimal is shorter
+        # Minimal template carries the direction/method check discipline
+        # (bb9f612f04) instead of the full goal text — it no longer needs to
+        # be strictly shorter than the full prompt; the invariant is that the
+        # goal text is NOT repeated in the minimal form (asserted above).
+        assert "DIRECTION CHECK" in prompt_later
 
     def test_continuation_prompt_force_full(self, hermes_home):
         """force_full=True must bypass the minimal template — used after

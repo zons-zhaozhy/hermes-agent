@@ -2396,6 +2396,7 @@ class MCPServerTask:
         "_reconnect_retries", "_session_proven", "_was_parked",
         "_inflight_tasks", "_reconnecting", "_suspect_reason",
         "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
+        "_ever_connected",
     )
 
     def __init__(self, name: str):
@@ -2426,6 +2427,12 @@ class MCPServerTask:
         # keeps getting charged and still reaches the park instead of
         # hot-cycling respawns forever.
         self._session_proven: bool = False
+        # Set once tools have ever been registered and never cleared again,
+        # unlike ``_ready`` (which is cleared on every reconnect cycle). Used
+        # to tell a genuine first-connection failure from a later reconnect
+        # failure that merely happens to occur while ``_ready`` is
+        # momentarily clear — see the ``initial_retries`` ladder in run().
+        self._ever_connected: bool = False
         # True while parked (reconnect budget exhausted) or after a park,
         # until the session proves healthy again — used to log the
         # parked→revived transition exactly once.
@@ -2987,16 +2994,20 @@ class MCPServerTask:
         pids = getattr(self, "_stdio_child_pids", None)
         if not pids or self._is_http():
             return False
-        for pid in pids:
-            # windows-footgun: ok — psutil.pid_exists handles Windows; the
-            # os.kill probe below only runs when psutil is unavailable.
+        try:
             import psutil
-
-            if not psutil.pid_exists(pid):
-                continue  # this one is dead
-            return True  # alive (signal permission irrelevant for liveness)
-            return False  # at least one child alive
-        return True
+        except ImportError:
+            return False  # unknown → don't fail fast
+        for pid in pids:
+            # pid_exists handles Windows without signal-permission noise; a
+            # probe failure is unknown, not proof that every child exited.
+            try:
+                alive = psutil.pid_exists(pid)
+            except Exception:
+                return False  # unknown → don't fail fast
+            if alive:
+                return False  # at least one child alive → not all dead
+        return True  # every tracked child has exited
 
     async def _watch_stdio_children(self) -> None:
         """Poll child liveness while a stdio RPC is in flight (#81995).
@@ -3343,6 +3354,7 @@ class MCPServerTask:
                     self._mark_lifecycle_started()
                     await self._discover_tools()
                     self._ready.set()
+                    self._ever_connected = True
                     # Session is live again: clear any breaker state from a
                     # prior outage so the first call after recovery isn't
                     # gated on a stale consecutive-failure count (#16788).
@@ -3714,6 +3726,7 @@ class MCPServerTask:
                         self.session = session
                         await self._discover_tools()
                         self._ready.set()
+                        self._ever_connected = True
                         # Session is live again: clear any breaker state from a
                         # prior outage so the first call after recovery isn't
                         # gated on a stale consecutive-failure count (#16788).
@@ -3779,6 +3792,7 @@ class MCPServerTask:
                             self.session = session
                             await self._discover_tools()
                             self._ready.set()
+                            self._ever_connected = True
                             # Session is live again: clear any breaker state from
                             # a prior outage so the first call after recovery
                             # isn't gated on a stale failure count (#16788).
@@ -3826,6 +3840,7 @@ class MCPServerTask:
                         self.session = session
                         await self._discover_tools()
                         self._ready.set()
+                        self._ever_connected = True
                         # Session is live again: clear any breaker state from a
                         # prior outage so the first call after recovery isn't
                         # gated on a stale consecutive-failure count (#16788).
@@ -4124,9 +4139,15 @@ class MCPServerTask:
 
                 # If this is the first connection attempt, retry with backoff
                 # before giving up. A transient DNS/network blip at startup
-                # should not permanently kill the server.
+                # should not permanently kill the server. Gated on
+                # ``_ever_connected`` rather than ``_ready`` — ``_ready`` is
+                # cleared on every reconnect cycle (see below), so a server
+                # that already registered tools once and then dropped would
+                # otherwise be misclassified as never having connected and
+                # re-enter this initial-connect ladder (#94654).
+                # ``_ever_connected`` itself is set once and never cleared.
                 # (Ported from Kilo Code's MCP resilience fix.)
-                if not self._ready.is_set():
+                if not self._ever_connected:
                     if failure_class == "permanent":
                         # Deterministic failure (bad command, non-MCP URL,
                         # 401/403): every retry hits the same wall. Park
@@ -6139,6 +6160,18 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                         and isinstance(_stdio_dead_result := _stdio_dead(), bool)
                         and _stdio_dead_result
                     ):
+                        # Dead children but stale server.session, so the
+                        # transport-down path above never fired — signal the
+                        # server task to respawn and return a clean
+                        # reconnecting error. No explicit _bump_server_error:
+                        # the error return flows through the handler's JSON
+                        # parse, which already bumps once.
+                        if _signal_reconnect(server):
+                            return tool_error(
+                                f"MCP server '{server_name}' stdio subprocess is "
+                                f"dead and reconnect was requested. Do NOT retry "
+                                f"immediately — give it a few seconds to respawn."
+                            )
                         raise TimeoutError(
                             f"MCP stdio subprocess for '{server_name}' has "
                             f"exited; failing the call fast instead of "
@@ -6175,11 +6208,18 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                             )
                             if watch_task in done and not rpc_task.done():
                                 rpc_task.cancel()
+                                # Nothing clears server.session on a mid-call
+                                # child death, so without a reconnect signal
+                                # the server would stay dead until the idle
+                                # keepalive probe notices.
+                                _signal_reconnect(server)
                                 raise TimeoutError(
                                     f"MCP stdio subprocess for '{server_name}' "
                                     f"exited mid-call; failing the call fast "
                                     f"instead of waiting "
-                                    f"{float(tool_timeout):.0f}s"
+                                    f"{float(tool_timeout):.0f}s; reconnect "
+                                    f"requested — give it a few seconds to "
+                                    f"respawn before retrying"
                                 )
                             result = await rpc_task
                         finally:

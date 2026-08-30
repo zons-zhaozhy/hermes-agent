@@ -873,7 +873,7 @@ def _resolve_script_directory(script_path: str) -> Optional[str]:
         if path is not None and path.is_absolute():
             return str(path.parent)
     except Exception:
-        pass
+        logger.warning("script directory resolution failed for %s", script_path, exc_info=True)
     return None
 
 

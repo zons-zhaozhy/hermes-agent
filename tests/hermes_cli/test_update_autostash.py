@@ -6,6 +6,10 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli import config as hermes_config
+
+# Shared isolation (see tests/hermes_cli/conftest.py::no_real_launchd).
+pytestmark = pytest.mark.usefixtures("no_real_launchd")
+
 from hermes_cli import main as hermes_main
 
 

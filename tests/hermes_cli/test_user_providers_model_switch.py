@@ -79,6 +79,15 @@ def test_list_authenticated_providers_enumerates_dict_format_models(monkeypatch)
     """
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    # Live /models discovery must stay OFF: without this the REAL machine's
+    # configured endpoints (e.g. a local ollama service) answer the probe and
+    # the declared dict-format catalog below is replaced by live models.
+    monkeypatch.setattr(
+        "hermes_cli.model_switch._fetch_picker_live_models", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.cached_fetch_api_models", lambda *a, **k: []
+    )
 
     user_providers = {
         "local-ollama": {
@@ -521,6 +530,12 @@ def test_section3_probes_no_key_endpoint_with_singular_default_model(monkeypatch
     """
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    # Force the generic /models path: on a dev box with a REAL local ollama
+    # service the native-catalog branch answers and the mocked
+    # fetch_api_models below is never reached.
+    monkeypatch.setattr(
+        "hermes_cli.models.should_use_ollama_native_catalog", lambda *a, **k: False
+    )
 
     probed = {}
 

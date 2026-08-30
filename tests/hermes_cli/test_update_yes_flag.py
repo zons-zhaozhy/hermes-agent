@@ -12,7 +12,12 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.main import cmd_update
+
+# Shared isolation (see tests/hermes_cli/conftest.py::no_real_launchd).
+pytestmark = pytest.mark.usefixtures("no_real_launchd")
 
 
 def _make_run_side_effect(

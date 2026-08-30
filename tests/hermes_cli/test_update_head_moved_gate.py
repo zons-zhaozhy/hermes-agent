@@ -15,6 +15,10 @@ import pytest
 
 from hermes_cli import main as hermes_main
 
+# Shared isolation (see tests/hermes_cli/conftest.py::no_real_launchd).
+pytestmark = pytest.mark.usefixtures("no_real_launchd")
+
+
 
 def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
     """Simulate git commands where HEAD advances from pre_sha to post_sha."""

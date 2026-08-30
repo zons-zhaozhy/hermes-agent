@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from unittest.mock import patch
 
 import pytest
 
@@ -212,6 +213,15 @@ class TestGetServicePidsScoping:
         }
         monkeypatch.setattr(
             gw, "_locate_launchd_gateway_service", lambda label: located[label]
+        )
+        # The all_profiles belt-and-suspenders branch runs a REAL
+        # ``launchctl list`` — on a dev box with live ai.hermes.gateway*
+        # agents (e.g. a sibling profile like -merit-ops) those PIDs leak
+        # into the expected set. Stub the scan to an empty launchctl world.
+        monkeypatch.setattr(
+            gw.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
+                a[0] if a else [], 0, stdout="", stderr=""
+            )
         )
 
     def test_all_profiles_returns_every_gateway_service_pid(self, monkeypatch):
@@ -646,10 +656,15 @@ class TestIncompleteWarningMentionsLaunchctl:
         _warn_incomplete_gateway_fleet_restart(["ai.hermes.gateway-merit-ops"])
         out = capsys.readouterr().out
         assert "Update incomplete" in out
-        assert "launchctl kickstart -k" in out
+        # macOS branch (#88848): a launchd label here means launchd lost the
+        # job — recovery guidance is bootstrap, not kickstart.
+        assert "launchctl bootstrap" in out
 
     def test_systemd_units_keep_systemctl_hint(self, capsys):
-        _warn_incomplete_gateway_fleet_restart(["hermes-gateway-coder"])
-        out = capsys.readouterr().out
-        assert "systemctl" in out
-        assert "launchctl" not in out
+        # The hint branches on is_macos() — on a macOS dev host force the
+        # systemd branch so the systemctl hint is actually exercised.
+        with patch("hermes_cli.gateway.is_macos", return_value=False):
+            _warn_incomplete_gateway_fleet_restart(["hermes-gateway-coder"])
+            out = capsys.readouterr().out
+            assert "systemctl" in out
+            assert "launchctl" not in out

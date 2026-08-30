@@ -600,6 +600,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/software-development/software-development-code-wiki',
+                    'user-guide/skills/optional/software-development/software-development-grill-me',
                     'user-guide/skills/optional/software-development/software-development-rest-graphql-debug',
                     'user-guide/skills/optional/software-development/software-development-subagent-driven-development',
                   ],
@@ -612,6 +613,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/optional/web-development/web-development-cloudflare-temporary-deploy',
                     'user-guide/skills/optional/web-development/web-development-page-agent',
+                    'user-guide/skills/optional/web-development/web-development-publish-site',
                   ],
                 },
                 {
