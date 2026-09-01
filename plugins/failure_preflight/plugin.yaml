@@ -1,0 +1,6 @@
+name: failure_preflight
+description: 失败预演护栏——动手类任务开工前强制做「失败说明书」预演（失败top3+断电开关+翻转护栏），芒格逆向思维法的产品化
+version: 1.0.0
+author: stan
+hooks:
+  - pre_llm_call

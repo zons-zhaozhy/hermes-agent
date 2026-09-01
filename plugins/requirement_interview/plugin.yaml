@@ -1,0 +1,6 @@
+name: requirement_interview
+description: 反向采访澄清——需求交付型任务开工前强制做盲点扫描三分类（必须确认/可暂假设/持续观察），堵住「直接开工」和「全停下问」两个极端
+version: 1.0.0
+author: stan
+hooks:
+  - pre_llm_call
