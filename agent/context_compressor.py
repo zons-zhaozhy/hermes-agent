@@ -2313,6 +2313,7 @@ class ContextCompressor(ContextEngine):
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
+        self._last_real_rough_ratio = 0.0
         self._pending_request_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
         self._last_compression_telemetry = None
@@ -2624,6 +2625,7 @@ class ContextCompressor(ContextEngine):
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
+        self._last_real_rough_ratio = 0.0
         self._pending_request_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
         self._last_compression_telemetry = None
@@ -3178,6 +3180,7 @@ class ContextCompressor(ContextEngine):
         self.last_total_tokens = 0
         self.last_real_prompt_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
+        self._last_real_rough_ratio = 0.0
         self.last_compression_rough_tokens = 0
         self._pending_request_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
@@ -3494,6 +3497,7 @@ class ContextCompressor(ContextEngine):
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
+        self._last_real_rough_ratio = 0.0
         self._pending_request_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
 
@@ -3589,6 +3593,18 @@ class ContextCompressor(ContextEngine):
         self.last_total_tokens = usage.get("total_tokens", self.last_prompt_tokens + self.last_completion_tokens)
         if self.last_prompt_tokens > 0:
             self.last_real_prompt_tokens = self.last_prompt_tokens
+            # Record the observed real/rough ratio from this same-request
+            # (rough, real) pair so preflight can scale rough growth by it.
+            # The raw rough estimate over-counts CJK text and provider replay
+            # blobs severalfold (#14695), so raw rough growth hugely overstates
+            # real growth in heavy sessions; scaling by the observed ratio
+            # keeps the projection accurate without losing its safety ceiling
+            # (ratio clamped to <= 1.0, and `last_real_prompt_tokens >=
+            # threshold` below still forces compression when real usage is over).
+            if self._pending_request_rough_tokens > 0:
+                _obs_ratio = self.last_prompt_tokens / self._pending_request_rough_tokens
+                if _obs_ratio > 0:
+                    self._last_real_rough_ratio = min(max(_obs_ratio, 0.0), 1.0)
             if self.last_prompt_tokens < self.threshold_tokens:
                 if self.awaiting_real_usage_after_compression and self.last_compression_rough_tokens > 0:
                     self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
@@ -3744,6 +3760,15 @@ class ContextCompressor(ContextEngine):
         # rough baseline without a matching real reading would shrink
         # apparent growth and defer on stale data — the unsafe direction.
         growth = max(0, rough_tokens - baseline)
+        # Scale rough growth by the session's observed real/rough ratio. The raw
+        # rough delta over-counts real growth in CJK/replay-heavy sessions
+        # (severalfold), so an unscaled projection overshoots the threshold and
+        # keeps firing preflight compression at a fraction of the real window
+        # (churn + lock contention). Ratio is clamped <= 1.0; when unknown
+        # (0.0) or >= 1.0 the projection keeps its prior conservative ceiling.
+        _ratio = getattr(self, "_last_real_rough_ratio", 0.0)
+        if _ratio and 0.0 < _ratio < 1.0:
+            growth = int(growth * _ratio)
         projected_real = self.last_real_prompt_tokens + growth
         return projected_real < self.threshold_tokens
 
