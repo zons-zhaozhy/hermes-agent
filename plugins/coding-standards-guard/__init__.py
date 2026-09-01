@@ -979,7 +979,8 @@ def _check_log_collect_timestamp(tree: ast.AST, lines: List[str]) -> List[Violat
       全部字面量参数无 --timestamps/-t/--output=short-precise 前缀;豁免行不报
     """
     violations = []
-    _TS_ARGS = ("--timestamps", "-t", "--output=short-precise")
+    _TS_ARGS = ("--timestamps", "-t", "--output=short-precise",
+                "-o", "--output")
     # 命令首位须是采集工具本身——排除 os.path.join(dir,"logs")/argparse("logs")/
     # getattr(cfg,"log_dir") 等同名巧合(负向验证 4 处误报的根因,0901 实测)
     _TOOL_PREFIX = ("docker", "kubectl", "podman", "nerdctl", "journalctl",
