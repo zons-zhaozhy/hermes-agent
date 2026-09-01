@@ -980,6 +980,10 @@ def _check_log_collect_timestamp(tree: ast.AST, lines: List[str]) -> List[Violat
     """
     violations = []
     _TS_ARGS = ("--timestamps", "-t", "--output=short-precise")
+    # 命令首位须是采集工具本身——排除 os.path.join(dir,"logs")/argparse("logs")/
+    # getattr(cfg,"log_dir") 等同名巧合(负向验证 4 处误报的根因,0901 实测)
+    _TOOL_PREFIX = ("docker", "kubectl", "podman", "nerdctl", "journalctl",
+                    "sudo", "timeout")
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -992,13 +996,20 @@ def _check_log_collect_timestamp(tree: ast.AST, lines: List[str]) -> List[Violat
             elif isinstance(a, ast.List):
                 lits.extend(e.value for e in a.elts
                             if isinstance(e, ast.Constant) and isinstance(e.value, str))
-        if not any(v in _LOG_COLLECT_CMDS for v in lits):
+        if not lits:
+            continue
+        first = lits[0]
+        if first not in _TOOL_PREFIX:
+            continue
+        # 找到工具后的首个非包装词(sudo/timeout 后面才是真命令)
+        cmd_chain = [v for v in lits if v in _TOOL_PREFIX or v in _LOG_COLLECT_CMDS]
+        if not any(v in _LOG_COLLECT_CMDS for v in cmd_chain):
             continue
         if any(v.startswith(_TS_ARGS) for v in lits):
             continue  # 已带时间戳参数
         if "# ts-ok" in lines[node.lineno - 1]:
             continue
-        cmd = next(v for v in lits if v in _LOG_COLLECT_CMDS)
+        cmd = next(v for v in cmd_chain if v in _LOG_COLLECT_CMDS)
         violations.append(Violation(
             rule_id="R023", line=node.lineno, col=node.col_offset,
             severity="error",
