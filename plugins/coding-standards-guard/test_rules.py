@@ -271,6 +271,23 @@ print("R022: 诊断输出截断")
 for _name, _code, _expect in _R022_CASES:
     test(_name, _code, _expect)
 
+# R023 期望值独立推导: 「有而不取」=命令字面量含 logs/journalctl 且无时间戳参数
+_R023_CASES = [
+    ("R023 违规: docker logs 无 --timestamps(doctor 实际形态)",
+     'def f(name, since):\n    subprocess.run(["docker", "logs", "--since", since, name])', "R023"),
+    ("R023 违规: journalctl 无时间输出格式",
+     'def f(u):\n    subprocess.run(["journalctl", "-u", u, "--no-pager"])', "R023"),
+    ("R023 合法: 带 --timestamps",
+     'def f(name):\n    subprocess.run(["docker", "logs", "--timestamps", name])', None),
+    ("R023 合法: ts-ok 豁免(纯计数场景)",
+     'def f(name):\n    subprocess.run(["docker", "logs", name])  # ts-ok 仅统计行数,时间无关', None),
+    ("R023 合法: 非采集调用(变量名 logs 作他用)",
+     'def f(logs):\n    print(len(logs))', None),
+]
+print("R023: 日志采集缺时间戳")
+for _name, _code, _expect in _R023_CASES:
+    test(_name, _code, _expect)
+
 print("\n" + "=" * 60)
 print(f"结果: {PASS_COUNT}/{PASS_COUNT + FAIL_COUNT} 通过, {FAIL_COUNT}/{PASS_COUNT + FAIL_COUNT} 失败")
 if FAIL_COUNT == 0:

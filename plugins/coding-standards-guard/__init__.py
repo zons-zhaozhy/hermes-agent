@@ -956,6 +956,60 @@ def _check_diag_truncation(tree: ast.AST, lines: List[str]) -> List[Violation]:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# R023: 信息维度丢弃 — 日志采集调用缺时间戳参数
+# ═══════════════════════════════════════════════════════════════════════
+
+_LOG_COLLECT_CMDS = ("logs", "journalctl")
+
+
+def _check_log_collect_timestamp(tree: ast.AST, lines: List[str]) -> List[Violation]:
+    """R023: docker/kubectl logs、journalctl 采集缺时间戳 — 有而不取。
+
+    契约(2026-09-01 用户拍板,普适编程规约): 信息持有的定位维度(时间/位置/主体),
+    不取/不用/不传/丢弃,每一环都必须有显式声明的理由;无声丢弃=违规。
+    本规则拦第一环「有而不取」: 日志采集工具原生支持 --timestamps(docker/kubectl)
+    或 --output=short-precise(journalctl),不取=错误何时发生永久丢失。
+    教训: ontoX doctor 全部 6 处 docker logs 均未带 --timestamps,诊断报告里的
+    错误行是无时间光杆行(commit e94255d6a 修)。
+    豁免=行尾 `# ts-ok` 加理由(如采集目的是纯计数)。
+
+    Contract:
+      Preconditions: tree 为可解析 AST
+      Postconditions: 命中当且仅当 Call 参数含字面量 'logs'/'journalctl' 且
+      全部字面量参数无 --timestamps/-t/--output=short-precise 前缀;豁免行不报
+    """
+    violations = []
+    _TS_ARGS = ("--timestamps", "-t", "--output=short-precise")
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        # 字面量参数采集: 直接字符串常量 + 列表字面量内的字符串常量
+        # (命令形态典型为 ["docker","logs",...] 包在 List 里——R023 首版漏此形态)
+        lits = []
+        for a in node.args:
+            if isinstance(a, ast.Constant) and isinstance(a.value, str):
+                lits.append(a.value)
+            elif isinstance(a, ast.List):
+                lits.extend(e.value for e in a.elts
+                            if isinstance(e, ast.Constant) and isinstance(e.value, str))
+        if not any(v in _LOG_COLLECT_CMDS for v in lits):
+            continue
+        if any(v.startswith(_TS_ARGS) for v in lits):
+            continue  # 已带时间戳参数
+        if "# ts-ok" in lines[node.lineno - 1]:
+            continue
+        cmd = next(v for v in lits if v in _LOG_COLLECT_CMDS)
+        violations.append(Violation(
+            rule_id="R023", line=node.lineno, col=node.col_offset,
+            severity="error",
+            message=f"日志采集({cmd})缺时间戳参数 — 无声丢弃是唯一不可逆动作;"
+                    "气门(按可逆性三选一):①补 --timestamps(docker/kubectl)/"
+                    "--output=short-precise(journalctl) 全取;②确知下游不需要"
+                    "时间→行尾 `# ts-ok` 加理由(保留豁免痕迹,后续可翻案);"
+                    "③暂不确定→同样补参数取全,下游自滤(多收可逆,少收不可逆)",
+        ))
+    return violations
+
 
 _RULES = [
     # ── 吞异常系列（5 条）──
@@ -984,6 +1038,8 @@ _RULES = [
     ("R021",      _check_regex_usage,               "正则使用 — 优先 str 方法/结构化解析，豁免=re-ok"),
     # ── 诊断输出系列（1 条）──
     ("R022",      _check_diag_truncation,           "诊断输出截断 — print/logger/raise 消息切片，豁免=trunc-ok"),
+    # ── 信息维度系列（1 条）──
+    ("R023",      _check_log_collect_timestamp,     "日志采集缺时间戳 — 有而不取，豁免=ts-ok"),
 ]
 
 
