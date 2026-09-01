@@ -5675,6 +5675,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._secret_deadline = 0
         self._spinner_text: str = ""  # thinking spinner text for TUI
         self._tool_start_time: float = 0.0  # monotonic timestamp when current tool started (for live elapsed)
+        self._current_tool_name: str = ""  # tool currently executing (for wait-transparency rendering)
+        self._bg_output_tail: str = ""  # newest output line from a live background process
+        # Wire the registry's live-output hook: while a process wait blocks, the
+        # spinner shows the child's latest output line instead of a frozen
+        # "preparing process…" black box. Reader-thread callback — only string
+        # assignments here, never print/ANSI work.
+        try:
+            from tools.process_registry import process_registry as _preg
+
+            def _bg_tail_sink(session, chunk: str) -> None:
+                stripped = chunk.strip() if chunk else ""
+                if not stripped:
+                    return
+                line = stripped.splitlines()[-1].strip()
+                if line:
+                    self._bg_output_tail = line[:120]
+
+            _preg.on_output = _bg_tail_sink
+        except Exception:
+            pass
         self._pending_tool_info: dict = {}  # function_name -> list of (preview, args) for stacked scrollback
         self._last_scrollback_tool: str = ""  # last tool name printed to scrollback (for "new" dedup)
         self._command_running = False
@@ -6761,6 +6781,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         txt = getattr(self, "_spinner_text", "")
         if not txt:
             return ""
+        # Wait-transparency: while a `process` wait blocks, append the live
+        # background process's newest output line so the user sees progress
+        # instead of a frozen spinner (issue: "preparing process… → 10min wait").
+        if getattr(self, "_current_tool_name", "") == "process" and self._bg_output_tail:
+            tail = self._bg_output_tail
+            if tail not in txt:
+                txt = f"{txt} · {tail}"
         flow = self._spinner_token_flow()
         t0 = getattr(self, "_tool_start_time", 0) or 0
         if t0 > 0:
@@ -14712,6 +14739,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         if event_type == "tool.completed":
             self._tool_start_time = 0.0
+            self._current_tool_name = ""
+            self._bg_output_tail = ""
             # Per-turn accounting: this feed already sees every tool call with
             # its result, so the summary line needs no agent-loop state.
             self._turn_summary_record(
@@ -14787,6 +14816,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if event_type != "tool.started":
             return
         if function_name and not function_name.startswith("_"):
+            self._current_tool_name = function_name
+            self._bg_output_tail = ""
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(function_name)
             label = preview or function_name
