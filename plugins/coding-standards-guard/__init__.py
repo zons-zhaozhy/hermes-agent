@@ -789,18 +789,20 @@ def _check_raise_without_cause(tree: ast.AST, lines: List[str]) -> List[Violatio
                 and node.exc.id == in_handler.name):
             continue
 
-        # from None — 刻意压制上下文，warning
+        # from None — 刻意压制上下文=程序员显式声明,不再告警
+        # (0901 实测 mcp_server 3 处 from None 防敏感信息外泄属合法防御形态,
+        #  warning 刷屏无增量信息——显式语法本身即审计可见)
         if isinstance(node.cause, ast.Constant) and node.cause.value is None:
-            violations.append(Violation(
-                rule_id="R020", line=node.lineno, col=node.col_offset,
-                severity="warning",
-                message="raise ... from None 刻意压制异常上下文 — 堆栈信息丢失，开发人员看不到根因",
-                snippet=_snippet(lines, node.lineno),
-            ))
             continue
 
         # 已带 from <expr> → 放行
         if node.cause is not None:
+            continue
+
+        # 豁免通道: 行尾 `# raise-ok` + 理由(对齐 trunc-ok/re-ok/ts-ok 惯例)
+        # 适用形态: except 内恢复路径/业务校验的分支 raise——与捕获异常无因果,
+        # from e 反而错误关联(0901 实测 dbchat example/metric 查重即此形态)
+        if "# raise-ok" in lines[node.lineno - 1]:
             continue
 
         # raise Call(...) 或 raise 其它 Name，无 cause → error
