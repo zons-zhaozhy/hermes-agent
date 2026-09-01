@@ -7613,6 +7613,47 @@ def run_conversation(
                         messages, tools=agent.tools or None
                     )
 
+                # Proactive tool-result prune: reclaim re-sent history long
+                # before should_compress() (≈66% of the window) would ever
+                # fire. Deterministic, no LLM call; protects the recent tail.
+                # No-op unless proactive_prune_tokens is configured and
+                # _real_tokens is above it — and even then the prune only
+                # commits when it reclaims at least
+                # proactive_prune_min_reclaim_tokens, so prompt-cache breaks
+                # stay episodic like compression's (the one sanctioned cache
+                # break) instead of firing every tool iteration. See
+                # ContextCompressor.prune_tool_results_only.
+                # NOTE: must run BEFORE the should_compress branch (not inside
+                # the blocked-compression elif) so the
+                # proactive_prune_tokens..threshold window — where old tool
+                # outputs ride in history and are re-sent verbatim every turn —
+                # is actually pruned. Restores the placement from 1efceead4,
+                # lost in the 887-commit upstream merge.
+                # getattr guard: plugin context engines predating the hook and
+                # minimal test doubles (SimpleNamespace compressors) lack the
+                # method — treat absence as a no-op.
+                _prune = getattr(_compressor, "prune_tool_results_only", None)
+                if callable(_prune):
+                    try:
+                        _pruned_msgs, _pruned_n = _prune(
+                            messages, current_tokens=_real_tokens
+                        )
+                    except Exception:
+                        logger.debug(
+                            "proactive tool-result prune failed; skipping",
+                            exc_info=True,
+                        )
+                        _pruned_msgs, _pruned_n = messages, 0
+                    # Standard no-op caller contract: only commit when the
+                    # engine returned a NEW list object with a non-zero count.
+                    # The compressor atomically rewrites the active transcript
+                    # with the durable rearm threshold and stamps rows with
+                    # _DB_PERSISTED_MARKER, so the marker-based flush dedup
+                    # (see _flush_messages_to_session_db) prevents duplicate
+                    # writes — do NOT rebuild conversation_history here.
+                    if _pruned_n and _pruned_msgs is not messages:
+                        messages = _pruned_msgs
+
                 if (
                     agent.compression_enabled
                     and compression_attempts < max_compression_attempts
@@ -7681,46 +7722,9 @@ def run_conversation(
                             _real_tokens,
                             int(getattr(_compressor, "threshold_tokens", 0) or 0),
                         )
-                    # Proactive tool-result prune: reclaim re-sent history on
-                    # large-window models long before should_compress() (≈50% of
-                    # the window) would ever fire. Deterministic, no LLM call;
-                    # protects the recent tail. No-op unless proactive_prune_tokens
-                    # is configured and _real_tokens is above it — and even then
-                    # the prune only commits when it reclaims at least
-                    # proactive_prune_min_reclaim_tokens, so prompt-cache breaks
-                    # stay episodic like compression's (the one sanctioned cache
-                    # break) instead of firing every tool iteration. See
-                    # ContextCompressor.prune_tool_results_only.
-                    # getattr guard: plugin context engines predating the hook and
-                    # minimal test doubles (SimpleNamespace compressors) lack the
-                    # method — treat absence as a no-op.
-                    _prune = getattr(_compressor, "prune_tool_results_only", None)
-                    if callable(_prune):
-                        try:
-                            _pruned_msgs, _pruned_n = _prune(
-                                messages, current_tokens=_real_tokens
-                            )
-                        except Exception:
-                            logger.debug(
-                                "proactive tool-result prune failed; skipping",
-                                exc_info=True,
-                            )
-                            _pruned_msgs, _pruned_n = messages, 0
-                        # Standard no-op caller contract: only commit when the
-                        # engine returned a NEW list object with a non-zero count.
-                        if _pruned_n and _pruned_msgs is not messages:
-                            # Do NOT rebuild conversation_history here. The compressor
-                            # atomically rewrites the active transcript with the durable
-                            # rearm threshold, then stamps every returned row with
-                            # _DB_PERSISTED_MARKER, so the marker-based flush dedup (see
-                            # _flush_messages_to_session_db) prevents duplicate writes.
-                            # Calling
-                            # conversation_history_after_compression (a compaction-only
-                            # helper keyed on the _last_compaction_in_place flag) would be
-                            # a no-op at best, and on a stale in-place flag could seed
-                            # this turn's fresh, not-yet-persisted rows into history_ids
-                            # and skip writing them.
-                            messages = _pruned_msgs
+                    # NOTE: proactive tool-result prune no longer lives here —
+                    # it now runs BEFORE the should_compress branch above so
+                    # the proactive_prune_tokens..threshold window is pruned.
 
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
