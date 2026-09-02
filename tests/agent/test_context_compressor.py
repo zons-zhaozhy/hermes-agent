@@ -365,6 +365,29 @@ class TestPreflightDeferral:
         compressor.awaiting_real_usage_after_compression = True
         assert compressor.should_defer_preflight_to_real_usage(95_000) is True
 
+    def test_defers_with_observed_real_rough_ratio_scaling_growth(self, compressor):
+        """#14695: raw rough growth over-counts real growth in CJK/replay-heavy
+        sessions severalfold. With a low observed real/rough ratio, preflight
+        must scale rough growth so it does not fire compaction at a fraction of
+        the real window (the churn/lock-contention storm)."""
+        compressor.threshold_tokens = 264_000
+        compressor.last_real_prompt_tokens = 133_000
+        compressor.last_rough_tokens_when_real_prompt_fit = 114_000
+        compressor._last_real_rough_ratio = 0.48
+        # Unscaled: growth=162K, projected=295K >= threshold -> would fire.
+        # Scaled:   growth=77K,  projected=210K <  threshold -> defers.
+        assert compressor.should_defer_preflight_to_real_usage(276_000) is True
+
+    def test_ratio_scaling_never_suppresses_real_over_threshold(self, compressor):
+        """Ratio scaling must not suppress compression once real usage itself
+        crosses the threshold — the `>= threshold` short-circuit still forces
+        compression regardless of the ratio."""
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 90_000   # already over threshold
+        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
+        compressor._last_real_rough_ratio = 0.3
+        assert compressor.should_defer_preflight_to_real_usage(120_000) is False
+
 
 
 
