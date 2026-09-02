@@ -8368,7 +8368,11 @@ def run_conversation(
                     from hermes_cli.lifecycle import has_hook
                     from hermes_cli.plugins import get_pre_verify_continue_message
 
-                    if _edited and has_hook("pre_verify") and _attempt < max_verify_nudges():
+                    # 0902: 门槛由「本回合改过文件」放宽为「注册了 pre_verify
+                    # hook 即咨询」——纯总结回合（批间汇报后宣言「继续下一批」
+                    # 却停轮）此前零改动直接放行，插件层无权干预。续跑决策权
+                    # 在 hook 自身判定 + attempt 上限，成本保障不变。
+                    if has_hook("pre_verify") and _attempt < max_verify_nudges():
                         # Posture is fixed for the session — resolve once + cache.
                         coding = getattr(agent, "_resolved_is_coding", None)
                         if coding is None:
