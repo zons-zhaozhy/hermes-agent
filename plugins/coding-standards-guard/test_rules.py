@@ -114,8 +114,10 @@ test("R020 裸 raise — 完整透传放行",
      'try:\n    x = 1\nexcept Exception as e:\n    raise\n', None)
 test("R020 raise e — re-raise 本体放行",
      'try:\n    x = 1\nexcept Exception as e:\n    raise e\n', None)
-test("R020 from None — 压制上下文 warning",
-     'try:\n    x = 1\nexcept Exception as e:\n    raise RuntimeError("x") from None\n', "R020")
+test("允许: from None — 显式压制=主动声明(0901改判,原warning撤)",
+     'try:\\\\n    x = 1\\\\nexcept Exception as e:\\\\n    raise RuntimeError("x") from None\\\\n', None)
+test("R020 豁免: # raise-ok — except内业务校验分支raise",
+     'try:\\\\n    x = 1\\\\nexcept Exception as e:\\\\n    if not check():\\\\n        raise ValueError("bad")  # raise-ok 查重失败与原异常无因果\\\\n', None)
 test("R020 raise 局部变量新异常 — 同样断链",
      'try:\n    x = 1\nexcept Exception as e:\n    exc = RuntimeError("x")\n    raise exc\n', "R020")
 test("R020 except 外 raise — 放行",
@@ -269,6 +271,23 @@ _R022_CASES = [
 ]
 print("R022: 诊断输出截断")
 for _name, _code, _expect in _R022_CASES:
+    test(_name, _code, _expect)
+
+# R023 期望值独立推导: 「有而不取」=命令字面量含 logs/journalctl 且无时间戳参数
+_R023_CASES = [
+    ("R023 违规: docker logs 无 --timestamps(doctor 实际形态)",
+     'def f(name, since):\n    subprocess.run(["docker", "logs", "--since", since, name])', "R023"),
+    ("R023 违规: journalctl 无时间输出格式",
+     'def f(u):\n    subprocess.run(["journalctl", "-u", u, "--no-pager"])', "R023"),
+    ("R023 合法: 带 --timestamps",
+     'def f(name):\n    subprocess.run(["docker", "logs", "--timestamps", name])', None),
+    ("R023 合法: ts-ok 豁免(纯计数场景)",
+     'def f(name):\n    subprocess.run(["docker", "logs", name])  # ts-ok 仅统计行数,时间无关', None),
+    ("R023 合法: 非采集调用(变量名 logs 作他用)",
+     'def f(logs):\n    print(len(logs))', None),
+]
+print("R023: 日志采集缺时间戳")
+for _name, _code, _expect in _R023_CASES:
     test(_name, _code, _expect)
 
 print("\n" + "=" * 60)

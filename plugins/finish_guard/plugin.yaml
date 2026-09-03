@@ -1,0 +1,8 @@
+name: finish_guard
+description: 收尾守卫v2——三层真通道拦截「要不要继续」式请示：L1 pre_tool_call拦截clarify调用(block)，L2 pre_verify强制续跑(continue)，L3用户可见标记。真正需拍板/授权/凭据/不可逆的请示豁免
+version: 2.0.0
+author: stan
+hooks:
+  - pre_tool_call
+  - pre_verify
+  - transform_llm_output
