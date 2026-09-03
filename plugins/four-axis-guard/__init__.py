@@ -55,6 +55,7 @@ def _agent_owned_prefixes() -> tuple[Path, ...]:
         home / "cron" / "output",
         home / "cache",
         home / "memories",
+        home / "skill_suggestions",  # 每日审计报告等 agent 自产文档（同 2026-08-15 设计意图）
     )
 
 
