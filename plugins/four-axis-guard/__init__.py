@@ -59,6 +59,20 @@ def _agent_owned_prefixes() -> tuple[Path, ...]:
     )
 
 
+# hermes home 之外的 agent 自维护产物目录。aml-bid 是 AML 投标管线的巡检/
+# 状态日志（PIPELINE-STATE.md、MONITOR-LOG.md），由夜间调度 cron 每 15 分钟
+# 追加——与 retrospectives 同类（agent 自产文档，非核心代码编辑）。不豁免则
+# 与 patch-first（改文件唯一合法通道=patch）互斥，巡检日志被迫绕行终端写入。
+_EXTRA_AGENT_OWNED_PREFIXES: tuple[str, ...] = (
+    "~/Documents/aml-bid",
+)
+
+
+def _extra_agent_owned_prefixes() -> tuple[Path, ...]:
+    """解析 hermes home 之外的豁免前缀（expanduser，每次现算，不冻结）。"""
+    return tuple(Path(s).expanduser() for s in _EXTRA_AGENT_OWNED_PREFIXES)
+
+
 def _is_agent_owned_path(path_str: str) -> bool:
     """判断目标路径是否属于 agent 自维护产物（四轴豁免范围）。
 
@@ -77,8 +91,11 @@ def _is_agent_owned_path(path_str: str) -> bool:
             "path=%r error=%s", path_str, exc, exc_info=True,
         )
         return False
-    result = any(p == prefix or prefix in p.parents for prefix in _agent_owned_prefixes())
-    if result:
+    prefixes = _agent_owned_prefixes() + _extra_agent_owned_prefixes()
+    result = any(p == prefix or prefix in p.parents for prefix in prefixes)
+    if result and any(
+        p == prefix or prefix in p.parents for prefix in _agent_owned_prefixes()
+    ):
         from hermes_constants import get_hermes_home
 
         hermes_root = str(get_hermes_home())
