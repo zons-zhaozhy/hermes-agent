@@ -44,7 +44,7 @@ import json
 import logging
 import os
 import queue
-import re
+import re  # re-ok: 名称格式校验/依赖切分等正则场景聚集于此文件
 import sys
 import threading
 import time
@@ -493,7 +493,7 @@ def discover_entrypoint_manifests() -> List["PluginManifest"]:
             eps, ENTRY_POINT_CAPABILITIES_GROUP
         )
     except Exception as exc:
-        logger.debug("Entry-point scan failed: %s", exc)
+        logger.warning("Entry-point scan failed: %s", exc, exc_info=True)
         return manifests
 
     for ep in group_eps:
@@ -527,7 +527,7 @@ def discover_entrypoint_manifests() -> List["PluginManifest"]:
             manifest.kind = _classify_entrypoint_value_kind(ep.value)
             manifests.append(manifest)
         except Exception as exc:
-            logger.debug(
+            logger.warning(
                 "Entry-point manifest for %r skipped: %s",
                 getattr(ep, "name", "?"),
                 exc,
@@ -551,6 +551,7 @@ def _classify_entrypoint_value_kind(value: str) -> str:
             _resolve_module_source(module_name)
         ) or "standalone"
     except Exception:
+        logger.warning("plugin kind detection failed — standalone", exc_info=True)
         return "standalone"
 
 # System-prompt sections are deliberately more constrained than lifecycle
@@ -656,7 +657,7 @@ def _sanitize_plugin_names(raw: list) -> list:
             "plugins config list contains %d malformed entries (stray characters "
             "from a corrupted config write — real plugin names were likely "
             "displaced); ignoring: %r",
-            len(junk), junk[:12],
+            len(junk), junk[:12],  # trunc-ok: 摘要展示,len字段已含规模信息
         )
     return clean
 
@@ -674,6 +675,7 @@ def _get_disabled_plugins() -> set:
         disabled = cfg_get(config, "plugins", "disabled", default=[])
         return set(_sanitize_plugin_names(disabled)) if isinstance(disabled, list) else set()
     except Exception:
+        logger.warning("disabled-plugins read failed — treated as empty", exc_info=True)
         return set()
 
 
@@ -704,6 +706,7 @@ def _get_enabled_plugins() -> Optional[set]:
             return None
         return set(_sanitize_plugin_names(enabled))
     except Exception:
+        logger.warning("enabled-plugins allowlist read failed — treated as none", exc_info=True)
         return None
 
 
@@ -1045,12 +1048,14 @@ def _read_source_from_origin(origin: Optional[str], limit: int = 8192) -> str:
         try:
             origin = importlib.util.source_from_cache(origin)
         except Exception:
+            logger.warning("pyc→py source resolution failed: %s", origin, exc_info=True)
             return ""
     if not origin.endswith(".py"):
         return ""
     try:
-        return Path(origin).read_text(encoding="utf-8", errors="replace")[:limit]
+        return Path(origin).read_text(encoding="utf-8", errors="replace")[:limit]  # trunc-ok: LLM上下文功能性上限,limit为入参
     except Exception:
+        logger.warning("module source read failed: %s", origin, exc_info=True)
         return ""
 
 
@@ -1109,6 +1114,7 @@ def resolve_module_origin(module_name: str) -> Optional[str]:
             search_paths = next_paths
         return None
     except Exception:
+        logger.warning("module origin search failed — None", exc_info=True)
         return None
 
 
@@ -1362,7 +1368,7 @@ def _plugin_data_namespace(plugin_id: str, skill_namespace: str) -> str:
     if (
         skill_namespace
         and candidate.startswith("agent-plugin-")
-        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,191}", candidate)
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,191}", candidate)  # re-ok: 标识符字符集校验,无str等价
     ):
         # Portable Agent Plugins already receive this exact PLUGIN_DATA path.
         return candidate
@@ -1725,6 +1731,7 @@ class PluginContext:
             from hermes_cli.profiles import get_active_profile_name
             return get_active_profile_name()
         except Exception:
+            logger.warning("active-profile resolve failed — default", exc_info=True)
             return "default"
 
     # -- lifecycle: unload callbacks and supervised tasks --------------------
@@ -2031,6 +2038,7 @@ class PluginContext:
             from hermes_cli.config import load_config
             cfg = load_config() or {}
         except Exception:
+            logger.warning("config load failed for mcp_allowlist — empty", exc_info=True)
             return []
         entries = (cfg.get("plugins") or {}).get("entries") or {}
         entry = entries.get(plugin_id) or {}
@@ -2064,6 +2072,7 @@ class PluginContext:
         except Exception:
             # If we can't load config, fail closed — better to break the
             # override than silently grant it.
+            logger.warning("config load failed for tool-override consent — fail-closed", exc_info=True)
             return False
         plugin_id = self.manifest.key or self.manifest.name
         # Fail-closed by construction: any failure to read consent state
@@ -2149,6 +2158,7 @@ class PluginContext:
         try:
             cfg = load_config_readonly() or {}
         except Exception:
+            logger.warning("config load failed for gateway-injection consent — denied", exc_info=True)
             return False
 
         plugin_id = self.manifest.key or self.manifest.name
@@ -2256,7 +2266,7 @@ class PluginContext:
                 )
                 return
         except Exception:
-            pass  # If commands module isn't available, skip the check
+            logger.warning("commands-module check skipped for %s", clean, exc_info=True)
 
         previous = self._manager._plugin_commands.get(clean)
         hint = (args_hint or "").strip()
@@ -4170,13 +4180,13 @@ class PluginManager:
                 try:
                     from tools.registry import registry as tool_registry
                 except Exception as exc:  # pragma: no cover - defensive
-                    logger.debug("unload: tools.registry unavailable: %s", exc)
+                    logger.warning("unload: tools.registry unavailable: %s", exc)
                 else:
                     for tool_name in preledger_tools:
                         try:
                             tool_registry.deregister(tool_name)
                         except Exception as exc:
-                            logger.debug(
+                            logger.warning(
                                 "unload: tool deregister %s failed: %s",
                                 tool_name,
                                 exc,
@@ -4311,7 +4321,7 @@ class PluginManager:
             re_register_config_hooks()
         except Exception as exc:
             # Import cycle / missing module must not abort force reload.
-            logger.debug("force-reload shell-hook re-register skipped: %s", exc)
+            logger.warning("force-reload shell-hook re-register skipped: %s", exc)
 
     def _refresh_secret_sources_after_discovery(self) -> None:
         """If any plugin secret source is enabled, reset cache and re-apply.
@@ -4328,10 +4338,12 @@ class PluginManager:
             from agent.secret_sources.registry import list_plugin_sources
             from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
         except Exception:
+            logger.warning("secret-source modules unavailable — skip enrichment", exc_info=True)
             return
         try:
             plugin_sources = list_plugin_sources()
         except Exception:
+            logger.warning("secret-source enumeration failed — skip enrichment", exc_info=True)
             return
         if not plugin_sources:
             return
@@ -4366,7 +4378,7 @@ class PluginManager:
                 ", ".join(sorted(enabled_names)),
             )
         except Exception as exc:
-            logger.debug("secret source re-apply after discovery failed: %s", exc)
+            logger.warning("secret source re-apply after discovery failed: %s", exc)
 
     def _discover_and_load_inner(self) -> None:
         """The actual discovery sweep — see :meth:`discover_and_load`."""
@@ -4534,14 +4546,14 @@ class PluginManager:
         plugin_id: str,
     ) -> None:
         """Register one plugin-owned approval transport for this profile."""
-        import re
+        import re  # re-ok: 传输名格式校验
 
         from hermes_cli.approval_transport import RegisteredApprovalTransport
 
         clean = str(name).strip().lower()
         if clean == "builtin":
             raise ValueError("approval transport name 'builtin' is reserved")
-        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", clean):
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", clean):  # re-ok: 传输名格式校验,无str等价
             raise ValueError(
                 "approval transport name must match [a-z0-9][a-z0-9_-]{0,63}"
             )
@@ -4845,7 +4857,7 @@ class PluginManager:
                                 key, detected, detected,
                             )
                     except Exception:
-                        pass
+                        logger.warning("manifest kind auto-detect failed for %s", key, exc_info=True)
 
             logger.debug(
                 "Parsed manifest: key=%s name=%s kind=%s source=%s path=%s",
@@ -4919,6 +4931,7 @@ class PluginManager:
             source_text = _resolve_module_source(module_name)
             return _detect_kind_from_source(source_text) or "standalone"
         except Exception:
+            logger.warning("entry-point kind detection failed — standalone", exc_info=True)
             return "standalone"
 
     def _scan_entry_points(self) -> List[PluginManifest]:
@@ -5035,7 +5048,7 @@ class PluginManager:
         except Exception:
             # If the registry import fails for any reason, fall back to eager
             # loading so the platform is never silently lost.
-            logger.debug(
+            logger.warning(
                 "Deferred platform registration failed for '%s'; eager-loading",
                 lookup_key,
                 exc_info=True,
@@ -5183,7 +5196,7 @@ class PluginManager:
         missing: List[str] = []
         for req in deps:
             # Best-effort presence probe on the distribution name.
-            dist = re.split(r"[<>=!~\[;\s]", req, maxsplit=1)[0].strip()
+            dist = re.split(r"[<>=!~\[\;\s]", req, maxsplit=1)[0].strip()  # re-ok: 依赖说明符切分(多分隔符),无str等价
             if not dist:
                 continue
             try:
@@ -6218,6 +6231,7 @@ def _plugin_home_key() -> Path:
     try:
         return get_hermes_home().expanduser().resolve()
     except Exception:
+        logger.warning("hermes home resolve() failed — using unresolved path", exc_info=True)
         return get_hermes_home().expanduser()
 
 
@@ -6305,7 +6319,7 @@ def _reset_plugin_managers_for_tests() -> None:
             try:
                 manager.unload()
             except Exception:
-                logger.debug("test plugin-manager unload failed", exc_info=True)
+                logger.warning("test plugin-manager unload failed", exc_info=True)
         _plugin_managers_by_home.clear()
         _plugin_manager = None
     # Dashboard-auth providers are persistent host-owned registrations that
@@ -6319,7 +6333,7 @@ def _reset_plugin_managers_for_tests() -> None:
 
         _clear_dashboard_auth_providers()
     except Exception:
-        logger.debug("dashboard-auth registry clear failed", exc_info=True)
+        logger.warning("dashboard-auth registry clear failed", exc_info=True)
 
 
 def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:
@@ -6412,7 +6426,7 @@ def _persist_plugin_toolset_keys() -> None:
             _json.dump({"toolset_keys": keys, "portable_mcp": portable}, fh)
         _os.replace(tmp, path)
     except Exception:
-        logger.debug("plugin toolset key persist failed", exc_info=True)
+        logger.warning("plugin toolset key persist failed", exc_info=True)
 
 
 def _read_plugin_keys_cache() -> Optional[dict]:
@@ -6424,7 +6438,7 @@ def _read_plugin_keys_cache() -> Optional[dict]:
         if isinstance(blob, dict):
             return blob
     except Exception:
-        pass
+        logger.warning("plugin manifest blob parse failed — treated as unreadable", exc_info=True)
     return None
 
 
@@ -6607,7 +6621,7 @@ def fire_pre_command_hook(
                     result, command, surface,
                 )
     except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("pre_command hook dispatch failed (non-fatal): %s", exc)
+        logger.warning("pre_command hook dispatch failed (non-fatal): %s", exc)
 
 
 _thread_tool_whitelist = threading.local()
@@ -6877,7 +6891,7 @@ def _resolve_block_from_details(
                     session_id=session_id,
                 )
             except Exception:
-                pass
+                logger.warning("observability context set failed (approval gate)", exc_info=True)
             try:
                 result = request_tool_approval(
                     tool_name,
@@ -6889,10 +6903,11 @@ def _resolve_block_from_details(
                     try:
                         reset_current_observability_context(approval_tokens)
                     except Exception:
-                        pass
+                        logger.warning("observability context reset failed (approval gate)", exc_info=True)
         except Exception:
             # Fail-closed: if the gate itself errors, block rather than
             # silently execute an action a plugin flagged for approval.
+            logger.warning("plugin approval gate errored — fail-closed block: %s", tool_name, exc_info=True)
             return f"BLOCKED: plugin approval gate failed for {tool_name}"
         if not result.get("approved"):
             return str(
@@ -7224,6 +7239,7 @@ def get_plugin_toolsets() -> List[tuple]:
     try:
         from tools.registry import registry
     except Exception:
+        logger.warning("tools.registry unavailable — plugin toolset grouping skipped", exc_info=True)
         return []
 
     # Group plugin tool names by their toolset
