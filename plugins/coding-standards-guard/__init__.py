@@ -1116,8 +1116,10 @@ def _check_content(content: str, target: str) -> Optional[Dict[str, Any]]:
             f"    • 硬编码密码/IP/连接串/路径 → 必须从 .env / 环境变量读取\n"
             f"    • 默认值兜底/别名兼容/getattr 默认值 → 缺失必须报错引导\n"
             f"    • eval() → 用 ast.literal_eval() 替代\n"
-            f"    • import * → 必须显式导入\n"
-            f"  修复后重试。"
+            "    • import * → 必须显式导入\n"
+            "  写前预检(一次列出全部违规,禁打地鼠): "
+            "python3 plugins/coding-standards-guard/preflight.py <file>\n"
+            "  修复后重试。"
         ),
     }
 

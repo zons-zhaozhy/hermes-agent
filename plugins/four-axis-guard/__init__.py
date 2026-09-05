@@ -24,7 +24,11 @@ logger = logging.getLogger(__name__)
 # marker 文件路径由 ReadThinkGate 经 get_hermes_home() 解析（profile-aware），
 # 本插件必须用同一解析方式，否则 profile 隔离下写读两端路径不一致（PR #3575
 # 同类 bug）。延迟解析：每次读取时现算，不冻结进程首次解析结果。
-_WRITE_TOOLS = frozenset({"write_file", "patch", "execute_code"})
+# 与主闸门 agent/read_think_gate.py::_FOUR_AXIS_REQUIRED_TOOLS 对齐——
+# 主闸门明确裁定 execute_code 不强制四轴(可为纯只读分析,写路径已被
+# write_file/patch 覆盖)。副防线曾额外拦 execute_code,与主防线裁定
+# 冲突,实测产生 474 次误拦。以主防线为唯一裁定源。
+_WRITE_TOOLS = frozenset({"write_file", "patch"})
 _MARKER_MAX_AGE_SECONDS = 600  # marker 有效期 10 分钟，超时视为无效
 
 

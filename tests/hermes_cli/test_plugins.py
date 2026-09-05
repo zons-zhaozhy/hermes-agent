@@ -1436,20 +1436,54 @@ class TestPreToolCallModify:
         assert block_msg == "still blocked"
         assert modified == {"path": "/safe"}
 
-    def test_modify_after_block_is_invisible(self, monkeypatch):
-        """A modify after a block is never reached — first block wins."""
+    def test_modify_after_block_is_visible(self, monkeypatch):
+        """Modify directives accumulate regardless of block ordering —
+        aggregated verdicts replace first-wins so all guards' decisions
+        are visible in one round (anti whack-a-mole)."""
         monkeypatch.setattr(
             "hermes_cli.plugins.invoke_hook",
             lambda hook_name, **kwargs: [
                 {"action": "block", "message": "stopped"},
-                {"action": "modify", "args": {"path": "/invisible"}},
+                {"action": "modify", "args": {"path": "/visible"}},
             ],
         )
         block_msg, modified = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/original"}
         )
         assert block_msg == "stopped"
+        assert modified == {"path": "/visible"}
+
+    def test_multiple_blocks_are_aggregated(self, monkeypatch):
+        """All block verdicts surface in one message — the agent fixes
+        every violation at once instead of hitting guards one by one."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "block", "message": "guard-A says no"},
+                {"action": "block", "message": "guard-B also says no"},
+            ],
+        )
+        block_msg, modified = _dispatch_pre_tool_call_hooks(
+            "write_file", {"path": "/original"}
+        )
+        assert block_msg is not None
+        assert "guard-A says no" in block_msg
+        assert "guard-B also says no" in block_msg
+        assert "2 个护栏" in block_msg
         assert modified is None
+
+    def test_single_block_keeps_original_message(self, monkeypatch):
+        """A single block verdict passes through verbatim (no header)."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "block", "message": "only guard"},
+            ],
+        )
+        block_msg, _ = _dispatch_pre_tool_call_hooks(
+            "write_file", {"path": "/original"}
+        )
+        assert block_msg == "only guard"
 
     def test_modify_with_none_args(self, monkeypatch):
         """Modify should handle None args gracefully."""

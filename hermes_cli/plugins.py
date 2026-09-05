@@ -6694,6 +6694,12 @@ def _get_pre_tool_call_directive_details(
     block_msg: Optional[str] = None
     modified_args: Optional[Dict[str, Any]] = None
 
+    # 聚合所有 block verdict——first-wins 曾让每次只看到第一个护栏的
+    # 意见,修完一个再撞下一个(实测 1175 个 turn 被拦≥3 次,打地鼠根源)。
+    # 现在一次性收集全部 block,合并成一条消息,一次修复全部合规。
+    block_msgs: list[str] = []
+    approve_directive = None
+
     for result in hook_results:
         if not isinstance(result, dict):
             continue
@@ -6718,14 +6724,35 @@ def _get_pre_tool_call_directive_details(
         # an approve directive can carry an optional reason.
         if action == "block" and not message:
             continue
-        rule_key = result.get("rule_key") if action == "approve" else None
-        rule_key = rule_key.strip() if isinstance(rule_key, str) else None
-        if not rule_key:
-            rule_key = None
+        if action == "block":
+            # 功能性上限:拼接后的 tool result 需有界,2000字/条防上下文爆
+            block_msgs.append(message[:2000])
+            continue
+        if approve_directive is None:
+            rule_key = result.get("rule_key")
+            rule_key = rule_key.strip() if isinstance(rule_key, str) else None
+            if not rule_key:
+                rule_key = None
+            approve_directive = _PreToolCallDirective(
+                action="approve", message=message, rule_key=rule_key,
+                modified_args=modified_args,
+            )
+
+    if block_msgs:
+        # 多护栏命中时标头计数,单护栏命中时保持原文(既有测试兼容)
+        if len(block_msgs) == 1:
+            block_msg = block_msgs[0]
+        else:
+            block_msg = (
+                f"[护栏聚合] {len(block_msgs)} 个护栏同时拦截——"
+                f"全部修完再重试,禁止修一个撞下一个:\n\n"
+                + "\n\n──────\n\n".join(block_msgs)
+            )
         return _PreToolCallDirective(
-            action=action, message=message, rule_key=rule_key,
-            modified_args=modified_args,
+            action="block", message=block_msg, modified_args=modified_args,
         )
+    if approve_directive is not None:
+        return approve_directive
 
     return _PreToolCallDirective(modified_args=modified_args)
 

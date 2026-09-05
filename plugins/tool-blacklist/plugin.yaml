@@ -1,0 +1,6 @@
+name: tool_blacklist
+version: "1.0.0"
+description: 必败工具机械黑名单——vision_analyze(100%败)一律改glm_vision、codegraph系(83%败)非hermes本体仓禁用、memory批量replace拦并提示逐条单op。0905用户拍板:打地鼠根治须机制强制,禁memory口头提醒。
+author: stan
+hooks:
+  - pre_tool_call
