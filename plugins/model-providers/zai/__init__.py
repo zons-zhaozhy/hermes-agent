@@ -32,54 +32,26 @@ plus ``reasoning_effort: "low"`` (the cheapest tier) instead of being sent
 as-is and rejected server-side.
 """
 
-from __future__ import annotations
-
 import re
 from typing import Any
 
+from agent import reasoning_effort as re_
 from providers import register_provider
 from providers.base import ProviderProfile
 
 _GLM_VERSION_RE = re.compile(r"^glm-(\d+)(?:\.(\d+))?")
+# Alias spellings seen on relays (Fireworks ``glm-5p2``, ``zai-org-glm-5-2``…).
+_GLM_5_3_TOKENS = ("glm-5.3", "glm-5-3", "glm-5p3")
+_GLM_5_2_TOKENS = ("glm-5.2", "glm-5-2", "glm-5p2") + _GLM_5_3_TOKENS
 
 
 def _model_supports_thinking(model: str | None) -> bool:
     """GLM thinking-capable model families: glm-4.5 and later (4.5, 4.6, 5…)."""
-    m = (model or "").strip().lower()
-    match = _GLM_VERSION_RE.match(m)
-    if not match:
-        return False
-    major = int(match.group(1))
-    minor = int(match.group(2) or 0)
-    return (major, minor) >= (4, 5)
+    match = _GLM_VERSION_RE.match((model or "").strip().lower())
+    return bool(match) and (int(match.group(1)), int(match.group(2) or 0)) >= (4, 5)
 
 
-def _is_glm_5_2(model: str | None) -> bool:
-    """Detect GLM-5.2/5.3 (reasoning_effort-capable) across alias spellings.
-
-    Covers the canonical ``glm-5.2``/``glm-5.3`` plus the ``glm-5-2`` /
-    ``glm-5p2`` variants seen on relays (Fireworks ``glm-5p2``, etc.) and any
-    vendor-prefixed form (``z-ai/glm-5.2``, ``zai-org-glm-5-2``).  GLM-5.3
-    uses the same base model as 5.2 (post-training gains only) and exposes
-    the same ``reasoning_effort`` knob (verified live 2026-08-14: the
-    coding-plan endpoint accepts ``reasoning_effort: high`` for glm-5.3).
-    """
-    m = (model or "").strip().lower()
-    if not m:
-        return False
-    return any(
-        token in m
-        for token in ("glm-5.2", "glm-5-2", "glm-5p2", "glm-5.3", "glm-5-3", "glm-5p3")
-    )
-
-
-def _is_glm_5_3(model: str | None) -> bool:
-    """Detect GLM-5.3 specifically — it has a wider effort vocabulary.
-
-    5.2 accepts only ``high``/``max``; 5.3 accepts a graded
-    ``low``/``medium``/``high``/``max`` scale (verified live, issue #91789),
-    so effort mapping must pick the vocabulary per model.
-    """
+def _has_token(model: str | None, tokens: tuple[str, ...]) -> bool:
     m = (model or "").strip().lower()
     if not m:
         return False
@@ -105,27 +77,18 @@ def _glm_5_2_reasoning_effort(
         # tier (low) instead of leaving the server-default effort in place.
         return "low" if _is_glm_5_3(model) else None
 
-    effort = (reasoning_config.get("effort") or "").strip().lower()
-    if not effort or effort == "none":
+
+def _glm_5_2_reasoning_effort(reasoning_config: dict | None, *, model: str | None = None) -> str | None:
+    """Hermes effort -> GLM vocabulary (5.2: high/max; 5.3: low..max). Below-floor
+    efforts clamp to the floor; disabled/unset leaves the server default."""
+    effort = re_.requested_effort(reasoning_config)
+    if effort is None or effort == "none":
         return None
-
-    # Per-model vocabulary declared in agent.reasoning_effort; xhigh rounds
-    # up to max on both. 5.2 cannot think less than high; 5.3 accepts a
-    # graded scale down to low (issue #91789).
-    from agent.reasoning_effort import (
-        GLM52_EFFORTS,
-        GLM52_OVERRIDES,
-        GLM53_EFFORTS,
-        GLM53_OVERRIDES,
-        clamp_effort,
-    )
-
-    if _is_glm_5_3(model):
-        efforts, overrides, floor = GLM53_EFFORTS, GLM53_OVERRIDES, "low"
+    if _has_token(model, _GLM_5_3_TOKENS):
+        efforts, overrides, floor = re_.GLM53_EFFORTS, re_.GLM53_OVERRIDES, "low"
     else:
-        efforts, overrides, floor = GLM52_EFFORTS, GLM52_OVERRIDES, "high"
-
-    clamped = clamp_effort(effort, efforts, overrides)
+        efforts, overrides, floor = re_.GLM52_EFFORTS, re_.GLM52_OVERRIDES, "high"
+    clamped = re_.clamp_effort(effort, efforts, overrides)
     return clamped if clamped in efforts else floor
 
 
@@ -141,9 +104,7 @@ class ZaiProfile(ProviderProfile):
 
         if not _model_supports_thinking(model) and not _is_glm_5_2(model) and not _is_glm_5_3(model):
             return extra_body, top_level
-
-        # Only emit when the user expressed a preference; omitting the field
-        # keeps the server default (enabled) exactly as before.
+        # Only emit when the user expressed a preference (server default = enabled).
         if isinstance(reasoning_config, dict):
             enabled = reasoning_config.get("enabled") is not False
             if not enabled and _is_glm_5_3(model):
@@ -158,7 +119,6 @@ class ZaiProfile(ProviderProfile):
             effort = _glm_5_2_reasoning_effort(reasoning_config, model=model)
             if effort is not None:
                 top_level["reasoning_effort"] = effort
-
         return extra_body, top_level
 
 

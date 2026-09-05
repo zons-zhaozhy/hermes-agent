@@ -5,6 +5,8 @@ import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from run_agent import AIAgent
 
 
@@ -36,21 +38,21 @@ def _mock_response(content="Hello", finish_reason="stop", tool_calls=None):
     return SimpleNamespace(choices=[choice], model="test/model", usage=None)
 
 
-def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None = None) -> AIAgent:
-    # This file tests relay→plugin→guardrail policy precedence — orthogonal to
-    # the ReadThinkGate concern (covered by tests/agent/test_deliberation_gate.py).
-    # Gate default is enabled; block it here so write_file in these fixtures
-    # isn't stopped by the reasoning-first gate before reaching the layers
-    # under test.
+def _make_agent(
+    *tool_names,
+    max_iterations: int = 10,
+    config: dict | None = None,
+    platform: str | None = None,
+) -> AIAgent:
+    # ReadThinkGate off: this file tests relay→plugin→guardrail precedence.
     base_config: dict = {"read_think_gate": {"enabled": False}}
     if config:
         base_config.update(config)
     with (
-        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs(*tool_names)),
-        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs(*tool_names)),
+        patch("model_tools.check_toolset_requirements", return_value={}),
         patch("hermes_cli.config.load_config", return_value=base_config),
         patch("hermes_cli.config.load_config_readonly", return_value=base_config),
-        patch("run_agent.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -59,6 +61,7 @@ def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None 
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
+            platform=platform or "cli",
         )
     agent.client = MagicMock()
     agent._cached_system_prompt = "You are helpful."
@@ -94,6 +97,29 @@ def _hard_stop_config(**overrides) -> dict:
     return cfg
 
 
+def test_gateway_platform_uses_hard_stop_default_without_cli_opt_in():
+    agent = _make_agent("web_search", platform="telegram")
+    args = {"query": "same"}
+
+    _seed_exact_failures(agent, "web_search", args, count=5)
+
+    decision = getattr(agent, "_tool_guardrails").before_call("web_search", args)
+    assert decision.action == "block"
+    assert decision.code == "repeated_exact_failure_block"
+
+
+@pytest.mark.parametrize("platform", ["desktop", "acp"])
+def test_interactive_platforms_keep_warning_only_default(platform):
+    agent = _make_agent("web_search", platform=platform)
+    args = {"query": "same"}
+
+    _seed_exact_failures(agent, "web_search", args, count=5)
+
+    decision = getattr(agent, "_tool_guardrails").before_call("web_search", args)
+    assert decision.action == "allow"
+    assert decision.code == "allow"
+
+
 def test_default_sequential_path_warns_repeated_exact_failure_without_blocking_execution():
     agent = _make_agent("web_search")
     args = {"query": "same"}
@@ -106,7 +132,7 @@ def test_default_sequential_path_warns_repeated_exact_failure_without_blocking_e
     msg = SimpleNamespace(content="", tool_calls=[tc])
     messages = []
 
-    with patch("run_agent.handle_function_call", return_value=json.dumps({"error": "boom"})) as mock_hfc:
+    with patch("model_tools.handle_function_call", return_value=json.dumps({"error": "boom"})) as mock_hfc:
         agent._execute_tool_calls_sequential(msg, messages, "task-1")
 
     mock_hfc.assert_called_once()
@@ -132,7 +158,7 @@ def test_config_enabled_hard_stop_blocks_repeated_exact_failure_before_execution
     msg = SimpleNamespace(content="", tool_calls=[tc])
     messages = []
 
-    with patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN") as mock_hfc:
+    with patch("model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as mock_hfc:
         agent._execute_tool_calls_sequential(msg, messages, "task-1")
 
     mock_hfc.assert_not_called()
@@ -152,7 +178,7 @@ def test_sequential_after_call_appends_guidance_to_tool_result_without_extra_mes
     msg = SimpleNamespace(content="", tool_calls=[tc])
     messages = []
 
-    with patch("run_agent.handle_function_call", return_value=json.dumps({"error": "boom"})):
+    with patch("model_tools.handle_function_call", return_value=json.dumps({"error": "boom"})):
         agent._execute_tool_calls_sequential(msg, messages, "task-1")
 
     assert [m["role"] for m in messages] == ["tool"]
@@ -180,7 +206,7 @@ def test_same_tool_failure_warning_tells_model_to_recover_with_tools():
     msg = SimpleNamespace(content="", tool_calls=[tc])
     messages = []
 
-    with patch("run_agent.handle_function_call", return_value=json.dumps({"exit_code": 1})):
+    with patch("model_tools.handle_function_call", return_value=json.dumps({"exit_code": 1})):
         agent._execute_tool_calls_sequential(msg, messages, "task-1")
 
     content = messages[0]["content"]
@@ -213,7 +239,7 @@ def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_
         executed.append((name, args, kwargs["tool_call_id"]))
         return json.dumps({"ok": args["query"]})
 
-    with patch("run_agent.handle_function_call", side_effect=fake_handle):
+    with patch("model_tools.handle_function_call", side_effect=fake_handle):
         agent._execute_tool_calls_concurrent(msg, messages, "task-1")
 
     assert executed == [("web_search", allowed_args, "c-allow")]
@@ -322,7 +348,7 @@ def test_relay_rewrite_is_guarded_before_dispatch_in_concurrent_path():
     agent.tool_start_callback = lambda *args: starts.append(args)
     with (
         patch("agent.relay_tools.execute", side_effect=relay_execute),
-        patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch,
+        patch("model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch,
     ):
         agent._execute_tool_calls_concurrent(msg, messages, "task-1")
 
@@ -343,7 +369,7 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
             "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
             return_value=("plugin policy", None),
         ),
-        patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN") as mock_hfc,
+        patch("model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as mock_hfc,
     ):
         agent._execute_tool_calls_sequential(msg, messages, "task-1")
 
@@ -367,7 +393,7 @@ def test_default_run_conversation_warns_without_guardrail_halt():
     agent.client.chat.completions.create.side_effect = responses
 
     with (
-        patch("run_agent.handle_function_call", return_value=json.dumps({"error": "boom"})) as mock_hfc,
+        patch("model_tools.handle_function_call", return_value=json.dumps({"error": "boom"})) as mock_hfc,
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
@@ -413,7 +439,7 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     agent._disable_streaming = True
 
     with (
-        patch("run_agent.handle_function_call", return_value=json.dumps({"error": "boom"})),
+        patch("model_tools.handle_function_call", return_value=json.dumps({"error": "boom"})),
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),

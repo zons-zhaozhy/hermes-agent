@@ -32,6 +32,7 @@ import sys
 import tempfile
 
 import pytest
+from tools import browser_tool_install as bt_install
 
 
 # ---------------------------------------------------------------------------
@@ -288,5 +289,5 @@ model:
         _fresh_modules()
 
         import tools.browser_tool
-        with patch.object(tools.browser_tool, "check_browser_requirements", return_value=True):
-            assert tools.browser_tool.check_browser_vision_requirements() is True
+        with patch.object(bt_install, "check_browser_requirements", return_value=True):
+            assert tools.browser_tool_install.check_browser_vision_requirements() is True
