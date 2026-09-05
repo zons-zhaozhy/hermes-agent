@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
-import re  # noqa: scanner plugin — regex is the implementation, not an analysis shortcut
+import re  # re-ok: shell命令扫描器,正则即本体实现 # noqa: scanner plugin
 from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -89,12 +89,12 @@ def _is_python_inline_write(command: str) -> bool:
       Preconditions: command is non-empty string
       Postconditions: True iff python3 inline AND has write indicator
     """
-    if not _RE_PYTHON_INLINE.search(command):
+    if not _RE_PYTHON_INLINE.search(command):  # re-ok: shell命令扫描器本体
         return False
     for indicator in _WRITE_INDICATORS:
         if indicator in command:
             return True
-    if _RE_OPEN_WRITE.search(command):
+    if _RE_OPEN_WRITE.search(command):  # re-ok: shell命令扫描器本体
         return True
     return False
 
@@ -194,7 +194,7 @@ def _extract_inplace_target(command: str) -> Optional[str]:
             return t
         # Check if the remaining tokens after -i flags form a plausible path
     # Fallback: try regex
-    m = re.search(r"(?:perl|sed|awk)\s+(?:-\w+\s+)*['\"][^'\"]*['\"]?\s+(\S+)", command)
+    m = re.search(r"(?:perl|sed|awk)\s+(?:-\w+\s+)*['\"][^'\"]*['\"]?\s+(\S+)", command)  # re-ok: shell命令扫描器本体
     if m:
         return m.group(1).strip("'\"")
     return None
@@ -349,12 +349,12 @@ def _detect_source_write(command: str) -> Tuple[bool, str]:
         return True, "python3 内联脚本含写文件操作"
 
     # Layer 2: Shell redirect (cat > / tee / echo > / printf >)
-    if _RE_CAT_HEREDOC_WRITE.search(command):
+    if _RE_CAT_HEREDOC_WRITE.search(command):  # re-ok: shell命令扫描器本体
         target = _extract_redirect_target(command)
         if target and _is_source_file(target) and not _is_safe_path(target):
             return True, f"shell 重定向写入源码文件 ({target})"
 
-    if _RE_TEE_WRITE.search(command):
+    if _RE_TEE_WRITE.search(command):  # re-ok: shell命令扫描器本体
         target = _extract_redirect_target(command)
         if target and _is_source_file(target) and not _is_safe_path(target):
             return True, f"tee 写入源码文件 ({target})"
@@ -369,7 +369,7 @@ def _detect_source_write(command: str) -> Tuple[bool, str]:
         return True, f"shell 重定向写入源码文件 ({target})"
 
     # Layer 3: In-place edit (sed -i, perl -pi)
-    if _RE_INPLACE_EDIT.search(command):
+    if _RE_INPLACE_EDIT.search(command):  # re-ok: shell命令扫描器本体
         target = _extract_inplace_target(command)
         if target and _is_source_file(target) and not _is_safe_path(target):
             return True, f"in-place 编辑源码文件 ({target})"
