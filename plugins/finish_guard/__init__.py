@@ -43,6 +43,39 @@ _LEGIT_ASK_RE = re.compile(
     r"|歧义|必须先确认|需要你确认|待确认)"
 )
 
+# 宣言式假继续（0902 实测穿透）：陈述句宣布继续/下一批但随即停轮。
+# 判定只看「尾部命中计划句式 + 回合结束」，不看本回合 tool 调用数——
+# 做了部分工作后宣言继续再停轮，同样是失效（用户 0902 拍板修正）。
+_DECLARE_RE = re.compile(
+    r"(继续|接下来|下一批|开始.{0,8}批|下一步|随后就|稍后|待续|进行中)"
+)
+# 完成态豁免：任务真完成后的收尾陈述（「下一步如需…」类边界话术）不拦
+_DONE_RE = re.compile(
+    r"(全部完成|已全部完成|已完成|完成完毕|收官|清零|收工|告一段落|全部推送"
+    r"|待拍板|需要你拍板|必须先确认|需要你确认|等你确认|如需|若需|除非另有|另行指示)"
+)
+
+
+def _is_false_continue(text: str) -> bool:
+    """Contract: Preconditions: text 为 str（可空）；Postconditions: 命中
+    宣言式继续句式、且不命中完成态/合法请示豁免时返回 True。
+
+    完成态豁免规则：完成词与继续宣言并存时（批间汇报「X已清零，继续Y」），
+    只有完成词出现在宣言**之后**（真终态收尾）才放行；宣言在前=还有
+    未做之事=拦。"""
+    if not text:
+        return False
+    if _LEGIT_ASK_RE.search(text):  # re-ok: 中文句式模糊匹配无str等价
+        return False
+    m = _DECLARE_RE.search(text)  # re-ok: 同上
+    if not m:
+        return False
+    done = _DONE_RE.search(text)  # re-ok: 同上
+    if done and done.start() > m.start():
+        return False  # 完成词在宣言后=终态收尾，放行
+    return True  # 无完成词或完成词在宣言前=批间汇报，拦
+
+
 # pre_verify 单回合最多强制续跑次数（防请示/续跑死循环，量级对齐核心 max nudges）
 _MAX_PRE_VERIFY_NUDGES = 3
 
@@ -103,15 +136,17 @@ def _on_pre_verify(**kwargs) -> dict:
         return {}
     final_response = kwargs.get("final_response") or ""
     tail = _tail_text(final_response)
-    if not _is_pushback(tail):
+    if not (_is_pushback(tail) or _is_false_continue(tail)):
         return {}
-    logger.warning("finish_guard: pre_verify 拦截请示式收尾（attempt=%d），强制续跑", attempt)
+    logger.warning(
+        "finish_guard: pre_verify 拦截请示式/宣言式收尾（attempt=%d），强制续跑", attempt
+    )
     return {
         "action": "continue",
         "message": (
-            "[finish_guard] 你的收尾是请示式提问（「要不要/继续吗」类），已拦截。"
-            "撤回请示：把可逆决策标注为假设后直接连做剩余步骤，跑完拿真实"
-            "结果收尾。只有不可逆操作、凭据、付费、方向性选型才允许请示。"
+            "[finish_guard] 你的收尾是请示式提问或宣言式假继续（宣布「继续/下一批」"
+            "却停轮）。撤回收尾：把可逆决策标注为假设后直接连做剩余步骤，跑完拿"
+            "真实结果收尾。只有不可逆操作、凭据、付费、方向性选型才允许停下请示。"
         ),
     }
 
@@ -126,13 +161,13 @@ def _transform_llm_output(response_text: str = "", **kwargs) -> str:
     if not output.strip():
         return output
     tail = _tail_text(output)
-    if not _is_pushback(tail):
+    if not (_is_pushback(tail) or _is_false_continue(tail)):
         return output
-    logger.warning("finish_guard: 请示式收尾漏网（L1/L2 未覆盖），打用户可见标记")
+    logger.warning("finish_guard: 请示式/宣言式收尾漏网（L1/L2 未覆盖），打用户可见标记")
     return (
         output
-        + "\n\n[finish_guard] 上面以请示式收尾。按既定纪律：可逆决策标注假设直接继续，"
-        "不必等待确认；下轮回复我将继续执行。"
+        + "\n\n[finish_guard] 上面以请示式提问或宣言式假继续收尾。按既定纪律："
+        "可逆决策标注假设直接继续，不必等待确认；下轮回复我将继续执行。"
     )
 
 
