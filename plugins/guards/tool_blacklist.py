@@ -1,4 +1,4 @@
-"""tool-blacklist — 必败工具机械黑名单（打地鼠根治的机制层）。
+"""guards.tool_blacklist — 必败工具机械黑名单（打地鼠根治的机制层）。
 
 背景（0905 用户拍板）：errors.log 实测 vision_analyze 17/17 全败、
 codegraph_search 5/6 败，但每个会话仍被反复调用——因为「别调它」

@@ -305,7 +305,7 @@ def _on_pre_tool_call(
     lines = [
         "",
         "=" * 60,
-        " 编码前强制查重拦截 (duplicate-check v2)",
+        " 编码前强制查重拦截 (guards.duplicate_check)",
         "   新建文件: {0}".format(path),
         "   提取关键词: {0}".format(", ".join(keywords)),
         "   ",

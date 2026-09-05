@@ -1,4 +1,4 @@
-"""four-axis-guard plugin — pre_tool_call 四轴闸门副防线。
+"""guards.four_axis — pre_tool_call 四轴闸门副防线。
 
 与 ReadThinkGate 协同：Gate 扫描 assistant_content 检测四轴证据，
 写入 marker 文件。本插件读取 marker 文件，四轴未齐即阻断写工具。
@@ -173,4 +173,4 @@ def on_pre_tool_call(**kwargs) -> Optional[Dict[str, Any]]:
 
 def register(ctx) -> None:
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
-    logger.info("four-axis-guard plugin registered")
+    logger.info("guards.four_axis registered")

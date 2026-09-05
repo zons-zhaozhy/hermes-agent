@@ -1,4 +1,4 @@
-"""source-code-write-guard plugin — intercept terminal commands that silently write source files.
+"""guards.source_write — intercept terminal commands that silently write source files.
 
 Motivation: terminal tool output is summary-only in CLI. Any file-write channel
 (cat >, tee, python3 -c, perl -i, sed -i, echo >) silently modifies files with
@@ -451,7 +451,7 @@ def on_pre_tool_call(**kwargs) -> Optional[Dict[str, Any]]:
 
     if _is_escape_hatch(command):
         logger.info(
-            "source-code-write-guard: escape hatch triggered — "
+            "guards.source_write: escape hatch triggered — "
             "guard file modification allowed via terminal"
         )
         return None
@@ -461,7 +461,7 @@ def on_pre_tool_call(**kwargs) -> Optional[Dict[str, Any]]:
         return None
 
     logger.warning(
-        "source-code-write-guard: blocked terminal source write — %s "
+        "guards.source_write: blocked terminal source write — %s "
         "(command length=%d)",
         reason,
         len(command),
@@ -471,4 +471,4 @@ def on_pre_tool_call(**kwargs) -> Optional[Dict[str, Any]]:
 
 def register(ctx) -> None:
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
-    logger.info("source-code-write-guard plugin registered")
+    logger.info("guards.source_write registered")
