@@ -37,3 +37,13 @@ L0 机制黑名单 tool-blacklist                     —— 管"必败工具根
 - hermes_cli/plugins.py 历史违规约 40 处(R001/R008/R013/R021/R022),
   属 god-file 存量,修它们=独立任务,按层归 L2 规范层处理。
 - 四轴闸门 marker 10 分钟时效 vs 长 turn 中途失效的时序问题待观察。
+
+## 收拢执行记录（0905,全部实测）
+- patch-first 已禁用并表: source_code_write_guard 为严格超集
+  (sed 4 变体全拦/只读 sed -n 放行,等价性验证过);
+  config.yaml plugins.enabled 43 项、disabled=[patch-first]。
+- PreWriteGuard vs ReadThinkGate write-target 检查: 语义重复但状态源
+  不同(session_state vs gate._files_read)——暂共存(PreWriteGuard 覆盖
+  gate 未激活的 turn),待观察误拦率后再并。
+- 聚合总线端到端实测: 真实插件环境 write_file 违规一次同时输出
+  CodingStandardsGuard+四轴闸门 两条 verdict。
