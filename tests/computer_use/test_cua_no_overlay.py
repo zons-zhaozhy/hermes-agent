@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, mock_open, patch
 import pytest
 
 from tools.computer_use import cua_backend
+from tools.computer_use import cua_backend_daemon
 from tools.computer_use import cua_backend_driver
 
 
@@ -242,6 +243,14 @@ class TestEmbeddedDaemonOverlayFlag:
         ), patch.object(
             cua_backend_driver, "_cua_driver_supports_no_overlay", return_value=True,
         ), patch.object(
+            # macOS spawns the private daemon under the CuaDriver.app bundle for TCC
+            # identity; a dev box without the app installed would hard-fail here.
+            cua_backend_daemon, "_resolve_cua_driver_app_path",
+            return_value="/Applications/CuaDriver.app",
+        ), patch.object(
+            # Signature validation runs real codesign against the bundle.
+            cua_backend_daemon, "_validate_cua_driver_app_signature",
+        ), patch.object(
             cua_backend.subprocess, "Popen", return_value=process,
         ) as popen, patch.object(
             cua_backend.subprocess, "run", return_value=status,
@@ -249,5 +258,16 @@ class TestEmbeddedDaemonOverlayFlag:
             daemon.start()
 
         command = popen.call_args.args[0]
-        assert command[:2] == ["/usr/bin/cua-driver", "serve"]
-        assert "--no-overlay" in command
+        # macOS wraps the daemon in `open -n -a CuaDriver.app --args …`; the
+        # driver command and serve args follow the wrapper.
+        if command[0] == "/usr/bin/open":
+            assert command[:2] == ["/usr/bin/open", "-n"]
+            assert "--args" in command
+            args = command[command.index("--args") + 1:]
+            # Under the macOS `open` wrapper the binary itself is implied;
+            # serve args start at "serve".
+            assert args[0] == "serve"
+            assert "--no-overlay" in args
+        else:
+            assert command[:2] == ["/usr/bin/cua-driver", "serve"]
+            assert "--no-overlay" in command

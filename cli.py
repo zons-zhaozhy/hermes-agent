@@ -4500,6 +4500,7 @@ def main(
     skills: str | list[str] | tuple[str, ...] = None,
     model: str = None,
     provider: str = None,
+    reasoning: str = None,
     api_key: str = None,
     base_url: str = None,
     max_turns: int = None,

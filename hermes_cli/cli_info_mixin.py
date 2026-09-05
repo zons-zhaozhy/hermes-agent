@@ -447,6 +447,23 @@ class CLIInfoMixin:
         """Return True when /steer should be dispatched immediately while the agent is running."""
         return self._busy_inline_command(text, has_images, ("steer",))
 
+    def _redirect_was_steered(self) -> bool:
+        """True when redirect() accepted the text but only as a steer.
+
+        redirect() silently degrades to steer() while a tool is mid-flight:
+        the text lands in ``_pending_steer`` and rides on the LAST tool result
+        once the current command finishes — the turn is NOT actually
+        interrupted. The CLI must not print the "Redirected current turn"
+        illusion in that case.
+        """
+        agent = self.agent
+        if agent is None:
+            return False
+        return (
+            getattr(agent, "_pending_steer", None) is not None
+            and getattr(agent, "_pending_redirect", None) is None
+        )
+
     def _should_handle_background_command_inline(
         self, text: str, has_images: bool = False) -> bool:
         """Return True when /bg or /btw should be dispatched while the agent runs (their
