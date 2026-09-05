@@ -1,0 +1,8 @@
+name: discipline
+version: "1.0.0"
+description: L3执行纪律护栏套件(收拢8插件)——瞎猜拦截/DB schema强制/错误诊断纪律/curl签名确认/日志先行/工具滥用/禁绕过/禁推责。分层见docs/guard-system-architecture.md。
+author: stan
+hooks:
+  - pre_tool_call
+  - post_tool_call
+  - pre_llm_call

@@ -1,7 +1,0 @@
-name: no-pushback
-version: "1.0.0"
-description: "Hard-blocks lazy pushback: output containing pushback questions and clarify tool abuse"
-author: stan
-hooks:
-  - transform_llm_output
-  - pre_tool_call

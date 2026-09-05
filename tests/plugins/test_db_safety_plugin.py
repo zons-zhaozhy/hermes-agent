@@ -15,7 +15,7 @@ import pytest
 
 _spec = _ilu.spec_from_file_location(
     "plugins.db_safety",
-    os.path.join(os.path.dirname(__file__), "..", "..", "plugins", "db-safety", "__init__.py"),
+    os.path.join(os.path.dirname(__file__), "..", "..", "plugins", "discipline", "db_safety.py"),
 )
 _ds = _ilu.module_from_spec(_spec)
 _spec.loader.exec_module(_ds)
