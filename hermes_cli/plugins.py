@@ -1791,6 +1791,12 @@ def _get_pre_tool_call_directive_details(
         api_request_id=api_request_id, middleware_trace=list(middleware_trace or []),
     )
     modified_args: Optional[Dict[str, Any]] = None
+    # Aggregate ALL block verdicts — first-wins used to surface only the first
+    # guard's opinion, so the agent fixed one violation and immediately hit the
+    # next (the whack-a-mole root cause). Collect every block now and merge
+    # them into a single message so one retry fixes every violation at once.
+    block_msgs: list = []
+    approve_directive = None
     for result in hook_results:
         if not isinstance(result, dict):
             continue
@@ -1811,9 +1817,33 @@ def _get_pre_tool_call_directive_details(
         # A block directive requires a message (it becomes the tool result); approve's is optional.
         if action == "block" and not message:
             continue
-        rule_key = result.get("rule_key") if action == "approve" else None
-        rule_key = (rule_key.strip() or None) if isinstance(rule_key, str) else None
-        return _PreToolCallDirective(action=action, message=message, rule_key=rule_key, modified_args=modified_args)
+        if action == "block":
+            assert message is not None  # gate above guarantees a non-empty block message
+            # Functional bound: the concatenated tool result must stay bounded —
+            # 2000 chars per verdict keeps context growth finite.  # trunc-ok: 功能性上限,完整verdict已在护栏日志
+            block_msgs.append(message[:2000])
+            continue
+        if approve_directive is None:
+            rule_key = result.get("rule_key")
+            rule_key = (rule_key.strip() or None) if isinstance(rule_key, str) else None
+            approve_directive = _PreToolCallDirective(
+                action="approve", message=message, rule_key=rule_key,
+                modified_args=modified_args,
+            )
+    if block_msgs:
+        if len(block_msgs) == 1:
+            block_msg = block_msgs[0]
+        else:
+            block_msg = (
+                f"[护栏聚合] {len(block_msgs)} 个护栏同时拦截——"
+                f"全部修完再重试,禁止修一个撞下一个:\n\n"
+                + "\n\n──────\n\n".join(block_msgs)
+            )
+        return _PreToolCallDirective(
+            action="block", message=block_msg, modified_args=modified_args,
+        )
+    if approve_directive is not None:
+        return approve_directive
     return _PreToolCallDirective(modified_args=modified_args)
 
 

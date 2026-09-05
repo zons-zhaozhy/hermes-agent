@@ -204,6 +204,10 @@ class TestPreToolCheck:
         # for any attribute access, which would short-circuit the interrupt
         # skip path before any cancelled-tool messages are appended.
         agent._incremental_persistence_failed = False
+        # ReadThinkGate wiring: a bare MagicMock auto-creates a gate whose
+        # check_batch returns a truthy MagicMock — the executor then treats it
+        # as a block and never reaches the interrupt skip path.
+        agent._read_think_gate = None
 
         # Import and call the method
         import types

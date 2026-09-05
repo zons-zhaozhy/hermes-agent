@@ -2,6 +2,7 @@
 
 import json
 import os
+import platform
 import shlex
 import shutil
 import signal
@@ -1205,7 +1206,12 @@ class TestCheckpoint:
         redacted before write. Recovery only uses command for display/logging
         (the process is already running), so masking is lossless."""
         checkpoint = tmp_path / "procs.json"
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+        # _REDACT_ENABLED is an import-time constant; a dev shell exporting
+        # HERMES_REDACT_SECRETS=false freezes it before the conftest env
+        # isolation runs. The redaction contract is independent of that
+        # preference, so pin it on for this test.
+        with patch("agent.redact._REDACT_ENABLED", True), \
+             patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
             secret = "sk-secret1234567890"
             command = f"curl -H 'Authorization: Bearer {secret}' http://x"
             s = _make_session(sid="proc_secret", command=command)
@@ -1875,6 +1881,7 @@ class TestReaderLoopOrphanedPipe:
 # systemd cgroup isolation for gateway-spawned local executors (#70716)
 # =========================================================================
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: systemd scopes")
+@pytest.mark.skipif(platform.system() != "Linux", reason="systemd-run --user --scope spawn path is Linux-only (_IS_LINUX gate)")
 class TestSystemdCgroupIsolation:
     """Verify spawn_local wraps the worker in ``systemd-run --user --scope``
     when running under a supervisor and systemd-run is available, and falls

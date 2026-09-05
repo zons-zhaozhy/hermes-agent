@@ -220,6 +220,10 @@ def test_unreadable_schema_without_cli_names_the_sqlite3_requirement(
     import hermes_cli.session_lost_and_found as laf
 
     monkeypatch.setattr(laf, "find_sqlite3_cli", lambda: None)
+    # A REAL vulnerable sqlite3 on PATH (e.g. macOS 3.51.0 with the WAL-reset
+    # bug) may have populated the refusal cache before this test; reset it so
+    # the plain CLI-missing branch is exercised deterministically.
+    laf._last_cli_refusal = {}
     with pytest.raises(SessionRecoverySourceError) as excinfo:
         recover_session_database(
             source,

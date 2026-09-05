@@ -12,7 +12,35 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-_SKILLS_BLOCK_RE = re.compile(r"<available_skills>.*?</available_skills>", re.DOTALL)
+def _find_skills_block(text: str):
+    """Find <available_skills>...</available_skills> block. O(n) scan — replaces the
+    earlier DOTALL regex whose lazy repetition risked backtracking blowups (# perf,
+    fork commit eb0775d15e)."""
+    if not text:
+        return None
+    _start = text.lower().find('<available_skills>')
+    if _start == -1:
+        return None
+    _end = text.lower().find('</available_skills>', _start + len('<available_skills>'))
+    if _end == -1:
+        return None
+
+    class _Match:
+        def __init__(self, full, inner):
+            self._full = full
+            self._inner = inner
+        def group(self, n=0):
+            if n == 0:
+                return self._full
+            return self._inner
+        def start(self):
+            return 0
+        def end(self):
+            return len(self._full)
+    return _Match(
+        text[_start:_end + len('</available_skills>')],
+        text[_start + len('<available_skills>'):_end],
+    )
 
 # A rendered skill entry is ``    - name: desc`` (or ``    - name``); category headers use two
 # leading spaces, so the four-space + ``- `` prefix isolates skill lines.
@@ -158,7 +186,7 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
 
     # The skills index lives in the volatile tier (moved from stable so skill edits don't
     # invalidate the cached identity prefix); fall back to stable for older layouts.
-    skills_match = _SKILLS_BLOCK_RE.search(volatile) or _SKILLS_BLOCK_RE.search(stable)
+    skills_match = _find_skills_block(volatile) or _find_skills_block(stable)
     skills_index = skills_match.group(0) if skills_match else ""
 
     # Memory + user profile are joined into ``volatile``; re-derive them from the store so the
