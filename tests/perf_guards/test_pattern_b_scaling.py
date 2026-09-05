@@ -189,8 +189,12 @@ class TestToolCallFragmentAssemblyLinear:
     FRAG = "y" * 64
     # Sized so the small case takes ≥2ms even on fast hardware: sub-ms bases
     # make the ratio jitter on noisy CI runners (measured 0.185ms at 8k).
-    N_SMALL = 128_000
-    N_LARGE = 512_000
+    # Capped at 128k/32k: past ~256k fragments the 16MB+ list growth leaves
+    # macOS's small-object allocator's stable zone and page-fault noise makes
+    # LINEAR code measure 8-15x (masks the guard). At 32k/128k the linear
+    # shape measures ~3.6x while the dict-field `+=` anti-pattern stays ~37x.
+    N_SMALL = 32_000
+    N_LARGE = 128_000
     MAX_RATIO = 8.0  # linear ≈ 4; dict-field quadratic measured >> 10
 
     @staticmethod
