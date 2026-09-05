@@ -82,19 +82,59 @@ _WRITE_INDICATORS = (
 
 _RE_OPEN_WRITE = re.compile(r"open\s*\([^)]*['\"]w['\"]")
 
-def _is_python_inline_write(command: str) -> bool:
-    """Check if command is a python3 inline script with file writes.
+def _python_inline_write_targets(command: str) -> list:
+    """提取 python 内联脚本中所有 open(...,'w') 的第一个路径参数（无正则）。
 
     Contract:
       Preconditions: command is non-empty string
-      Postconditions: True iff python3 inline AND has write indicator
+      Postconditions: 返回路径字符串列表（可能为空——提取不到）
     """
-    if not _RE_PYTHON_INLINE.search(command):  # re-ok: shell命令扫描器本体
+    targets: list = []
+    # 无正则切分（R2 纪律）: 逐个找 "open(" 后的首个引号参数
+    rest = command
+    while True:
+        i = rest.find("open(")
+        if i < 0:
+            break
+        seg = rest[i + len("open("):]
+        # 只在 write 模式的 open 才算写目标: 参数里须含 'w"/"w' 模式字样
+        j = seg.find(")")
+        body = seg[:j] if j >= 0 else seg[:80]
+        if ("'w'" in body) or ('"w"' in body) or ("'wb'" in body) or ('"wb"' in body) or ("'a'" in body) or ('"a"' in body):
+            # 第一个参数 = 首个引号对内容
+            for q in ("'", '"'):
+                k = body.find(q)
+                if k >= 0:
+                    m = body.find(q, k + 1)
+                    if m > k:
+                        targets.append(body[k + 1:m])
+                        break
+        rest = seg
+    return targets
+
+
+def _is_python_inline_write(command: str) -> bool:
+    """Check if command is a python3 inline script with file writes.
+
+    只拦「写到源码路径」的内联写——open('/tmp/..','w') 等安全路径放行
+    （对齐插件头 Exclusions 契约与 Layer 2/3 的 _is_safe_path 判定）。
+
+    Contract:
+      Preconditions: command is non-empty string
+      Postconditions: True iff python3 inline AND 写目标为源码路径；
+                      提取不到路径但含写指示词时保守拦截（防绕过）。
+    """
+    if not _RE_PYTHON_INLINE.search(command):  # re-ok: shell命令扫描器本体,检测python -c调用形态
         return False
+    targets = _python_inline_write_targets(command)
+    if targets:
+        # 有明确 open 路径: 任何一个非安全路径的源码写 → 拦
+        return any(_is_source_file(t) and not _is_safe_path(t) for t in targets)
+    # 无 open 但含其他写指示词(write_text 等): 提取不到路径，保守拦截
     for indicator in _WRITE_INDICATORS:
         if indicator in command:
             return True
-    if _RE_OPEN_WRITE.search(command):  # re-ok: shell命令扫描器本体
+    if _RE_OPEN_WRITE.search(command):  # re-ok: shell命令扫描器本体,open写模式检测
         return True
     return False
 
