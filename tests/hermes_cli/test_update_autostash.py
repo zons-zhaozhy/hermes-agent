@@ -2,6 +2,7 @@ from pathlib import Path
 from subprocess import CalledProcessError
 from types import SimpleNamespace
 from unittest.mock import patch
+import os
 
 import pytest
 
@@ -65,6 +66,12 @@ def _patch_gateway_discovery():
     with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
          patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
          patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
+         patch(
+             # Dev-box leak: real ai.hermes.gateway LaunchAgent plist (default
+             # install root) takes the live launchctl path and fails closed.
+             "hermes_cli.gateway.get_launchd_plist_path",
+             return_value=Path(os.environ.get("HERMES_HOME", "/tmp")) / "nonexistent-launchd-plist.plist",
+         ), \
          patch("hermes_cli.update_inventory.collect_runtime_inventory", return_value=None), \
          patch("hermes_cli.update_inventory.report_unaccounted_runtimes", return_value=False), \
          patch.object(hermes_main, "_fleet_probe_expected_runtimes", lambda *a, **kw: False), \

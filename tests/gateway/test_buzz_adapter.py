@@ -3061,13 +3061,17 @@ class TestInboundMediaAuthorizationGate:
 
     @pytest.mark.asyncio
     async def test_live_media_redacts_long_path_before_bounding(self, tmp_path):
+        # Only a shallow real file is needed (the mocked CLI never reads it); keep the
+        # private hierarchy deep enough to trigger redaction but under macOS PATH_MAX
+        # (1024) so Path.is_file() in the real send path doesn't hit Errno 63 —
+        # the contract is about the path text in the error message, not the fs.
         parent = tmp_path
         private_parts = []
-        for index in range(6):
+        for index in range(3):
             part = f"private-{index}-" + ("x" * 150)
             private_parts.append(part)
             parent = parent / part
-            parent.mkdir()
+            parent.mkdir(parents=True, exist_ok=True)
         media = parent / "handoff.txt"
         media.write_text("safe handoff", encoding="utf-8")
         adapter = _make_adapter()

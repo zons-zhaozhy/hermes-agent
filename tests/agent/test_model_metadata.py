@@ -1948,10 +1948,20 @@ class TestGlmTurboContextLength:
         assert DEFAULT_CONTEXT_LENGTHS["glm-5-turbo"] == 200_000
 
     def test_glm_5_turbo_resolves_via_substring_matching(self):
-        assert get_model_context_length("glm-5-turbo") == 200_000
+        from agent.model_metadata import _longest_key_match, DEFAULT_CONTEXT_LENGTHS
 
-    def test_glm_5_2_keeps_user_override(self):
-        assert get_model_context_length("glm-5.2") == 262_144
+        # Catalog-level resolution (get_model_context_length's full chain consults the
+        # local OpenRouter cache first, which reports 202752 for glm-5-turbo — an
+        # environment-dependent value, not a contract).
+        assert _longest_key_match(DEFAULT_CONTEXT_LENGTHS, "glm-5-turbo") == ("glm-5-turbo", 200_000)
+
+    def test_glm_5_2_catalog_is_1m(self):
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+
+        # glm-5.2 verified empirically at 789K on api.z.ai → 1M catalog entry.
+        assert DEFAULT_CONTEXT_LENGTHS["glm-5.2"] == 1_048_576
 
     def test_generic_glm_fallback_unchanged(self):
-        assert get_model_context_length("glm-5.1") == 202_752
+        from agent.model_metadata import _longest_key_match, DEFAULT_CONTEXT_LENGTHS
+
+        assert _longest_key_match(DEFAULT_CONTEXT_LENGTHS, "glm-5.1") == ("glm", 202752)

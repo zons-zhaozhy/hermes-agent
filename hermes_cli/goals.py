@@ -519,10 +519,8 @@ class GoalState:
             last_verdict=data.get("last_verdict"),
             last_reason=data.get("last_reason"),
             paused_reason=data.get("paused_reason"),
-            consecutive_parse_failures=int(data.get("consecutive_parse_failures", 0) or 0),
-            consecutive_transport_failures=int(data.get("consecutive_transport_failures", 0) or 0),
             turn_reasons=[str(r) for r in (data.get("turn_reasons") or []) if str(r).strip()][-20:],
-            subgoals=subgoals,
+            subgoals=[str(s).strip() for s in raw_subgoals if str(s).strip()] if isinstance(raw_subgoals, list) else [],
             waiting_on_pid=(int(data["waiting_on_pid"]) if data.get("waiting_on_pid") else None),
             waiting_on_session=(str(data["waiting_on_session"]) if data.get("waiting_on_session") else None),
             waiting_reason=data.get("waiting_reason"),
@@ -533,6 +531,7 @@ class GoalState:
             ],
             progress_num=int(data.get("progress_num", 0) or 0),
             progress_den=int(data.get("progress_den", 0) or 0),
+            **ints, **floats,
         )
 
     def has_contract(self) -> bool:
@@ -827,6 +826,20 @@ def _extract_json_object(raw: str) -> Optional[Dict[str, Any]]:
         except Exception:
             return None
     return data if isinstance(data, dict) else None
+
+
+def _call_goal_judge_llm(call_llm, system_prompt: str, user_prompt: str, timeout: Optional[float]) -> str:
+    """Route through call_llm so auxiliary.goal_judge.* config (provider/model, extra_body,
+    reasoning_effort, retries) all apply. Returns the raw reply text."""
+    resp = call_llm(
+        task="goal_judge",
+        messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+        temperature=0, max_tokens=_goal_judge_max_tokens(), timeout=timeout,
+    )
+    try:
+        return resp.choices[0].message.content or ""
+    except Exception:
+        return ""
 
 
 def _parse_judge_response(raw: str) -> Tuple[str, str, bool, Optional[Dict[str, Any]]]:
@@ -1590,6 +1603,11 @@ class GoalManager:
         )
         state.last_verdict = verdict
         state.last_reason = reason
+        # Parse failures reset on any usable reply INCLUDING transport errors, so a flaky network
+        # doesn't trip the auto-pause meant for bad judge models; transport failures are counted
+        # separately because persistent API errors (401, DNS) mean a broken config.
+        state.consecutive_parse_failures = state.consecutive_parse_failures + 1 if parse_failed else 0
+        state.consecutive_transport_failures = state.consecutive_transport_failures + 1 if transport_failed else 0
         # Record the trajectory so the NEXT judge call can see drift across
         # turns. Cap at 20 (mirrors from_json) to bound state size. Transport
         # failures get a sentinel — they had no verdict and must not masquerade

@@ -1,7 +1,9 @@
 """Tests for cmd_update — branch fallback when remote branch doesn't exist."""
 
 import hashlib
+import os
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, patch
 
@@ -94,6 +96,15 @@ def _patch_gateway_discovery():
          patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
          patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
          patch(
+             # The plist lookup derives from the DEFAULT install root, so a dev box
+             # with a real ai.hermes.gateway LaunchAgent takes the live launchctl
+             # restart path (#88848) and its fail-closed contract exits 1 — same
+             # dev-box leak class as the label enumeration below. Point it at a
+             # nonexistent path so the branch is a clean no-op.
+             "hermes_cli.gateway.get_launchd_plist_path",
+             return_value=Path(os.environ.get("HERMES_HOME", "/tmp")) / "nonexistent-launchd-plist.plist",
+         ), \
+         patch(
              # macOS launchd fleet restart: derived from the DEFAULT install
              # root (not the sandboxed HERMES_HOME), so a dev box with a real
              # ai.hermes.gateway LaunchAgent leaks into these tests — the
@@ -108,6 +119,28 @@ def _patch_gateway_discovery():
              # launchctl directly — same leak, same isolation need.
              "hermes_cli.update_cmd._restart_launchd_gateway_after_update",
              return_value=([], []),
+         ), \
+         patch(
+             # Runtime inventory reads control sockets / PID files from the
+             # DEFAULT install root — a dev box with a live gateway yields a
+             # non-empty plan and the zero-row fail-closed contract (#93406)
+             # exits 1. No plan → no expectation.
+             "hermes_cli.update_inventory.collect_runtime_inventory",
+             return_value=None,
+         ), \
+         patch(
+             "hermes_cli.update_inventory.report_unaccounted_runtimes",
+             return_value=False,
+         ), \
+         patch(
+             "hermes_cli.update_receipt.collect_fleet_versions",
+             return_value=[],
+         ), \
+         patch.object(
+             # The stale-module purge evicts ``hermes_cli.gateway`` from
+             # sys.modules mid-update; the restart phase's fresh import then
+             # loads an UNPATCHED copy, discarding every mock above.
+             update_cmd, "_purge_stale_hermes_modules", lambda *a, **kw: None,
          ):
         yield
 

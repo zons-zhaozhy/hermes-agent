@@ -354,7 +354,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     # MiniMax — M3 is 1M; M2.x is 204,800. https://platform.minimax.io/docs/api-reference/text-chat-openai
     "minimax-m3": 1000000, "minimax": 204800,
     # GLM — 5.2/5.3 are 1M (5.2 verified empirically at 789K on api.z.ai); older GLM ~202K.
+    # glm-5-turbo is 200K per docs.bigmodel.cn (longest-key-first substring matching
+    # resolves "glm-5-turbo" to 200K, older "glm" keys to their own limits).
     # The OpenRouter :free variant is capped; the longer key wins.
+    "glm-5-turbo": 200_000,
     "glm-5.2": 1_048_576, "glm-5.2:free": 256_000, "glm-5.3": 1_048_576, "glm": 202752,
     # xAI — /v1/models returns no context_length, so these prevent probe-down on api.x.ai
     # custom providers (docs.x.ai). grok-composer(-2.5-fast, Grok Build CLI) is OAuth-only:

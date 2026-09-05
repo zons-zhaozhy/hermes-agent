@@ -1382,6 +1382,33 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
     return True
 
 
+def _run_read_think_gate(agent, assistant_message, parsed_calls) -> Optional[str]:
+    """Invoke the ReadThinkGate pre-dispatch check. Returns the block message when
+    the gate blocks this batch, else ``None``. Crash-safe: any gate failure logs a
+    warning and allows execution."""
+    gate = getattr(agent, "_read_think_gate", None)
+    if gate is None:
+        return None
+    try:
+        return gate.check_batch(
+            getattr(assistant_message, "content", None) or "",
+            [pc.name for pc in parsed_calls],
+            tool_args=[pc.args for pc in parsed_calls],
+        )
+    except Exception:
+        logger.warning("ReadThinkGate check_batch failed (tool dispatch wiring)", exc_info=True)
+        return None
+
+
+def _append_gate_blocked_results(agent, messages, tool_calls, effective_task_id, block: str) -> None:
+    """Emit one gate-blocked result per tool call so the batch stays well-formed."""
+    for tool_call in tool_calls:
+        _name = getattr(getattr(tool_call, "function", None), "name", "") or "tool"
+        messages.append(make_tool_result_message(
+            _name, block, _pairing_tool_call_id(tool_call), effect_disposition="none",
+        ))
+
+
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
     """Execute tool calls concurrently; results are appended in original call order.
     ``finalize=False`` skips end-of-batch budget enforcement and /steer injection (the
@@ -1402,6 +1429,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         return
 
     parsed_calls = [_parse_tool_call(agent, tc) for tc in tool_calls]
+
+    # ReadThinkGate: pre-dispatch reasoning check (crash-safe; gate misbehaviour
+    # must never block tool execution).
+    _gate_block = _run_read_think_gate(agent, assistant_message, parsed_calls)
+    if _gate_block is not None:
+        _append_gate_blocked_results(agent, messages, tool_calls, effective_task_id, _gate_block)
+        return
 
     tool_names_str = ", ".join(pc.name for pc in parsed_calls)
     if _tool_progress_enabled(agent):
@@ -1647,6 +1681,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     _tool_budget = _budget_for_agent(agent)  # once per turn, not per result
     tool_calls = assistant_message.tool_calls
 
+    # ReadThinkGate: pre-dispatch reasoning check (crash-safe).
+    _parsed = [_parse_tool_call(agent, tc) for tc in tool_calls]
+    _gate_block = _run_read_think_gate(agent, assistant_message, _parsed)
+    if _gate_block is not None:
+        _append_gate_blocked_results(agent, messages, tool_calls, effective_task_id, _gate_block)
+        return
+
     for i, tool_call in enumerate(tool_calls, 1):
         if getattr(agent, "_incremental_persistence_failed", False):
             return
@@ -1713,7 +1754,10 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
     for kind, calls in segments:
         if getattr(agent, "_incremental_persistence_failed", False):
             return
-        segment_message = SimpleNamespace(tool_calls=list(calls))
+        segment_message = SimpleNamespace(
+            tool_calls=list(calls),
+            content=getattr(assistant_message, "content", None),
+        )
         run_segment = execute_tool_calls_concurrent if kind == "parallel" else execute_tool_calls_sequential
         run_segment(agent, segment_message, messages, effective_task_id, api_call_count, finalize=False)
         if getattr(agent, "_incremental_persistence_failed", False):

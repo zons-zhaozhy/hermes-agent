@@ -10,6 +10,8 @@ and fails loudly when the update was a no-op.
 """
 
 from types import SimpleNamespace
+import os
+from pathlib import Path
 
 import pytest
 
@@ -130,6 +132,13 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     )
     monkeypatch.setattr(
         hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
+    )
+    # Dev-box leak: a real ai.hermes.gateway LaunchAgent plist (default install
+    # root) takes the live launchctl path and its fail-closed exit. Point the
+    # lookup at a nonexistent path so the branch is a clean no-op.
+    monkeypatch.setattr(
+        hermes_gateway, "get_launchd_plist_path",
+        lambda: Path(os.environ.get("HERMES_HOME", "/tmp")) / "nonexistent-launchd-plist.plist",
     )
 
 

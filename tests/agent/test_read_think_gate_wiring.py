@@ -93,6 +93,9 @@ def _make_agent(*tool_names: str, gate_enabled: bool = True) -> AIAgent:
     agent.client = MagicMock()
     agent._cached_system_prompt = "You are helpful."
     agent._use_prompt_caching = False
+    # Attributes assembled by the current agent_init that sequential dispatch reads.
+    if not hasattr(agent, "_context_engine_tool_names"):
+        agent._context_engine_tool_names = set()
     agent.compression_enabled = False
     agent.save_trajectories = False
     return agent
@@ -165,7 +168,7 @@ class TestSegmentedContentPreservation:
 
         with (
             patch("agent.tool_executor.get_active_env", return_value=None),
-            patch("run_agent.handle_function_call", return_value="{}"),
+            patch("model_tools.handle_function_call", return_value="{}"),
         ):
             execute_tool_calls_segmented(
                 agent, assistant_message, messages, "task-1",
@@ -190,7 +193,7 @@ class TestSegmentedContentPreservation:
 
         with (
             patch("agent.tool_executor.get_active_env", return_value=None),
-            patch("run_agent.handle_function_call", return_value="{}"),
+            patch("model_tools.handle_function_call", return_value="{}"),
         ):
             execute_tool_calls_segmented(
                 agent, assistant_message, messages, "task-1",
@@ -221,7 +224,7 @@ class TestSequentialGateWiring:
 
         with (
             patch("agent.tool_executor.get_active_env", return_value=None),
-            patch("run_agent.handle_function_call", return_value="{}"),
+            patch("model_tools.handle_function_call", return_value="{}"),
         ):
             execute_tool_calls_sequential(agent, assistant_message, messages, "task-1")
 
@@ -248,7 +251,7 @@ class TestSequentialGateWiring:
         with (
             patch("agent.tool_executor.get_active_env", return_value=None),
             patch(
-                "run_agent.handle_function_call",
+                "model_tools.handle_function_call",
                 side_effect=lambda *a, **k: dispatched.append(a) or "{}",
             ),
         ):
@@ -316,7 +319,7 @@ class TestGateFailsafe:
         with (
             patch("agent.tool_executor.get_active_env", return_value=None),
             patch(
-                "run_agent.handle_function_call",
+                "model_tools.handle_function_call",
                 side_effect=lambda *a, **k: dispatched.append(a) or "{}",
             ),
         ):

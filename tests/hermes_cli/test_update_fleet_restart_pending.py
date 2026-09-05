@@ -17,6 +17,8 @@ No live gateway, no network. Git and restart are mocked.
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -134,6 +136,12 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(hermes_gateway, "supports_systemd_services", lambda: False)
     monkeypatch.setattr(
         hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
+    )
+    # Dev-box leak: real ai.hermes.gateway LaunchAgent plist (default install
+    # root) takes the live launchctl path and fails closed. No-op instead.
+    monkeypatch.setattr(
+        hermes_gateway, "get_launchd_plist_path",
+        lambda: Path(os.environ.get("HERMES_HOME", "/tmp")) / "nonexistent-launchd-plist.plist",
     )
     monkeypatch.setattr(
         "hermes_cli.update_receipt.collect_fleet_versions",

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 
 
@@ -76,11 +79,39 @@ def no_real_launchd():
              return_value=[],
          ), \
          patch(
+             # The plist lookup derives from the DEFAULT install root (not the
+             # sandboxed HERMES_HOME), so a real plist takes the live launchctl
+             # restart path and fails closed. No-op instead.
+             "hermes_cli.gateway.get_launchd_plist_path",
+             return_value=Path(os.environ.get("HERMES_HOME", "/tmp")) / "nonexistent-launchd-plist.plist",
+         ), \
+         patch(
              "hermes_cli.gateway.launchd_gateway_labels_for_install",
              return_value=[],
          ), \
          patch(
              "hermes_cli.update_cmd._restart_launchd_gateway_after_update",
              return_value=([], []),
+         ), \
+         patch(
+             # Runtime inventory reads control sockets / PID files from the
+             # DEFAULT install root — a dev box with a live gateway yields a
+             # non-empty plan, fleet rows are then "expected", and the zero-row
+             # fail-closed contract (#93406) exits 1. No plan → no expectation.
+             # NOTE: report_unaccounted_runtimes / collect_fleet_versions are
+             # deliberately NOT mocked — some update tests assert on their
+             # real output.
+             "hermes_cli.update_inventory.collect_runtime_inventory",
+             return_value=None,
+         ), \
+         patch.object(
+             # The stale-module purge evicts ``hermes_cli.gateway`` from
+             # sys.modules mid-update; the restart phase's fresh ``from
+             # hermes_cli.gateway import ...`` then loads an UNPATCHED copy,
+             # silently discarding every mock above (see test_update_autostash's
+             # fixture for the pioneering comment).
+             __import__("hermes_cli.main", fromlist=["_purge_stale_hermes_modules"]),
+             "_purge_stale_hermes_modules",
+             lambda *a, **kw: None,
          ):
         yield

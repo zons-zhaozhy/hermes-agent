@@ -1821,6 +1821,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         """Forget the real-vs-rough token pairing used by should_defer_preflight_to_real_usage()."""
         self.last_real_prompt_tokens = self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = self._pending_request_rough_tokens = 0
+        self._last_real_rough_ratio = 0.0
         self.awaiting_real_usage_after_compression = False
 
     def _reset_session_compaction_state(self) -> None:
@@ -2447,7 +2448,18 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         if baseline <= 0:
             return False
         # No baseline ratchet here: advancing rough without a matching real reading would defer on stale data.
-        return self.last_real_prompt_tokens + max(0, rough_tokens - baseline) < self.threshold_tokens
+        growth = max(0, rough_tokens - baseline)
+        # Scale rough growth by the session's observed real/rough ratio. The raw
+        # rough delta over-counts real growth in CJK/replay-heavy sessions
+        # (severalfold), so an unscaled projection overshoots the threshold and
+        # keeps firing preflight compression at a fraction of the real window
+        # (churn + lock contention). Ratio is clamped <= 1.0; when unknown
+        # (0.0) or >= 1.0 the projection keeps its prior conservative ceiling.
+        _ratio = getattr(self, "_last_real_rough_ratio", 0.0)
+        if _ratio and 0.0 < _ratio < 1.0:
+            growth = int(growth * _ratio)
+        projected_real = self.last_real_prompt_tokens + growth
+        return projected_real < self.threshold_tokens
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """True when compression should run now (anti-thrash included; see :meth:`should_compress_info` for the reason)."""
@@ -3499,7 +3511,14 @@ Write only the summary body. Do not include any preamble or prefix."""
         self._last_summary_error = err_text
         # Terminal network/empty-content failure after any fallback: flag so compress() ABORTS
         # and preserves the session; independent of abort_on_summary_failure.
-        if kind.streaming_closed:
+        # Timeout precedence (see the cooldown ladder above): a timed-out
+        # request ALSO matches _is_connection_error (APITimeoutError is a
+        # subclass of the connection-error family), but a deadline
+        # exhaustion is the structural repeat-offender class — it is
+        # handled by the escalating timeout cooldown, NOT by aborting the
+        # session. Only a genuine mid-stream close (peer drop, chunked
+        # read failure) without timeout semantics gets the abort flag.
+        if kind.streaming_closed and not kind.timeout:
             # A terminal connection/network failure or empty-content response from a degraded provider (we
             # reach this branch only after any main-model fallback has already been tried or is
             # unavailable). Flag it so compress() ABORTS and preserves the session unchanged instead of
