@@ -1,7 +1,0 @@
-name: db-safety
-version: "1.0.0"
-description: "Block SQL queries that guess table/column names — require schema confirmation first."
-author: stan
-hooks:
-  - pre_tool_call
-  - post_tool_call

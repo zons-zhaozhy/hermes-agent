@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import importlib
 
-m = importlib.import_module("plugins.no-guessing")
+m = importlib.import_module("plugins.discipline.no_guessing")
 
 REGISTRY = (
     "OntoX 全家族服务注册表\n\n服务 仓库 Dockerfile 版本 端口\n---- ----\n"

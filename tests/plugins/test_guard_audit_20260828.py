@@ -15,8 +15,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGINS = os.path.join(HERE, "..", "..", "plugins")
 
 
-def _load(rel):
-    p = os.path.join(PLUGINS, rel, "__init__.py")
+def _load(rel, fname=None):
+    # fname given → load a flat module file inside plugins/<rel>/<fname>
+    # (discipline/guards suites keep sub-guards as flat modules, not packages)
+    p = os.path.join(PLUGINS, rel, fname if fname else "__init__.py")
     spec = importlib.util.spec_from_file_location(f"guard_{rel.replace('-', '_')}_t", p)
     assert spec is not None and spec.loader is not None, p
     m = importlib.util.module_from_spec(spec)
@@ -24,8 +26,8 @@ def _load(rel):
     return m
 
 
-db = _load("db-safety")
-ts = _load("tool-safety")
+db = _load("discipline", "db_safety.py")
+ts = _load("discipline", "tool_safety.py")
 
 
 def _run(mod, tool, cmd):

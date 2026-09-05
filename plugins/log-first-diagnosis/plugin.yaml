@@ -1,7 +1,0 @@
-name: log-first-diagnosis
-version: "1.0.0"
-description: 工具返回错误时强制日志优先诊断——post_tool_call检测错误写入状态，pre_llm_call注入诊断提醒，从代码层强制"读日志追堆栈"而非穷举试探。
-author: stan
-hooks:
-  - post_tool_call
-  - pre_llm_call

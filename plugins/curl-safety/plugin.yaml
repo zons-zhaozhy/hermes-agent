@@ -1,7 +1,0 @@
-name: curl-safety
-version: "1.0.0"
-description: HTTP请求安全拦截——检测到curl/httpx调用时，强制提醒先确认API签名(路径/方法/参数/请求体)，禁瞎猜路径和参数。
-author: stan
-hooks:
-  - pre_tool_call
-  - pre_llm_call

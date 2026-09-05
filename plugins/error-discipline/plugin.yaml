@@ -1,7 +1,0 @@
-name: error-discipline
-version: "1.0.0"
-description: "Enforce log-first diagnosis — block repeated trial-and-error without reading error messages first."
-author: stan
-hooks:
-  - pre_tool_call
-  - post_tool_call

@@ -1,7 +1,0 @@
-name: tool-safety
-version: "1.0.0"
-description: "Guard against tool misuse — batch str.replace without verification, read_file retry loops, patch falsification."
-author: stan
-hooks:
-  - pre_tool_call
-  - post_tool_call
