@@ -58,9 +58,9 @@ def _contains_write(code: str) -> bool:
 
 def _extract_paths_from_code(code: str) -> list:
     """Extract string literals that look like file paths from Python code."""
-    import re  # noqa: R1 — import validation requires regex pattern matching
+    import re  # re-ok: 字符串字面量提取,引号嵌套非str方法可解析 # noqa: R1
     # Match string literals (single or double quoted)
-    patterns = re.findall(r'["\']([^"\']+)["\']', code)
+    patterns = re.findall(r'["\']([^"\']+)["\']', code)  # re-ok: 字符串字面量提取
     return [p for p in patterns if "/" in p or p.endswith(".py") or p.endswith(".md")]
 
 
@@ -153,7 +153,8 @@ def on_pre_tool_call(**kwargs) -> Optional[Dict[str, Any]]:
                 pass  # exists relative to cwd
             else:
                 return None  # truly new file
-        except Exception:  # noqa: D5 — file existence check, non-critical
+        except Exception:  # noqa: D5 — 探测失败按不存在处理,但留痕观测
+            logger.warning("guards.pre_write: target existence check failed for %s", target_norm, exc_info=True)
             return None
 
     read_files = _get_read_files(sid)
