@@ -215,9 +215,14 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
             if ':' in line:
                 path, n = line.rsplit(':', 1)
                 try:
-                    counts[path] = int(n)
+                    n = int(n)
                 except ValueError:
-                    pass
+                    continue
+                # BSD grep prints "path:0" for scanned-but-unmatched files;
+                # rg and GNU grep omit them. A zero count is not a match —
+                # drop it so both engines return the same shape.
+                if n > 0:
+                    counts[path] = n
         return SearchResult(
             counts=counts, total_count=sum(counts.values()),
             truncated=bool(limit_reason), limit_reason=limit_reason)

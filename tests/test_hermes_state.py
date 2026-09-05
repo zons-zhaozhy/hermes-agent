@@ -4,6 +4,7 @@ import sqlite3
 import time
 import json
 import threading
+import contextlib
 from pathlib import Path
 from unittest import mock
 
@@ -910,12 +911,20 @@ class TestFTS5Search:
         db.append_message("s1", role="user", content="after")
 
         statements = []
-        read_conn = db._get_read_conn() or db._conn
-        traced_connections = [db._conn]
-        if read_conn is not db._conn:
-            traced_connections.append(read_conn)
-        for conn in traced_connections:
-            conn.set_trace_callback(statements.append)
+        # Reads run on pooled connections obtained per-statement via _read_ctx,
+        # so tracing only the writer + one checkout misses them. Attach the trace
+        # at the _read_ctx boundary instead: every connection the search path
+        # actually executes on gets the callback.
+        _orig_read_ctx = SessionDB._read_ctx
+
+        @contextlib.contextmanager
+        def _tracing_read_ctx(self):
+            with _orig_read_ctx(self) as conn:
+                conn.set_trace_callback(statements.append)
+                yield conn
+
+        SessionDB._read_ctx = _tracing_read_ctx
+        db._conn.set_trace_callback(statements.append)
 
         def context_query_count():
             normalized = (" ".join(sql.upper().split()) for sql in statements)
@@ -940,8 +949,8 @@ class TestFTS5Search:
             assert default[0]["context"]
             assert context_query_count() == 2
         finally:
-            for conn in traced_connections:
-                conn.set_trace_callback(None)
+            SessionDB._read_ctx = _orig_read_ctx
+            db._conn.set_trace_callback(None)
 
     def test_sanitize_fts5_query_strips_dangerous_chars(self):
         """Unit test for _sanitize_fts5_query static method."""
