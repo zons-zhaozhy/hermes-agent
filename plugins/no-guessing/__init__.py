@@ -286,7 +286,11 @@ def _extract_service_names(command: str):
                          # 0828 实锤误拦修复: git/循环/管道等通用 shell 令牌不是服务名
                          "git", "add", "commit", "push", "pull", "cd", "for",
                          "in", "do", "done", "if", "then", "fi", "while",
-                         "echo", "sh", "xargs", "grep", "tail", "head"}
+                         "echo", "sh", "xargs", "grep", "tail", "head",
+                         # 0830 复现修复: shlex 保留的 shell 操作符/连接词被提取为"服务名"导致
+                         # 'cd x && bash deploy.sh cloud <真名>' 永远误拦(&& 不在注册表)
+                         "&&", "||", ";", "|", "&", ">", "<", ">>", "2>&1",
+                         "sudo", "source", ".", "env", "export"}
     names = []
     for tok in tokens:
         if tok.startswith("-") or tok in known_subcommands or tok.endswith((".sh", ".yml", ".yaml")):
