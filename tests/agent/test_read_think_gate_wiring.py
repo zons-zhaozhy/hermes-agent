@@ -37,8 +37,8 @@ def _load_four_axis_guard():
     """The plugin dir has a hyphen — load by file path like the plugin loader."""
     import importlib.util
 
-    plugin_path = Path(__file__).resolve().parents[2] / "plugins" / "four-axis-guard" / "__init__.py"
-    assert plugin_path.exists(), f"four-axis-guard plugin missing: {plugin_path}"
+    plugin_path = Path(__file__).resolve().parents[2] / "plugins" / "guards" / "four_axis.py"
+    assert plugin_path.exists(), f"four-axis guard module missing: {plugin_path}"
     spec = importlib.util.spec_from_file_location("four_axis_guard_under_test", plugin_path)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)

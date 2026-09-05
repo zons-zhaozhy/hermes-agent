@@ -1,6 +1,0 @@
-name: duplicate-check
-version: "2.0"
-description: write_file/patch 前置查重拦截 — 新建文件前自动搜已有等价实现
-author: 吉量
-hooks:
-  - pre_tool_call
