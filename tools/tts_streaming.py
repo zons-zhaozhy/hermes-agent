@@ -111,7 +111,8 @@ class SentenceChunker:
 
     def flush(self) -> List[str]:
         """Drain the tail (end-of-text or long-idle flush)."""
-        tail, self.buf = _THINK_BLOCK_RE.sub("", self.buf).strip(), ""
+        tail = _strip_think_blocks(self.buf).strip()
+        self.buf = ""
         return [tail] if tail else []
 
 

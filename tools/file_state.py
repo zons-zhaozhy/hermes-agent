@@ -172,14 +172,19 @@ class FileStateRegistry:
                      paths: Iterable[str]) -> Dict[str, List[str]]:
         """``{writer_task_id: [paths]}`` for writes after ``since_ts`` by agents
         other than ``exclude_task_id`` (delegate_task's "subagent modified files
-        you previously read" reminder)."""
+        you previously read" reminder).
+
+        When ``paths`` is empty, returns ALL writes since ``since_ts``
+        (wildcard — used by delegate_task to populate ``files_written``
+        for the review loop)."""
         if _disabled():
             return {}
         paths_set = set(paths)
         out: Dict[str, List[str]] = defaultdict(list)
         with self._state_lock:
             for p, (writer_tid, ts) in self._last_writer.items():
-                if writer_tid != exclude_task_id and ts >= since_ts and p in paths_set:
+                if writer_tid != exclude_task_id and ts >= since_ts and (
+                        not paths_set or p in paths_set):
                     out[writer_tid].append(p)
         return dict(out)
 

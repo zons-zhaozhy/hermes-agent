@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import time
+from contextlib import contextmanager, suppress
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -138,37 +139,37 @@ def _call_tool(proc: subprocess.Popen, msg_id: int, name: str, arguments: Any = 
 
 @contextmanager
 def _mcp_session(binary: str, timeout: float) -> Iterator[subprocess.Popen]:
-    """Spawn ``<binary> mcp`` and always close stdin / wait / kill it on exit."""
+    """Spawn ``<binary> mcp`` and always close stdin / wait / kill it on exit.
+
+    The wait loop polls with interrupt checks so a user Ctrl-C (or gateway
+    stop) does not block on a hung driver process.
+    """
     proc = _open_mcp(binary)
     try:
         yield proc
     finally:
-        try:
+        with suppress(Exception):
             proc.stdin.close()
-        except Exception:
-            pass
         try:
             from tools.interrupt import is_interrupted
         except ImportError:
             def is_interrupted():
                 return False
         deadline = time.monotonic() + timeout
-        interrupted = False
         while proc.poll() is None:
-            if is_interrupted():
-                interrupted = True
-                break
-            if time.monotonic() > deadline:
+            if is_interrupted() or time.monotonic() > deadline:
                 break
             time.sleep(0.1)
-        if interrupted:
-            proc.kill()
-            proc.wait()
-        elif proc.returncode is None:
+        if proc.returncode is None:
             proc.kill()
             proc.wait()
 
-    result = call_resp.get("result") or {}
+def _drive_health_report(binary: str, *, include: Sequence[str] = (), skip: Sequence[str] = (), timeout: float = 12.0) -> Report:
+    """Handshake + `health_report` → report; HealthReportUnavailable (caller falls back) or RuntimeError."""
+    args = {k: list(v) for k, v in (("include", include), ("skip", skip)) if v}
+    with _mcp_session(binary, timeout) as proc:
+        _mcp_rpc(proc, 1, "initialize", {})
+        result = _call_tool(proc, 2, "health_report", args)
     if not isinstance(result, dict):
         raise RuntimeError(f"health_report result was not an object: {type(result).__name__}")
     return _extract_health_report_from_result(result)

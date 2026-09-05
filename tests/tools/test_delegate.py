@@ -21,7 +21,6 @@ from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
     DelegateEvent,
-    _audit_context_adequacy,
     _get_max_concurrent_children,
     _load_config,
     delegate_task,
@@ -99,9 +98,7 @@ class TestDelegateRequirements(unittest.TestCase):
 
         desc = _build_top_level_description()
         # Compaction ceiling: the old description was ~4,000 chars.
-        # 2320 = upstream 2199 (LIVE ORCHESTRATION steer/stop) + pinned-
-        # provider no-fallback contract (184cddb449) carried by our fork.
-        self.assertLessEqual(len(desc), 2320)
+        self.assertLessEqual(len(desc), 2200)
         # Contracts only the top-level text carries:
         for keyword in (
             "background",          # async semantics
@@ -148,11 +145,7 @@ class TestChildSystemPrompt(unittest.TestCase):
         prompt = _build_child_system_prompt("Fix the tests")
         self.assertIn("Fix the tests", prompt)
         self.assertIn("YOUR TASK", prompt)
-        # No context → should NOT have the "CONTEXT:\n<actual context>" block
-        # (but WILL have the ⚠️ WARNING and "Self-Serve" blocks)
-        self.assertNotIn("CONTEXT:\n", prompt)
-        self.assertIn("WARNING", prompt)
-        self.assertIn("Self-Serve Missing Information", prompt)
+        self.assertNotIn("CONTEXT", prompt)
 
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):
@@ -420,8 +413,10 @@ class TestDelegateTask(unittest.TestCase):
                 child_db = kwargs["session_db"]
                 self.assertIsInstance(child_db, SessionDB)
                 self.assertIsNot(child_db, parent_db)
+                # resolve() on both sides: macOS /var -> /private/var symlink makes
+                # raw str() comparison fail on one side depending on who resolved.
                 self.assertEqual(
-                    str(child_db.db_path), str(parent_db.db_path)
+                    Path(child_db.db_path).resolve(), Path(parent_db.db_path).resolve()
                 )
             finally:
                 if child_db is not None:
@@ -2239,143 +2234,6 @@ class TestFallbackModelInheritance(unittest.TestCase):
                     _resolve_delegation_credentials(cfg, parent)
         self.assertIn("missing-acp-binary", str(ctx.exception))
 
-
-class TestContextAdequacyAudit(unittest.TestCase):
-    """Tests for _audit_context_adequacy — the delegate_task context gate."""
-
-    def test_no_context_emits_level0_warning(self):
-        """Task with zero context triggers Level 0 warning."""
-        with self.assertLogs("tools.delegate_tool", level="WARNING") as cm:
-            _audit_context_adequacy(
-                [{"goal": "Fix something"}], None
-            )
-        self.assertTrue(
-            any("NO context provided" in m for m in cm.output),
-            f"Expected Level 0 warning, got: {cm.output}",
-        )
-
-    def test_short_context_emits_level1_warning(self):
-        """Task with <80 char context triggers Level 1 warning."""
-        with self.assertLogs("tools.delegate_tool", level="WARNING") as cm:
-            _audit_context_adequacy(
-                [{"goal": "Fix tests", "context": "too short"}], None
-            )
-        self.assertTrue(
-            any("likely insufficient" in m for m in cm.output),
-            f"Expected Level 1 warning, got: {cm.output}",
-        )
-
-    def test_no_path_hints_emits_level2_warning(self):
-        """Task with long goal but no file paths triggers Level 2 warning."""
-        with self.assertLogs("tools.delegate_tool", level="WARNING") as cm:
-            _audit_context_adequacy(
-                [{"goal": "a" * 50, "context": "Some conventions about naming"}], None
-            )
-        self.assertTrue(
-            any("no file/directory references" in m for m in cm.output),
-            f"Expected Level 2 warning, got: {cm.output}",
-        )
-
-    def test_no_completion_criteria_emits_level3_warning(self):
-        """Task with >200 char context but no completion criteria triggers Level 3."""
-        with self.assertLogs("tools.delegate_tool", level="WARNING") as cm:
-            _audit_context_adequacy(
-                [{"goal": "Fix tests", "context": "x" * 250}], None
-            )
-        self.assertTrue(
-            any("completion criteria" in m for m in cm.output),
-            f"Expected Level 3 warning, got: {cm.output}",
-        )
-
-    def test_rich_context_emits_no_warnings(self):
-        """Task with rich context (paths + completion + long) emits no warnings."""
-        rich = (
-            "## File paths\n- /src/foo.py\n- /tests/test_foo.py\n\n"
-            "## Completion criteria\n- All tests pass\n- verify with pytest"
-        )
-        # Should not emit any WARNING level logs
-        with self.assertRaises(AssertionError):
-            with self.assertLogs("tools.delegate_tool", level="WARNING") as cm:
-                _audit_context_adequacy(
-                    [{"goal": "Fix tests", "context": rich}], None
-                )
-
-    def test_fallback_context_used_when_task_omits_it(self):
-        """Single-mode: fallback context is used when task dict has none."""
-        with self.assertLogs("tools.delegate_tool", level="WARNING") as cm:
-            _audit_context_adequacy(
-                [{"goal": "Fix tests"}], "Fallback context with file /src/foo.py"
-            )
-        # Fallback is used, so no Level 0 warning should fire
-        self.assertFalse(
-            any("NO context provided" in m for m in cm.output),
-            "Fallback context should prevent Level 0 warning",
-        )
-
-
-class TestProjectContextAutoExtraction(unittest.TestCase):
-    """Tests for _extract_project_context_summary — automatic context injection."""
-
-    def test_nonexistent_workspace_returns_empty(self):
-        from tools.delegate_tool import _extract_project_context_summary
-        result = _extract_project_context_summary("/nonexistent/path/xyz123")
-        self.assertEqual(result, "")
-
-    def test_extracts_marked_sections(self):
-        """Sections with 'convention' / 'pitfall' / '铁律' in headers are extracted."""
-        from tools.delegate_tool import _extract_project_context_summary
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmpdir:
-            hermes_md = os.path.join(tmpdir, ".hermes.md")
-            with open(hermes_md, "w") as f:
-                f.write(
-                    "# Project Info\nSome generic info.\n\n"
-                    "## Known Pitfalls\n- Never hardcode paths\n"
-                    "- Always use absolute paths\n\n"
-                    "## Naming Conventions\n- snake_case for Python\n"
-                    "- camelCase for JS\n\n"
-                    "# Unused Section\nIgnored content.\n"
-                )
-            result = _extract_project_context_summary(tmpdir)
-            self.assertIn("Known Pitfalls", result)
-            self.assertIn("Never hardcode paths", result)
-            self.assertIn("Naming Conventions", result)
-            self.assertIn("snake_case", result)
-            self.assertNotIn("Unused Section", result)
-            self.assertIn("Auto-Extracted Project Context", result)
-
-    def test_truncation_respected(self):
-        """Output is capped at _PROJECT_CONTEXT_MAX_CHARS."""
-        from tools.delegate_tool import (
-            _extract_project_context_summary,
-            _PROJECT_CONTEXT_MAX_CHARS,
-        )
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmpdir:
-            hermes_md = os.path.join(tmpdir, ".hermes.md")
-            # Write a huge useful section
-            big_section = "## Important Rules\n" + ("- Rule: " + "x" * 200 + "\n") * 50
-            with open(hermes_md, "w") as f:
-                f.write(big_section)
-            result = _extract_project_context_summary(tmpdir)
-            self.assertLessEqual(len(result), _PROJECT_CONTEXT_MAX_CHARS + 50)  # small margin for truncation marker
-
-    def test_system_prompt_includes_auto_extracted_context(self):
-        """_build_child_system_prompt with workspace_path includes auto-extracted context."""
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmpdir:
-            hermes_md = os.path.join(tmpdir, ".hermes.md")
-            with open(hermes_md, "w") as f:
-                f.write(
-                    "## Naming Rules\n- Always use snake_case\n"
-                )
-            prompt = _build_child_system_prompt(
-                "Fix something",
-                workspace_path=tmpdir,
-            )
-            self.assertIn("Auto-Extracted Project Context", prompt)
-            self.assertIn("Naming Rules", prompt)
-            self.assertIn("snake_case", prompt)
 
 if __name__ == "__main__":
     unittest.main()

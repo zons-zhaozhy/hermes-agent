@@ -7348,3 +7348,27 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
         main_runtime=main_runtime,
     )
 # ---- END PLUGIN-COMPAT ----
+
+
+# Judge thinking dialect control (fork addition).
+_JUDGE_NO_THINK_MODEL_RE = re.compile(
+    r"glm-5[._p-]?3", re.IGNORECASE
+)
+
+
+def build_judge_thinking_extra_body(model: Optional[str]) -> Dict[str, Any]:
+    """Return the ``extra_body`` a no-thinking judge should send for ``model``.
+
+    - GLM-5.3 (any alias spelling): ``{"thinking": {"type": "enabled"}}``
+      plus top-level ``reasoning_effort: low`` baked into the same dict —
+      the cheapest legal tier; the model still answers directly.
+    - Everything else (including None/unknown): the historical
+      ``{"thinking": {"type": "disabled"}}`` shape.
+
+    Contract:
+    Preconditions: *model* is a provider model string or None.
+    Postconditions: never raises; returns a JSON-safe dict usable as extra_body.
+    """
+    if model and _JUDGE_NO_THINK_MODEL_RE.search(model):
+        return {"thinking": {"type": "enabled"}, "reasoning_effort": "low"}
+    return {"thinking": {"type": "disabled"}}

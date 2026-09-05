@@ -1363,8 +1363,6 @@ def get_active_profile_name() -> str:
     try:
         parts = resolved.relative_to(profiles_root).parts
         if len(parts) == 1 and _PROFILE_ID_RE.match(parts[0]):
-            _cached_profile_name = parts[0]
-            _cached_profile_home = home_str
             return parts[0]
     except ValueError:
         pass

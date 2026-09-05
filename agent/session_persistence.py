@@ -196,6 +196,30 @@ def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optiona
         if id(msg) in history_ids or id(msg) in seed_ids:
             msg[_DB_PERSISTED_MARKER] = True
             continue
+        # --- cron persistence downgrade (fork) ---------------------------
+        # Cron runs are flat, headless, non-resumable sessions; the run's real
+        # output lives in the job's on-disk output dir. Persisting the whole
+        # transcript bloats the DB (~35MB/run). Drop tool results and their
+        # producing assistant(tool_calls) rows TOGETHER (replay role
+        # alternation never sees an orphan tool_calls), and collapse skill
+        # scaffolds to their invocation line before the row is built.
+        if getattr(agent, "_session_db", None) is not None and getattr(agent, "platform", None) == "cron":
+            role = msg.get("role")
+            if role == "tool":
+                continue
+            if role == "assistant" and isinstance(msg.get("tool_calls"), list):
+                continue
+            if role == "user" and isinstance(msg.get("content"), str):
+                from agent.skill_commands import (
+                    _SKILL_INVOCATION_PREFIX,
+                    describe_skill_invocation,
+                    extract_user_instruction_from_skill_message,
+                )
+                content = msg["content"]
+                if content.startswith(_SKILL_INVOCATION_PREFIX):
+                    _desc = describe_skill_invocation(content)
+                    msg = {**msg, "content": _desc or extract_user_instruction_from_skill_message(content) or content[:200],
+                           "api_content": None}
         batch_rows.append(_db_flush_row(agent, msg, ov_idx == msg_idx or msg is pending_cli_message))
         batch_msgs.append(msg)
     return batch_rows, batch_msgs

@@ -64,6 +64,7 @@ _SUBPROCESS_PATTERNS = [
 KNOWN_SAFE = {
     "agent/shell_hooks.py",  # uses input=stdin_json, creates a pipe
     "plugins/security-guidance/patterns.py",  # subprocess mentions are in reminder strings, not calls
+    "plugins/guards/rules_selfcheck.py",  # subprocess mentions are embedded sample-code strings for rule self-tests, not calls
 }
 
 # Inline marker that exempts a single subprocess call from this check.

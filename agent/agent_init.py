@@ -32,8 +32,8 @@ from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH, fetch_model_metadata, is_local_endpoint, query_ollama_num_ctx
 )
 from agent.process_bootstrap import _install_safe_stdio
-from agent.read_think_gate import ReadThinkGate, ReadThinkGateConfig
 from agent.subdirectory_hints import SubdirectoryHintTracker
+from agent.read_think_gate import ReadThinkGate, ReadThinkGateConfig
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
@@ -479,124 +479,144 @@ def _finalize_routing(agent, api_mode, credential_pool):
             target=fetch_model_metadata, daemon=True, name="openrouter-prewarm",
         ).start()
 
-    agent.tool_progress_callback = tool_progress_callback
-    agent.tool_start_callback = tool_start_callback
-    agent.tool_complete_callback = tool_complete_callback
-    agent.suppress_status_output = False
-    agent.thinking_callback = thinking_callback
-    agent.reasoning_callback = reasoning_callback
-    agent.clarify_callback = clarify_callback
-    agent.read_terminal_callback = read_terminal_callback
-    agent.read_preview_callback = read_preview_callback
-    agent.drive_preview_callback = drive_preview_callback
-    agent.read_window_below_callback = read_window_below_callback
-    agent.setup_mcp_callback = setup_mcp_callback
-    agent.tour_callback = tour_callback
-    agent.step_callback = step_callback
-    agent.stream_delta_callback = stream_delta_callback
-    agent.interim_assistant_callback = interim_assistant_callback
-    agent.status_callback = status_callback
-    agent.notice_callback = notice_callback
-    agent.notice_clear_callback = notice_clear_callback
-    agent.event_callback = event_callback
-    agent.reaction_callback = reaction_callback
-    agent.tool_gen_callback = tool_gen_callback
 
-    
-    # Tool execution state — allows _vprint during tool execution
-    # even when stream consumers are registered (no tokens streaming then)
-    agent._executing_tools = False
-    agent._tool_guardrails = ToolCallGuardrailController()
-    agent._tool_guardrail_halt_decision: ToolGuardrailDecision | None = None
-    # ReadThinkGate — 推理门控主防线：扫描 assistant 内容的四轴证据并写
-    # ~/.hermes/cache/four_axis_gate.json marker（four-axis-guard 副防线读取）。
-    # 08-04 upstream sync (22d6d2a6f3) 丢失接线，本次恢复（backup/pre-sync-20260803 样本）。
-    agent._read_think_gate = ReadThinkGate()
+def _set_defaults(agent, table: Dict[str, Any]) -> None:
+    """Assign each ``name -> value`` on ``agent``; callables are factories (fresh per agent)."""
+    for name, value in table.items():
+        setattr(agent, name, value() if callable(value) else value)
 
-    # Interrupt mechanism for breaking out of tool loops
-    agent._interrupt_requested = False
-    agent._interrupt_message = None  # Optional message that triggered interrupt
-    # Explicit hard cancellation is separate from redirect/message state. A
-    # thread-safe Event makes the cause atomic for auxiliary stream pollers.
-    agent._hard_interrupt_requested = threading.Event()
-    agent._execution_thread_id: int | None = None  # Set at run_conversation() start
-    agent._interrupt_thread_signal_pending = False
-    agent._client_lock = threading.RLock()
-    agent._model_request_active = threading.Event()
-    agent._supports_active_turn_redirect = True
 
-    # /steer mechanism — inject a user note into the next tool result
-    # without interrupting the agent. Unlike interrupt(), steer() does
-    # NOT set _interrupt_requested; it waits for the current tool batch
-    # to finish naturally, then the drain hook appends the text to the
-    # last tool result's content so the model sees it on its next
-    # iteration. Message-role alternation is preserved (we modify an
-    # existing tool message rather than inserting a new user turn).
-    agent._pending_steer: Optional[str] = None
-    agent._pending_steer_lock = threading.Lock()
+# Control-flow state (interrupts / steer / redirect / delegation / background review).
+_CONTROL_STATE: Dict[str, Any] = {
+    "_executing_tools": False,  # lets _vprint print while tools run with stream consumers on
+    "_tool_guardrails": ToolCallGuardrailController,
+    "_tool_guardrail_halt_decision": None,
+    # ReadThinkGate — reasoning-phase gate (fork): scans assistant content for
+    # four-axis evidence and writes ~/.hermes/cache/four_axis_gate.json markers
+    # consumed by the four-axis-guard plugin's secondary line of defense.
+    "_read_think_gate": ReadThinkGate,
+    # Interrupts. Hard cancellation is separate from redirect/message state; the Event makes
+    # the cause atomic for auxiliary stream pollers.
+    "_interrupt_requested": False,
+    "_interrupt_message": None,  # optional message that triggered the interrupt
+    "_hard_interrupt_requested": threading.Event,
+    "_execution_thread_id": None,  # set at run_conversation() start
+    "_interrupt_thread_signal_pending": False,
+    "_client_lock": threading.RLock,
+    "_model_request_active": threading.Event,
+    "_supports_active_turn_redirect": True,
+    # /steer: the drain hook appends the note to the last tool result after the current
+    # batch — no interrupt, no new user turn (role alternation preserved).
+    "_pending_steer": None,
+    "_pending_steer_lock": threading.Lock,
+    # Active-turn redirect: keep the valid turn prefix, cancel only the in-flight request,
+    # rebuild the tail with the correction. Drained at a role-safe boundary.
+    "_pending_redirect": None,
+    "_pending_redirect_lock": threading.Lock,
+    # Concurrent-tool worker tids: `_set_interrupt` on `_execution_thread_id` alone doesn't
+    # reach ThreadPoolExecutor workers, so interrupt()/clear_interrupt() fan out to these.
+    "_tool_worker_threads": set,
+    "_tool_worker_threads_lock": threading.Lock,
+    # Subagent delegation: depth (0 = top-level) and running children (interrupt propagation).
+    "_delegate_depth": 0,
+    "_active_children": list,
+    "_active_children_lock": threading.Lock,
+    # Background review (agent/background_review.py): the run is installed before the worker
+    # starts and fences its first provider phase; the agent pointer enables interrupt fan-out.
+    "_background_review_agent": None,
+    "_background_review_run": None,
+    "_background_review_lock": threading.Lock,
+}
 
-    # Active-turn redirect mechanism. A regular follow-up sent while the model
-    # is generating is different from a hard /stop: preserve the valid turn
-    # prefix, cancel only the in-flight model request, and rebuild its tail with
-    # the correction. The loop drains this slot at a role-safe boundary.
-    agent._pending_redirect: Optional[str] = None
-    agent._pending_redirect_lock = threading.Lock()
+# Per-turn bookkeeping: budgets, activity tracking, rate-limit/credits telemetry.
+_TURN_STATE: Dict[str, Any] = {
+    # Iteration budget: notify the LLM only on exhaustion (one message, one grace call, then
+    # a forced summary) — intermediate pressure warnings made models give up early.
+    "_budget_exhausted_injected": False,
+    "_budget_grace_call": False,
+    "_run_budget_started_at": None,  # set by turn_context.prepare_turn when a budget is active
+    "_run_budget_wrapup_injected": False,  # one-shot latch for the 80% wrap-up notice
+    # Activity tracking (API call / tool / stream chunk) for the gateway timeout handler and
+    # "still working" notifications. Named provenances are stamped only by compression writers.
+    "_last_activity_ts": lambda: time.time(),
+    "_last_activity_desc": "initializing",
+    "_last_activity_provenance": ActivityProvenance.UNKNOWN,
+    "_session_activity_last_persist_mono": 0.0,  # rate-limits durable SessionDB stamps
+    "_current_tool": None,
+    "_api_call_count": 0,
+    # Opt-out for the between-turns MCP refresh; set on forks that need byte-identical tools[].
+    "_skip_mcp_refresh": False,
+    # Registry generation of the tool snapshot (set in _load_tools): a late refresh rejects
+    # a stale rebuild instead of clobbering a newer one.
+    "_tool_snapshot_generation": 0,
+    "_rate_limit_state": None,  # from x-ratelimit-* headers; read by /usage
+    # Credits tracking (dev-only, HERMES_DEV_CREDITS) from x-nous-credits-* headers; session
+    # start is latched on the first header so cumulative spend can be reported.
+    "_credits_state": None,
+    "_credits_session_start_micros": None,
+    "_or_cache_hits": 0,  # X-OpenRouter-Cache-Status: HIT count
+}
 
-    # Concurrent-tool worker thread tracking.  `_execute_tool_calls_concurrent`
-    # runs each tool on its own ThreadPoolExecutor worker — those worker
-    # threads have tids distinct from `_execution_thread_id`, so
-    # `_set_interrupt(True, _execution_thread_id)` alone does NOT cause
-    # `is_interrupted()` inside the worker to return True.  Track the
-    # workers here so `interrupt()` / `clear_interrupt()` can fan out to
-    # their tids explicitly.
-    agent._tool_worker_threads: set[int] = set()
-    agent._tool_worker_threads_lock = threading.Lock()
-    
-    # Subagent delegation state
-    agent._delegate_depth = 0        # 0 = top-level agent, incremented for children
-    agent._active_children = []      # Running child AIAgents (for interrupt propagation)
-    agent._active_children_lock = threading.Lock()
+# Session persistence state.
+_SESSION_STATE: Dict[str, Any] = {
+    "_session_messages": list,
+    # Responses encrypted-reasoning replay: routes that 400 with ``invalid_encrypted_content``
+    # make the loop disable it for the session (stateless continuity).
+    "_codex_reasoning_replay_enabled": True,
+    "_memory_write_origin": "assistant_tool",
+    "_memory_write_context": "foreground",
+    # Cached system prompt (built once, rebuilt on compression) + its cross-session-stable
+    # prefix, kept separately only to place an early cache marker.
+    "_cached_system_prompt": None,
+    "_cached_system_prompt_static": None,
+    # Whether close() also closes _session_db. False: a caller-supplied handle is usually the
+    # SHARED launch handle; callers handing over a DEDICATED handle set True.
+    "_owns_session_db": False,
+    # Close flush and turn-start flush can overlap; the durable marker lives on each message
+    # dict, so its test-and-append is serialized per agent.
+    "_session_persist_lock": threading.RLock,
+    # CLI's just-accepted user dict, reused by turn setup so its durable marker survives a
+    # close-persistence race.
+    "_pending_cli_user_message": None,
+    "_last_flushed_db_idx": 0,  # DB-write cursor (prevents duplicate writes)
+    "_session_db_created": False,  # DB row deferred to run_conversation()
+    # False on helper agents (compression / hygiene / review forks) that hand the session to
+    # a continuation row that must stay open.
+    "_end_session_on_close": True,
+    # True on the background review fork: never persist, so its harness turn can't hijack
+    # the live session.
+    "_persist_disabled": False,
+}
 
-    # Background memory/skill review state (agent/background_review.py).
-    # ``_background_review_run`` is installed before the worker starts and
-    # fences its first provider-capable phase; the direct agent pointer keeps
-    # normal interrupt propagation available once the fork is constructed.
-    agent._background_review_agent = None
-    agent._background_review_run = None
-    agent._background_review_lock = threading.Lock()
+# Streaming delivery state.
+_STREAM_STATE: Dict[str, Any] = {
+    "_stream_callback": None,  # streaming TTS; set early so _vprint can reference it
+    "_stream_needs_break": False,  # one "\n\n" before the next real text delta after tools
+    # Stateful scrubbers: <memory-context> / thinking spans split across deltas defeat
+    # per-delta regexes (both tags must be in one string).
+    "_stream_context_scrubber": StreamingContextScrubber,
+    "_stream_think_scrubber": StreamingThinkScrubber,
+    "_current_streamed_assistant_text": "",  # so a later completed interim isn't re-sent
+    "_delivered_interim_texts": set,  # interims this user turn (spans Codex continuations)
+    # Single-writer guard for the delta sink: each attempt claims a monotonic writer token and
+    # the sink drops chunks from threads holding a stale one, so a superseded stream can't
+    # interleave with the retry's. Threads that never claimed are never fenced.
+    "_stream_writer_lock": threading.Lock,
+    "_stream_writer_token": 0,
+    "_stream_writer_tls": threading.local,
+    "_stream_writer_dropped": 0,
+    # API-facing user message override when it differs from the persisted transcript (voice).
+    "_persist_user_message_idx": None,
+    "_persist_user_message_override": None,
+    "_persist_user_message_timestamp": None,
+    # Image-to-text fallbacks cached per payload/URL so one tool loop doesn't re-run vision.
+    "_anthropic_image_fallback_cache": dict,
+}
 
-    # Store OpenRouter provider preferences
-    agent.providers_allowed = providers_allowed
-    agent.providers_ignored = providers_ignored
-    agent.providers_order = providers_order
-    agent.provider_sort = provider_sort
-    agent.provider_require_parameters = provider_require_parameters
-    agent.provider_data_collection = provider_data_collection
-    agent.openrouter_min_coding_score = openrouter_min_coding_score
 
-    # Store toolset filtering options
-    agent.enabled_toolsets = enabled_toolsets
-    agent.disabled_toolsets = disabled_toolsets
-    
-    # Model response configuration
-    agent.max_tokens = max_tokens  # None = use model default
-    agent.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
-    # Per-provider reasoning_content echo opt-in (see _reasoning_echo_opt_in).
-    # Read once at init; switch_model / try_activate_fallback / restore
-    # keep it in sync with the active provider.
-    agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
-    agent.service_tier = service_tier
-    agent.request_overrides = dict(request_overrides or {})
-    agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
-    agent._force_ascii_payload = False
-    
-    # Anthropic prompt caching: auto-enabled for Claude models on native
-    # Anthropic, OpenRouter, and third-party gateways that speak the
-    # Anthropic protocol (``api_mode == 'anthropic_messages'``). Reduces
-    # input costs by ~75% on multi-turn conversations. Uses four breakpoints:
-    # the static system prefix, full system prompt, and last two messages
-    # (falling back to system-and-3 when no static prefix is available). See
-    # ``_anthropic_prompt_cache_policy`` for the layout-vs-transport decision.
+def _init_prompt_cache_config(agent):
+    # Anthropic prompt caching (~75% input savings): auto-enabled for Claude on native
+    # Anthropic, OpenRouter and anthropic_messages gateways. See _anthropic_prompt_cache_policy.
     agent._use_prompt_caching, agent._use_native_cache_layout = (
         agent._anthropic_prompt_cache_policy()
     )
@@ -1172,15 +1192,15 @@ def _apply_display_config(agent, _agent_cfg, platform):
         )
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
-    # ReadThinkGate 配置版初始化——覆盖 agent_init 前段的默认实例，
-    # 读 config.yaml → read_think_gate 段（enabled/max_reasoning_rounds 等）。
+
+    # ReadThinkGate config-driven init — overrides the default instance set via
+    # _CONTROL_STATE, reading the config.yaml `read_think_gate` section (enabled /
+    # max_reasoning_rounds / ...). Cron sessions are exempt: unattended jobs cannot
+    # answer gate prompts, and a blocked gate would starve the pipeline writes.
     try:
         _rtg_cfg = ReadThinkGateConfig.from_mapping(
             _agent_cfg.get("read_think_gate", {})
         )
-        # cron 会话豁免：无人值守任务无法应答门控问询，被拦=管线写不进台账。
-        # 闸门面向交互编码会话；cron 一律关停（scheduler.py:5460 platform="cron"）。
-        # frozen dataclass → dataclasses.replace 重建。
         if getattr(agent, "platform", "") == "cron":
             import dataclasses as _dc
             _rtg_cfg = _dc.replace(_rtg_cfg, enabled=False)
@@ -1188,10 +1208,6 @@ def _apply_display_config(agent, _agent_cfg, platform):
     except Exception as _dg_err:
         _ra().logger.warning("Read-think gate config ignored: %s", _dg_err)
         agent._read_think_gate = ReadThinkGate()
-    # Cache only the derived auxiliary compression context override that is
-    # needed later by the startup feasibility check.  Avoid exposing a
-    # broad pseudo-public config object on the agent instance.
-    agent._aux_compression_context_length_config = None
 
 
 def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
@@ -1350,47 +1366,11 @@ def _apply_agent_section(agent, _agent_cfg):
         _api_retries = 3
     agent._api_max_retries = _api_retries
 
-    # Initialize context compressor for automatic context management
-    # Compresses conversation when approaching model's context limit
-    # Configuration via config.yaml (compression section)
-    _compression_cfg = _agent_cfg.get("compression", {})
-    if not isinstance(_compression_cfg, dict):
-        _compression_cfg = {}
-    # Threshold default must come from DEFAULT_CONFIG (single source of
-    # truth), never an inline literal. Explicitness is judged against the
-    # user's RAW config.yaml (before deep-merge with defaults): a threshold
-    # present in the raw file means the user set it deliberately, and the
-    # small-context floor must not silently override it.
-    from hermes_cli.config import DEFAULT_CONFIG as _DEFAULT_CONFIG
-    from hermes_cli.config import read_user_config_raw
-    _default_compression = _DEFAULT_CONFIG.get("compression", {}) or {}
-    _threshold_default = _default_compression.get("threshold", 0.50)
-    compression_threshold = float(
-        _compression_cfg.get("threshold", _threshold_default)
-    )
-    try:
-        _raw_user_cfg = read_user_config_raw() or {}
-    except Exception:
-        _raw_user_cfg = {}
-    _raw_compression = _raw_user_cfg.get("compression", {}) or {}
-    compression_explicit_threshold = isinstance(
-        _raw_compression, dict,
-    ) and "threshold" in _raw_compression
-    # Per-model/route compaction-threshold override. Codex gpt-5.4 / gpt-5.5
-    # raise to 85% (the Codex backend caps both families at 272K, so the
-    # default 50% would compact at ~136K — half the usable context). Gated by
-    # an opt-out config flag so the user can fall back to the global threshold;
-    # when the override fires we stash a one-time notification (replayed on the
-    # first turn) that tells the user what changed and how to revert. The
-    # notice has its own display gate so users can keep the threshold
-    # autoraise without getting the banner on gateway turns.
-    _codex_gpt55_autoraise = str(
-        _compression_cfg.get("codex_gpt55_autoraise", True)
-    ).lower() in {"true", "1", "yes"}
-    _codex_gpt55_autoraise_notice = str(
-        _compression_cfg.get("codex_gpt55_autoraise_notice", True)
-    ).lower() in {"true", "1", "yes"}
-    agent._compression_threshold_autoraised = None
+
+def _positive_int(raw: Any, *, reject: tuple = ()) -> Optional[int]:
+    """``int(raw)`` when positive, else None. ``reject`` lists types refused outright (bool, float)."""
+    if reject and isinstance(raw, reject):
+        return None
     try:
         parsed = int(raw)
     except (TypeError, ValueError):
@@ -1877,28 +1857,18 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
     else:
         agent.context_compressor = ContextCompressor(
-            model=agent.model,
-            threshold_percent=compression_threshold,
-            explicit_threshold=compression_explicit_threshold,
-            protect_first_n=compression_protect_first,
-            protect_last_n=compression_protect_last,
-            summary_target_ratio=compression_target_ratio,
-            summary_model_override=None,
-            quiet_mode=agent.quiet_mode,
-            base_url=agent.base_url,
-            api_key=getattr(agent, "api_key", ""),
-            config_context_length=_effective_context_length,
-            provider=agent.provider,
-            api_mode=agent.api_mode,
-            abort_on_summary_failure=compression_abort_on_summary_failure,
-            max_tokens=agent.max_tokens,
-            model_thresholds=compression_model_thresholds,
-            threshold_tokens_cap=compression_threshold_tokens,
-            proactive_prune_tokens=compression_proactive_prune_tokens,
-            proactive_prune_min_result_chars=compression_proactive_prune_min_chars,
-            proactive_prune_min_reclaim_tokens=compression_proactive_prune_min_reclaim,
-            min_tail_user_messages=compression_min_tail_users,
-            tail_mode=compression_tail_mode,
+            model=agent.model, threshold_percent=cs.threshold, protect_first_n=cs.protect_first,
+            protect_last_n=cs.protect_last, summary_target_ratio=cs.target_ratio,
+            summary_model_override=None, quiet_mode=agent.quiet_mode, base_url=agent.base_url,
+            api_key=getattr(agent, "api_key", ""), config_context_length=_effective_context_length,
+            provider=agent.provider, api_mode=agent.api_mode,
+            abort_on_summary_failure=cs.abort_on_summary_failure,
+            max_tokens=_compressor_max_tokens(agent), model_thresholds=cs.model_thresholds,
+            threshold_tokens_cap=cs.threshold_tokens,
+            proactive_prune_tokens=cs.proactive_prune_tokens,
+            proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
+            proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
+            min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
