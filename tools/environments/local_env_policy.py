@@ -210,4 +210,9 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "HASS_TOKEN", "EMAIL_PASSWORD", "HERMES_DASHBOARD_SESSION_TOKEN",
     # Remote-compute / infrastructure secrets
     "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY",
+    # Runtime-only voice flags (tui_gateway/methods_voice.py). TUI-process-local
+    # state; children that inherit them start speaking aloud (pytest runs said
+    # test strings through edge TTS → afplay). Not secrets, but same tier-1
+    # "no child ever needs this" contract.
+    "HERMES_VOICE", "HERMES_VOICE_TTS", "HERMES_VOICE_DEBUG",
 })

@@ -254,6 +254,10 @@ def _filter_secret_env(
             continue
         if _is_hermes_internal_secret(key) or key in plugin_strip:
             continue
+        # Tier-1 keys are stripped from EVERY spawn surface (terminal env included)
+        # — the terminal path used to skip this check, leaking runtime voice flags.
+        if key in _ALWAYS_STRIP_KEYS and not is_env_passthrough(key):
+            continue
         first_party = _is_terminal_first_party_env(key)
         passthrough = is_env_passthrough(key)
         if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not (passthrough or first_party):
