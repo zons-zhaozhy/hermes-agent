@@ -1,4 +1,4 @@
-"""pre-write-guard plugin — enforce pre-investigation gate.
+"""guards.pre_write — enforce pre-investigation gate.
 
 Blocks write_file/patch/execute_code(write) if the target file has not been
 read (read_file/search_files) earlier in the same turn.
@@ -178,4 +178,4 @@ def on_pre_tool_call(**kwargs) -> Optional[Dict[str, Any]]:
 def register(ctx) -> None:
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("post_tool_call", on_post_tool_call)
-    logger.info("pre-write-guard registered")
+    logger.info("guards.pre_write registered")
