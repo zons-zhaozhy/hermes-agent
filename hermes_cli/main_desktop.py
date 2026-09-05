@@ -625,6 +625,39 @@ def _try_redownload_electron_dist(project_root: Path, env: dict) -> bool:
     return _redownload_electron_dist(project_root, env, mirror=_ELECTRON_FALLBACK_MIRROR)
 
 
+_ELECTRON_DL_NET_ERROR_CODES = (
+    "ETIMEDOUT",
+    "ENOTFOUND",
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "ECONNABORTED",
+    "EAI_AGAIN",
+)
+
+
+def _npm_failure_is_electron_download(result: "subprocess.CompletedProcess") -> bool:
+    """True when *result*'s npm output shows Electron's postinstall failed to
+    download its binary (network error against github.com / the mirror host).
+
+    ``npm ci`` is transactional: when a postinstall fails, npm tears the whole
+    install down, so by the time we inspect disk state the ``electron`` package
+    is often gone entirely and ``_electron_pkg_staged_missing_dist`` returns
+    False — the repair branch never runs. The npm output captured on the
+    CompletedProcess is then the only witness of *what* failed. Both the
+    electron path AND a network-error signature must be present so an unrelated
+    package failing while Electron merely happens to be installed does not
+    trigger a pointless mirror retry.
+    """
+    blob = f"{result.stdout or ''}\n{result.stderr or ''}"
+    if "node_modules/electron" not in blob.replace("\\", "/"):
+        return False
+    if "install.js" not in blob:
+        return False
+    return any(code in blob for code in _ELECTRON_DL_NET_ERROR_CODES) or (
+        "RequestError" in blob
+    )
+
+
 def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
     """Terminate a running desktop app whose exe lives INSIDE this build's ``release`` tree (Windows
     only — its lock makes the pack die with ``Access is denied``; POSIX can unlink a running
@@ -1249,6 +1282,29 @@ def _install_desktop_workspace_deps(npm: str, env: dict) -> None:
     # env keeps its PYTHON hint while restoring managed Node ahead of PATH.
     nixos_env = with_hermes_node_path(_nixos_build_env())
     install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
+    if install_result.returncode == 0:
+        return
+    # Two repair paths, mutually exclusive by cause:
+    # 1. Electron's postinstall failed to download its binary from github.com
+    #    (ETIMEDOUT & co). npm ci is transactional, so the staged package is
+    #    usually gone and the _electron_pkg_staged_missing_dist branch below
+    #    can't run. Retry the install once with the fallback mirror — the
+    #    registry (packages) already came from the user's npm config, only
+    #    Electron's binary host changes.
+    # 2. Electron is staged but its dist/ is missing (blocked postinstall,
+    #    non-network cause): re-run install.js.
+    if (
+        _npm_failure_is_electron_download(install_result)
+        and not nixos_env.get("ELECTRON_MIRROR")
+        and npm
+    ):
+        print("  ⚠ Electron binary download failed; retrying dependency "
+              "install with fallback mirror "
+              f"{_ELECTRON_FALLBACK_MIRROR} ...")
+        mirror_env = {**nixos_env, "ELECTRON_MIRROR": _ELECTRON_FALLBACK_MIRROR}
+        install_result = _run_npm_install_deterministic(
+            npm, PROJECT_ROOT, capture_output=False, env=mirror_env
+        )
     if install_result.returncode == 0:
         return
     if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):

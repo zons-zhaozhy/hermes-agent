@@ -83,7 +83,7 @@ def test_list_authenticated_providers_enumerates_dict_format_models(monkeypatch)
     # configured endpoints (e.g. a local ollama service) answer the probe and
     # the declared dict-format catalog below is replaced by live models.
     monkeypatch.setattr(
-        "hermes_cli.model_switch._fetch_picker_live_models", lambda *a, **k: None
+        "hermes_cli.model_switch_providers._fetch_picker_live_models", lambda *a, **k: None
     )
     monkeypatch.setattr(
         "hermes_cli.models.cached_fetch_api_models", lambda *a, **k: []
@@ -534,7 +534,7 @@ def test_section3_probes_no_key_endpoint_with_singular_default_model(monkeypatch
     # service the native-catalog branch answers and the mocked
     # fetch_api_models below is never reached.
     monkeypatch.setattr(
-        "hermes_cli.models.should_use_ollama_native_catalog", lambda *a, **k: False
+        "hermes_cli.models_local.should_use_ollama_native_catalog", lambda *a, **k: False
     )
 
     probed = {}

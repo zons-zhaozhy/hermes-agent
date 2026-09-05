@@ -116,7 +116,7 @@ class TestDiscoverAllPlugins:
         # Hermetic: a pip-installed entry-point plugin in the developer's venv
         # (e.g. rtk-hermes) must not leak into directory-discovery assertions.
         with patch(
-            "hermes_cli.plugins_cmd._discover_entrypoint_plugins",
+            "hermes_cli.plugins.discover_entrypoint_manifests",
             return_value=[],
         ):
             entries = _discover_all_plugins()
@@ -299,8 +299,10 @@ class TestCmdListJson:
         mock_user_dir.return_value = tmp_path
         mock_bundled_dir.return_value = tmp_path / "nonexistent"
 
-        # Patch config to return web/keenable as enabled
-        with patch("hermes_cli.plugins_cmd._get_enabled_set", return_value={"web/keenable"}):
+        # Patch config to return web/keenable as enabled; entry-point plugins
+        # installed in the dev venv must not leak into the json payload.
+        with patch("hermes_cli.plugins_cmd._get_enabled_set", return_value={"web/keenable"}), \
+             patch("hermes_cli.plugins.discover_entrypoint_manifests", return_value=[]):
             args = MagicMock()
             args.json = True
             args.plain = False

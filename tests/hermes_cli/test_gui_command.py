@@ -397,17 +397,19 @@ def test_gui_retries_npm_install_with_fallback_mirror_on_electron_timeout(
     pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
     launch_ok = subprocess.CompletedProcess(["/usr/bin/npm"], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
          patch(
-             "hermes_cli.main._run_npm_install_deterministic",
+             "hermes_cli.main_web_build._run_npm_install_deterministic",
              side_effect=[install_fail, install_ok],
          ) as mock_install, \
-         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
-         patch("hermes_cli.main._write_desktop_build_stamp"), \
-         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
-         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
-         patch("hermes_cli.main._register_linux_desktop_entry"), \
-         patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]) as mock_run, \
+         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
+         patch("hermes_cli.main_desktop._promote_staged_desktop_app",
+               side_effect=lambda desktop_dir, staging_dir: _make_packaged_executable(root, monkeypatch)), \
+         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main_desktop._register_linux_desktop_entry"), \
+         patch("hermes_cli.main_desktop.subprocess.run", side_effect=[pack_ok, launch_ok]) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
 
@@ -418,8 +420,8 @@ def test_gui_retries_npm_install_with_fallback_mirror_on_electron_timeout(
     assert retry_env["ELECTRON_MIRROR"] == cli_main._ELECTRON_FALLBACK_MIRROR
     out = capsys.readouterr().out
     assert "fallback mirror" in out
-    # And the pack still ran after the repair.
-    assert mock_run.call_args_list[0].args[0] == ["/usr/bin/npm", "run", "pack"]
+    # And the pack still ran after the repair (upstream pack carries staging args).
+    assert mock_run.call_args_list[0].args[0][:3] == ["/usr/bin/npm", "run", "pack"]
 
 
 def test_gui_respects_user_pinned_electron_mirror_no_retry(
@@ -438,12 +440,12 @@ def test_gui_respects_user_pinned_electron_mirror_no_retry(
         ["npm", "ci"], 1, stdout="", stderr=_REAL_NPM_ELECTRON_TIMEOUT
     )
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
          patch(
-             "hermes_cli.main._run_npm_install_deterministic",
+             "hermes_cli.main_web_build._run_npm_install_deterministic",
              return_value=install_fail,
          ) as mock_install, \
-         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
 

@@ -746,6 +746,8 @@ from hermes_cli.main_desktop import (  # frozen updater surface: update_cmd*.py 
     _desktop_dist_exists,
     _desktop_macos_relaunchable_fixup,
     _desktop_packaged_executable,
+    _npm_failure_is_electron_download,
+    _ELECTRON_FALLBACK_MIRROR,
 )
 from hermes_cli.main_web_build import (
     _sweep_stale_bytecode_if_checkout_changed,

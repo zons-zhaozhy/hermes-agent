@@ -79,6 +79,37 @@ class PluginToolOverrideError(PermissionError):
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_plugin_names(raw: list) -> list:
+    """Filter malformed entries out of a plugins enabled/disabled list.
+
+    Guards against the observed corruption class where a config write
+    iterated a bare string (e.g. ``list += "+source-code-write-guard"``)
+    and splattered single characters into the list, silently displacing
+    every real plugin name. Real plugin names are always multi-char and
+    never start with ``+``; anything else is junk and gets dropped with
+    a warning so the damage is visible instead of silent.
+
+    Preconditions: ``raw`` is already isinstance-checked as a list.
+    Postconditions: every returned item is a str with len > 1 that does
+    not start with '+'; junk entries are logged exactly once per call.
+    """
+    clean: list = []
+    junk: list = []
+    for item in raw:
+        if isinstance(item, str) and len(item) > 1 and not item.startswith("+"):
+            clean.append(item)
+        else:
+            junk.append(item)
+    if junk:
+        logger.warning(
+            "plugins config list contains %d malformed entries (stray characters "
+            "from a corrupted config write — real plugin names were likely "
+            "displaced); full junk list: %r",
+            len(junk), junk,
+        )
+    return clean
+
 # ``HERMES_PLUGINS_DEBUG=1`` tees verbose discovery logs to stderr in addition to agent.log. Read
 # once at import; tests flip it mid-process via ``_install_plugin_debug_handler(force=True)``.
 _PLUGINS_DEBUG = env_var_enabled("HERMES_PLUGINS_DEBUG")

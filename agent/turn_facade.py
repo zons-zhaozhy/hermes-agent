@@ -192,4 +192,41 @@ class TurnFacadeMixin:
         """Final response string of one turn; ``stream_callback`` receives each text delta."""
         return self.run_conversation(message, stream_callback=stream_callback)["final_response"]
 
+    def force_release_session_turn_lease(self, session_id: Optional[str] = None) -> bool:
+        """Force-release the turn lease this agent currently holds.
+
+        Callable from another thread (e.g. the CLI input handler) after an
+        interrupt left the owning agent thread stuck past its grace window:
+        the agent thread became a daemon and its ``run_conversation`` finally
+        never ran, so the durable lease is never released and any successor
+        turn would stall acquiring it for up to ``wait_seconds`` (default 300).
+
+        The release is holder-qualified (``WHERE conversation_id = ? AND
+        holder = ?``), so a late release/refresh from the abandoned thread
+        cannot delete a successor's lease. Returns True if a lease row was
+        actually removed, False otherwise (no holder recorded, no session, or
+        write failed) — callers should treat False as "nothing to force".
+        """
+        try:
+            db = getattr(self, "_session_db", None)
+            if db is None:
+                return False
+            holder = getattr(self, "_active_session_turn_lease_holder", None)
+            sid = session_id or getattr(self, "session_id", None)
+            if not holder or not sid:
+                return False
+            db.release_session_turn_lease(sid, holder)
+            if getattr(self, "_active_session_turn_lease_holder", None) == holder:
+                self._active_session_turn_lease_holder = None
+                self._active_session_turn_lease_ttl_seconds = None
+            logger.info(
+                "Forced release of session turn lease for %s (holder %s)",
+                sid,
+                holder,
+            )
+            return True
+        except Exception:
+            logger.warning("force_release_session_turn_lease failed", exc_info=True)
+            return False
+
     _run_codex_app_server_turn = _forward("agent.codex_runtime", "run_codex_app_server_turn")
