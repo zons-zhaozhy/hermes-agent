@@ -26,7 +26,7 @@ L0 机制黑名单 tool-blacklist                     —— 管"必败工具根
    `_get_pre_tool_call_directive_details`）收集所有 block verdict 合并成
    一条消息——禁 first-wins 打地鼠（已上线,含护栏聚合标头）。
 3. **写前预检优先于事后拦截**：
-   `python3 plugins/coding-standards-guard/preflight.py <file>` 提交前
+   `python3 plugins/guards/preflight.py <file>` 提交前
    一次性全量自查；拦截消息指路该命令。
 4. **必败工具进 L0 而非 memory 提醒**：vision_analyze→glm_vision、
    codegraph 系非 hermes 仓→gitnexus、memory 批量 operations→逐条单 op。

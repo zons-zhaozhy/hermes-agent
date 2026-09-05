@@ -1,0 +1,7 @@
+name: guards
+version: "2.0.0"
+description: L2写入质量护栏套件(收拢6插件)——必败工具黑名单/四轴副防线/先读后写/查重/terminal直写拦截/AST编码规范+写前预检。分层见docs/guard-system-architecture.md。
+author: stan
+hooks:
+  - pre_tool_call
+  - post_tool_call

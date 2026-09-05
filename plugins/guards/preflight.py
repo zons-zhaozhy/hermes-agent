@@ -26,7 +26,7 @@ _repo_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_repo_root))
 
 _spec = importlib.util.spec_from_file_location(
-    "csguard", Path(__file__).resolve().parent / "__init__.py"
+    "csguard", Path(__file__).resolve().parent / "coding_standards.py"
 )
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)

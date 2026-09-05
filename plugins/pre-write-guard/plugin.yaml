@@ -1,7 +1,0 @@
-name: pre-write-guard
-version: "1.0.0"
-description: "Enforce pre-investigation gate — block write_file/patch/execute_code(write) if target files have not been read first in this turn."
-author: stan
-hooks:
-  - pre_tool_call
-  - post_tool_call

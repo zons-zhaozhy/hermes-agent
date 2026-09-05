@@ -10,7 +10,7 @@ import os
 _plugin_dir = os.path.join(os.path.dirname(__file__))
 _spec = importlib.util.spec_from_file_location(
     "coding_standards_guard",
-    os.path.join(_plugin_dir, "__init__.py"),
+    os.path.join(_plugin_dir, "coding_standards.py"),
 )
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)

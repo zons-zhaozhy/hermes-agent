@@ -7,7 +7,7 @@
 import importlib.util
 from pathlib import Path
 
-_PLUG = Path(__file__).resolve().parent.parent / "plugins" / "source_code_write_guard" / "__init__.py"
+_PLUG = Path(__file__).resolve().parent.parent / "plugins" / "guards" / "source_write.py"
 
 
 def _load():

@@ -14,7 +14,7 @@ import pytest
 
 _spec = _ilu.spec_from_file_location(
     "plugins.duplicate_check",
-    os.path.join(os.path.dirname(__file__), "..", "..", "plugins", "duplicate-check", "__init__.py"),
+    os.path.join(os.path.dirname(__file__), "..", "..", "plugins", "guards", "duplicate_check.py"),
 )
 _dc = _ilu.module_from_spec(_spec)
 _spec.loader.exec_module(_dc)

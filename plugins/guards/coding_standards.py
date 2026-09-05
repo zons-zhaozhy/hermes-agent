@@ -1118,7 +1118,7 @@ def _check_content(content: str, target: str) -> Optional[Dict[str, Any]]:
             f"    • eval() → 用 ast.literal_eval() 替代\n"
             "    • import * → 必须显式导入\n"
             "  写前预检(一次列出全部违规,禁打地鼠): "
-            "python3 plugins/coding-standards-guard/preflight.py <file>\n"
+            "python3 plugins/guards/preflight.py <file>\n"
             "  修复后重试。"
         ),
     }

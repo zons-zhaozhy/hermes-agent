@@ -1,7 +1,0 @@
-name: four-axis-guard
-version: "1.0.0"
-description: "四轴闸门副防线 — 写工具执行前检查四轴 marker，与 ReadThinkGate 主防线协同"
-author: stan
-kind: standalone
-hooks:
-  - pre_tool_call

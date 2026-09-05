@@ -1,6 +1,0 @@
-name: coding-standards-guard
-version: "2.0.0"
-description: "事前拦截编码规范违规——AST 精准检测裸 except: pass/硬编码密码/import *，集中管理编码规范。"
-author: stan
-hooks:
-  - pre_tool_call
