@@ -115,7 +115,7 @@ def _read_marker() -> Optional[dict]:
         _marker = _marker_file()
         if not _marker.exists():
             return None
-        data = json.loads(_marker.read_text())
+        data = json.loads(_marker.read_text(encoding="utf-8"))
         age = time.time() - data.get("timestamp", 0)
         if age > _MARKER_MAX_AGE_SECONDS:
             logger.debug("four-axis marker expired (age=%.0fs)", age)

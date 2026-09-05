@@ -127,7 +127,7 @@ def _bump_persist_count(key: str) -> None:
         p = _persist_path()
         p.parent.mkdir(parents=True, exist_ok=True)
         lock_path = p.with_suffix(".lock")
-        with open(lock_path, "w") as lockf:
+        with open(lock_path, "w", encoding="utf-8") as lockf:
             fcntl.flock(lockf.fileno(), fcntl.LOCK_EX)
             try:
                 # 锁内读（含窗口衰减）

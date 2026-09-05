@@ -47,7 +47,14 @@ def test_guest_barriers_leave_synchronous_alone_when_unset(monkeypatch, tmp_path
         conn.execute("PRAGMA journal_mode=DELETE")
         conn.execute("PRAGMA synchronous=1")
         apply_durability_barriers(conn)
-        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 1
+        # With database.synchronous unset the guest path adds nothing — EXCEPT
+        # the documented darwin floor: _enforce_macos_synchronous_full raises
+        # the level to FULL (2) on macOS regardless of config (Apple fsync()
+        # guarantees neither data-on-platter nor ordering).
+        import sys
+
+        expected = 2 if sys.platform == "darwin" else 1
+        assert conn.execute("PRAGMA synchronous").fetchone()[0] == expected
     finally:
         conn.close()
 

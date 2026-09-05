@@ -30,7 +30,10 @@ from gateway.config import (
 from gateway.response_filters import (
     is_intentional_silence_response as _is_intentional_silence_response,
     is_partial_silence_marker as _is_partial_silence_marker)
-from gateway.stream_consumer_fences import ensure_closed_code_fences
+from gateway.stream_consumer_fences import (  # noqa: F401  (re-exported for external plugins)
+    ensure_closed_code_fences,
+    escape_code_fences_for_display,
+)
 from gateway.stream_consumer_transport import StreamTransportMixin
 from gateway.stream_consumer_fallback import StreamFallbackMixin
 from gateway.stream_consumer_think import StreamThinkFilterMixin
@@ -55,87 +58,6 @@ _FUTURE_TYPES = (asyncio.Future, concurrent.futures.Future)
 
 # Boundary finalize text when nothing has accumulated yet (overridable per boundary).
 _DEFAULT_BOUNDARY_PLACEHOLDER = "⏸ 等待审批中..."
-
-
-def escape_code_fences_for_display(text: str) -> str:
-    """Escape triple-backtick markers so text can be safely wrapped
-    inside an outer ``` code block without breaking the fence.
-
-    When reasoning content contains ``` (e.g. the model quotes code
-    in its thinking), wrapping it in an outer ``` for display causes
-    the inner fence to break the outer block.  Solution: replace each
-    `` ``` `` with `` \\`\\`\\` `` before wrapping.
-
-    Returns:
-        The input text with each `` ``` `` replaced by `` \\`\\`\\` ``,
-        or the input unchanged if no triple-backticks are present.
-    """
-    if not isinstance(text, str) or "```" not in text:
-        return text
-    return text.replace("```", "\\`\\`\\`")
-
-
-def ensure_closed_code_fences(text: str) -> str:
-    """Append a closing `` ``` `` fence and/or `` ` `` if the text has
-    orphaned code-block or inline-code markers.
-
-    When model output is truncated mid-code-block (e.g. by token limits
-    or a finish_reason="length"), the resulting message has an unclosed
-    code fence.  On Discord, Slack, and other platforms this causes
-    everything after the orphaned fence to render as a single code block.
-    The same problem applies to inline-code spans closed by a single
-    backtick: an orphaned `` ` `` makes the remainder of the message
-    render as inline code.
-
-    Triple-backtick: count `` ``` `` occurrences.  If odd, append a
-    closing fence on its own line.  This is safe because nested
-    triple-backtick fences (e.g. a literal `` ``` `` inside a code block)
-    are exceedingly rare in model output and, when they do appear, the
-    extra closing fence just creates a brief empty code block at the end
-    of the message — far less harmful than the entire message being one
-    giant code block.
-
-    Single backtick: after balancing triple-backtick fences, strip all
-    complete `` ```…``` `` regions and count remaining standalone `` ` ``.
-    If odd, append a closing inline-code backtick.  Same trade-off: a
-    stray closing backtick may produce a brief empty inline-code span,
-    which is far less harmful than the rest of the message being rendered
-    as inline code.
-
-    Returns:
-        The input text with closing markers appended if needed, or the
-        input text unchanged.
-    """
-    if not isinstance(text, str) or not text:
-        return text
-
-    # Step 1: fix triple-backtick code-block fences (existing logic)
-    if text.count("```") % 2 == 1:
-        text = text.rstrip("\n") + "\n```"
-
-    # Step 2: fix single-backtick inline-code spans
-    # Remove complete ```…``` regions so their internal backticks don't
-    # pollute the standalone count.  Also remove any trailing unclosed
-    # ``` that leaks through (defence in depth).
-    import re
-    # str.find (O(n)) replaces DOTALL re.sub to prevent regex backtracking
-    _fence = '```'
-    _t = text
-    while True:
-        _p = _t.find(_fence)
-        if _p == -1:
-            break
-        _p2 = _t.find(_fence, _p + 3)
-        if _p2 == -1:
-            break
-        _t = _t[:_p] + _t[_p2 + 3:]
-    without_fences = _t
-    without_fences = re.sub(r"```[^`]*$", "", without_fences)
-
-    if without_fences.count("`") % 2 == 1:
-        text = text + "`"
-
-    return text
 
 
 @dataclass

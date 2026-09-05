@@ -189,7 +189,7 @@ def _store_lock(store: Path):
     lock_path = store / _STORE_LOCK_NAME
     lock_file = None
     try:
-        lock_file = open(lock_path, "a+")
+        lock_file = open(lock_path, "a+", encoding="utf-8")
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
     except OSError as exc:
         # Unopenable lock file must never break checkpointing itself.
