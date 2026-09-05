@@ -11,30 +11,53 @@ from agent import reasoning_effort as re_
 from providers import register_provider
 from providers.base import ProviderProfile
 
-_GLM_VERSION_RE = re.compile(r"^glm-(\d+)(?:\.(\d+))?")
-# Alias spellings seen on relays (Fireworks ``glm-5p2``, ``zai-org-glm-5-2``…).
-_GLM_5_3_TOKENS = ("glm-5.3", "glm-5-3", "glm-5p3")
-_GLM_5_2_TOKENS = ("glm-5.2", "glm-5-2", "glm-5p2") + _GLM_5_3_TOKENS
+_GLM_VERSION_RE = re.compile(r"glm-(\d+)(?:[.\-p](\d+))?")  # re-ok: 版本号提取,无结构化解析器可用
+# Semantic tier gates — compare version tuples instead of enumerating alias
+# spellings, so glm-5.4 / glm-6 fall into the right contract branch
+# automatically (relay prefixes like "z-ai/glm-5.3" also match: the pattern
+# is unanchored).
+_GLM_5_3_MIN = (5, 3)
+_GLM_5_2_MIN = (5, 2)
+
+
+def _model_glm_version(model: str | None) -> tuple[int, int] | None:
+    """Best GLM (major, minor) mentioned anywhere in the model string."""
+    best: tuple[int, int] | None = None
+    for match in _GLM_VERSION_RE.finditer((model or "").strip().lower()):
+        version = (int(match.group(1)), int(match.group(2) or 0))
+        if best is None or version > best:
+            best = version
+    return best
 
 
 def _model_supports_thinking(model: str | None) -> bool:
     """GLM thinking-capable model families: glm-4.5 and later (4.5, 4.6, 5…)."""
-    match = _GLM_VERSION_RE.match((model or "").strip().lower())
-    return bool(match) and (int(match.group(1)), int(match.group(2) or 0)) >= (4, 5)
+    version = _model_glm_version(model)
+    return version is not None and version >= (4, 5)
 
 
-def _has_token(model: str | None, tokens: tuple[str, ...]) -> bool:
-    m = (model or "").strip().lower()
-    return any(token in m for token in tokens)
+def _is_glm_5_3(model: str | None) -> bool:
+    version = _model_glm_version(model)
+    return version is not None and version >= _GLM_5_3_MIN
 
 
-def _glm_5_2_reasoning_effort(reasoning_config: dict | None, *, model: str | None = None) -> str | None:
+def _is_glm_5_2(model: str | None) -> bool:
+    version = _model_glm_version(model)
+    return version is not None and version >= _GLM_5_2_MIN
+
+
+def _glm_native_reasoning_effort(reasoning_config: dict | None, *, model: str | None = None) -> str | None:
     """Hermes effort -> GLM vocabulary (5.2: high/max; 5.3: low..max). Below-floor
     efforts clamp to the floor; disabled/unset leaves the server default."""
+    is_5_3 = _is_glm_5_3(model)
+    if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
+        # GLM-5.3 cannot disable thinking: map "off" to the cheapest legal
+        # tier (low) instead of leaving the server-default effort in place.
+        return "low" if is_5_3 else None
     effort = re_.requested_effort(reasoning_config)
     if effort is None or effort == "none":
         return None
-    if _has_token(model, _GLM_5_3_TOKENS):
+    if is_5_3:
         efforts, overrides, floor = re_.GLM53_EFFORTS, re_.GLM53_OVERRIDES, "low"
     else:
         efforts, overrides, floor = re_.GLM52_EFFORTS, re_.GLM52_OVERRIDES, "high"
@@ -50,13 +73,13 @@ class ZaiProfile(ProviderProfile):
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}
-        is_5_2 = _has_token(model, _GLM_5_2_TOKENS)
+        is_5_2 = _is_glm_5_2(model)
         if not _model_supports_thinking(model) and not is_5_2:
             return extra_body, top_level
         # Only emit when the user expressed a preference (server default = enabled).
         if isinstance(reasoning_config, dict):
             enabled = reasoning_config.get("enabled") is not False
-            if not enabled and _has_token(model, _GLM_5_3_TOKENS):
+            if not enabled and _is_glm_5_3(model):
                 # GLM-5.3 rejects thinking.type=disabled outright; send the
                 # official migration shape and let the effort knob above
                 # select the cheapest tier (low).
@@ -64,7 +87,7 @@ class ZaiProfile(ProviderProfile):
             else:
                 extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
         if is_5_2:
-            effort = _glm_5_2_reasoning_effort(reasoning_config, model=model)
+            effort = _glm_native_reasoning_effort(reasoning_config, model=model)
             if effort is not None:
                 top_level["reasoning_effort"] = effort
         return extra_body, top_level

@@ -78,12 +78,12 @@ def _attempt_track(path_str: str, task_id: str, session_id: str) -> None:
         _record_track(task_id, session_id, p, category)
 
 
-def _extract_paths_from_write_file(args: Dict[str, Any]) -> Set[str]:
-    path = args.get(_WRITE_FILE_PATH_KEY)
+def _extract_paths_from_write_file(args: Dict[str, Any], _result: str = "") -> Set[str]:
+    path = args.get("path")
     return {path} if isinstance(path, str) and path else set()
 
 
-def _extract_paths_from_patch(args: Dict[str, Any]) -> Set[str]:
+def _extract_paths_from_patch(args: Dict[str, Any], _result: str = "") -> Set[str]:
     # The patch tool creates new files via the `mode="patch"` path too, but
     # most of its use is editing existing files — we only care about new
     # ephemeral creations, so treat patch conservatively and only pick up
@@ -119,8 +119,8 @@ def _extract_paths_from_terminal(args: Dict[str, Any], result: str) -> Set[str]:
 
 
 _PATH_EXTRACTORS: Dict[str, Callable[[Dict[str, Any], str], Set[str]]] = {
-    "write_file": _extract_path_arg,
-    "patch": _extract_path_arg,
+    "write_file": _extract_paths_from_write_file,
+    "patch": _extract_paths_from_patch,
     "terminal": _extract_paths_from_terminal}
 
 
