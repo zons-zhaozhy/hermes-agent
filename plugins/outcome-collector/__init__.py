@@ -374,35 +374,41 @@ def _classify_tool_sequence(
         return "unknown", None
 
     total = len(tool_calls)
-    error_calls = [tc for tc in tool_calls if tc["status"] in ("error", "blocked")]
+    # Guard blocks are by-design gating (agent must gather evidence and
+    # retry), not tool failures. Count only genuine errors here; blocked
+    # calls still feed the retry-then-success pattern below so that
+    # [blocked, blocked, ok] classifies as success/retry_then_success.
+    error_calls = [tc for tc in tool_calls if tc["status"] == "error"]
     error_count = len(error_calls)
 
-    # Pattern: repeated_same_tool_error — same tool errored ≥2 times
+    # Pattern: retry_then_success — at least one non-ok call followed by a
+    # later ok on the same tool (agent overcame the obstacle, possibly via
+    # a guard block that demanded more evidence first)
+    tool_outcomes: dict[str, list[str]] = {}
+    for tc in tool_calls:
+        tool_outcomes.setdefault(tc["tool_name"], []).append(tc["status"])
+    for tool_name, statuses in tool_outcomes.items():
+        has_error = "error" in statuses or "blocked" in statuses
+        has_later_ok = False
+        seen_error = False
+        for s in statuses:
+            if s in ("error", "blocked"):
+                seen_error = True
+            elif s == "ok" and seen_error:
+                has_later_ok = True
+                break
+        if has_error and has_later_ok:
+            return "success", "retry_then_success"
+
+    # Pattern: repeated_same_tool_error — same tool errored ≥2 times with no
+    # later success on that tool (checked after retry_then_success so that
+    # [blocked, blocked, ok] is not misread as a failure loop)
     if error_calls:
         from collections import Counter
         error_tool_counts = Counter(tc["tool_name"] for tc in error_calls)
         for tool, cnt in error_tool_counts.items():
             if cnt >= 2:
                 return "failure", "repeated_same_tool_error"
-
-    # Pattern: retry_then_success — at least one error followed by a later success
-    # on the same tool (agent overcame the obstacle)
-    if error_count > 0:
-        tool_outcomes: dict[str, list[str]] = {}
-        for tc in tool_calls:
-            tool_outcomes.setdefault(tc["tool_name"], []).append(tc["status"])
-        for tool_name, statuses in tool_outcomes.items():
-            has_error = "error" in statuses or "blocked" in statuses
-            has_later_ok = False
-            seen_error = False
-            for s in statuses:
-                if s in ("error", "blocked"):
-                    seen_error = True
-                elif s == "ok" and seen_error:
-                    has_later_ok = True
-                    break
-            if has_error and has_later_ok:
-                return "success", "retry_then_success"
 
     # Pattern: high_error_density — ≥50% error rate with enough calls to be meaningful
     if total >= 5 and error_count / total >= 0.5:
@@ -529,7 +535,7 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, str]]:
                         prev_turn["failure_pattern"] = pattern
                         prev_turn["tool_count"] = len(tool_calls)
                         prev_turn["error_count"] = sum(
-                            1 for tc in tool_calls if tc["status"] in ("error", "blocked")
+                            1 for tc in tool_calls if tc["status"] == "error"
                         )
                         prev_turn["tools"] = list(set(tc["tool_name"] for tc in tool_calls))
                         prev_turn["summary"] = f"outcome={outcome}" + (
