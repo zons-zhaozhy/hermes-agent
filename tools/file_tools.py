@@ -648,6 +648,22 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 f"You have read this exact file region {count} times consecutively. "
                 "The content has not changed since your last read. Use the information you already have. "
                 "If you are stuck in a loop, stop reading and proceed with writing or responding.")
+        # Hashline-style freshness credential: stamp the CURRENT full-file
+        # content so a follow-up patch can pass expected_fingerprint and get
+        # rejected up front when the file changed since this read. Only full
+        # reads carry a fingerprint (a partial read hasn't seen enough to edit).
+        # Hash the RAW disk bytes via _cat — NOT the line-numbered display
+        # content — so patch_tool's gate (same _cat source) compares like
+        # with like.
+        if not result_dict.get("error") and not result_dict.get("truncated") \
+                and not (offset > 1):
+            try:
+                from tools.file_fingerprint import content_fingerprint
+                _fp_read = _get_file_ops(task_id)._cat(resolved_str)
+                if _fp_read.exit_code == 0:
+                    result_dict["fingerprint"] = content_fingerprint(_fp_read.stdout)
+            except Exception:
+                logger.debug("fingerprint stamp failed", exc_info=True)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
@@ -794,11 +810,18 @@ def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str]] | str:
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
                task_id: str = "default", cross_profile: bool = False,
-               session_id: str | None = None) -> str:
+               session_id: str | None = None,
+               expected_fingerprint: str | None = None) -> str:
     """Patch a file using replace mode or V4A patch format.
 
     ``cross_profile``: same semantics as ``write_file``'s flag (mirror-guard
     bypass only; unadvertised).
+
+    ``expected_fingerprint``: optional hashline-style freshness credential.
+    When provided, the file's current content is hashed first; a mismatch
+    means the caller edited from a stale read — the edit is REJECTED before
+    any fuzzy matching, with a pointer to re-read. Omitted = no check
+    (back-compat).
     """
     _paths_to_check = [path] if path else []
     _content_write_paths = list(_paths_to_check)
@@ -821,6 +844,29 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 _locks.enter_context(file_state.lock_path(_r))
             stale_warnings = _edit_warnings(_paths_to_check, _path_to_resolved, task_id)
             file_ops = _get_file_ops(task_id)
+
+            # Hashline freshness gate: if the caller pinned a fingerprint from
+            # an earlier read_file, verify the on-disk content still matches
+            # BEFORE any matching/writing. A mismatch = editing from a stale
+            # mental copy — reject and point at a re-read. Single-file replace
+            # mode only (V4A multi-file patches don't carry per-file tags here).
+            if expected_fingerprint:
+                if mode != "replace" or not path:
+                    return tool_error(
+                        "expected_fingerprint applies to mode='replace' with a single path")
+                _fp_target = _path_to_resolved.get(path) or path
+                try:
+                    _fp_read = file_ops._cat(_fp_target)
+                    _current = _fp_read.stdout if _fp_read.exit_code == 0 else None
+                except Exception:
+                    _current = None
+                from tools.file_fingerprint import fingerprint_matches
+                if _current is None or not fingerprint_matches(_current, expected_fingerprint):
+                    return tool_error(
+                        f"FINGERPRINT MISMATCH for '{path}': the file changed since the "
+                        "read_file that produced this fingerprint. Your edit is based on "
+                        "stale content and was NOT applied. Re-read the file, then patch "
+                        "with the new fingerprint.", path=path)
 
             # Hand the shell layer the RESOLVED targets so both layers agree on
             # which file is edited even when the shell's cwd differs.
@@ -1039,6 +1085,15 @@ PATCH_SCHEMA = {
                 "description": "Replace all occurrences instead of requiring a unique match (default: false)",
                 "default": False,
             },
+            "expected_fingerprint": {
+                "type": "string",
+                "description": (
+                    "Optional freshness credential: the 'fingerprint' value returned by your "
+                    "most recent FULL read_file of this file. When provided and the file has "
+                    "changed since that read, the edit is rejected before applying — re-read "
+                    "and retry with the new fingerprint. Omit to skip the check."),
+                "default": None,
+            },
             # NOTE: handler still accepts `cross_profile` — see write_file's
             # NOTE (mirror-guard bypass only; unadvertised by design).
             # NOTE: handler still accepts `mode` + `patch` (V4A) from ANY
@@ -1161,6 +1216,7 @@ def _handle_patch(args, **kw):
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
         session_id=kw.get("session_id"),
+        expected_fingerprint=args.get("expected_fingerprint"),
     )
 
 
