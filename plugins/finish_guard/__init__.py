@@ -101,6 +101,8 @@ def _tail_text(text: str, chars: int = 200) -> str:
 # 取 questions 的稳定内容键，忽略顺序与无关元数据。
 _GAP_STREAK_LIMIT = 3
 _gap_streaks: dict[str, str] = {}  # gap fingerprint -> consecutive count
+# 进程级防膨胀上限（每条~50字节，正常永不触及；clear() 重置保证同时只存一个指纹族）
+_GAP_STREAKS_CAP = 64
 
 
 def _clarify_gap_fingerprint(args: dict) -> str:
@@ -141,6 +143,9 @@ def _on_pre_tool_call(**kwargs) -> dict:
         if prev is None:
             _gap_streaks.clear()  # 新问题=有进展，全部重置
             _gap_streaks[fp] = "1"
+            if len(_gap_streaks) > _GAP_STREAKS_CAP:  # 防御上限（clear 后恒 1，永不触发）
+                _gap_streaks.clear()
+                _gap_streaks[fp] = "1"
         else:
             _gap_streaks[fp] = str(int(prev) + 1)
         if int(_gap_streaks[fp]) >= _GAP_STREAK_LIMIT:
