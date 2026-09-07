@@ -658,10 +658,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
         if not result_dict.get("error") and not result_dict.get("truncated") \
                 and not (offset > 1):
             try:
-                from tools.file_fingerprint import content_fingerprint
+                from tools.file_fingerprint import content_fingerprint, record_read
                 _fp_read = _get_file_ops(task_id)._cat(resolved_str)
                 if _fp_read.exit_code == 0:
                     result_dict["fingerprint"] = content_fingerprint(_fp_read.stdout)
+                    record_read(task_id, resolved_str, result_dict["fingerprint"])
             except Exception:
                 logger.debug("fingerprint stamp failed", exc_info=True)
         return json.dumps(result_dict, ensure_ascii=False)
@@ -727,7 +728,8 @@ def _note_edited(task_id: str, paths: list[str], path_to_resolved: dict, session
 
 def write_file_tool(path: str, content: str, task_id: str = "default",
                     cross_profile: bool = False,
-                    session_id: str | None = None) -> str:
+                    session_id: str | None = None,
+                    expected_fingerprint: str | None = None) -> str:
     """Write content to a file.
 
     ``cross_profile`` bypasses the sandbox-mirror lost-write guards only
@@ -757,9 +759,39 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 # subagents; different paths stay fully parallel.
                 _lock.enter_context(file_state.lock_path(_resolved))
             warnings = _edit_warnings([path], path_to_resolved, task_id)
+
+            # Hashline freshness gate for overwrite writes — MORE dangerous than
+            # patch (no old-content check at all): same protocol as patch_tool.
+            # Explicit expected_fingerprint mismatch = REJECT (opt-in strict);
+            # registry mismatch without credential = WARN only.
+            from tools.file_fingerprint import (content_fingerprint, fingerprint_matches,
+                                                last_seen as _fp_last_seen,
+                                                record_write as _fp_record_write)
+            if _resolved:
+                _auto_fp = expected_fingerprint or _fp_last_seen(task_id, _resolved)
+                if _auto_fp:
+                    try:
+                        _fp_read = _get_file_ops(task_id)._cat(_resolved)
+                        _current = _fp_read.stdout if _fp_read.exit_code == 0 else None
+                    except Exception:
+                        logger.debug("write_file fingerprint gate read failed", exc_info=True)
+                        _current = None
+                    if _current is not None and not fingerprint_matches(_current, _auto_fp):
+                        if expected_fingerprint:
+                            return tool_error(
+                                f"FINGERPRINT MISMATCH for '{path}': the file changed since the "
+                                "read_file that produced this fingerprint. Your overwrite would "
+                                "destroy those changes and was NOT applied. Re-read the file, "
+                                "merge your changes, then write with the new fingerprint.",
+                                path=path)
+                        warnings = list(warnings) + [
+                            f"file '{path}' changed since your last full read_file (fingerprint "
+                            "stale) — your overwrite will destroy unseen changes; re-read first "
+                            "if this file matters."]
+
             result_dict = _get_file_ops(task_id).write_file(_resolved or path, content).to_dict()
             if warnings:
-                result_dict["_warning"] = warnings[0]
+                result_dict["_warning"] = warnings[0] if len(warnings) == 1 else " | ".join(warnings)
             if _resolved:
                 # Always report the ABSOLUTE path written so a wrong-cwd mismatch
                 # is visible in the response instead of silently landing elsewhere.
@@ -769,6 +801,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             else:
                 if _resolved:
                     result_dict["files_modified"] = [_resolved]
+                    try:
+                        _fp_record_write(task_id, _resolved, content_fingerprint(content))
+                    except Exception:
+                        logger.debug("write_file fingerprint restamp failed", exc_info=True)
                 _note_edited(task_id, [path], path_to_resolved, session_id)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
@@ -850,23 +886,32 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             # BEFORE any matching/writing. A mismatch = editing from a stale
             # mental copy — reject and point at a re-read. Single-file replace
             # mode only (V4A multi-file patches don't carry per-file tags here).
-            if expected_fingerprint:
-                if mode != "replace" or not path:
-                    return tool_error(
-                        "expected_fingerprint applies to mode='replace' with a single path")
+            # Transition-period auto-check: even WITHOUT an explicit credential,
+            # compare against the per-task registry of last full reads; a
+            # mismatch only WARNS (don't block flows that never opted in).
+            from tools.file_fingerprint import last_seen as _fp_last_seen
+            if mode == "replace" and path:
                 _fp_target = _path_to_resolved.get(path) or path
-                try:
-                    _fp_read = file_ops._cat(_fp_target)
-                    _current = _fp_read.stdout if _fp_read.exit_code == 0 else None
-                except Exception:
-                    _current = None
-                from tools.file_fingerprint import fingerprint_matches
-                if _current is None or not fingerprint_matches(_current, expected_fingerprint):
-                    return tool_error(
-                        f"FINGERPRINT MISMATCH for '{path}': the file changed since the "
-                        "read_file that produced this fingerprint. Your edit is based on "
-                        "stale content and was NOT applied. Re-read the file, then patch "
-                        "with the new fingerprint.", path=path)
+                _auto_fp = expected_fingerprint or _fp_last_seen(task_id, _fp_target)
+                if _auto_fp:
+                    try:
+                        _fp_read = file_ops._cat(_fp_target)
+                        _current = _fp_read.stdout if _fp_read.exit_code == 0 else None
+                    except Exception:
+                        logger.debug("fingerprint gate read failed", exc_info=True)
+                        _current = None
+                    from tools.file_fingerprint import fingerprint_matches
+                    if _current is None or not fingerprint_matches(_current, _auto_fp):
+                        if expected_fingerprint:
+                            return tool_error(
+                                f"FINGERPRINT MISMATCH for '{path}': the file changed since the "
+                                "read_file that produced this fingerprint. Your edit is based on "
+                                "stale content and was NOT applied. Re-read the file, then patch "
+                                "with the new fingerprint.", path=path)
+                        stale_warnings = list(stale_warnings) + [
+                            f"file '{path}' changed since your last full read_file (fingerprint "
+                            "stale) — your old_string may not match; re-read if this patch fails "
+                            "or lands wrong."]
 
             # Hand the shell layer the RESOLVED targets so both layers agree on
             # which file is edited even when the shell's cwd differs.
@@ -888,6 +933,16 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             if stale_warnings:
                 result_dict["_warning"] = " | ".join(stale_warnings)
             if not result_dict.get("error"):
+                # Post-write restamp: refresh the registry so the task's next
+                # edit of this content doesn't false-warn (writer has fresh state).
+                try:
+                    from tools.file_fingerprint import record_write, content_fingerprint
+                    for _r in {_p for _p in _path_to_resolved.values() if _p}:
+                        _w_read = file_ops._cat(_r)
+                        if _w_read.exit_code == 0:
+                            record_write(task_id, _r, content_fingerprint(_w_read.stdout))
+                except Exception:
+                    logger.debug("post-write fingerprint restamp failed", exc_info=True)
                 # Report the ABSOLUTE path(s) actually patched so a wrong-cwd
                 # mismatch is visible instead of silently landing elsewhere.
                 _resolved_modified = [_path_to_resolved.get(_p) or _p for _p in _paths_to_check]
@@ -1039,6 +1094,16 @@ WRITE_FILE_SCHEMA = {
         "properties": {
             "path": {"type": "string", "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"},
             "content": {"type": "string", "description": "Complete content to write to the file"},
+            "expected_fingerprint": {
+                "type": "string",
+                "description": (
+                    "Optional freshness credential: the 'fingerprint' value returned by your "
+                    "most recent FULL read_file of this file. When provided and the file has "
+                    "changed since that read, the overwrite is REJECTED (it would destroy "
+                    "unseen changes) — re-read, merge, then write with the new fingerprint. "
+                    "Omit to skip the strict check."),
+                "default": None,
+            },
             # NOTE: the handler still accepts `cross_profile` (bool) — it now
             # bypasses only the #32049 sandbox-mirror lost-write guards, whose
             # rejection error teaches it. Unadvertised: the cross-PROFILE
@@ -1205,6 +1270,7 @@ def _handle_write_file(args, **kw):
         path=args["path"], content=args["content"], task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
         session_id=kw.get("session_id"),
+        expected_fingerprint=args.get("expected_fingerprint"),
     )
 
 
