@@ -134,6 +134,11 @@ def _on_pre_tool_call(**kwargs) -> dict:
         logger.warning("finish_guard: clarify args 序列化失败，降级 str: %s", e)
         blob = str(args)
     if not _is_pushback(blob):
+        # 合法豁免直接放行，但它仍是「一个不同的缺口」——若与当前 streak
+        # 指纹不同，重置计数（语境已变化，旧的连续性不成立）。
+        _fp_exempt = _clarify_gap_fingerprint(args)
+        if _fp_exempt and _fp_exempt not in _gap_streaks:
+            _gap_streaks.clear()
         return {}
     # stall 计数：同一缺口指纹连续命中才累加，不同问题重置
     stall_hint = ""
