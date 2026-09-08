@@ -111,7 +111,9 @@ def check_rule(conn: sqlite3.Connection, rule: str, effective: str,
         conn, "violations", "timestamp", " AND rule = ?", (rule,)
     )
     calls = _daily_counts(conn, "tool_outcomes", "timestamp")
-    if not viol:
+    # 0违规也是有效数据(纪律完全生效),仅无工具调用总量时才无法计算密度
+    viol = viol or []
+    if not calls:
         return None
 
     from datetime import date, timedelta
@@ -141,7 +143,19 @@ def check_rule(conn: sqlite3.Connection, rule: str, effective: str,
         return {"rule": rule, "effective": effective, "verdict": "inconclusive",
                 "reason": "窗口内无数据，无法计算密度"}
 
-    ratio = after_d / base_d if base_d > 0 else (0.0 if after_d == 0 else float("inf"))
+    if base_d == 0:
+        # 基线密度为0：该规则在基线窗口从未被触发过，缺可比基线。
+        # 0→0 视为保持；0→正数无法算比值，判 inconclusive 而非 inf 回退。
+        verdict = "inconclusive" if after_d > 0 else "effective"
+        return {"rule": rule, "effective": effective, "verdict": verdict,
+                "baseline_window": f"{base_start}~{base_end}",
+                "after_window": f"{after_start}~{after_end}",
+                "baseline_density_per_1k_calls": 0.0,
+                "after_density_per_1k_calls": round(after_d, 2),
+                "ratio": None,
+                "reason": "基线窗口零违规，缺可比基线（规则在基线期未启用或未触发）"}
+
+    ratio = after_d / base_d
     if ratio <= EFFECTIVE_RATIO:
         verdict = "effective"
     elif ratio > REGRESSED_RATIO:
@@ -194,7 +208,7 @@ def format_as_text(report: Dict[str, Any]) -> str:
             lines.append(
                 f"    基线 {r['baseline_window']}: {r['baseline_density_per_1k_calls']}/千调用  →  "
                 f"验收 {r['after_window']}: {r['after_density_per_1k_calls']}/千调用  "
-                f"(ratio={r['ratio']})"
+                f"(ratio={r['ratio'] if r['ratio'] is not None else 'N/A·零基线'})"
             )
         else:
             lines.append(f"    {r.get('reason', '')}")

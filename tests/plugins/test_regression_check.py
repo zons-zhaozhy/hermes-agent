@@ -87,6 +87,36 @@ class TestVerdicts:
         conn.commit()
         out = rc.check_rule(conn, "R5", "2026-09-08", TODAY)
         assert out["verdict"] == "regressed", out
+
+    def test_zero_baseline_positive_after_is_inconclusive(self, db):
+        """基线窗口零违规、验收窗口有违规 → 无可比基线,判 inconclusive 而非 inf 回退."""
+        conn, _ = db
+        for d in range(1, 8):
+            _seed(conn, "R1", f"2026-09-0{d}", 0, 1000)
+        for d in range(9, 16):
+            _seed(conn, "R1", f"2026-09-{d}", 3, 1000)
+        conn.commit()
+        out = rc.check_rule(conn, "R1", "2026-09-08", TODAY)
+        assert out["verdict"] == "inconclusive", out
+        assert out["ratio"] is None
+
+    def test_zero_baseline_zero_after_is_effective(self, db):
+        """基线与验收窗口都零违规 → 保持,判 effective."""
+        conn, _ = db
+        for d in range(1, 16):
+            _seed(conn, "R2", f"2026-09-{d:02d}", 0, 1000)
+        conn.commit()
+        out = rc.check_rule(conn, "R2", "2026-09-08", TODAY)
+        assert out["verdict"] == "effective", out
+
+    def test_regressed_ratio_value(self, db):
+        conn, _ = db
+        for d in range(1, 8):
+            _seed(conn, "R5", f"2026-09-0{d}", 2, 1000)
+        for d in range(9, 16):
+            _seed(conn, "R5", f"2026-09-{d}", 5, 1000)
+        conn.commit()
+        out = rc.check_rule(conn, "R5", "2026-09-08", TODAY)
         assert out["ratio"] == pytest.approx(2.5)
 
     def test_pending_when_window_incomplete(self, db):
