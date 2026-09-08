@@ -969,6 +969,31 @@ _ZAI_POLICY_NOTES = {
 }
 
 
+def _resolve_rate_limit_min_wait(agent: Any) -> float:
+    """Resolve the 429 wait floor; config wins so edits apply without restart.
+
+    Prefers a fresh read of ``agent.rate_limit.min_wait_seconds`` from config.yaml;
+    falls back to the value cached at agent init (tests inject it there). Invalid
+    or missing values yield 0.0 (floor disabled). Never raises.
+    """
+    cached = getattr(agent, "_rate_limit_min_wait_seconds", 0.0)
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        raw = ((cfg.get("agent") or {}).get("rate_limit") or {}).get("min_wait_seconds")
+        if raw is None:
+            return float(cached or 0.0)
+        value = float(raw)
+        if value != value or value in (float("inf"), float("-inf")):
+            logger.warning("Invalid agent.rate_limit.min_wait_seconds in config.yaml: %r — using 0.", raw)
+            return float(cached or 0.0)
+        return max(0.0, value)
+    except Exception:
+        logger.warning("config read failed in _resolve_rate_limit_min_wait; using cached/init value", exc_info=True)
+        return float(cached or 0.0)
+
+
 def compute_error_backoff(
     agent: Any, api_error: Exception, *, retry_count: int, max_retries: int, is_rate_limited: bool,
     is_zai_coding_overload: bool, base_url: Any, model: Any,
@@ -992,7 +1017,7 @@ def compute_error_backoff(
                 # realistic provider reset windows while still rejecting pathological values. (#26293)
                 _retry_after = min(float(_ra_raw), 600)
             except (TypeError, ValueError):
-                pass
+                logger.warning("Unparseable Retry-After header %r; falling back to backoff.", _ra_raw)
     wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
     _backoff_policy = None
     _adaptive = is_rate_limited or is_zai_coding_overload
@@ -1000,6 +1025,13 @@ def compute_error_backoff(
         wait_time, _backoff_policy = adaptive_rate_limit_backoff(
             retry_count, base_url=str(base_url), model=model, error=api_error, default_wait=wait_time,
         )
+    # agent.rate_limit.min_wait_seconds: floor for rate-limited retries (never lowers a
+    # Retry-After or adaptive value; Retry-After already encodes the provider's own window).
+    # Read per-call (not cached at agent init) so config edits apply without a restart;
+    # retries are rare so the read cost is negligible.
+    _min_rate_wait = _resolve_rate_limit_min_wait(agent)
+    if _adaptive and _min_rate_wait > 0:
+        wait_time = max(wait_time, _min_rate_wait)
     if _adaptive:
         _policy_note = _ZAI_POLICY_NOTES.get(_backoff_policy or "", "")
         _wait_reason = "Provider overloaded" if is_zai_coding_overload and not is_rate_limited else "Rate limited"

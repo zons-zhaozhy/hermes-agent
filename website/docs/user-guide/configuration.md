@@ -1866,6 +1866,16 @@ agent:
     wait_seconds: 1800.0  # give-up bound; >= 1. Invalid values warn and fall back to this default
 ```
 
+### Rate-limit retry wait floor
+
+`agent.rate_limit.min_wait_seconds` sets a minimum wait before Hermes retries a rate-limited (429) API call. Providers usually tell Hermes how long to wait via the `Retry-After` header (honored, capped at 600s); when the header is absent, the wait is a short jittered backoff — short retries can re-trip the limit and burn retry budget. This floor raises any rate-limit wait to at least the configured value (never lowers a longer `Retry-After`), so a single 429 means "wait a full minute, then continue" instead of hammering. Default `0` keeps the built-in schedule.
+
+```yaml
+agent:
+  rate_limit:
+    min_wait_seconds: 60.0  # floor for 429 retry waits; 0 disables. Invalid values warn and use 0
+```
+
 ## TTS Configuration
 
 ```yaml

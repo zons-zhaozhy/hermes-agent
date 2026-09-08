@@ -1366,6 +1366,18 @@ def _apply_agent_section(agent, _agent_cfg):
         _api_retries = 3
     agent._api_max_retries = _api_retries
 
+    # agent.rate_limit.min_wait_seconds: floor for 429/rate-limit retry waits. 0 disables.
+    _rate_limit_cfg = _cfg_dict(_agent_section, "rate_limit")
+    try:
+        _rl_min_wait = float(_rate_limit_cfg.get("min_wait_seconds", 0.0))
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid agent.rate_limit.min_wait_seconds in config.yaml: %r — using 0.",
+            _rate_limit_cfg.get("min_wait_seconds"),
+        )
+        _rl_min_wait = 0.0
+    agent._rate_limit_min_wait_seconds = max(0.0, _rl_min_wait)
+
 
 def _positive_int(raw: Any, *, reject: tuple = ()) -> Optional[int]:
     """``int(raw)`` when positive, else None. ``reject`` lists types refused outright (bool, float)."""
