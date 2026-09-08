@@ -1,0 +1,7 @@
+name: block_escalation
+version: "1.0.0"
+description: 拦截置信度升级——同一意图指纹连续第2次被任意拦截器 block 时，终止当轮 turn 并插入用户可见系统提示，杜绝换通道逃逸。
+author: stan
+hooks:
+  - post_tool_call
+  - transform_llm_output
