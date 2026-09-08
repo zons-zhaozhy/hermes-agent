@@ -32,6 +32,12 @@ from typing import Any, Dict, Optional
 from plugins._llm_judge import llm_judge_bool
 from plugins._shared_state import get_session_state
 
+# 回复侧合并判定：uncertain/needs_audit 一次调用（唯一出入口收拢）。
+# 延迟导入：避免插件间循环依赖；certainty 插件未启用时
+# judge_reply_side 不可用，此时本插件回退独立判定（llm_judge_bool 原路径）。
+from importlib import import_module as _import_module
+import sys
+
 logger = logging.getLogger(__name__)
 
 _NAMESPACE = "completion_boundary_audit"
@@ -68,8 +74,21 @@ def _state(sid: str) -> Dict[str, Any]:
     return get_session_state(sid or "_global", _NAMESPACE)
 
 
+def _judge_reply_side(text: str):
+    # 运行时插件模块名 = hermes_plugins.<slug>（连字符转下划线，
+    # 见 hermes_cli/plugins.py _directory_module_name）；依次尝试两个命名空间。
+    for modname in ("hermes_plugins.reply_certainty_checker",
+                    "plugins.reply_certainty_checker"):
+        try:
+            mod = sys.modules.get(modname) or _import_module(modname)
+            return mod.judge_reply_side(text)
+        except Exception as e:
+            logger.warning("reply-side merge via %s unavailable: %s", modname, e)
+    return None
+
+
 def needs_boundary_audit(text: str) -> Optional[bool]:
-    """LLM judge 判"完成声明且无边界披露"；None=fail-open。
+    """judge 判"完成声明且无边界披露"；None=fail-open。
 
     Contract:
       Preconditions: text 为 str（可为空）
@@ -77,6 +96,9 @@ def needs_boundary_audit(text: str) -> Optional[bool]:
     """
     if not text or len(text) < _MIN_LENGTH:
         return False
+    merged = _judge_reply_side(text)
+    if merged is not None:
+        return merged.get("needs_audit")
     return llm_judge_bool(
         task="completion_boundary_audit",
         system=_JUDGE_SYSTEM,

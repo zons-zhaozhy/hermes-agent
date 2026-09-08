@@ -45,11 +45,14 @@ def _hooks():
 
 
 def _mock_judge(monkeypatch, val, calls=None):
-    def fake(task, system, text, true_key=None, timeout=None):
+    def fake(text, timeout=None):
         if calls is not None:
-            calls.append(task)
-        return val
-    monkeypatch.setattr(plugin, "llm_judge_bool", fake)
+            calls.append("reply_side_guards")
+        plugin._REPLY_SIDE_CACHE.pop(
+            __import__("hashlib").sha1(text.encode("utf-8")).hexdigest()[:16], None
+        )
+        return {"uncertain": val, "needs_audit": val}
+    monkeypatch.setattr(plugin, "judge_reply_side", fake)
 
 
 def test_flagged_reply_unchanged_and_next_turn_injected(monkeypatch):
@@ -71,7 +74,7 @@ def test_clean_reply_silent(monkeypatch):
 def test_fail_open_silent(monkeypatch):
     h = _hooks()
     def boom(*a, **k): raise RuntimeError("aux down")
-    monkeypatch.setattr(plugin, "llm_judge_bool", boom)
+    monkeypatch.setattr(plugin, "judge_reply_side", boom)
     assert h["transform_llm_output"]("z" * 50, session_id=SID) is None
     assert h["pre_llm_call"](session_id=SID) is None
 

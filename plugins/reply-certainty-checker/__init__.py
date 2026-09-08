@@ -14,7 +14,7 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
-from plugins._llm_judge import llm_judge_bool
+from plugins._llm_judge import llm_judge_multi
 from plugins._shared_state import get_session_state
 
 logger = logging.getLogger(__name__)
@@ -22,6 +22,59 @@ logger = logging.getLogger(__name__)
 _NAMESPACE = "reply_certainty_checker"
 _MAX_JUDGE_CALLS = 30
 _JUDGE_TIMEOUT = 8.0
+
+# —— 回复侧合并判定（certainty + boundary 共用一次 LLM 调用）——
+# 两插件同为 transform_llm_output、同一回复文本，合并成一次 multi judge，
+# 判定语义与各自独立时完全一致，仅省掉一次串行调用（与用户侧
+# yinyang+devil 合并同范式）。
+
+REPLY_SIDE_SYSTEM = (
+    "你是回复纪律审查员。对下面这段 AI 最终回复同时判定两个维度：\\n"
+    "1. uncertain：是否包含'未标注验证来源的技术性模糊断言'——即用"
+    "'可能/应该/大概率/也许'等修饰技术事实、且没有紧跟实测证据"
+    "（如[实测]/日志/测试结果）。社交用语（'你可能需要…'）和已标注"
+    "[未查证]/[推断]的诚实表述不算。\\n"
+    "2. needs_audit：是否同时满足 a) 包含交付完成声明（声称任务/修复/"
+    "测试/部署已完成、全部通过、已交付）；b) 未披露任何未验证边界"
+    "（未列出未测路径/环境/已知风险/局限/未覆盖）。两条都满足才算 true；"
+    "只是进度汇报、已含边界声明、闲聊、提问不算。\\n"
+    "只回答一个 JSON 对象，含全部键："
+    '{\\"uncertain\\": true/false, \\"needs_audit\\": true/false}'
+)
+
+REPLY_SIDE_KEYS = ["uncertain", "needs_audit"]
+
+# 进程级结果缓存：同一段回复（sha1 前 16 位）只判一次，certainty/boundary 共享。
+_REPLY_SIDE_CACHE: Dict[str, Dict[str, Optional[bool]]] = {}
+
+
+def judge_reply_side(text: str, timeout: float = _JUDGE_TIMEOUT) -> Dict[str, Optional[bool]]:
+    """一次调用同时判 uncertain/needs_audit 两维度；异常 → 全 None。
+
+    同一回复文本进程内只发起一次真实调用（缓存命中直接返回），供
+    reply-certainty-checker / completion-boundary-audit 两个
+    transform_llm_output 钩子共享，消除重复调用。
+
+    Contract:
+      Preconditions: text 为非空 str
+      Postconditions: 返回 dict 恰含两键（True/False/None）；绝不 raise
+    """
+    import hashlib
+
+    assert text, "text must be non-empty"
+    h = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+    cached = _REPLY_SIDE_CACHE.get(h)
+    if cached is not None:
+        return cached
+    result = llm_judge_multi(
+        task="reply_side_guards",
+        system=REPLY_SIDE_SYSTEM,
+        text=text[:4000],
+        keys=REPLY_SIDE_KEYS,
+        timeout=timeout,
+    )
+    _REPLY_SIDE_CACHE[h] = result
+    return result
 
 _JUDGE_SYSTEM = (
     "你是事实纪律审查员。判断下面这段助手回复是否包含'未标注验证来源的"
@@ -45,13 +98,8 @@ def _has_unverified_hedge(text: str) -> Optional[bool]:
     """
     if len(text) < 20:
         return False
-    return llm_judge_bool(
-        task="reply_certainty_checker",
-        system=_JUDGE_SYSTEM,
-        text=text[:4000],
-        true_key="uncertain",
-        timeout=_JUDGE_TIMEOUT,
-    )
+    result = judge_reply_side(text)
+    return result.get("uncertain")
 
 
 def _state(sid: str) -> Dict[str, Any]:
