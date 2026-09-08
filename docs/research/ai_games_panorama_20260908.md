@@ -113,7 +113,29 @@
 - tandfonline.com/doi/full/10.1080/10447318.2026.2620647 Inworld 玩家交互研究
 - mittrchina.com/news/detail/16040 社会模拟商业化
 
-## 九、后续可选深挖（未做，供拍板）
+## 九、补充：ACM CSUR 综述配套论文库分类学 [实测，读缓存全文 520/1250 行]
+
+git-disl/awesome-LLM-game-agent-papers 按「游戏环境 × 能力标签」组织论文，环境分类：
+- minecraft（Voyager/JARVIS-1/Optimus-1/2/WALL-E/MrSteve 等，最密集）
+- text-adventure（ReAct/Reflexion/SwiftSage/LATS 谱系；2026 年趋势=skill 内化：
+  SkillDAG/LatentSkill/SkillRL/SkillOps/技能生命周期管理——从「建技能库」转向
+  「技能内化进权重+自维护生态」）
+- communication（狼人杀/阿瓦隆/外交 Diplomacy；CICERO Science 2022 起点）
+- competition（棋牌/RTS：国际象棋/扑克/宝可梦/星际2，ZeroSumEval 竞技场）
+- cooperation（Hanabi/Overcooked 类，心智理论 ToM 方向）
+- sim-social（斯坦福小镇谱系：Project Sid（AI 文明）、Agent Hospital、SOTOPIA；
+  2026 新趋势=图加速 GASim、微内核 Agent-Kernel、人口级模拟）
+- sim-embodied / crafter / sim-other（通用具身与开放世界）
+
+技术标签频次观察 [实测统计]：#training（RL 微调）与 #planning 是绝对主线；
+2025-2026 明显转向 agentic RL（多轮轨迹级强化学习）+ skill 体系演进。
+值得注意的单点：
+- GameGen-X（ICLR 2025）：直接生成可交互开放世界游戏视频——生成式玩法另一路线。
+- Project Sid（arXiv 2411.00114）：千级 agent 的 AI 文明模拟，Simile 商业路线的学术原型。
+- Moltbook 研究（2026-02）：自进化 AI 社会中安全对齐持续退化——大规模自主社会
+  工程化必须配护栏（与 OntoX 护栏取向共振）。
+
+## 十、后续可选深挖（未做，供拍板）
 
 - Voyager skill library 源码级精读（与 OntoX 技能/skill 体系对照）
 - AI-Native Games survey 全文精读（全文已存缓存 ~/.hermes/cache/web/，220K 字符可分页读）
