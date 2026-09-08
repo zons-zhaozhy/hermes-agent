@@ -1856,6 +1856,16 @@ agent:
 
 Legitimately slow work is not penalized: streaming responses, tool heartbeats (every 30s while a tool runs), and approval waits all keep touching the clock, so only a turn making *zero* progress for the full bound fires the watchdog. Invalid values (a typo, `NaN`, `Inf`, non-positive `poll_s`) log a warning and fall back to the defaults — they never crash startup or silently disable the watchdog. A fired abort reports the stall as it begins recovery, and publishes the definitive aborted/lease-stopped outcome only once the interrupt has actually committed.
 
+### Session turn lease wait budget
+
+`agent.turn_lease.wait_seconds` bounds how long a process waits for the durable cross-process session turn lease (Desktop, CLI resume, gateway sharing one session through `state.db`) before giving up and telling you to resend the message. The holder keeps renewing while its turn is alive, so the wait only ends early when the holder's process dies (the lease then expires via its 300s TTL) or finishes.
+
+```yaml
+agent:
+  turn_lease:
+    wait_seconds: 1800.0  # give-up bound; >= 1. Invalid values warn and fall back to this default
+```
+
 ## TTS Configuration
 
 ```yaml

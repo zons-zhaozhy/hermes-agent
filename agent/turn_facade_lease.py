@@ -18,6 +18,32 @@ logger = logging.getLogger("run_agent")
 
 LEASE_TTL_SECONDS = 300.0
 LEASE_WAIT_SECONDS = 1800.0
+MIN_LEASE_WAIT_SECONDS = 1.0
+
+
+def resolve_lease_wait_seconds(config: Optional[Dict[str, Any]] = None) -> float:
+    """Resolve the durable-lease wait budget from ``agent.turn_lease.wait_seconds``.
+
+    Invalid values (typo, NaN, Inf, non-positive) warn and fall back to
+    ``LEASE_WAIT_SECONDS``. Never raises. Mirrors
+    ``agent.turn_liveness.resolve_turn_liveness_settings``.
+    """
+    agent_cfg = config.get("agent") if isinstance(config, dict) else None
+    raw_section = agent_cfg.get("turn_lease") if isinstance(agent_cfg, dict) else None
+    section: Dict[str, Any] = raw_section if isinstance(raw_section, dict) else {}
+    raw = section.get("wait_seconds", LEASE_WAIT_SECONDS)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = float("nan")
+    if value != value or value in (float("inf"), float("-inf")) or value < MIN_LEASE_WAIT_SECONDS:
+        logger.warning(
+            "Invalid agent.turn_lease.wait_seconds in config.yaml: %r — "
+            "falling back to default %.0f.",
+            raw, LEASE_WAIT_SECONDS,
+        )
+        return LEASE_WAIT_SECONDS
+    return value
 
 
 class DurableTurnLease:
@@ -212,6 +238,17 @@ class TurnLeaseAdmission:
     conversation_history: Optional[List[Dict[str, Any]]] = None
 
 
+def _load_turn_config() -> Dict[str, Any]:
+    """Read-only config snapshot for lease-liveness settings; ``{}`` on any failure."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        return load_config_readonly() or {}
+    except Exception:
+        logger.debug("Failed to load config for turn lease settings", exc_info=True)
+        return {}
+
+
 def _durable_session_exists(db, session_id: str) -> bool:
     try:
         return db.get_session(session_id) is not None
@@ -269,7 +306,8 @@ def admit_durable_turn_lease(
         )
 
     if not db.acquire_session_turn_lease(
-        session_id, holder, ttl_seconds=LEASE_TTL_SECONDS, wait_seconds=LEASE_WAIT_SECONDS,
+        session_id, holder, ttl_seconds=LEASE_TTL_SECONDS,
+        wait_seconds=resolve_lease_wait_seconds(_load_turn_config()),
         on_wait=_on_wait, should_abort=lambda: getattr(agent, "_interrupt_requested", False),
     ):
         admission.early_result = _lease_not_acquired_result(agent, session_id, conversation_history)
