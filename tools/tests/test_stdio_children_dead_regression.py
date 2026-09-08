@@ -20,7 +20,7 @@ def _extract_method(source: str) -> str:
     return source[start : end + len(end_marker)]
 
 
-code = _extract_method(open(SRC).read())
+code = _extract_method(open(SRC, encoding="utf-8").read())
 
 ns: dict = {}
 exec("class _T:\n    def _is_http(self):\n        return False\n" + code, ns)

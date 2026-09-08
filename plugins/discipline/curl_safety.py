@@ -93,7 +93,7 @@ def _on_pre_tool_call(**kwargs) -> None:
                 "command": str(args.get("command", args.get("code", "")))[:200],
                 "timestamp": time.time(),
             }
-            with open(_STATE_FILE, "w") as f:
+            with open(_STATE_FILE, "w", encoding="utf-8") as f:
                 json.dump(payload, f)
             logger.debug("curl-safety: 检测到 HTTP 请求 [%s]", tool_name)
         except OSError as e:
@@ -106,7 +106,7 @@ def _on_pre_llm_call(**kwargs) -> dict:
         return {}
 
     try:
-        with open(_STATE_FILE) as f:
+        with open(_STATE_FILE, encoding="utf-8") as f:
             payload = json.load(f)
     except (json.JSONDecodeError, KeyError, OSError) as e:
         try:

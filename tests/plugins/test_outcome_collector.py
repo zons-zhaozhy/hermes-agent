@@ -457,6 +457,29 @@ class TestLayer1TaskOutcome:
         assert outcome == "success"
         assert pattern == "retry_then_success"
 
+    def test_guard_block_then_success_is_success(self):
+        """[blocked, blocked, ok] on the same tool is the by-design guard
+        friction flow (gate demands evidence, agent retries, call lands)
+        and must classify as success/retry_then_success, not failure."""
+        outcome, pattern = plugin_mod._classify_tool_sequence([
+            {"tool_name": "execute_code", "status": "blocked"},
+            {"tool_name": "execute_code", "status": "blocked"},
+            {"tool_name": "execute_code", "status": "ok"},
+        ])
+        assert outcome == "success"
+        assert pattern == "retry_then_success"
+
+    def test_unrecovered_blocks_are_not_failure(self):
+        """Blocks without any later ok are not genuine errors — they must
+        not trigger repeated_same_tool_error; with no errors at all the
+        turn falls through to success/clean_completion."""
+        outcome, pattern = plugin_mod._classify_tool_sequence([
+            {"tool_name": "patch", "status": "blocked"},
+            {"tool_name": "patch", "status": "blocked"},
+        ])
+        assert outcome == "success"
+        assert pattern == "clean_completion"
+
     def test_clean_completion_is_success(self):
         """All tool calls ok → success/clean_completion."""
         outcome, pattern = plugin_mod._classify_tool_sequence([

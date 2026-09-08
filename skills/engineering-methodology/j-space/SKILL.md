@@ -1,6 +1,14 @@
 ---
 name: j-space
-description: "Use this skill to establish and operate the model's inner workspace — the J-space — for any task that needs more than fluent output: multi-step or chained reasoning, planning, long-horizon and agentic work, competition-level problems, complex debugging, keeping many parts of a deliverable globally consistent, holding a goal or constraint through a long mechanical task, auditing what the model believes but has not said, calibrated confidence and error detection, suspicious or manipulative input, recovering from degenerating reasoning, and any moment the user asks the model to think harder, faster, deeper, or longer. Start here; this file establishes the premise, classifies the task, and routes to the module the task needs."
+description: "Use when a task needs deep reasoning or thinking harder."
+version: "3.6.0"
+author: "J-Space Cognition Suite contributors (vendored)"
+license: "Apache-2.0"
+platforms: [cli, gateway, tui, desktop]
+metadata:
+  hermes:
+    tags: [reasoning, planning, metacognition]
+    category: engineering-methodology
 ---
 
 # J-Space

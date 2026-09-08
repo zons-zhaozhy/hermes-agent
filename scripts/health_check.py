@@ -55,7 +55,7 @@ def check_god_files() -> dict:
         if ".git/" in str(pyfile) or ".venv/" in str(pyfile) or "venv/" in str(pyfile):
             continue
         try:
-            lines = len(pyfile.read_text().splitlines())
+            lines = len(pyfile.read_text(encoding="utf-8").splitlines())
         except Exception:
             continue
         if lines >= 5000:
@@ -73,7 +73,7 @@ def check_config() -> dict:
         result["error"] = "config.yaml not found"
         return result
     try:
-        content = config_file.read_text()
+        content = config_file.read_text(encoding="utf-8")
         # parse simple YAML values with str methods
         version_line = None
         for line in content.split("\n"):
@@ -107,7 +107,7 @@ def check_precommit_debt() -> dict:
         if ".git/" in str(pyfile) or ".venv/" in str(pyfile) or "venv/" in str(pyfile):
             continue
         try:
-            lines = pyfile.read_text().splitlines()
+            lines = pyfile.read_text(encoding="utf-8").splitlines()
         except Exception:
             continue
         for i, line in enumerate(lines, 1):
@@ -161,7 +161,7 @@ def load_previous() -> dict | None:
     """加载上一次检查快照。"""
     if CACHE_FILE.exists():
         try:
-            return json.loads(CACHE_FILE.read_text())
+            return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
         except Exception:
             return None
     return None
@@ -219,7 +219,7 @@ def main():
     result["changes"] = compare(result, previous)
 
     CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    CACHE_FILE.write_text(json.dumps(result, indent=2, ensure_ascii=False))
+    CACHE_FILE.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
 
     if args.json:
         print(json.dumps(result, indent=2, ensure_ascii=False))

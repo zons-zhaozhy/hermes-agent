@@ -110,7 +110,7 @@ def _on_post_tool_call(**kwargs) -> None:
                 "detail": detail[:200],
                 "timestamp": time.time(),
             }
-            with open(_STATE_FILE, "w") as f:
+            with open(_STATE_FILE, "w", encoding="utf-8") as f:
                 json.dump(payload, f)
             logger.debug(
                 "log-first-diagnosis: 检测到错误 [%s] %s",
@@ -126,7 +126,7 @@ def _on_pre_llm_call(**kwargs) -> dict:
         return {}
 
     try:
-        with open(_STATE_FILE) as f:
+        with open(_STATE_FILE, encoding="utf-8") as f:
             payload = json.load(f)
         os.remove(_STATE_FILE)
     except (json.JSONDecodeError, KeyError, OSError):

@@ -11,7 +11,6 @@ metadata:
     category: agent
     related_skills:
       - systematic-debugging
-      - github-code-review
     config:
       skills.config.decision_tree.stagnation_window:
         type: integer

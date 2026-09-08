@@ -24,6 +24,7 @@ violation (does not modify files).
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import sys
@@ -63,6 +64,7 @@ _SUBPROCESS_PATTERNS = [
 KNOWN_SAFE = {
     "agent/shell_hooks.py",  # uses input=stdin_json, creates a pipe
     "plugins/security-guidance/patterns.py",  # subprocess mentions are in reminder strings, not calls
+    "plugins/guards/rules_selfcheck.py",  # subprocess mentions are embedded sample-code strings for rule self-tests, not calls
 }
 
 # Inline marker that exempts a single subprocess call from this check.
@@ -82,6 +84,50 @@ SKIP_DIRS = {
     "gateway/",
     "cron/",
 }
+
+
+_SPLAT_RE = re.compile(r"\*\*\s*([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _splat_carries_stdin(call_text: str, content: str) -> bool:
+    """True when the call splats ``**name`` / ``**name(...)`` and ``name`` is defined in
+    the same file (assignment or ``def``) whose OWN expression/body sets ``stdin=``.
+
+    Shared kwargs helpers (``_RUN_KW = dict(..., stdin=DEVNULL)``, ``def _run_kwargs(): return
+    dict(..., stdin=DEVNULL)``) legitimately carry the guard; we only accept them when the
+    definition provably sets stdin= — never on the helper's name alone, and never because an
+    unrelated later call in the file happens to pass ``stdin=``.
+    """
+    names = set(_SPLAT_RE.findall(call_text))
+    if not names:
+        return False
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return False
+    for name in names:
+        node = None
+        for n in ast.walk(tree):
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name:
+                node = n
+                break
+            if isinstance(n, (ast.Assign, ast.AnnAssign)):
+                targets = n.targets if isinstance(n, ast.Assign) else [n.target]
+                if any(isinstance(t, ast.Name) and t.id == name for t in targets):
+                    node = n.value if n.value is not None else n
+                    break
+        if node is None:
+            return False
+        # stdin appears as a keyword (dict(stdin=...)) or as a dict-literal key ({"stdin": ...})
+        # somewhere INSIDE this definition — not merely nearby in the file.
+        has = any(
+            (isinstance(sub, ast.keyword) and sub.arg == "stdin")
+            or (isinstance(sub, ast.Constant) and sub.value == "stdin")
+            for sub in ast.walk(node)
+        )
+        if not has:
+            return False
+    return True
 
 
 def find_subprocess_calls(content: str, filepath: str) -> list[dict]:
@@ -129,6 +175,11 @@ def find_subprocess_calls(content: str, filepath: str) -> list[dict]:
 
                         # Has input= → creates a pipe, safe.
                         if "input=" in call_text:
+                            break
+
+                        # Splats a same-file kwargs helper whose definition
+                        # sets stdin= → the guard travels with the helper.
+                        if _splat_carries_stdin(call_text, content):
                             break
 
                         # Inline exemption marker on the call itself or within

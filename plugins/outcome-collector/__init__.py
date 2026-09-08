@@ -374,35 +374,41 @@ def _classify_tool_sequence(
         return "unknown", None
 
     total = len(tool_calls)
-    error_calls = [tc for tc in tool_calls if tc["status"] in ("error", "blocked")]
+    # Guard blocks are by-design gating (agent must gather evidence and
+    # retry), not tool failures. Count only genuine errors here; blocked
+    # calls still feed the retry-then-success pattern below so that
+    # [blocked, blocked, ok] classifies as success/retry_then_success.
+    error_calls = [tc for tc in tool_calls if tc["status"] == "error"]
     error_count = len(error_calls)
 
-    # Pattern: repeated_same_tool_error — same tool errored ≥2 times
+    # Pattern: retry_then_success — at least one non-ok call followed by a
+    # later ok on the same tool (agent overcame the obstacle, possibly via
+    # a guard block that demanded more evidence first)
+    tool_outcomes: dict[str, list[str]] = {}
+    for tc in tool_calls:
+        tool_outcomes.setdefault(tc["tool_name"], []).append(tc["status"])
+    for tool_name, statuses in tool_outcomes.items():
+        has_error = "error" in statuses or "blocked" in statuses
+        has_later_ok = False
+        seen_error = False
+        for s in statuses:
+            if s in ("error", "blocked"):
+                seen_error = True
+            elif s == "ok" and seen_error:
+                has_later_ok = True
+                break
+        if has_error and has_later_ok:
+            return "success", "retry_then_success"
+
+    # Pattern: repeated_same_tool_error — same tool errored ≥2 times with no
+    # later success on that tool (checked after retry_then_success so that
+    # [blocked, blocked, ok] is not misread as a failure loop)
     if error_calls:
         from collections import Counter
         error_tool_counts = Counter(tc["tool_name"] for tc in error_calls)
         for tool, cnt in error_tool_counts.items():
             if cnt >= 2:
                 return "failure", "repeated_same_tool_error"
-
-    # Pattern: retry_then_success — at least one error followed by a later success
-    # on the same tool (agent overcame the obstacle)
-    if error_count > 0:
-        tool_outcomes: dict[str, list[str]] = {}
-        for tc in tool_calls:
-            tool_outcomes.setdefault(tc["tool_name"], []).append(tc["status"])
-        for tool_name, statuses in tool_outcomes.items():
-            has_error = "error" in statuses or "blocked" in statuses
-            has_later_ok = False
-            seen_error = False
-            for s in statuses:
-                if s in ("error", "blocked"):
-                    seen_error = True
-                elif s == "ok" and seen_error:
-                    has_later_ok = True
-                    break
-            if has_error and has_later_ok:
-                return "success", "retry_then_success"
 
     # Pattern: high_error_density — ≥50% error rate with enough calls to be meaningful
     if total >= 5 and error_count / total >= 0.5:
@@ -529,7 +535,7 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, str]]:
                         prev_turn["failure_pattern"] = pattern
                         prev_turn["tool_count"] = len(tool_calls)
                         prev_turn["error_count"] = sum(
-                            1 for tc in tool_calls if tc["status"] in ("error", "blocked")
+                            1 for tc in tool_calls if tc["status"] == "error"
                         )
                         prev_turn["tools"] = list(set(tc["tool_name"] for tc in tool_calls))
                         prev_turn["summary"] = f"outcome={outcome}" + (
@@ -590,6 +596,99 @@ def on_post_tool_call(**kwargs) -> None:
             "tool_name": tool_name,
             "status": record["status"],
         })
+
+    # Layer 2.6: memory 纪律条目写入成功后自动登记生效日期（供 regression_check 验收）
+    if tool_name == "memory" and status == "ok":
+        _register_discipline_effective_date(args)
+
+
+def _parse_discipline_tags(text: str) -> Dict[str, str]:
+    """从纪律条目文本解析 {规则号: 生效日}。纯 str 方法,无正则。
+
+    约定格式: "§R6 v3(0907):..." —— § 分段,段内 R<数字> 开头,首个括号内 MMDD。
+
+    Contract:
+      Preconditions: text 为单条 memory 条目字符串
+      Postconditions: 命中约定格式返回非空 dict;日期非法(如0931)该段跳过;
+                      MMDD 晚于今天属上一年
+    """
+    found: Dict[str, str] = {}
+    now = datetime.now(timezone.utc)
+    for part in text.split("§"):
+        part = part.strip()
+        if not part.startswith("R"):
+            continue
+        digits = ""
+        for ch in part[1:]:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        if not digits:
+            continue
+        rule = f"R{digits}"
+        open_paren = part.find("(")
+        close_paren = part.find(")", open_paren + 1)
+        if open_paren < 0 or close_paren < 0:
+            continue
+        inner = part[open_paren + 1: close_paren]
+        if len(inner) != 4 or not inner.isdigit():
+            continue
+        mm, dd = int(inner[:2]), int(inner[2:])
+        try:
+            cand = datetime(now.year, mm, dd)
+        except ValueError:
+            continue
+        if cand.date() > now.date():
+            cand = datetime(now.year - 1, mm, dd)
+        found[rule] = cand.strftime("%Y-%m-%d")
+    return found
+
+
+def _register_discipline_effective_date(args: Dict[str, Any]) -> None:
+    """memory 写入成功后,把条目里的 R<n>+MMDD 登记进 discipline_dates.json.
+
+    Contract:
+      Preconditions: args 是 memory 工具参数 dict,调用方仅在 status=ok 时进入
+      Postconditions: 命中约定格式的规则写入 dates 文件(同规则号再写=修订生效,
+                      重开验收窗口);无命中=静默返回(非纪律条目是常态);
+                      IO 失败仅 warning 不抛,不阻断采集主链
+    隐私: 只持久化 {规则号: 日期} 两个短字符串,不落任何条目内容。
+    """
+    import json as _json
+
+    texts: List[str] = []
+    content = args.get("content") or args.get("new_text") or ""
+    if isinstance(content, str) and content:
+        texts.append(content)
+    for op in args.get("operations") or []:
+        if isinstance(op, dict):
+            c = op.get("content") or op.get("new_text") or ""
+            if isinstance(c, str) and c:
+                texts.append(c)
+
+    found: Dict[str, str] = {}
+    for text in texts:
+        found.update(_parse_discipline_tags(text))
+    if not found:
+        return
+
+    dates_path = _get_db_path().parent / "outcomes" / "discipline_dates.json"
+    dates_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing: Dict[str, str] = {}
+        if dates_path.exists():
+            loaded = _json.loads(dates_path.read_text(encoding="utf-8"))
+            assert isinstance(loaded, dict), "corrupt dates file"
+            existing = {str(k): str(v) for k, v in loaded.items()}
+        existing.update(found)  # 同规则号再写=修订版生效,重开窗口
+        dates_path.write_text(
+            _json.dumps(dict(sorted(existing.items())), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.info("outcome-collector: discipline dates registered: %s", found)
+    except Exception as exc:
+        logger.warning("outcome-collector: discipline date registration failed: %s", exc)
 
 
 def on_session_end(**kwargs) -> None:

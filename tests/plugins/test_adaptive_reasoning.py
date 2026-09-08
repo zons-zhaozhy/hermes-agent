@@ -211,9 +211,10 @@ def test_middleware_skips_when_effort_already_at_target():
 def test_middleware_rewrites_top_level_reasoning_effort():
     # top-level reasoning_effort is the PROVIDER-NATIVE scale, written by the
     # transport via the provider profile. The plugin must reuse the same
-    # profile mapping (zai glm-5.3: minimal/low→low, medium/high→high,
-    # xhigh/max/ultra→max) instead of writing raw Hermes levels.
-    # Start from native low; work context + complex msg → Hermes medium → native high.
+    # profile mapping (zai glm-5.3 native ladder per probe #91789:
+    # low<medium<high<max, all levels legal; xhigh→max) instead of writing
+    # raw Hermes levels.
+    # Start from native low; work context + complex msg → Hermes medium → native medium.
     req = {"model": "glm-5.3", "messages": [
         {"role": "user", "content": "help me debug the failing migration and analyze the root cause"},
         {"role": "assistant", "tool_calls": [
@@ -228,7 +229,7 @@ def test_middleware_rewrites_top_level_reasoning_effort():
         session_id="s1", turn_id="t1", api_call_count=1,
     )
     assert result is not None
-    assert result["request"]["reasoning_effort"] == "high"
+    assert result["request"]["reasoning_effort"] == "medium"
 
     # brevity → minimal; zai glm-5.3 native mapping: minimal → low
     req2 = {"model": "glm-5.3", "messages": [], "reasoning_effort": "high"}
@@ -520,10 +521,11 @@ def test_request_middleware_rejects_stale_turn_stats():
         request=req, session_id="s-stale", turn_id="t-new",
         api_call_count=2, provider="zai",
     )
-    # prior medium → zai native high == request's starting value → no-op;
-    # the ONLY failure mode would be a native LOW leaking through (stale
-    # easy-feedback applied). Assert the invariant, not the wrapper shape.
-    assert r is None or r["request"]["reasoning_effort"] == "high"
+    # prior medium stands on the native ladder (medium == request's starting
+    # Hermes level translated); the ONLY failure mode would be a native LOW
+    # leaking through (stale easy-feedback applied). Assert the invariant,
+    # not the wrapper shape.
+    assert r is None or r["request"]["reasoning_effort"] in {"medium", "high"}
 
 
 def test_extractor_handles_relay_dict_shape():

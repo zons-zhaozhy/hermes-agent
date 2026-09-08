@@ -59,7 +59,8 @@ def analyze_tool_error_rates(conn: sqlite3.Connection, days: int) -> List[Dict]:
         """
         SELECT tool_name,
                COUNT(*) as total,
-               SUM(CASE WHEN status IN ('error', 'blocked') THEN 1 ELSE 0 END) as errors
+               SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors,
+               SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) as blocked
         FROM tool_outcomes
         WHERE tool_name != '_turn_outcome'
           AND timestamp >= datetime('now', ?)
@@ -75,6 +76,8 @@ def analyze_tool_error_rates(conn: sqlite3.Connection, days: int) -> List[Dict]:
         total = r["total"]
         errors = r["errors"]
         rate = errors / total if total else 0
+        blocked = r["blocked"] or 0
+        block_rate = blocked / total if total else 0
         if rate >= 0.3:
             findings.append({
                 "type": "high_error_tool",
@@ -83,6 +86,18 @@ def analyze_tool_error_rates(conn: sqlite3.Connection, days: int) -> List[Dict]:
                 "error_count": errors,
                 "error_rate": round(rate * 100, 1),
                 "severity": "high" if rate >= 0.5 else "medium",
+            })
+        elif block_rate >= 0.5 and blocked >= 10:
+            # Guard friction is by-design gating, not tool failure — report it
+            # separately so error-rate signals stay clean while the friction
+            # (agent repeatedly hitting the same gate) stays visible.
+            findings.append({
+                "type": "high_block_rate",
+                "tool": r["tool_name"],
+                "total_calls": total,
+                "blocked_count": blocked,
+                "blocked_rate": round(block_rate * 100, 1),
+                "severity": "low",
             })
     return findings
 
@@ -96,7 +111,7 @@ def analyze_error_patterns(conn: sqlite3.Connection, days: int) -> List[Dict]:
                error_message,
                COUNT(*) as cnt
         FROM tool_outcomes
-        WHERE status IN ('error', 'blocked')
+        WHERE status = 'error'
           AND timestamp >= datetime('now', ?)
           AND error_message IS NOT NULL
         GROUP BY tool_name, error_type, error_message
@@ -125,7 +140,7 @@ def analyze_session_failure_clusters(conn: sqlite3.Connection, days: int) -> Lis
         """
         SELECT session_id,
                COUNT(*) as total,
-               SUM(CASE WHEN status IN ('error', 'blocked') THEN 1 ELSE 0 END) as errors,
+               SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors,
                MIN(timestamp) as started,
                MAX(timestamp) as ended
         FROM tool_outcomes
@@ -158,7 +173,7 @@ def analyze_tool_usage_breakdown(conn: sqlite3.Connection, days: int) -> Dict:
         """
         SELECT tool_name,
                COUNT(*) as total,
-               SUM(CASE WHEN status IN ('error', 'blocked') THEN 1 ELSE 0 END) as errors,
+               SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors,
                AVG(duration_ms) as avg_ms
         FROM tool_outcomes
         WHERE tool_name != '_turn_outcome'
@@ -190,7 +205,7 @@ def analyze_temporal_trend(conn: sqlite3.Connection, days: int) -> Dict:
         """
         SELECT DATE(timestamp) as day,
                COUNT(*) as total,
-               SUM(CASE WHEN status IN ('error', 'blocked') THEN 1 ELSE 0 END) as errors
+               SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors
         FROM tool_outcomes
         WHERE tool_name != '_turn_outcome'
           AND timestamp >= datetime('now', ?)
@@ -320,7 +335,7 @@ def analyze_cross_turn_patterns(conn: sqlite3.Connection, days: int) -> List[Dic
         for tid in turn_ids:
             errored_tools = {
                 c["tool"] for c in turns[tid]
-                if c["status"] in ("error", "blocked")
+                if c["status"] == "error"
             }
             for tool in errored_tools:
                 error_tool_turns.setdefault(tool, []).append(tid)

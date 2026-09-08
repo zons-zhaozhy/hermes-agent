@@ -95,10 +95,35 @@ def _tail_text(text: str, chars: int = 200) -> str:
 
 # ---------------------------------------------------------------- L1: clarify 拦截
 
+# Orca 式 stall 计数（goal_tracker.rs SAME_GAP_STREAK_LIMIT 思路）：对被拦截的
+# clarify 问题本体算指纹，同一问题连续出现（换措辞同内容同指纹）≥3 次 → 在
+# block 消息中附加「疑似原地打转」警示，引导换方法而非第四次重复。指纹只
+# 取 questions 的稳定内容键，忽略顺序与无关元数据。
+_GAP_STREAK_LIMIT = 3
+_gap_streaks: dict[str, str] = {}  # gap fingerprint -> consecutive count
+# 进程级防膨胀上限（每条~50字节，正常永不触及；clear() 重置保证同时只存一个指纹族）
+_GAP_STREAKS_CAP = 64
+
+
+def _clarify_gap_fingerprint(args: dict) -> str:
+    """Contract: Preconditions: args 为 dict；Postconditions: 返回由 questions
+    内容（排序后拼接）派生的稳定指纹（sha256 前 12 hex），无 questions 时
+    返回空串（不参与计数）。"""
+    import hashlib
+
+    qs = args.get("questions")
+    if not isinstance(qs, list):
+        return ""
+    norm = "|".join(sorted(str(q.get("question", "") if isinstance(q, dict) else str(q))
+                           for q in qs))
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:12]
+
+
 def _on_pre_tool_call(**kwargs) -> dict:
     """Contract: Preconditions: kwargs 含 tool_name/args（clarify 为 questions 列表）；
-    Postconditions: 命中推责式提问时返回 {"action":"block","message":...}，
-    否则返回 {} 放行。pre_tool_call 超时由核心 fail-closed 兜底。"""
+    Postconditions: 命中推责式提问时返回 {"action":"block","message":...}（同问题
+    连续≥3 次时消息附 stall 警示），否则返回 {} 放行。pre_tool_call 超时由核心
+    fail-closed 兜底。"""
     tool_name = kwargs.get("tool_name", "")
     if tool_name != "clarify":
         return {}
@@ -109,7 +134,32 @@ def _on_pre_tool_call(**kwargs) -> dict:
         logger.warning("finish_guard: clarify args 序列化失败，降级 str: %s", e)
         blob = str(args)
     if not _is_pushback(blob):
+        # 合法豁免直接放行，但它仍是「一个不同的缺口」——若与当前 streak
+        # 指纹不同，重置计数（语境已变化，旧的连续性不成立）。
+        _fp_exempt = _clarify_gap_fingerprint(args)
+        if _fp_exempt and _fp_exempt not in _gap_streaks:
+            _gap_streaks.clear()
         return {}
+    # stall 计数：同一缺口指纹连续命中才累加，不同问题重置
+    stall_hint = ""
+    fp = _clarify_gap_fingerprint(args)
+    if fp:
+        prev = _gap_streaks.get(fp)
+        if prev is None:
+            _gap_streaks.clear()  # 新问题=有进展，全部重置
+            _gap_streaks[fp] = "1"
+            if len(_gap_streaks) > _GAP_STREAKS_CAP:  # 防御上限（clear 后恒 1，永不触发）
+                _gap_streaks.clear()
+                _gap_streaks[fp] = "1"
+        else:
+            _gap_streaks[fp] = str(int(prev) + 1)
+        if int(_gap_streaks[fp]) >= _GAP_STREAK_LIMIT:
+            stall_hint = (
+                " 另检测到同一问题已连续出现 "
+                f"{_gap_streaks[fp]} 次——疑似原地打转。停下提问解决不了它："
+                "换一种方法（换工具/换路径/降级拆小/直接读日志定位），或明确"
+                "列出已尝试的两种方案与各自失败原因。"
+            )
     logger.warning(
         "finish_guard: 拦截请示式 clarify 调用——要求自行决断继续（摘要: %s）",
         blob,
@@ -120,7 +170,7 @@ def _on_pre_tool_call(**kwargs) -> dict:
             "[finish_guard] 该提问属于请示式收尾，已拦截。除不可逆操作"
             "（删除/覆盖/发布/生产库）、凭据、付费、方向性选型外，一律自行"
             "判断并直接执行剩余步骤；可逆决定标注「假设：xxx」后继续。"
-            "重新组织你的下一步行动，不要再问。"
+            "重新组织你的下一步行动，不要再问。" + stall_hint
         ),
     }
 

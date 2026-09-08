@@ -83,7 +83,7 @@ def test_list_authenticated_providers_enumerates_dict_format_models(monkeypatch)
     # configured endpoints (e.g. a local ollama service) answer the probe and
     # the declared dict-format catalog below is replaced by live models.
     monkeypatch.setattr(
-        "hermes_cli.model_switch._fetch_picker_live_models", lambda *a, **k: None
+        "hermes_cli.model_switch_providers._fetch_picker_live_models", lambda *a, **k: None
     )
     monkeypatch.setattr(
         "hermes_cli.models.cached_fetch_api_models", lambda *a, **k: []
@@ -387,7 +387,7 @@ def test_switch_model_resolves_user_provider_credentials(monkeypatch, tmp_path):
     
     # Mock validation to pass
     monkeypatch.setattr(
-        "hermes_cli.models.validate_requested_model",
+        "hermes_cli.models_validate.validate_requested_model",
         lambda *a, **k: {"accepted": True, "persist": True, "recognized": True, "message": None}
     )
     
@@ -452,7 +452,7 @@ def _run_user_provider_override_case(
     with patch("hermes_cli.model_switch.resolve_alias", return_value=None), \
          patch("hermes_cli.model_switch.list_provider_models", return_value=[]), \
          patch("hermes_cli.model_switch.normalize_model_for_provider", side_effect=lambda model, provider: model), \
-         patch("hermes_cli.models.validate_requested_model", return_value=_REJECTED_VALIDATION), \
+         patch("hermes_cli.models_validate.validate_requested_model", return_value=_REJECTED_VALIDATION), \
          patch("hermes_cli.models.detect_provider_for_model", return_value=None), \
          patch("hermes_cli.model_switch.get_model_info", return_value=None), \
          patch("hermes_cli.model_switch.get_model_capabilities", return_value=None), \
@@ -534,7 +534,7 @@ def test_section3_probes_no_key_endpoint_with_singular_default_model(monkeypatch
     # service the native-catalog branch answers and the mocked
     # fetch_api_models below is never reached.
     monkeypatch.setattr(
-        "hermes_cli.models.should_use_ollama_native_catalog", lambda *a, **k: False
+        "hermes_cli.models_local.should_use_ollama_native_catalog", lambda *a, **k: False
     )
 
     probed = {}

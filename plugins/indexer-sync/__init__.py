@@ -92,7 +92,7 @@ def _discover_tracked_repos():
         import json
         registry_path = Path.home() / ".gitnexus" / "registry.json"
         if registry_path.exists():
-            registry = json.loads(registry_path.read_text())
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
             # registry is a bare list of {"name", "path", ...} objects
             repos = registry if isinstance(registry, list) else registry.get("repos", [])
             for repo in repos:

@@ -250,7 +250,7 @@ print("复合场景")
 test("合法: ValueError+return False（不触发 R008/R013）",
      "def parse_int(s):\n    try:\n        return int(s)\n    except ValueError:\n        return 0", None)
 test("合法: OSError+logger.warning+return",
-     "import logging\nlogger = logging.getLogger(__name__)\ntry:\n    f = open(path)\nexcept OSError as e:\n    logger.warning('file error')\n    return None", None)
+     "import logging\nlogger = logging.getLogger(__name__)\ntry:\n    f = open(path)\nexcept OSError as e:\n    logger.warning('file error')\n    return None", None)  # windows-footgun: ok (embedded sample-code string, not a real open())
 test("违规: Exception+pass",
      "try:\n    do_something()\nexcept Exception:\n    pass", "R001")
 test("违规: except+return None 无日志",
