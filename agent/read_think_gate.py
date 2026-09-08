@@ -170,10 +170,19 @@ def _terminal_writes_file(command: str) -> bool:
     if not command:
         return False
 
-    # 0. heredoc 模式不是直接的文件写入——命令只是启动解释器
-    #    python3 << 'PYEOF' / cat > "file" << 'EOF' 是 heredoc 输入，不拦截
+    # 0. 解释器 heredoc（python3 <<'PY'）吃 stdin 不写文件——放行。
+    #    但 `cat > f <<'EOF'` / `tee f <<EOF` 是写文件：重定向/写模式
+    #    检测必须先于 heredoc 豁免执行，否则构成绕过口。
+    #    解释器判定 = heredoc 标记前的最后一段命令以已知解释器结尾。
     if "<<" in command:
-        return False
+        pre_heredoc = command.split("<<", 1)[0]
+        last_seg = pre_heredoc.rstrip().rsplit("|", 1)[-1].strip()
+        # 整 token 匹配——后缀匹配会撞 .sh 文件名(cat > f.sh <<EOF 被误判解释器)
+        _INTERPRETER_TOKENS = ("python3", "python", "bash", "sh", "zsh",
+                               "node", "perl", "ruby", "ssh", "sudo")
+        seg_words = last_seg.split()
+        if seg_words and seg_words[-1] in _INTERPRETER_TOKENS:
+            return False
 
     # 1. 高置信度模式
     for pat in _TERMINAL_WRITE_PATTERNS_HIGH:
