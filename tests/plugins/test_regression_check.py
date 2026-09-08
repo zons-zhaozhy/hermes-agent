@@ -17,6 +17,12 @@ import pytest
 
 PLUGIN_DIR = Path(__file__).resolve().parents[2] / "plugins" / "outcome-collector"
 
+_p_spec = importlib.util.spec_from_file_location(
+    "outcome_collector_plugin_l26", PLUGIN_DIR / "__init__.py"
+)
+plugin_mod = importlib.util.module_from_spec(_p_spec)
+_p_spec.loader.exec_module(plugin_mod)
+
 _spec = importlib.util.spec_from_file_location(
     "regression_check", PLUGIN_DIR / "regression_check.py"
 )
@@ -169,3 +175,57 @@ class TestTextFormat:
         }
         text = rc.format_as_text(report)
         assert "窗口内无数据" in text
+
+
+class TestDisciplineDateAutoRegister:
+    """Layer 2.6: memory 纪律写入自动登记生效日期."""
+
+    def _dates_path(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(plugin_mod, "_db_path", tmp_path / "outcomes.db")
+        monkeypatch.setattr(plugin_mod, "_schema_ready", True)
+        return tmp_path / "outcomes" / "discipline_dates.json"
+
+    def test_parse_discipline_tag(self):
+        out = plugin_mod._parse_discipline_tags(
+            "前置文本。§R6 v3(0907):诊断禁stderr丢弃;§R5(0907)禁sleep。普通句子无标记。")
+        assert set(out) == {"R6", "R5"}
+        # 0907 → 今年或去年(取决于跑测试的日期),两者必居其一
+        assert {out["R6"], out["R5"]} <= {
+            "2026-09-07", "2025-09-07"}
+
+    def test_parse_invalid_date_skipped(self):
+        out = plugin_mod._parse_discipline_tags("§R6(0931):非法日期")
+        assert out == {}
+
+    def test_parse_no_tag_is_empty(self):
+        assert plugin_mod._parse_discipline_tags("普通memory条目,无规则标记") == {}
+
+    def test_register_via_memory_args(self, monkeypatch, tmp_path):
+        dates_path = self._dates_path(monkeypatch, tmp_path)
+        plugin_mod._register_discipline_effective_date(
+            {"action": "add", "content": "§R9(0102):新纪律"})
+        import json
+        assert json.loads(dates_path.read_text())["R9"].endswith("01-02")
+
+    def test_register_batch_ops(self, monkeypatch, tmp_path):
+        dates_path = self._dates_path(monkeypatch, tmp_path)
+        plugin_mod._register_discipline_effective_date(
+            {"operations": [{"action": "replace", "content": "§R8(0305):批量"}]})
+        import json
+        assert "R8" in json.loads(dates_path.read_text())
+
+    def test_register_non_discipline_content_no_file(self, monkeypatch, tmp_path):
+        dates_path = self._dates_path(monkeypatch, tmp_path)
+        plugin_mod._register_discipline_effective_date(
+            {"action": "add", "content": "用户偏好简洁回复"})
+        assert not dates_path.exists()
+
+    def test_reregister_updates_window(self, monkeypatch, tmp_path):
+        """同规则号再写(修订版)应覆盖生效日,重开验收窗口."""
+        dates_path = self._dates_path(monkeypatch, tmp_path)
+        plugin_mod._register_discipline_effective_date(
+            {"content": "§R6(0101):v1"})
+        plugin_mod._register_discipline_effective_date(
+            {"content": "§R6 v2(0303):修订"})
+        import json
+        assert json.loads(dates_path.read_text())["R6"].endswith("03-03")
