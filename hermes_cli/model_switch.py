@@ -841,11 +841,19 @@ def _configured_provider_matches(
     target = model_name.strip().lower()
 
     candidates: list[tuple[str, dict]] = []
+    user_slugs: set[str] = set()
     if isinstance(user_providers, dict):
+        user_slugs = {str(k).strip().lower() for k in user_providers if isinstance(k, str)}
         candidates += [(slug, cfg) for slug, cfg in user_providers.items()
                        if isinstance(slug, str) and isinstance(cfg, dict)]
+    # Only append a custom-derived entry when its provider_key isn't already routed as a
+    # top-level ``providers:`` slug above. get_compatible_custom_providers() folds top-level
+    # providers into the legacy list too, so the same provider would otherwise be matched twice
+    # (``zai`` and ``custom:zai``) and reported as "declared by multiple configured providers".
     candidates += [(f"custom:{e['name']}", e) for e in _custom_entries(custom_providers)
-                   if isinstance(e.get("name"), str) and e["name"].strip()]
+                   if isinstance(e.get("name"), str) and e["name"].strip()
+                   and str(e.get("provider_key") or e.get("name") or "").strip().lower()
+                   not in user_slugs]
 
     matches: dict[str, str] = {}
     for slug, cfg in candidates:
