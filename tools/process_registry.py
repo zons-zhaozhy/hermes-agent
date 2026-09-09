@@ -1021,7 +1021,31 @@ class ProcessRegistry:
             wait()
         except Exception as e:
             logger.debug("%s wait timed out or failed: %s", label, e)
-        self._finish_exited(session, exit_code())
+        # Live-child guard: wait() timing out (e.g. the 5s cap against a
+        # still-running multi-minute process) leaves returncode()=None.
+        # Reporting that as "exited (exit code None)" is a false-positive
+        # completion notification for a process that is demonstrably alive.
+        # Escalate the wait once for a definitive answer; if the child still
+        # hasn't exited, park the session as detached-alive so poll()/wait()
+        # keep working off Popen instead of lying about an exit that didn't
+        # happen. The reader is gone either way — no output will be captured.
+        rc = exit_code()
+        if rc is None:
+            try:
+                rc = session.process.wait(timeout=30)
+            except Exception:
+                rc = None
+        if rc is None and session.process is not None:
+            with session._lock:
+                if not session.exited:
+                    session.detached = True
+            logger.warning(
+                "%s reader ended but child pid=%s is still alive — marking "
+                "session detached (no false 'exited' notification); status "
+                "remains discoverable via poll()/kill",
+                label, getattr(session.process, "pid", "?"))
+            return
+        self._finish_exited(session, rc)
 
     @staticmethod
     def _log_delta_command(quoted_log_path: str, offset: int) -> str:
