@@ -1,0 +1,5 @@
+name: six-laws-guard
+version: 1.0.0
+description: "科学编程六律守卫——网络/DB 交互代码四防线机检(R1 哨兵先于close/R2 清理守卫), 违规 block"
+hooks:
+  - pre_tool_call
