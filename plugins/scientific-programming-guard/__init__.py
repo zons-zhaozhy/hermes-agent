@@ -9,7 +9,7 @@ v2 升级(对应四层十五律):
     R2 finally 清理未包 try/except → 掩盖原始异常(律 11)
 
 判定全部 AST 级零正则。豁免: test_ 前缀/单行函数。
-测试: tests/plugins/test_six_laws_guard.py
+测试: tests/plugins/test_scientific_programming_guard.py
 """
 import ast
 import logging
@@ -229,7 +229,7 @@ def on_pre_tool_call(**kwargs):
             }
         return {}
     except Exception:
-        logger.warning("six-laws-guard 检查失败(放行)", exc_info=True)
+        logger.warning("scientific-programming-guard 检查失败(放行)", exc_info=True)
         return {}
 
 

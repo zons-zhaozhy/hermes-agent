@@ -1,4 +1,4 @@
-"""six-laws-guard E2E 测试 v2——期望值独立推导(先写期望再验证)。
+"""scientific-programming-guard E2E 测试 v2——期望值独立推导(先写期望再验证)。
 
 期望值来自科学编程律的语义, 非实现反推:
   - 律11: close 先于哨兵 put → 必拦; finally 裸 close → 必拦;
@@ -10,8 +10,8 @@
 import importlib.util
 from pathlib import Path
 
-PLUGIN_PATH = Path(__file__).resolve().parents[2] / "plugins" / "six-laws-guard" / "__init__.py"
-spec = importlib.util.spec_from_file_location("six_laws_guard", PLUGIN_PATH)
+PLUGIN_PATH = Path(__file__).resolve().parents[2] / "plugins" / "scientific-programming-guard" / "__init__.py"
+spec = importlib.util.spec_from_file_location("scientific_programming_guard", PLUGIN_PATH)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
