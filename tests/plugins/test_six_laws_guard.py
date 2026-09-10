@@ -1,12 +1,11 @@
-"""six-laws-guard E2E 测试——期望值独立推导(先写期望再验证)。
+"""six-laws-guard E2E 测试 v2——期望值独立推导(先写期望再验证)。
 
-期望值来自四防线语义, 非实现反推:
-  - finally 中 close 先于哨兵 put = 消费方饿死风险 → 必拦
-  - finally 中裸 close(无 try 包裹) = 掩盖原始异常 → 必拦
-  - close 包了 try/except = L3 合规 → 放行
-  - 哨兵先于 close 且 close 有守卫 = L4+L3 合规 → 放行
-  - 非网络代码(.py 但无网络痕迹) = 规则不适用 → 放行
-  - 非 .py 文件 = 不扫 → 放行
+期望值来自科学编程律的语义, 非实现反推:
+  - 律11: close 先于哨兵 put → 必拦; finally 裸 close → 必拦;
+          哨兵先行+守卫 close → 放行
+  - 律3:  cc>10 或 >50 行 → 必拦; 简单函数 → 放行
+  - 律4:  参数/返回值缺注解 → 必拦; 注解齐全 → 放行
+  - 非网络代码不受 R1/R2 约束; 非 .py 不扫
 """
 import importlib.util
 from pathlib import Path
@@ -23,7 +22,7 @@ def _run(path, content):
 
 
 def test_r1_close_before_sentinel_blocked():
-    """close 排在哨兵 put 之前 → 必拦(期望来自 L4 语义)"""
+    """close 排在哨兵 put 之前 → 必拦(期望来自律11 并发正确性)"""
     bad = """
 import oracledb
 def worker(q, conn):
@@ -39,7 +38,7 @@ def worker(q, conn):
 
 
 def test_r2_unguarded_close_in_finally_blocked():
-    """finally 中裸 close 无 try 包裹 → 必拦(期望来自 L3 语义)"""
+    """finally 中裸 close 无 try 包裹 → 必拦(期望来自律11)"""
     bad = """
 import oracledb
 def f(conn):
@@ -53,13 +52,15 @@ def f(conn):
 
 
 def test_guarded_close_after_sentinel_pass():
-    """哨兵先行 + close 有守卫 → 放行(即 b810a5e 修复后的正确形态)"""
+    """哨兵先行 + close 有守卫 + 注解齐全 → 放行(合规形态)"""
     good = """
+import queue
 import oracledb
-def worker(q, conn):
+def worker(q: "queue.Queue", conn: "oracledb.Connection") -> list:
     try:
         rows = conn.query("SELECT 1")
         q.put(rows)
+        return rows
     finally:
         q.put(None)
         try:
@@ -77,9 +78,51 @@ def test_non_python_pass():
     assert r == {}
 
 
-def test_non_network_python_pass():
-    """无网络痕迹的 .py → 规则不适用 → 放行"""
-    r = _run("/proj/x.py", "def add(a, b):\n    return a + b\n")
+def test_r3_complexity_blocked():
+    """圈复杂度超预算(>10 分支) → 必拦(期望来自律3)"""
+    branches = "\n".join(
+        f"    if x == {i}:\n        y += 1" for i in range(12)
+    )
+    bad = f"""
+def calc(x: int) -> int:
+    y = 0
+{branches}
+    return y
+"""
+    r = _run("/proj/x.py", bad)
+    assert r.get("action") == "block", f"应拦截, got {r}"
+    assert "复杂度" in r.get("message", "")
+
+
+def test_r3_simple_function_pass():
+    """注解齐全的简单函数 → 放行"""
+    good = """
+def add(a: int, b: int) -> int:
+    return a + b
+"""
+    r = _run("/proj/x.py", good)
+    assert r == {}, f"应放行, got {r}"
+
+
+def test_r4_missing_annotations_blocked():
+    """参数/返回值缺类型注解 → 必拦(期望来自律4)"""
+    bad = """
+def greet(name):
+    return "hi " + name
+"""
+    r = _run("/proj/x.py", bad)
+    assert r.get("action") == "block", f"应拦截, got {r}"
+    assert "类型注解" in r.get("message", "")
+
+
+def test_non_network_no_r1_r2():
+    """非网络代码不触发 R1/R2(但 R3/R4 仍生效)——此处注解齐全的
+    简单非网络函数应完全放行"""
+    good = """
+def calc(x: int) -> int:
+    return x * 2
+"""
+    r = _run("/proj/x.py", good)
     assert r == {}
 
 

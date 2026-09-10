@@ -1,13 +1,14 @@
-"""科学编程六律守卫——网络/DB 交互代码四防线机检。
+"""科学编程守卫 v2——skill:scientific-programming 的机检子集。
 
-拦截规则(对应 skill:scientific-programming-six-laws 律二):
-  R1  finally 块中资源 close/清理在哨兵 put 之前 → 消费方可能被饿死
-  R2  finally 块中清理动作未包 try/except → 死资源上抛新异常掩盖原始异常
-  R3  网络重试 pattern 用裸 except/过窄白名单 → 断连族错误码漏网零重试
+v2 升级(对应四层十五律):
+  防错层(所有 .py 生效):
+    R3 圈复杂度预算——单函数 cc>10 或行数>50 → 拆分(律 3 复杂度控制)
+    R4 新函数缺类型注解——def 参数/返回值无注解(律 4 静态分析前置)
+  运行层(仅网络/DB 交互代码生效, 判定=结构化导入集合):
+    R1 finally 中 close 在哨兵 put 之前 → 消费方饿死(律 11 并发正确性)
+    R2 finally 清理未包 try/except → 掩盖原始异常(律 11)
 
-只对「网络/DB 交互代码」生效——判定条件(结构化, 禁正则枚举信号词):
-  文本含 import oracledb/pymysql/psycopg/requests/httpx/socket/.connect(
-  即视为网络交互代码。
+判定全部 AST 级零正则。豁免: test_ 前缀/单行函数。
 测试: tests/plugins/test_six_laws_guard.py
 """
 import ast
@@ -22,7 +23,8 @@ _NET_MODULES = (
 )
 _NET_HINTS = (".connect(", "cursor()", "execute_many", "query_stream")
 
-_EXEMPT_PREFIXES = ("test_", "_", "verify_")
+_MAX_CC = 10
+_MAX_LINES = 50
 
 
 def _is_network_code(text: str) -> bool:
@@ -40,12 +42,99 @@ def _is_network_code(text: str) -> bool:
     return any(h in text for h in _NET_HINTS)
 
 
-def _check_l4_sentinel_before_close(tree: ast.AST) -> list:
-    """R1: finally 中 close 类调用不得排在哨兵 put 之前。
+def _is_exempt(func: ast.FunctionDef) -> bool:
+    """豁免判定——测试函数/魔法方法不检查。
 
-    扫描 Try 节点的 finalbody: 若同时存在 close 类调用(属性名以
-    close/shutdown/dispose 结尾)与队列 put 调用(属性名 put/put_nowait),
-    close 出现在 put 之前即违规——死资源 close 卡死会饿死消费循环。
+    Contract:
+      Preconditions: func 是 FunctionDef 节点
+      Postconditions: 名字以 test_/__ 开头返回 True
+    """
+    return func.name.startswith(("test_", "__"))
+
+
+def _cyclomatic_complexity(func: ast.FunctionDef) -> int:
+    """圈复杂度计算(简化 McCabe)——1 + 分支/异常/布尔算子数。
+
+    Contract:
+      Preconditions: func 是 FunctionDef
+      Postconditions: 返回 ≥1 的整数复杂度值
+    """
+    cc = 1
+    for node in ast.walk(func):
+        if isinstance(node, (ast.If, ast.For, ast.While, ast.AsyncFor,
+                             ast.ExceptHandler, ast.With, ast.AsyncWith)):
+            cc += 1
+        elif isinstance(node, ast.BoolOp):
+            cc += len(node.values) - 1
+        elif isinstance(node, (ast.Assert, ast.comprehension)):
+            cc += 1
+        elif isinstance(node, ast.Match):
+            cc += len(node.cases)
+    return cc
+
+
+def _check_complexity_budget(tree: ast.AST) -> list:
+    """R3: 单函数圈复杂度>10 或行数>50 → 违规(律 3)。
+
+    Contract:
+      Preconditions: tree 是合法 AST
+      Postconditions: 返回违规消息列表(空=合规)
+    """
+    issues = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        if _is_exempt(node):
+            continue
+        cc = _cyclomatic_complexity(node)
+        lines = (getattr(node, "end_lineno", 0) or node.lineno) - node.lineno + 1
+        if cc > _MAX_CC or lines > _MAX_LINES:
+            issues.append(
+                f"line {node.lineno}: {node.name}() 复杂度超预算"
+                f"(cc={cc}>{_MAX_CC} 或 {lines}行>{_MAX_LINES})"
+                f"——拆分为更小的单一职责函数(律 3)。"
+            )
+    return issues
+
+
+def _check_type_annotations(tree: ast.AST) -> list:
+    """R4: def 参数与返回值缺类型注解 → 违规(律 4)。
+
+    仅查顶层 def(patch 场景看不到嵌套函数全貌, 查可见的全部)。
+    self/cls 与 *args/**kwargs 豁免。
+
+    Contract:
+      Preconditions: tree 是合法 AST
+      Postconditions: 返回违规消息列表(空=合规)
+    """
+    issues = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        if _is_exempt(node):
+            continue
+        missing = []
+        args = node.args
+        positional = list(args.posonlyargs) + list(args.args)
+        if positional and positional[0].arg in ("self", "cls"):
+            positional = positional[1:]
+        for a in positional:
+            if a.annotation is None:
+                missing.append(a.arg)
+        if args.vararg and args.vararg.annotation is None:
+            missing.append("*" + args.vararg.arg)
+        if node.returns is None:
+            missing.append("-> 返回值")
+        if missing:
+            issues.append(
+                f"line {node.lineno}: {node.name}() 缺类型注解: "
+                f"{', '.join(missing)}(律 4 静态分析前置)。"
+            )
+    return issues
+
+
+def _check_l4_sentinel_before_close(tree: ast.AST) -> list:
+    """R1: finally 中 close 类调用不得排在哨兵 put 之前(律 11)。
 
     Contract:
       Preconditions: tree 是合法 AST
@@ -70,17 +159,14 @@ def _check_l4_sentinel_before_close(tree: ast.AST) -> list:
         if close_pos and put_pos and close_pos[0] < put_pos[0]:
             issues.append(
                 f"line {close_pos[1]}: finally 中 close/清理在哨兵 put 之前"
-                f"——死资源 close 卡死会饿死消费循环(四防线 L4)。"
+                f"——死资源 close 卡死会饿死消费循环(律 11 并发正确性)。"
                 f"调整顺序: 哨兵先行, close 包 try/except 后置。"
             )
     return issues
 
 
 def _check_l3_guarded_cleanup(tree: ast.AST) -> list:
-    """R2: finally 中清理调用必须被 try/except 包裹。
-
-    死连接上的 close/调档操作会抛新异常(如 AttributeError),
-    掩盖 finally 之前的原始异常(四防线 L3)。
+    """R2: finally 中清理调用必须被 try/except 包裹(律 11)。
 
     Contract:
       Preconditions: tree 是合法 AST
@@ -100,14 +186,14 @@ def _check_l3_guarded_cleanup(tree: ast.AST) -> list:
                 continue
             issues.append(
                 f"line {stmt.lineno}: finally 中 {name}() 未包 try/except"
-                f"——死资源上会抛新异常掩盖原始异常(四防线 L3)。"
+                f"——死资源上会抛新异常掩盖原始异常(律 11)。"
                 f"包 try/except 记 warning, 不得上抛。"
             )
     return issues
 
 
 def on_pre_tool_call(**kwargs):
-    """pre_tool_call 入口——写操作前机检网络代码四防线。
+    """pre_tool_call 入口——写 .py 前机检科学编程纪律。
 
     Contract:
       Preconditions: kwargs 含 tool_name 与 args(write_file/patch 为
@@ -122,18 +208,23 @@ def on_pre_tool_call(**kwargs):
         args = kwargs.get("args", {}) or {}
         text = (args.get("content") or args.get("new_string") or "")
         path = str(args.get("path", ""))
-        if not path.endswith(".py") or not _is_network_code(text):
+        if not path.endswith(".py"):
             return {}
         tree = ast.parse(text)
-        issues = _check_l4_sentinel_before_close(tree)
-        issues += _check_l3_guarded_cleanup(tree)
+        # 防错层规则——所有 .py 生效
+        issues = _check_complexity_budget(tree)
+        issues += _check_type_annotations(tree)
+        # 运行层规则——仅网络/DB 交互代码生效
+        if _is_network_code(text):
+            issues += _check_l4_sentinel_before_close(tree)
+            issues += _check_l3_guarded_cleanup(tree)
         if issues:
             return {
                 "action": "block",
                 "message": (
-                    "[six-laws-guard] 网络/DB 代码四防线违规:\n"
+                    "[scientific-programming-guard] 科学编程纪律违规:\n"
                     + "\n".join(issues)
-                    + "\n修复后再提交。规则全文: skill:scientific-programming-six-laws"
+                    + "\n修复后再提交。规则全文: skill:scientific-programming"
                 ),
             }
         return {}
