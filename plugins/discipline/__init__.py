@@ -34,6 +34,7 @@ from plugins.discipline import (
     no_bypass,
     no_guessing,
     no_pushback,
+    rule_reinjection,
     tool_safety,
 )
 
@@ -48,6 +49,7 @@ _SUB_GUARDS = (
     ("tool_safety", tool_safety),
     ("no_bypass", no_bypass),
     ("no_pushback", no_pushback),
+    ("rule_reinjection", rule_reinjection),
 )
 
 
