@@ -53,7 +53,7 @@ RabbitOS 核心论点"让用户少理解十个概念"与 Hermes 脚手架梯（F
 
 ## 结论：有价值的参考按优先级
 
-1. **规则每轮重注入（WORKFLOW.md 模式）**——最高价值。通道现成（pre_llm_call 插件），解决已被实测证实的"长会话纪律衰减"缺陷，缓存安全，零核心改动。形态：插件读仓库内规则文件摘要，每轮追加注入当前用户消息。注意注入体量要小（每轮都付 token 成本）
+1. **规则每轮重注入（WORKFLOW.md 模式）**——✅已落地（2026-09-12，commit e0f7545463）：plugins/discipline/rule_reinjection.py，discipline 套件第 9 子模块。衰减残留三件套处理：冲突消解头（supersede 语义作废旧表述）+ SHA 版本指纹（改版后旧指纹自识别为作废）+ 节流节奏（首注/版本变更/每 10 轮补注，防堆积）。数据源=.hermes-rules.md（仓库根，git 管理）。E2E 实测：生产 invoke_hook('pre_llm_call') 注入产物命中权威前缀；8/8 测试绿
 2. **Skill 安装后审计总结**——中价值。对齐 Rabbit"装完给审计结果"，复用上下文文件的注入扫描思路扩到 skill 安装链
 3. **项目就绪度自检（harness self-check）**——中价值。长自动任务前的基建评分门禁，落点 skill
 4. 不参考：取消会话边界（毁缓存）、目录式 workspace（弱于现有 worktree 隔离）、Generative UI
