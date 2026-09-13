@@ -44,6 +44,14 @@ DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
 # Consecutive transport failures (401, timeout, DNS) before auto-pause: a broken API key returns
 # 401 every call and must not spend every turn on an unreachable judge.
 DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5
+# Consecutive IDENTICAL judge reasons (same fingerprint) before auto-pause: a weak judge model
+# re-issues the same template rejection every turn ("no concrete evidence...") regardless of
+# what the agent posted, burning the entire budget in a rejection loop (observed 2026-09-13:
+# 5 turns of near-verbatim refusals against responses containing file excerpts + commit + md5).
+# The fingerprint normalizes whitespace/case; transport sentinels don't count; a genuinely
+# different reason resets the counter. Pause (not block) so the user can swap the judge model
+# (auxiliary.goal_judge.model) or resume with /goal resume.
+DEFAULT_MAX_REPEATED_JUDGE_REASONS = 3
 
 # Quality gates: deterministic shell commands that must pass before the judge may declare DONE. A
 # failed gate short-circuits the judge — its output IS the continuation prompt, so the agent works
@@ -484,6 +492,13 @@ class GoalState:
     last_reason: Optional[str] = None
     paused_reason: Optional[str] = None       # why we auto-paused (budget, etc.)
     consecutive_parse_failures: int = 0       # judge-output parse failures in a row
+    # Consecutive identical judge reasons (fingerprinted) in a row — a weak judge model
+    # re-issuing the same template rejection every turn. Auto-pauses at
+    # DEFAULT_MAX_REPEATED_JUDGE_REASONS instead of burning the whole budget.
+    consecutive_repeated_reasons: int = 0
+    # Fingerprint of the previous turn's judge reason (None after a sentinel/blank turn).
+    # Kept so the next evaluate call can tell "same rejection again" from "new rejection".
+    last_reason_fingerprint: Optional[str] = None
     # Tracked separately from parse failures: a broken API key returns 401 every call and must
     # auto-pause instead of burning the budget on an unreachable judge.
     consecutive_transport_failures: int = 0   # judge API/transport errors in a row
@@ -549,6 +564,8 @@ class GoalState:
             ],
             progress_num=int(data.get("progress_num", 0) or 0),
             progress_den=int(data.get("progress_den", 0) or 0),
+            consecutive_repeated_reasons=int(data.get("consecutive_repeated_reasons", 0) or 0),
+            last_reason_fingerprint=(str(data["last_reason_fingerprint"]) if data.get("last_reason_fingerprint") else None),
             **ints, **floats,
         )
 
@@ -769,6 +786,34 @@ def _truncate(text: str, limit: int) -> str:
     if not text:
         return ""
     return text if len(text) <= limit else text[:limit] + "… [truncated]"
+
+
+# Judge-reason transport sentinel prefix (mirrors the literal written into turn_reasons).
+_JUDGE_UNREACHABLE_PREFIX = "[judge unreachable"
+
+
+def judge_reason_fingerprint(reason: str) -> Optional[str]:
+    """Stable fingerprint for a judge reason, for repeated-verdict detection.
+
+    Normalizes whitespace and case, then takes the first 160 chars — enough to
+    catch template refusals from weak judge models ("no concrete evidence ...")
+    while letting genuinely different reasons hash apart. Transport sentinels
+    (``[judge unreachable …]``) and empty/blank reasons return ``None``: the
+    caller must neither count nor reset on them.
+
+    Contract:
+      Preconditions: reason is a str (possibly empty).
+      Postconditions:
+        - returns None for blank input or the unreachable sentinel
+        - returns a non-empty str otherwise; equal outputs ⇔ inputs match after
+          whitespace/case normalization over the first 160 chars
+    """
+    if not reason or not reason.strip():
+        return None
+    if reason.strip().startswith(_JUDGE_UNREACHABLE_PREFIX):
+        return None
+    normalized = " ".join(reason.split()).lower()
+    return normalized[:160]
 
 
 def _pid_alive(pid: int) -> bool:
@@ -1722,6 +1767,16 @@ class GoalManager:
         # separately because persistent API errors (401, DNS) mean a broken config.
         state.consecutive_parse_failures = state.consecutive_parse_failures + 1 if parse_failed else 0
         state.consecutive_transport_failures = state.consecutive_transport_failures + 1 if transport_failed else 0
+        # Repeated-verdict detection: fingerprint the judge reason; identical fingerprints
+        # stack, genuinely different reasons reset. Transport sentinels and blank reasons
+        # neither count nor reset (the judge said nothing usable this turn).
+        _fp = judge_reason_fingerprint(str(reason or ""))
+        if _fp is not None:
+            if _fp == state.last_reason_fingerprint:
+                state.consecutive_repeated_reasons += 1
+            else:
+                state.consecutive_repeated_reasons = 1
+            state.last_reason_fingerprint = _fp
         # Record the trajectory so the NEXT judge call can see drift across
         # turns. Cap at 20 (mirrors from_json) to bound state size. Transport
         # failures get a sentinel — they had no verdict and must not masquerade
@@ -1768,6 +1823,21 @@ class GoalManager:
                 f"⏸ Goal paused — the judge model ({n_parse} turns) isn't returning the required JSON verdict. "
                 "Route the judge to a stricter model in "
                 + _JUDGE_CONFIG_HINT.format(provider="openrouter", model="google/gemini-3-flash-preview"),
+            )
+        # Repeated-verdict loop: the judge keeps rejecting with the SAME reason no matter what
+        # the agent posts — a weak judge model in template-refusal mode. Pausing preserves the
+        # remaining budget; the fix is a stronger judge model (auxiliary.goal_judge.model), not
+        # more turns of identical rejections. Resume with /goal resume after swapping.
+        n_rep = state.consecutive_repeated_reasons
+        if n_rep >= DEFAULT_MAX_REPEATED_JUDGE_REASONS:
+            return self._pause_decision(
+                f"judge repeated the same rejection {n_rep} turns in a row: {_truncate(str(reason or ''), 160)}",
+                "continue", reason,
+                f"⏸ Goal paused — the judge model rejected {n_rep} turns in a row with the SAME reason "
+                "(a weak judge in template-refusal mode ignores posted evidence). Swap "
+                "auxiliary.goal_judge.model to a stronger model in "
+                + _JUDGE_CONFIG_HINT.format(provider="zai", model="glm-5.3-flash")
+                + " then /goal resume",
             )
 
         if state.turns_used >= state.max_turns:
@@ -1941,6 +2011,9 @@ def run_kanban_goal_loop(
     # Per-turn judge reasons (local, capped at 20) so the judge can see the
     # trajectory across turns and detect drift — mirrors GoalState.turn_reasons.
     kanban_turn_reasons: List[str] = []
+    # Repeated-verdict detection state (mirrors GoalState.consecutive_repeated_reasons).
+    kanban_repeated_reasons: int = 0
+    kanban_last_reason_fp: Optional[str] = None
     # The first turn already consumed one unit of budget.
     turns_used = 1
     nudged_to_finalize = False
@@ -1980,7 +2053,31 @@ def run_kanban_goal_loop(
                 else str(reason).strip()
             )
             del kanban_turn_reasons[:-20]
+        # Repeated-verdict detection (mirrors GoalManager.evaluate_after_turn): identical
+        # fingerprinted reasons stack; sentinels/blank reasons neither count nor reset.
+        _kfp = judge_reason_fingerprint(str(reason or ""))
+        if _kfp is not None:
+            if _kfp == kanban_last_reason_fp:
+                kanban_repeated_reasons += 1
+            else:
+                kanban_repeated_reasons = 1
+        kanban_last_reason_fp = _kfp
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
+
+        # Repeated-verdict loop: block the card for review instead of burning the turn budget
+        # on identical template rejections from a weak judge model.
+        if verdict == "continue" and kanban_repeated_reasons >= DEFAULT_MAX_REPEATED_JUDGE_REASONS:
+            _log(
+                f"kanban goal loop: task {task_id} judge repeated the same rejection "
+                f"{kanban_repeated_reasons} turns in a row; blocking for review"
+            )
+            _block(
+                f"Goal-mode judge rejected {kanban_repeated_reasons} turns in a row with the SAME "
+                f"reason: {_truncate(str(reason or ''), 200)}. The judge model appears stuck in "
+                "template-refusal mode — swap auxiliary.goal_judge.model to a stronger model, "
+                "then re-dispatch this card."
+            )
+            return _result("blocked_judge_loop", f"judge repeated the same rejection {kanban_repeated_reasons}x")
 
         if verdict == "blocked":
             # Unachievable is NOT done: block the card with the judge's reason now instead of
@@ -2047,6 +2144,8 @@ __all__ = [
     "clear_goal",
     "migrate_goal_to_session",
     "judge_goal",
+    "judge_reason_fingerprint",
+    "DEFAULT_MAX_REPEATED_JUDGE_REASONS",
     "run_kanban_goal_loop",
     "extract_tool_calls_summary",
 ]
