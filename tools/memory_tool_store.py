@@ -29,12 +29,27 @@ def _scan_memory_content(content: str) -> Optional[str]:
 
 
 def _error(message: str, **extra) -> Dict[str, Any]:
+    """Default refusal shape for store-level guards (validation / capacity /
+    no-match / consolidation cap). All of these refuse the *call* by design —
+    the caller can fix arguments and retry — so they carry ``rejected: True``
+    for observer-side classification (status='rejected', error_type
+    'guard_rejection') instead of polluting the true-error caliber.
+    Environment failures that are NOT the caller's fault (drift, unreadable
+    file) must use ``_environment_error`` to stay true errors."""
+    return {"success": False, "rejected": True, "error": message, **extra}
+
+
+def _environment_error(message: str, **extra) -> Dict[str, Any]:
+    """True-failure variant of ``_error``: environmental problems (concurrent
+    drift, unreadable file, lock contention) that retrying with the same
+    arguments may legitimately fix. NOT marked ``rejected`` — these belong in
+    the true-error caliber so degradation stays visible."""
     return {"success": False, "error": message, **extra}
 
 
 def _drift_error(path: Path, bak_path: str) -> Dict[str, Any]:
     """External drift: the file wouldn't round-trip, so flushing would discard content."""
-    return _error((
+    return _environment_error((
         f"Refusing to write {path.name}: file on disk has content that wouldn't round-trip "
         f"through the memory tool (likely added by the patch tool, a shell append, a manual edit, "
         f"or a concurrent session). A snapshot was saved to {bak_path}. Resolve the drift first — "
@@ -47,7 +62,7 @@ def _drift_error(path: Path, bak_path: str) -> Dict[str, Any]:
 
 def _read_failed_error(path: Path) -> Dict[str, Any]:
     """Existing-but-unreadable file: saving from an assumed-empty view would wipe it."""
-    return _error(
+    return _environment_error(
         f"Refusing to write {path.name}: the file exists on disk but could not be read right now "
         f"(temporarily locked by another program, a permission change, invalid/corrupt text encoding, "
         f"or a filesystem error). Treating an unreadable file as empty and saving would wipe existing "
@@ -103,7 +118,7 @@ class MemoryStore:
         self._consolidation_failures += 1
         if self._consolidation_failures <= self._MAX_CONSOLIDATION_FAILURES_PER_TURN:
             return response
-        return {"success": False, "done": True, "error": (
+        return {"success": False, "done": True, "rejected": True, "error": (
             f"Memory consolidation failed {self._consolidation_failures} times this turn. Stop retrying "
             "memory calls — leave memory unchanged for now and continue with your reply to the user. "
             "The fact can be saved in a later turn.")}

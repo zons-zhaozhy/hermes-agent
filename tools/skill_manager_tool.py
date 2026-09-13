@@ -764,7 +764,7 @@ def skill_manage(
             _pre["path"] if _pre else None, complete_package=(action == "delete"), skill=name)
     for arg, missing, message in _REQUIRED_ARGS.get(action, ()):
         if missing(args[arg]):
-            return tool_error(message, success=False)
+            return tool_rejection(message, success=False)
     handler = _ACTION_HANDLERS.get(action, lambda a: _err(
         f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"))
     result = handler({"name": name, **args})
@@ -876,7 +876,7 @@ SKILL_MANAGE_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
+from tools.registry import registry, tool_error, tool_rejection
 
 registry.register(
     name="skill_manage", toolset="skills", schema=SKILL_MANAGE_SCHEMA, emoji="📝",

@@ -54,13 +54,19 @@ def _ts() -> str:
 # ── Analysis queries ──────────────────────────────────────────────────
 
 def analyze_tool_error_rates(conn: sqlite3.Connection, days: int) -> List[Dict]:
-    """Find tools with >30% error rate (min 5 calls)."""
+    """Find tools with >30% error rate (min 5 calls).
+
+    Caliber: status='rejected' rows are in-tool guard refusals (validation /
+    capacity / policy — produced via tools.registry.tool_rejection); they
+    count as guard friction in the rejected columns and the low-severity
+    guard-friction finding, never into the true-error caliber."""
     rows = conn.execute(
         """
         SELECT tool_name,
                COUNT(*) as total,
                SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors,
-               SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) as blocked
+               SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) as blocked,
+               SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected
         FROM tool_outcomes
         WHERE tool_name != '_turn_outcome'
           AND timestamp >= datetime('now', ?)
@@ -78,6 +84,9 @@ def analyze_tool_error_rates(conn: sqlite3.Connection, days: int) -> List[Dict]:
         rate = errors / total if total else 0
         blocked = r["blocked"] or 0
         block_rate = blocked / total if total else 0
+        rejected = r["rejected"] or 0
+        guard_total = blocked + rejected
+        guard_rate = guard_total / total if total else 0
         if rate >= 0.3:
             findings.append({
                 "type": "high_error_tool",
@@ -87,16 +96,18 @@ def analyze_tool_error_rates(conn: sqlite3.Connection, days: int) -> List[Dict]:
                 "error_rate": round(rate * 100, 1),
                 "severity": "high" if rate >= 0.5 else "medium",
             })
-        elif block_rate >= 0.5 and blocked >= 10:
-            # Guard friction is by-design gating, not tool failure — report it
-            # separately so error-rate signals stay clean while the friction
-            # (agent repeatedly hitting the same gate) stays visible.
+        elif guard_rate >= 0.5 and guard_total >= 10:
+            # Guard friction (pre-dispatch blocks + in-tool rejections) is
+            # by-design gating, not tool failure — report it separately so
+            # error-rate signals stay clean while the friction (agent
+            # repeatedly hitting the same gate) stays visible.
             findings.append({
                 "type": "high_block_rate",
                 "tool": r["tool_name"],
                 "total_calls": total,
                 "blocked_count": blocked,
-                "blocked_rate": round(block_rate * 100, 1),
+                "rejected_count": rejected,
+                "guard_rate": round(guard_rate * 100, 1),
                 "severity": "low",
             })
     return findings

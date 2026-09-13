@@ -595,11 +595,27 @@ class _CallIds:
 
 
 def _tool_result_observer_fields(tool_name: str, result: Any) -> tuple[str, Optional[str], Optional[str]]:
-    """Derive (status, error_type, error_message) from a tool result for observer hooks."""
+    """Derive (status, error_type, error_message) from a tool result for observer hooks.
+
+    Contract:
+      Postconditions: a dict result carrying {"rejected": true} alongside "error"
+        is a by-design refusal (validation/capacity/policy guard), classified as
+        status='rejected' so downstream calibers (outcome-collector, audit)
+        never mix guard friction into the true-error rate; runtime failures
+        keep status='error'."""
     try:
         parsed_result = json.loads(result) if isinstance(result, str) else result
-        if isinstance(parsed_result, dict) and parsed_result.get("error"):
-            return "error", "tool_error", str(parsed_result.get("error"))
+        if isinstance(parsed_result, dict):
+            # A tool that self-reports a classification (terminal's envelope
+            # carries status="blocked" for approval/hardline refusals) is the
+            # authority on its own outcome — respect it before key-sniffing.
+            body_status = parsed_result.get("status")
+            if body_status in ("blocked", "rejected") and parsed_result.get("error"):
+                return body_status, "guard_rejection", str(parsed_result.get("error"))
+            if parsed_result.get("error"):
+                if parsed_result.get("rejected") is True:
+                    return "rejected", "guard_rejection", str(parsed_result.get("error"))
+                return "error", "tool_error", str(parsed_result.get("error"))
     except Exception:
         pass
     try:
