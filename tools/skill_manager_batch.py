@@ -16,10 +16,17 @@ _BATCH_MAX_OPS = 20
 
 
 def _validate_batch_ops(operations, default_name, tool_error):
-    """Shape checks with no side effects. Returns (names, None) or (None, error_json)."""
+    """Shape checks with no side effects. Returns (names, None) or (None, error_json).
+
+    Contract:
+      Postconditions: shape violations are by-design rejections of the call;
+        the returned error JSON carries "rejected": true (via tools.registry
+        tool_rejection semantics applied by the caller's error factory) so
+        observer pipelines classify them as guard friction, not tool failure."""
     from tools.skill_manager_guards import _background_review_preflight
+    from tools.registry import tool_rejection
     def fail(i, msg):
-        return None, tool_error(f"operations[{i}]{msg}", success=False)
+        return None, tool_rejection(f"operations[{i}]{msg}", success=False)
     names = []
     for i, op in enumerate(operations):
         if not isinstance(op, dict) or not op.get("action"):

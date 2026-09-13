@@ -933,9 +933,20 @@ registry = ToolRegistry()
 
 
 def tool_error(message, **extra) -> str:
-    """``'{"error": "<message>", **extra}'`` — the error body is bounded so a raw
+    """`'{"error": "<message>", **extra}'` — the error body is bounded so a raw
     exception can't bloat history across retries."""
     return json.dumps({"error": _bound_error_text(str(message)), **extra}, ensure_ascii=False)
+
+
+def tool_rejection(message, **extra) -> str:
+    """`'{"error": "<message>", "rejected": true, **extra}'` — a by-design
+    refusal of the *call* (argument validation, capacity guard, curator
+    policy), as opposed to a runtime failure. Observer pipelines classify
+    ``rejected`` results as status='rejected' so guard friction never
+    pollutes the true-error caliber (model_tools._tool_result_observer_fields)."""
+    payload = {"error": _bound_error_text(str(message)), "rejected": True}
+    payload.update(extra)
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def tool_result(data=None, **kwargs) -> str:

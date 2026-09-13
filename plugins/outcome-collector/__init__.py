@@ -374,10 +374,11 @@ def _classify_tool_sequence(
         return "unknown", None
 
     total = len(tool_calls)
-    # Guard blocks are by-design gating (agent must gather evidence and
-    # retry), not tool failures. Count only genuine errors here; blocked
-    # calls still feed the retry-then-success pattern below so that
-    # [blocked, blocked, ok] classifies as success/retry_then_success.
+    # Guard blocks AND in-tool rejections are by-design gating (the agent must
+    # fix arguments or gather evidence and retry), not tool failures. Count
+    # only genuine errors here; blocked/rejected calls still feed the
+    # retry-then-success pattern below so that [rejected, rejected, ok]
+    # classifies as success/retry_then_success.
     error_calls = [tc for tc in tool_calls if tc["status"] == "error"]
     error_count = len(error_calls)
 
@@ -388,11 +389,11 @@ def _classify_tool_sequence(
     for tc in tool_calls:
         tool_outcomes.setdefault(tc["tool_name"], []).append(tc["status"])
     for tool_name, statuses in tool_outcomes.items():
-        has_error = "error" in statuses or "blocked" in statuses
+        has_error = any(s in ("error", "blocked", "rejected") for s in statuses)
         has_later_ok = False
         seen_error = False
         for s in statuses:
-            if s in ("error", "blocked"):
+            if s in ("error", "blocked", "rejected"):
                 seen_error = True
             elif s == "ok" and seen_error:
                 has_later_ok = True
@@ -577,7 +578,7 @@ def on_post_tool_call(**kwargs) -> None:
         "turn_id": kwargs.get("turn_id") or "",
         "tool_call_id": kwargs.get("tool_call_id") or "",
         "tool_name": tool_name,
-        "status": status if status in ("ok", "error", "blocked") else "ok",
+        "status": status if status in ("ok", "error", "blocked", "rejected") else "ok",
         "error_type": kwargs.get("error_type") or None,
         "error_message": err_msg,
         "duration_ms": kwargs.get("duration_ms", 0) or 0,

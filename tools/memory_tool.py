@@ -113,16 +113,16 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
     Missing ``old_text`` is recoverable (it can't be schema-required — needs a combinator
     the Codex backend rejects): return the inventory plus a retry instruction."""
     if action == "add" and not content:
-        return tool_error("Content is required for 'add' action.", success=False)
+        return tool_rejection("Content is required for 'add' action.", success=False)
     if action in ("replace", "remove") and not old_text:
         return json.dumps({
-            "success": False,
+            "success": False, "rejected": True,
             "error": (f"'{action}' needs old_text -- a short unique substring of the entry "
                       f"to {action}. None was provided. Reissue the {action} with old_text "
                       f"set to part of one of the current_entries below."),
             "current_entries": store._entries_for(target), "usage": store._usage(target)}, ensure_ascii=False)
     if action == "replace" and not content:
-        return tool_error("content is required for 'replace' action.", success=False)
+        return tool_rejection("content is required for 'replace' action.", success=False)
     return None
 
 
@@ -176,7 +176,7 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
     or batch (``operations``, atomic against the final budget). ``new_text``
     aliases ``content`` — callers mirror ``old_text`` with it (patch-tool shape)."""
     if store is None:
-        return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
+        return tool_rejection("Memory is not available. It may be disabled in config or this environment.", success=False)
     if content is None and new_text is not None:
         content = new_text
     # Strict providers send JSON null for optional fields; treat as omitted.
@@ -186,7 +186,7 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
         return json.dumps(target_error)
     if operations:
         if not isinstance(operations, list):
-            return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
+            return tool_rejection("operations must be a list of {action, content?, old_text?} objects.", success=False)
         denied = _background_delete_gate(action, operations, target)
         if denied is not None:
             return denied
@@ -196,7 +196,7 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
             return gate_result
         return json.dumps(store.apply_batch(target, operations), ensure_ascii=False)
     if action not in _STORE_ACTIONS:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_rejection(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
     invalid = (_validate_single_op(store, action, target, content, old_text)
                or _background_delete_gate(action, None, target, content, old_text)
                or _apply_write_gate(action, target, content, old_text))
@@ -238,12 +238,13 @@ def _memory_target_error(store: "MemoryStore", target: str) -> Optional[Dict[str
     """Return a shared validation error for an invalid or disabled target."""
     if target not in {"memory", "user"}:
         from tools.registry import _bound_error_text
-        return {"success": False,
+        return {"success": False, "rejected": True,
                 "error": _bound_error_text(f"Invalid memory target '{target}'. Use 'memory' or 'user'.")}
     if store.target_enabled(target):
         return None
     label = "USER.md" if target == "user" else "MEMORY.md"
-    return {"success": False, "error": f"Built-in {label} writes are disabled in memory config.", "target": target}
+    return {"success": False, "rejected": True,
+            "error": f"Built-in {label} writes are disabled in memory config.", "target": target}
 
 
 def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:
@@ -359,7 +360,7 @@ def _build_memory_schema_overrides() -> Dict[str, Any]:
     return {"description": description, "parameters": parameters}
 
 
-from tools.registry import registry, tool_error  # noqa: E402  (registration at import time)
+from tools.registry import registry, tool_error, tool_rejection  # noqa: E402  (registration at import time)
 
 registry.register(
     name="memory",

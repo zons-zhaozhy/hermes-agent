@@ -14,7 +14,10 @@ logger = logging.getLogger("tools.skill_manager_tool")
 
 
 def _refusal(message: str, **extra: Any) -> Dict[str, Any]:
-    return {"success": False, "error": message, **extra}
+    """By-design refusal of the call (policy/preflight guard). Carries
+    ``rejected: True`` so observer-side classification routes it to
+    status='rejected' instead of the true-error caliber."""
+    return {"success": False, "rejected": True, "error": message, **extra}
 
 
 def _is_background_review() -> bool:
