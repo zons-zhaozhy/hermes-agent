@@ -81,68 +81,8 @@ def _patch_managed_uv(request):
 
 
 @pytest.fixture(autouse=True)
-def _patch_gateway_discovery():
-    """Keep cmd_update's gateway auto-restart phase off this machine's gateways.
-
-    The restart phase used to swallow every exception at debug level, so these
-    end-to-end tests never noticed it touching real gateway discovery. Since
-    the phase is surfaced (#78574: an aborted restart now fails the update),
-    an unmocked ``find_gateway_pids`` on a box with a live gateway reaches the
-    conftest live-system guard and turns into a spurious ``sys.exit(1)``.
-    Discovery returning nothing makes the phase a clean no-op for every test
-    in this module (none of them assert on gateway restarts).
-    """
-    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
-         patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
-         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
-         patch(
-             # The plist lookup derives from the DEFAULT install root, so a dev box
-             # with a real ai.hermes.gateway LaunchAgent takes the live launchctl
-             # restart path (#88848) and its fail-closed contract exits 1 — same
-             # dev-box leak class as the label enumeration below. Point it at a
-             # nonexistent path so the branch is a clean no-op.
-             "hermes_cli.gateway.get_launchd_plist_path",
-             return_value=Path(os.environ.get("HERMES_HOME", "/tmp")) / "nonexistent-launchd-plist.plist",
-         ), \
-         patch(
-             # macOS launchd fleet restart: derived from the DEFAULT install
-             # root (not the sandboxed HERMES_HOME), so a dev box with a real
-             # ai.hermes.gateway LaunchAgent leaks into these tests — the
-             # mocked subprocess can't verify the restart and the fail-closed
-             # contract (#78574) exits 1. Empty labels = clean no-op.
-             "hermes_cli.gateway.launchd_gateway_labels_for_install",
-             return_value=[],
-         ), \
-         patch(
-             # Current-profile path: _restart_launchd_gateway_after_update
-             # bypasses the label enumeration above and talks to the REAL
-             # launchctl directly — same leak, same isolation need.
-             "hermes_cli.update_cmd._restart_launchd_gateway_after_update",
-             return_value=([], []),
-         ), \
-         patch(
-             # Runtime inventory reads control sockets / PID files from the
-             # DEFAULT install root — a dev box with a live gateway yields a
-             # non-empty plan and the zero-row fail-closed contract (#93406)
-             # exits 1. No plan → no expectation.
-             "hermes_cli.update_inventory.collect_runtime_inventory",
-             return_value=None,
-         ), \
-         patch(
-             "hermes_cli.update_inventory.report_unaccounted_runtimes",
-             return_value=False,
-         ), \
-         patch(
-             "hermes_cli.update_receipt.collect_fleet_versions",
-             return_value=[],
-         ), \
-         patch.object(
-             # The stale-module purge evicts ``hermes_cli.gateway`` from
-             # sys.modules mid-update; the restart phase's fresh import then
-             # loads an UNPATCHED copy, discarding every mock above.
-             update_cmd, "_purge_stale_hermes_modules", lambda *a, **kw: None,
-         ):
-        yield
+def _patch_gateway_discovery(isolated_update_runtime):
+    pass
 
 
 class TestCmdUpdateNpmLockfileCache:
@@ -1183,6 +1123,7 @@ class TestNodeRuntimeNpmResolution:
         from hermes_cli import update_cmd
 
         desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+        (desktop_dir / "package.json").write_text("{}", encoding="utf-8")
         packaged_exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
         build_ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
 

@@ -70,6 +70,25 @@ def test_no_lease_without_durable_row_or_when_persist_disabled():
     assert admission.lease is None and db.events == []
 
 
+def test_resolve_lease_wait_seconds_defaults_and_validation():
+    from agent.turn_facade_lease import LEASE_WAIT_SECONDS, resolve_lease_wait_seconds
+
+    # Independent expectations: absent/None/malformed config falls back to the default.
+    assert resolve_lease_wait_seconds(None) == LEASE_WAIT_SECONDS
+    assert resolve_lease_wait_seconds({}) == LEASE_WAIT_SECONDS
+    assert resolve_lease_wait_seconds({"agent": None}) == LEASE_WAIT_SECONDS
+    assert resolve_lease_wait_seconds({"agent": "nonsense"}) == LEASE_WAIT_SECONDS
+    assert resolve_lease_wait_seconds({"agent": {"turn_lease": "nonsense"}}) == LEASE_WAIT_SECONDS
+    # Valid overrides pass through, including the numeric-string form.
+    assert resolve_lease_wait_seconds({"agent": {"turn_lease": {"wait_seconds": 300}}}) == 300.0
+    assert resolve_lease_wait_seconds({"agent": {"turn_lease": {"wait_seconds": "120"}}}) == 120.0
+    # Typo, NaN, Inf, and sub-minimum values warn and fall back; never raise.
+    for bad in ("typo", float("nan"), float("inf"), float("-inf"), 0, -5):
+        assert resolve_lease_wait_seconds(
+            {"agent": {"turn_lease": {"wait_seconds": bad}}}
+        ) == LEASE_WAIT_SECONDS
+
+
 def test_admission_sets_holder_attrs_and_release_clears_them(monkeypatch):
     monkeypatch.setattr(
         "agent.turn_liveness.resolve_turn_liveness_settings", lambda cfg: (None, 1.0)

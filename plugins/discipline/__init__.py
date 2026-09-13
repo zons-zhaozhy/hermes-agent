@@ -13,6 +13,7 @@ curl-safety / log-first-diagnosis / tool-safety / no-bypass / no-pushback)
   tool_safety      灾难删除/批量替换无验证等工具滥用拦截
   no_bypass        被护栏拦截后禁换通道绕过
   no_pushback      输出推责话术拦截
+  rule_reinjection 规则常驻重注入(.hermes-rules.md 每轮权威版注入,防纪律衰减)
 
 分层依据见 docs/guard-system-architecture.md。
 
@@ -34,6 +35,7 @@ from plugins.discipline import (
     no_bypass,
     no_guessing,
     no_pushback,
+    rule_reinjection,
     tool_safety,
 )
 
@@ -48,6 +50,7 @@ _SUB_GUARDS = (
     ("tool_safety", tool_safety),
     ("no_bypass", no_bypass),
     ("no_pushback", no_pushback),
+    ("rule_reinjection", rule_reinjection),
 )
 
 

@@ -9,8 +9,9 @@
 
 ```
 L4 审计层  OutcomeAnalysis / outcomes.db        —— 事后度量,不改行为
-L3 执行纪律 no-guessing / db-safety / error-discipline / curl-safety
-            —— 管"怎么跑命令"(不瞎猜/不裸奔/不吞错)
+L3 执行纪律 no-guessing / db-safety / error-discipline / curl-safety /
+            rule-reinjection
+            —— 管"怎么跑命令"(不瞎猜/不裸奔/不吞错) + 规则常驻不衰减
 L2 写入质量 coding-standards-guard / four-axis / PreWriteGuard /
             duplicate-check / patch-first / source-code-write-guard
             —— 管"写什么"(规范/证据/查重/唯一通道)

@@ -76,6 +76,15 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 CHECKPOINT_BASE = get_hermes_home() / "checkpoints"
+_CHECKPOINT_BASE_AT_IMPORT = CHECKPOINT_BASE
+
+
+def _resolve_checkpoint_base() -> Path:
+    """Active profile's checkpoint root at call time: the patched ``CHECKPOINT_BASE`` when a test
+    changed it, else live profile-scoped HERMES_HOME — under the multiplexed gateway one process
+    serves every profile, so the import-time constant would write every profile's code-edit
+    checkpoints into the launch profile's store."""
+    return CHECKPOINT_BASE if CHECKPOINT_BASE != _CHECKPOINT_BASE_AT_IMPORT else get_hermes_home() / "checkpoints"
 
 # Single shared store directory under CHECKPOINT_BASE.
 _STORE_DIRNAME = "store"
@@ -344,7 +353,7 @@ def _project_hash(working_dir: str) -> str:
 
 def _store_path(base: Optional[Path] = None) -> Path:
     """Return the single shared shadow store path."""
-    return (base or CHECKPOINT_BASE) / _STORE_DIRNAME
+    return (base or _resolve_checkpoint_base()) / _STORE_DIRNAME
 
 
 def _shadow_repo_path(working_dir: str) -> Path:  # pragma: no cover — kept for BC
@@ -360,6 +369,11 @@ def _shadow_repo_path(working_dir: str) -> Path:  # pragma: no cover — kept fo
 
 def _index_path(store: Path, dir_hash: str) -> Path:
     return store / _INDEXES_DIRNAME / dir_hash
+
+
+def _store_has_head(store: Path) -> bool:
+    """Shared-store liveness probe: HEAD exists once the store is initialised."""
+    return (store / "HEAD").exists()
 
 
 def _ledger_path(store: Path, dir_hash: str) -> Path:
@@ -464,6 +478,18 @@ def _git_env(
     return env
 
 
+def _git_subprocess(cmd: List[str], env: dict, timeout: int, cwd: Optional[str] = None):
+    # creationflags suppresses the per-call conhost flash on Windows (no-op on POSIX).
+    # Text mode both replaces undecodable path bytes and normalizes CR/CRLF.
+    text_options = {} if "-z" in cmd else {"text": True, "encoding": "utf-8", "errors": "replace"}
+    result = subprocess.run(cmd, capture_output=True, timeout=timeout, **text_options,
+                            env=env, cwd=cwd, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+    if "-z" in cmd:
+        result.stdout = os.fsdecode(result.stdout)
+        result.stderr = result.stderr.decode("utf-8", errors="replace")
+    return result
+
+
 def _repair_bare_repo_dirs(store: Path) -> None:
     """Recreate refs/ and branches/ dirs that ``git gc`` may have removed.
 
@@ -523,19 +549,7 @@ def _run_git(
     # still failing every snapshot on Aug 14).
     for attempt in range(1, _LOCK_RETRY_ATTEMPTS + 1):
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True, encoding='utf-8', errors='replace',
-                timeout=timeout,
-                env=env,
-                cwd=str(normalized_working_dir),
-                stdin=subprocess.DEVNULL,
-                # Checkpoints fire several bare git calls per turn from the
-                # console-less desktop/gateway backend; suppress the per-call
-                # conhost flash on Windows (no-op on POSIX).
-                creationflags=windows_hide_flags(),
-            )
+            result = _git_subprocess(cmd, env, timeout, cwd=str(normalized_working_dir))
         except subprocess.TimeoutExpired:
             msg = f"git timed out after {timeout}s: {' '.join(cmd)}"
             logger.error(msg, exc_info=True)
@@ -553,7 +567,8 @@ def _run_git(
             return False, "", str(exc)
 
         ok = result.returncode == 0
-        stdout = result.stdout.strip()
+        # NUL-delimited output contains literal paths, including leading spaces.
+        stdout = result.stdout if "-z" in args else result.stdout.strip()
         stderr = result.stderr.strip()
         if ok or result.returncode in allowed_returncodes:
             return ok, stdout, stderr
@@ -1011,12 +1026,8 @@ class CheckpointManager:
             digest = _hash_file(path)
             if digest is None:
                 return
-            working_dir = self.get_working_dir_for_path(str(path))
-            store = _store_path(CHECKPOINT_BASE)
-            dir_hash = _project_hash(working_dir)
-            ledger = _load_ledger(store, dir_hash)
-            ledger[str(path)] = {"sha256": digest, "ts": time.time()}
-            _save_ledger(store, dir_hash, ledger)
+            store, dir_hash = _store_path(), _project_hash(self.get_working_dir_for_path(str(path)))
+            _save_ledger(store, dir_hash, {**_load_ledger(store, dir_hash), str(path): {"sha256": digest, "ts": time.time()}})
         except Exception as exc:
             logger.debug("record_agent_write failed for %s: %s", file_path, exc)
 
@@ -1034,18 +1045,19 @@ class CheckpointManager:
             return {"success": False, "error": hash_err}
 
         abs_dir = str(_normalize_path(working_dir))
-        store = _store_path(CHECKPOINT_BASE)
-        if not (store / "HEAD").exists():
+        store = _store_path()
+        if not _store_has_head(store):
             return {"success": False, "error": "No checkpoints exist for this directory"}
 
         dir_hash = _project_hash(abs_dir)
         index_file = _index_path(store, dir_hash)
 
         # Stage the current tree so the name-only diff sees new files too.
+        # -z keeps literal paths (leading spaces / any byte sequence) intact.
         _run_git(["add", "-A"], store, abs_dir,
                  timeout=_GIT_TIMEOUT * 2, index_file=index_file)
         ok, names_out, err = _run_git(
-            ["diff", "--name-only", commit_hash, "--cached"],
+            ["diff", "--name-only", "-z", commit_hash, "--cached"],
             store, abs_dir, index_file=index_file,
         )
         # Reset the index back to the project ref so it doesn't drift.
@@ -1064,10 +1076,8 @@ class CheckpointManager:
                     "ledger_empty": True}
         restore: List[str] = []
         skipped: List[str] = []
-        for rel in names_out.splitlines():
-            rel = rel.strip()
-            if not rel:
-                continue
+        # NUL-separated literal paths; whitespace is part of the file name.
+        for rel in filter(None, names_out.split("\x00")):
             abs_path = Path(abs_dir) / rel
             entry = ledger.get(str(abs_path))
             recorded = entry.get("sha256") if isinstance(entry, dict) else None
@@ -1209,8 +1219,8 @@ class CheckpointManager:
         entry carries the extra ``workdir`` key so callers can label which
         project a checkpoint belongs to.
         """
-        store = _store_path(CHECKPOINT_BASE)
-        if not (store / "HEAD").exists():
+        store = _store_path()
+        if not _store_has_head(store):
             return []
         results: List[Dict] = []
         for meta in _list_projects(store):
@@ -1714,8 +1724,10 @@ class CheckpointManager:
         # a threshold that drifted between the two would make a file both
         # absent from the checkpoint and not recognised as capped at restore,
         # which is precisely the deletion this change exists to prevent.
+        # NUL-separated literal paths; whitespace is part of the file name.
         oversize = [
-            rel for rel in paths if self._exceeds_size_cap(abs_workdir / rel)
+            rel for rel in paths
+            if rel and self._exceeds_size_cap(abs_workdir / rel)
         ]
         if not oversize:
             return
@@ -2361,7 +2373,7 @@ def maybe_auto_prune_checkpoints(
     Returns ``{"skipped": bool, "result": prune_checkpoints-dict,
     "error": optional str}``.
     """
-    base = checkpoint_base or CHECKPOINT_BASE
+    base = checkpoint_base or _resolve_checkpoint_base()
     out: Dict[str, object] = {"skipped": False}
 
     try:
@@ -2431,7 +2443,7 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
     ``pre_v2_projects``, since ``prune_checkpoints`` deletes orphans from
     both layouts.
     """
-    base = checkpoint_base or CHECKPOINT_BASE
+    base = checkpoint_base or _resolve_checkpoint_base()
     out: Dict = {
         "base": str(base),
         "store_size_bytes": 0,
@@ -2506,7 +2518,7 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
 
     Returns ``{"bytes_freed": N, "deleted": bool}``.
     """
-    base = checkpoint_base or CHECKPOINT_BASE
+    base = checkpoint_base or _resolve_checkpoint_base()
     out = {"bytes_freed": 0, "deleted": False}
     if not base.exists():
         return out
@@ -2525,7 +2537,7 @@ def clear_legacy(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
 
     Returns ``{"bytes_freed": N, "deleted": count}``.
     """
-    base = checkpoint_base or CHECKPOINT_BASE
+    base = checkpoint_base or _resolve_checkpoint_base()
     out = {"bytes_freed": 0, "deleted": 0}
     if not base.exists():
         return out
