@@ -209,6 +209,47 @@ class TestResponseSignalsComplete:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Judge goal-text visibility: completion criteria at the tail of a long
+# kanban --goal card body must survive into the judge prompt (regression
+# for the 2000-char structural truncation bug fixed via _JUDGE_GOAL_CHARS).
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestJudgeGoalVisibility:
+    def test_tail_criteria_survive_truncation(self):
+        """A card body >2000 chars with criteria at its tail reaches the judge prompt intact.
+
+        Contract: Preconditions — goal text longer than the old 2000-char cut, criterion
+        marker only at the tail. Postconditions — marker present in the assembled judge
+        prompt (goal segment not truncated); verdict parsed from the fake judge reply.
+        """
+        from typing import Any
+        import hermes_cli.goals as goals
+
+        tail_marker = "TAIL_CRITERION_SESSION_BOARD_CLEARED"
+        body = ("filler context line about the task.\n" * 300) + f"\nfinal criterion: {tail_marker}"
+        goal = f"card title\n\n{body}"
+        assert len(goal) > 2000
+
+        captured: dict = {}
+
+        def fake_call_llm(call_llm: Any, system: str, prompt: str, timeout: Any) -> str:
+            captured["prompt"] = prompt
+            return '{"verdict":"continue","reason":"probe"}'
+
+        orig = goals._call_goal_judge_llm
+        goals._call_goal_judge_llm = fake_call_llm
+        try:
+            verdict, reason, _, _, _ = goals.judge_goal(goal=goal, last_response="probe")
+        finally:
+            goals._call_goal_judge_llm = orig
+
+        assert verdict == "continue" and reason == "probe"
+        assert tail_marker in captured["prompt"], (
+            "tail-of-body completion criterion was truncated out of the judge prompt")
+
+
+# ──────────────────────────────────────────────────────────────────────
 # LoopState round-trip
 # ──────────────────────────────────────────────────────────────────────
 

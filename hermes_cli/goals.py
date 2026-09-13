@@ -792,6 +792,31 @@ def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit] + "… [truncated]"
 
 
+def _truncate_goal(text: str, limit: int) -> str:
+    """Head+tail truncation for goal texts.
+
+    Contract: Preconditions — limit >= 2 * _GOAL_TAIL_KEEPER_CHARS so head and tail
+    segments cannot overlap. Postconditions — returned string length <= limit + marker
+    overhead; when text exceeds limit, both the first `limit - tail` chars AND the final
+    _GOAL_TAIL_KEEPER_CHARS chars are present. Rationale: kanban --goal cards carry
+    completion criteria at the *tail* of the body; a plain head cut (the old behaviour)
+    structurally hides those criteria from the judge regardless of the limit.
+    """
+    if not text or len(text) <= limit:
+        return text
+    tail = _GOAL_TAIL_KEEPER_CHARS
+    head = max(1, limit - tail)
+    marker = "… [truncated middle] "
+    # Reserve marker length inside the budget so the assembled string stays <= limit + small slack.
+    head = max(1, head - len(marker))
+    return text[:head] + marker + text[-tail:]
+
+
+# How much of a goal's tail is always preserved when the goal text exceeds the judge cap.
+# Completion criteria live at the tail of card bodies, so the tail is never negotiable.
+_GOAL_TAIL_KEEPER_CHARS = 2000
+
+
 # Judge-reason transport sentinel prefix (mirrors the literal written into turn_reasons).
 _JUDGE_UNREACHABLE_PREFIX = "[judge unreachable"
 
@@ -1164,7 +1189,7 @@ def judge_goal(
             )
             contract_block = f"{contract_block}\n{extra}"
         prompt = JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE.format(
-            goal=_truncate(goal, _JUDGE_GOAL_CHARS),
+            goal=_truncate_goal(goal, _JUDGE_GOAL_CHARS),
             contract_block=_truncate(contract_block, 2500),
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
             background_block=background_block,
@@ -1177,7 +1202,7 @@ def judge_goal(
             f"- {i}. {text}" for i, text in enumerate(clean_subgoals, start=1)
         )
         prompt = JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
-            goal=_truncate(goal, _JUDGE_GOAL_CHARS),
+            goal=_truncate_goal(goal, _JUDGE_GOAL_CHARS),
             subgoals_block=_truncate(subgoals_block, 2000),
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
             background_block=background_block,
@@ -1187,7 +1212,7 @@ def judge_goal(
         )
     else:
         prompt = JUDGE_USER_PROMPT_TEMPLATE.format(
-            goal=_truncate(goal, _JUDGE_GOAL_CHARS),
+            goal=_truncate_goal(goal, _JUDGE_GOAL_CHARS),
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
             background_block=background_block,
             tool_calls_block=tool_calls_block,
