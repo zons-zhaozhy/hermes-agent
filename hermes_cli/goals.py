@@ -37,6 +37,10 @@ DEFAULT_JUDGE_TIMEOUT = 30.0
 DEFAULT_JUDGE_MAX_TOKENS = 4096
 # Cap how much of the last response we send to the judge.
 _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
+# Cap for the goal text sent to the judge prompt. Card bodies (kanban --goal titles+bodies)
+# routinely carry completion criteria written at the tail of a 4KB+ spec; a 2000-char cut
+# structurally hides those criteria from the judge, so completion rules get truncated away.
+_JUDGE_GOAL_CHARS = 8000
 # Consecutive judge *parse* failures (empty / non-JSON) before the loop auto-pauses and points at
 # the goal_judge config. API/transport errors do NOT count — those are tracked separately below.
 # Guards against small models that cannot follow the strict JSON contract burning the whole budget.
@@ -1160,7 +1164,7 @@ def judge_goal(
             )
             contract_block = f"{contract_block}\n{extra}"
         prompt = JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE.format(
-            goal=_truncate(goal, 2000),
+            goal=_truncate(goal, _JUDGE_GOAL_CHARS),
             contract_block=_truncate(contract_block, 2500),
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
             background_block=background_block,
@@ -1173,7 +1177,7 @@ def judge_goal(
             f"- {i}. {text}" for i, text in enumerate(clean_subgoals, start=1)
         )
         prompt = JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
-            goal=_truncate(goal, 2000),
+            goal=_truncate(goal, _JUDGE_GOAL_CHARS),
             subgoals_block=_truncate(subgoals_block, 2000),
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
             background_block=background_block,
@@ -1183,7 +1187,7 @@ def judge_goal(
         )
     else:
         prompt = JUDGE_USER_PROMPT_TEMPLATE.format(
-            goal=_truncate(goal, 2000),
+            goal=_truncate(goal, _JUDGE_GOAL_CHARS),
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
             background_block=background_block,
             tool_calls_block=tool_calls_block,
