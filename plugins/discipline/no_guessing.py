@@ -305,6 +305,27 @@ def _is_terminal_with_command(tool_name: str, args: dict) -> bool:
     return tool_name == "terminal" and bool(args.get("command"))
 
 
+def _is_registry_list_call(command: str) -> bool:
+    """Contract: 判定命令是否为真正的 build.sh/deploy.sh --list 注册表列举调用。
+
+    与 _needs_name_verification 的区别：后者对 --list/-h/--help 一律 readonly 豁免
+    （免核验），本函数恰恰要采集这些 readonly 输出——所以不能复用，必须独立判定。
+    """
+    if "--list" not in command:
+        return False
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    if "--list" not in tokens:
+        return False
+    return any(
+        tok.endswith(("build.sh", "deploy.sh"))
+        and (i == 0 or tokens[i - 1] in ("bash", "sh", "sudo", "source", "."))
+        for i, tok in enumerate(tokens)
+    )
+
+
 def _needs_name_verification(command: str) -> bool:
     """Contract: 只在命令真正调用 build.sh/deploy.sh(可执行令牌)时触发核验。
     0828 实锤误拦修复: 'git add deploy/build.sh'/'bash -n x.sh && ...' 只是
@@ -500,9 +521,13 @@ def _on_post_tool_call(**kwargs):
     output = str(result.get("output", ""))
     state = _state(kwargs.get("session_id", ""))
 
-    if "--list" in command and exit_code == 0 and len(output) > 50:
+    if _is_registry_list_call(command) and exit_code == 0 and len(output) > 50:
         # 注册表输出采集（保留最新一份）——会话内存态 + 文件持久化双写
-        # （0829 修复:内存态在钩子链路下可能丢失,文件是 pre 侧兜底数据源）
+        # （0828 修复:内存态在钩子链路下可能丢失,文件是预侧兜底数据源）
+        # （0909 修复:命令文本恰含 --list 的 grep/编辑类调用会把无关输出当注册表
+        #  写进缓存（实锤:缓存内容=源码 grep 结果），导致 R3/R7 全量误拦。
+        #  0914 根修:独立判定函数 _is_registry_list_call——勿复用 _needs_name_verification,
+        #  它对 --list 一律 readonly 豁免返回 False,会把真注册表输出也排除掉。）
         state["registry_output"] = output
         state.pop("last_failed_command", None)
         try:
