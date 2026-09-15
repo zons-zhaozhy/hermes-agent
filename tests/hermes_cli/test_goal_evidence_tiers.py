@@ -68,3 +68,20 @@ def test_counts_sum_to_total_calls():
     assert out.startswith("5 call(s):")
     assert "observed_evidence=3" in out
     assert "preparatory=2" in out
+
+
+def test_every_judge_template_carries_prepared_not_observed_rule():
+    # Invariant (not a snapshot): every prompt shape the judge can assemble —
+    # plain, subgoals, contract — must teach the prepared≠observed distinction,
+    # so a future 4th template cannot silently drop the evidence-tier rule.
+    from hermes_cli import goals as goals_mod
+
+    templates = [
+        goals_mod.JUDGE_USER_PROMPT_TEMPLATE,
+        goals_mod.JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE,
+        goals_mod.JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE,
+    ]
+    for tpl in templates:
+        low = tpl.lower()
+        assert "observed_evidence" in low, "template missing the split annotation reference"
+        assert "prepared is not observed" in low, "template missing the tier rule"
