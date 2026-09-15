@@ -6893,6 +6893,36 @@ def _ladder_parameter_rungs(
     # ZAI vision models reject max_tokens with code 1210 and a message that never
     # mentions "max_tokens", so detect it explicitly.
     _is_zai_param_error = "1210" in err_str and "bigmodel" in str(getattr(client, "base_url", ""))
+    # ZAI thinking-capable models reject temperature with the same code 1210 and a message
+    # about thinking being unable to disable — the parameter name never appears, so the
+    # generic detector above misses it. Strip temperature (and the thinking extra_body, which
+    # carries the same conflict) once and warn: on the global endpoint this family of errors
+    # usually means the model is not provisioned for this key at all, and the actionable fix
+    # is an explicit base_url pointing at the CN coding endpoint.
+    _zai_base = str(getattr(client, "base_url", "")).lower()
+    _is_zai_thinking_conflict = (
+        "1210" in err_str and "thinking" in err_str.lower()
+        and ("z.ai" in _zai_base or "bigmodel" in _zai_base)
+    )
+    if _is_zai_thinking_conflict:
+        retry_kwargs = {k: v for k, v in kwargs.items() if k != "temperature"}
+        _eb = retry_kwargs.get("extra_body")
+        if isinstance(_eb, dict):
+            retry_kwargs["extra_body"] = {k: v for k, v in _eb.items() if k != "thinking"}
+        logger.warning(
+            "Auxiliary %s%s: ZAI rejected the request with code 1210 (thinking-parameter "
+            "conflict, message never names the parameter); retrying once without "
+            "temperature/thinking. If this persists, the model is likely not provisioned on "
+            "this endpoint for this key — set an explicit base_url (CN coding endpoint) for "
+            "this auxiliary task: %s",
+            task or "call", tag, first_err,
+        )
+        resp, new_err = yield from _rung(
+            _LadderStep("call", (client, retry_kwargs)), _param_rung_accepts)
+        if new_err is None:
+            return resp, None, retry_kwargs
+        first_err = new_err
+        kwargs = retry_kwargs
     if max_tokens is not None and (
         "max_tokens" in err_str or "unsupported_parameter" in err_str
         or _is_unsupported_parameter_error(first_err, "max_tokens") or _is_zai_param_error
