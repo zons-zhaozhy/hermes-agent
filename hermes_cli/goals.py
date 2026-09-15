@@ -56,6 +56,15 @@ DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5
 # different reason resets the counter. Pause (not block) so the user can swap the judge model
 # (auxiliary.goal_judge.model) or resume with /goal resume.
 DEFAULT_MAX_REPEATED_JUDGE_REASONS = 3
+# Consecutive cross-review VETOES of a primary judge's "done" verdict before the loop auto-pauses
+# for a human. The cross-review (auxiliary.goal_cross_review, a DIFFERENT provider/model from the
+# primary judge) is an independent adversarial check that hunts for ways the agent gamed or talked
+# past the primary judge. A single veto sends the agent back to produce real evidence; N vetos in a
+# row means the judge and cross-review genuinely disagree, so a human must arbitrate instead of the
+# loop bouncing forever. Pause (not block) so the user can /goal resume to override.
+DEFAULT_MAX_CROSS_REVIEW_CHALLENGES = 3
+# Cross-review output is one short JSON object; a large budget invites the reviewer to ramble.
+CROSS_REVIEW_MAX_TOKENS = 512
 
 # Quality gates: deterministic shell commands that must pass before the judge may declare DONE. A
 # failed gate short-circuits the judge — its output IS the continuation prompt, so the agent works
@@ -197,6 +206,36 @@ JUDGE_SYSTEM_PROMPT = (
     '{"verdict": "wait", "wait_for_seconds": <int>, "reason": "<one sentence>"}\n'
     "The legacy shape {\"done\": <true|false>, \"reason\": \"...\"} is still "
     "accepted (true=done, false=continue)."
+)
+
+# Independent adversarial cross-review of the primary judge's "done" verdict. Deliberately worded
+# VERY differently from JUDGE_SYSTEM_PROMPT (adversarial reviewer hunting to OVERTURN, vs a strict
+# judge deciding) so the reviewer doesn't inherit the judge's framing. Runs on a DIFFERENT
+# provider/model (auxiliary.goal_cross_review) so a single weak judge model can't rubber-stamp its
+# own verdict. Its job is to catch gaming: self-reported success, subtask-as-goal, zero observed
+# evidence, or a judge rationale that quotes the agent's words instead of a verifiable artifact.
+CROSS_REVIEW_SYSTEM_PROMPT = (
+    "You are an independent ADVERSARIAL reviewer. A primary judge has just ruled that an "
+    "autonomous agent COMPLETED a user's goal (verdict \"done\"). Your job is NOT to agree — it is "
+    "to try to OVERTURN that ruling by hunting for any way the agent gamed the judge or talked past "
+    "the goal.\n\n"
+    "You receive: the goal text, the agent's response, the primary judge's done-rationale, and a "
+    "summary of the agent's tool calls this turn.\n\n"
+    "Challenge the DONE ruling (challenge=true) when ANY of these hold:\n"
+    "- The agent's \"evidence\" is self-reported wording (\"done\", \"all tests pass\", \"completed\", "
+    "\"verified\", \"fixed\") with no actual tool OUTPUT line backing it.\n"
+    "- The evidence proves a RELATED subtask, not the goal's own stated outcome.\n"
+    "- The tool-call summary shows observed_evidence == 0 (only edits/writes, no terminal/test/"
+    "browser/execute runs) yet the agent claims a runtime outcome.\n"
+    "- The primary judge's rationale quotes the agent's words rather than a verifiable artifact "
+    "(command output, file excerpt, URL, exit code).\n"
+    "- The response leaves a known gap, TODO, or \"will do later\" that the goal requires.\n\n"
+    "Confirm (challenge=false) ONLY when the response contains independently checkable evidence "
+    "(a pasted command output, exit code, file contents, or URL) that directly satisfies the "
+    "goal's outcome, AND observed_evidence > 0.\n\n"
+    "Reply ONLY with a single JSON object on one line:\n"
+    '{"challenge": true, "reason": "<one sentence naming the missing evidence or specific gap>"}\n'
+    '{"challenge": false, "reason": "<one sentence citing the concrete evidence that survives scrutiny>"}\n'
 )
 
 # Judge prompt line for live delegated subagents (WAIT-for-seconds vs CONTINUE).
@@ -522,6 +561,10 @@ class GoalState:
     # Tracked separately from parse failures: a broken API key returns 401 every call and must
     # auto-pause instead of burning the budget on an unreachable judge.
     consecutive_transport_failures: int = 0   # judge API/transport errors in a row
+    # Consecutive cross-review VETOES of the primary judge's "done" verdict. One veto sends the
+    # agent back for real evidence; DEFAULT_MAX_CROSS_REVIEW_CHALLENGES vetos in a row auto-pause
+    # for a human (the judge and reviewer genuinely disagree). Reset to 0 once done stands.
+    cross_review_challenges: int = 0
     # Per-turn judge reasons (oldest→newest), capped. Lets the judge see the
     # trajectory across turns and detect drift (many turns on one sub-problem
     # while total scope stalls). Backwards-compatible: defaults to empty.
@@ -563,7 +606,7 @@ class GoalState:
     def from_json(cls, raw: str) -> "GoalState":
         data = json.loads(raw)
         raw_subgoals = data.get("subgoals") or []
-        ints = {k: int(data.get(k) or 0) for k in ("turns_used", "consecutive_parse_failures", "consecutive_transport_failures", "waiting_on_delegations")}
+        ints = {k: int(data.get(k) or 0) for k in ("turns_used", "consecutive_parse_failures", "consecutive_transport_failures", "waiting_on_delegations", "cross_review_challenges")}
         floats = {k: float(data.get(k) or 0.0) for k in ("created_at", "last_turn_at", "waiting_until", "waiting_since")}
         return cls(
             goal=data.get("goal", ""),
@@ -954,6 +997,112 @@ def _call_goal_judge_llm(call_llm, system_prompt: str, user_prompt: str, timeout
         return resp.choices[0].message.content or ""
     except Exception:
         return ""
+
+
+CROSS_REVIEW_USER_PROMPT_TEMPLATE = (
+    "Goal:\n{goal}\n\n"
+    "Agent's response:\n{response}\n\n"
+    "Primary judge's done-rationale:\n{judge_reason}\n\n"
+    "{tool_calls_block}"
+    "Scrutinize the primary judge's \"done\" ruling adversarially. Is there any way the agent "
+    "gamed the judge or talked past the goal? Reply with challenge=true to veto, or false to confirm.\n"
+)
+
+
+def _goal_cross_review_setting(key: str, default, cast):
+    """Resolve ``auxiliary.goal_cross_review.<key>``; non-positive/garbage falls back to ``default``."""
+    try:
+        from hermes_cli.config import load_config
+
+        value = cast((load_config().get("auxiliary") or {}).get("goal_cross_review", {}).get(key, default))
+        if value > 0:
+            return value
+    except Exception:
+        pass
+    return default
+
+
+def _goal_cross_review_timeout() -> float:
+    return _goal_cross_review_setting("timeout", DEFAULT_JUDGE_TIMEOUT, float)
+
+
+def _render_cross_review_prompt(goal: str, last_response: str, judge_reason: str,
+                                tool_calls_summary: Optional[str]) -> str:
+    """Cross-review user prompt: the goal, the agent's claim, the judge's rationale, and the tool
+    calls. Deliberately exposes the judge's rationale so the reviewer can catch a judge that quoted
+    the agent's words instead of a verifiable artifact."""
+    return CROSS_REVIEW_USER_PROMPT_TEMPLATE.format(
+        goal=_truncate_goal(goal, _JUDGE_GOAL_CHARS),
+        response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+        judge_reason=_truncate(judge_reason or "", 500),
+        tool_calls_block=_render_tool_calls_block(tool_calls_summary),
+    )
+
+
+def _call_goal_cross_review(call_llm, prompt: str, timeout: Optional[float]) -> str:
+    """Route through ``call_llm`` so ``auxiliary.goal_cross_review.*`` config applies. This is a
+    DIFFERENT task key from ``goal_judge``, so a distinct provider/model is expected by design."""
+    resp = call_llm(
+        task="goal_cross_review",
+        messages=[{"role": "system", "content": CROSS_REVIEW_SYSTEM_PROMPT}, {"role": "user", "content": prompt}],
+        temperature=0, max_tokens=CROSS_REVIEW_MAX_TOKENS, timeout=timeout,
+    )
+    try:
+        return resp.choices[0].message.content or ""
+    except Exception:
+        return ""
+
+
+def _parse_cross_review_response(raw: str) -> Tuple[bool, str, bool]:
+    """Parse the cross-review reply, fail-open. Returns ``(challenge, reason, parse_failed)``.
+    ``parse_failed`` flags non-JSON/missing-``challenge`` output so the caller fails OPEN (done
+    stands) rather than wedging the loop on a broken reviewer."""
+    if not raw:
+        return False, "cross-review returned empty response", True
+    data = _extract_json_object(raw)
+    if data is None:
+        return False, f"cross-review reply was not JSON: {_truncate(raw, 200)!r}", True
+    challenge_raw = data.get("challenge")
+    if isinstance(challenge_raw, bool):
+        challenge = challenge_raw
+    elif isinstance(challenge_raw, str):
+        challenge = challenge_raw.strip().lower() in {"true", "yes", "1", "challenge", "veto"}
+    else:
+        return False, "cross-review reply missing 'challenge' field", True
+    reason = str(data.get("reason") or "").strip() or "no reason provided"
+    return challenge, reason, False
+
+
+def _run_cross_review(goal: str, last_response: str, judge_reason: str,
+                      tool_calls_summary: Optional[str]) -> Optional[Tuple[bool, str]]:
+    """Independently cross-review the primary judge's "done" verdict.
+
+    Contract:
+      Preconditions: goal is a non-empty str; judge_reason is the primary judge's done-rationale.
+      Postconditions: returns None when the reviewer is UNAVAILABLE (import/API/parse failure) so
+        the caller FAILS OPEN and lets "done" stand — a broken reviewer must never wedge the loop;
+        otherwise returns (challenge, reason) where challenge=True vetoes the done verdict.
+    """
+    if not goal.strip():
+        return None
+    try:
+        from agent.auxiliary_client import call_llm
+    except Exception as exc:
+        logger.warning("goal cross-review: auxiliary client import failed: %s", exc)
+        return None
+    prompt = _render_cross_review_prompt(goal, last_response, judge_reason, tool_calls_summary)
+    timeout = _goal_cross_review_timeout()
+    try:
+        raw = _call_goal_cross_review(call_llm, prompt, timeout)
+    except Exception as exc:
+        logger.warning("goal cross-review: API call failed (%s) — failing open to done", exc)
+        return None
+    challenge, reason, parse_failed = _parse_cross_review_response(raw)
+    if parse_failed:
+        logger.warning("goal cross-review: unparseable reply %r — failing open to done", _truncate(raw, 200))
+        return None
+    logger.info("goal cross-review: challenge=%s reason=%s", challenge, _truncate(reason, 120))
+    return challenge, reason
 
 
 def _parse_judge_response(raw: str) -> Tuple[str, str, bool, Optional[Dict[str, Any]]]:
@@ -1874,6 +2023,33 @@ class GoalManager:
             )
 
         if verdict == "done":
+            # Independent cross-review of the done verdict (a DIFFERENT provider/model via
+            # auxiliary.goal_cross_review). A veto sends the agent back for real evidence; N vetos
+            # in a row auto-pause for a human. Reviewer unavailable → fail open (done stands).
+            cross = _run_cross_review(state.goal, last_response, reason, tool_calls_summary)
+            if cross is not None and cross[0]:
+                challenge_reason = cross[1]
+                state.cross_review_challenges += 1
+                state.last_verdict = "continue"
+                state.last_reason = f"cross-review vetoed done: {challenge_reason}"
+                if state.cross_review_challenges >= DEFAULT_MAX_CROSS_REVIEW_CHALLENGES:
+                    return self._pause_decision(
+                        f"cross-review vetoed done {state.cross_review_challenges} turns in a row: {challenge_reason}",
+                        "continue", reason,
+                        f"🛡 Goal paused — the independent cross-review vetoed the done verdict "
+                        f"{state.cross_review_challenges} times in a row. The judge and reviewer disagree; "
+                        "review the evidence, then /goal resume to override.",
+                    )
+                self._save()
+                return {
+                    "status": "active",
+                    "should_continue": True,
+                    "continuation_prompt": self.next_continuation_prompt(reason=challenge_reason),
+                    "verdict": "continue",
+                    "reason": challenge_reason,
+                    "message": f"🛡 Cross-review vetoed done: {challenge_reason}",
+                }
+            state.cross_review_challenges = 0
             state.status = "done"
             self._save()
             return _decision("done", False, None, "done", reason, f"✓ Goal achieved: {reason}")
