@@ -316,7 +316,26 @@ CURATOR_REVIEW_PROMPT = (
     "a distinct trigger'. Pairwise distinctness is the wrong bar. The "
     "right bar is: 'would a human maintainer write this as N separate "
     "skills, or as one skill with N labeled subsections?' When the "
-    "answer is the latter, merge.\n\n"
+    "answer is the latter, merge.\n"
+    "6. Every skill carries an evidence= tag (observed/documented/inferred/"
+    "unverified) reflecting how well its knowledge is backed. When you keep or "
+    "consolidate a skill, its frontmatter must declare metadata.hermes."
+    "provenance.evidence HONESTLY: observed = the lesson is backed by a real "
+    "tool output the agent pasted; documented = backed by an authoritative "
+    "source; inferred = reasoned but not directly verified; unverified = "
+    "session narration with no check. A skill whose lessons are all incident "
+    "narration must be evidence=unverified — never let unverified knowledge "
+    "read as observed. If you rewrite a skill, update its evidence to match "
+    "the new content.\n"
+    "7. Effectiveness audit. A skill flagged [NEVER-INHERITED] (use=0 AND "
+    "view=0 AND evidence=unverified) was deposited but never actually "
+    "retrieved or followed by a later session — its recursive improvement "
+    "loop did NOT close. For EVERY [NEVER-INHERITED] skill, make an explicit "
+    "decision and act on it: (a) archive it as never-effective, or (b) "
+    "rewrite its description/trigger so a later session can actually find it, "
+    "or (c) keep it and state why its trigger will fire later. Never let a "
+    "[NEVER-INHERITED] skill pass silently — silent keeping is how the library "
+    "drifts into a museum of dead lessons.\n\n"
     "How to work — not optional:\n"
     "1. Scan the full candidate list. Identify PREFIX CLUSTERS (skills "
     "sharing a first word or domain keyword). Examples you are likely "
@@ -817,13 +836,24 @@ def _render_candidate_list() -> str:
     if not rows:
         return "No curator-managed skills to review."
     cron_referenced = _cron_referenced_skills()
-    return "\n".join([f"Curator-managed skills ({len(rows)}):\n"] + [
-        f"- {r['name']}  provenance={r.get('provenance', 'agent')}  state={r['state']}  "
-        f"pinned={'yes' if r.get('pinned') else 'no'}  cron={'yes' if r['name'] in cron_referenced else 'no'}  "
-        f"activity={r.get('activity_count', 0)}  use={r.get('use_count', 0)}  view={r.get('view_count', 0)}  "
-        f"patches={r.get('patch_count', 0)}  last_activity={r.get('last_activity_at') or 'never'}"
-        for r in rows
-    ])
+    lines = [f"Curator-managed skills ({len(rows)}):\n"]
+    for r in rows:
+        name = r["name"]
+        evidence = skill_usage.skill_evidence(name)
+        use = int(r.get("use_count", 0) or 0)
+        view = int(r.get("view_count", 0) or 0)
+        # Effectiveness signal: deposited but never inherited — never used, never viewed, and no
+        # declared evidence. The review prompt demands an explicit decision on every such skill.
+        never_inherited = use == 0 and view == 0 and evidence == "unverified"
+        flag = "  [NEVER-INHERITED]" if never_inherited else ""
+        lines.append(
+            f"- {name}  provenance={r.get('provenance', 'agent')}  evidence={evidence}  "
+            f"state={r['state']}  pinned={'yes' if r.get('pinned') else 'no'}  "
+            f"cron={'yes' if name in cron_referenced else 'no'}  "
+            f"activity={r.get('activity_count', 0)}  use={use}  view={view}  "
+            f"patches={r.get('patch_count', 0)}  last_activity={r.get('last_activity_at') or 'never'}{flag}"
+        )
+    return "\n".join(lines)
 
 
 def _llm_meta(summary: str, error: Optional[str] = None) -> Dict[str, Any]:

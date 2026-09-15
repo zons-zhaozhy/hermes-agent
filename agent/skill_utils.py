@@ -625,6 +625,33 @@ def _hermes_metadata(frontmatter: Dict[str, Any]) -> Dict[str, Any]:
     return hermes if isinstance(hermes, dict) else {}
 
 
+# Evidence strengths a skill's provenance may declare (metadata.hermes.provenance.evidence).
+# Mirrors the J-SPACE assertion ladder the agent already follows in-session ([实测]/[文档]/[推断]/
+# [未查证]): a skill's knowledge is only as trustworthy as the evidence behind it. The default is
+# ``unverified`` — a freshly-dumped skill that never declared evidence must not masquerade as observed.
+SKILL_EVIDENCE_LEVELS = frozenset(("observed", "documented", "inferred", "unverified"))
+
+
+def extract_skill_provenance(frontmatter: Dict[str, Any]) -> Dict[str, str]:
+    """Structured provenance from ``metadata.hermes.provenance`` → ``{source, evidence, applies_when}``.
+
+    Contract:
+      Preconditions: frontmatter is a parsed SKILL.md frontmatter dict (may be empty).
+      Postconditions: returns a 3-key dict; ``evidence`` is always one of SKILL_EVIDENCE_LEVELS
+        (default ``unverified``); ``source``/``applies_when`` are strings (empty when absent).
+    """
+    prov = _hermes_metadata(frontmatter).get("provenance")
+    prov = prov if isinstance(prov, dict) else {}
+    evidence = str(prov.get("evidence") or "unverified").strip().lower()
+    if evidence not in SKILL_EVIDENCE_LEVELS:
+        evidence = "unverified"
+    return {
+        "source": str(prov.get("source") or "").strip(),
+        "evidence": evidence,
+        "applies_when": str(prov.get("applies_when") or "").strip(),
+    }
+
+
 # ``session_platforms`` is the gateway-channel gate: session platforms the skill
 # is FOR (hidden from the index elsewhere), unlike ``platforms:`` (host OS).
 _CONDITION_KEYS = ("fallback_for_toolsets", "requires_toolsets", "fallback_for_tools", "requires_tools", "session_platforms")

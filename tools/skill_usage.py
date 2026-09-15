@@ -670,6 +670,28 @@ def provenance(skill_name: str) -> str:
     return "hub" if is_hub_installed(skill_name) else "bundled" if is_bundled(skill_name) else "agent"
 
 
+def skill_evidence(skill_name: str) -> str:
+    """The skill's declared evidence strength from ``metadata.hermes.provenance.evidence``.
+
+    Defaults to ``unverified`` when the skill dir is missing or the field is absent — a skill that
+    never declared evidence must not pass as observed. This feeds the curator's effectiveness audit:
+    a ``use=0, view=0, evidence=unverified`` skill is a "deposited but never inherited" candidate,
+    not a silent keeper.
+    """
+    skill_dir = _find_skill_dir(skill_name)
+    if skill_dir is None:
+        return "unverified"
+    skill_md = skill_dir / "SKILL.md"
+    try:
+        from agent.skill_utils import extract_skill_provenance, parse_frontmatter
+
+        frontmatter, _ = parse_frontmatter(skill_md.read_text(encoding="utf-8", errors="replace"))
+        return extract_skill_provenance(frontmatter)["evidence"]
+    except Exception as exc:
+        logger.warning("skill_usage.skill_evidence(%s) failed to read frontmatter evidence: %s", skill_name, exc)
+        return "unverified"
+
+
 def usage_report() -> List[Dict[str, Any]]:
     """Usage rows for EVERY skill on disk (built-ins and hub included); ``curated_report()`` is the managed subset."""
     if not (base := _skills_dir()).exists():
