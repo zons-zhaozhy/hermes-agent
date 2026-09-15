@@ -297,6 +297,10 @@ def _extract_service_names(command: str):
             continue
         if "/" in tok or tok.startswith("$"):
             continue
+        # 散文令牌永远不是服务名：脚本注释里的中文短语（如「构建多个」）与
+        # 注释符号（#）曾被读成服务名，导致 build.sh --list 本身被 R7 拦
+        if not tok.isascii() or tok.startswith("#"):
+            continue
         names.append(tok)
     return names
 
@@ -458,6 +462,9 @@ def _check_script_indirection(command: str):
     调用时,要求脚本内服务名已通过注册表验证;否则拦截。
     读不到脚本文件(OSError/超大>100KB)→放行(不加重误拦)。
     """
+    # 不变式（文件头 Contract）：--list 是采集注册表的唯一通道，其本身永不拦
+    if _is_registry_list_call(command):
+        return None
     import shlex as _shlex
     from pathlib import Path as _Path
     try:
@@ -478,7 +485,10 @@ def _check_script_indirection(command: str):
             # 部署动作但不含服务注册语义,其服务名参数也一并提取即可）
             deploy_lines = [
                 ln for ln in text.splitlines()
-                if _needs_name_verification(ln)
+                # 只认真实调用行：注释行是用法文档不是调用（实锤：build.sh 用法
+                # 注释 `#   bash deploy/build.sh auth cortex  # 构建多个` 被读成
+                # 服务名 auth/cortex，导致 build.sh 自身无法被调用）
+                if not ln.lstrip().startswith("#") and _needs_name_verification(ln)
             ]
             if not deploy_lines:
                 continue
