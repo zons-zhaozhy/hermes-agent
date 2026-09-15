@@ -6,21 +6,24 @@
 并明确标注哪些信息是确认过的、哪些是假设、哪些要持续观察。
 出处：docs/research/2026-08-30-thinking-systems-hermes-insights.md A-2 条。
 
-机制：pre_llm_call hook。检测到「需求交付型任务」（做/写/建/改/出 X 类）时，
-注入「采访清单」元要求：开工前输出三分类盲点扫描，重大歧义一次问清（批量提问），
-可暂假设项显式标注后继续——堵住「直接开工」和「全停下问」两个极端。
+机制：pre_llm_call hook，会话首轮注入一次「采访规则」。是否属于「需求交付型
+任务」由 LLM 依据规则文本自含的适用条件语义判断——不在 Python 侧用关键词/
+正则猜任务类型：前缀表结构上不可穷举自然语言变体（英文、口语、动词不在句首），
+语义分类不属于确定性代码层（2026-09-15 用户点名「关键字匹配的做法太蠢了」）。
 
 与 failure_preflight 互补：那个管风险预演，这个管需求歧义。
 """
 
 import logging
-import re
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _INTERVIEW_RULE = """\
 [开工前采访——需求歧义清单，跳过即视为默认理解正确]
-本轮是需求交付型任务。动手前先做盲点扫描，输出三分类（没有项可省略该类）：
+适用条件（自行判断）：仅当用户消息是「需求交付型任务」——要求做/写/建/改/修/产出
+某个东西时适用；讨论、问答、闲聊、纯运维指令（部署/提交/查看）则忽略本规则。
+适用时动手前先做盲点扫描，输出三分类（没有项可省略该类）：
 1. 必须先确认：仅限【重大歧义】——会改变数据源/表结构/架构方向/不可逆结果的歧义
    → 才允许用一次批量提问问清（附你的建议默认方案），问完再动。提问收尾固定带
    「必须先确认：」前缀（finish_guard 据此豁免）。其余歧义一律不许停。
@@ -33,46 +36,26 @@ _INTERVIEW_RULE = """\
 若需求已足够明确（一句话可完成的简单任务），声明「无重大歧义」后直接开工。
 """
 
-# 需求交付型任务信号（与 failure_preflight 同源动词表，但语义不同：
-# 这里要的是「产出物交付」，纯运维动词如部署/提交不算）
-_DELIVER_RE = re.compile(
-    r"^(做|写|建|创建|改|修|重构|实现|开发|迁移|搭|搭一个|出一个|出一份|出一张|生成|设计|画|复刻"
-    r"|把|帮我|给我|添加|新增|补|删|移|处理|搞定|落盘|部署一个)"
-)  # re-ok: 中文动词前缀表,无str等价实现
 
-_DISCUSS_RE = re.compile(
-    r"^(什么是|是什么|为啥|为什么|怎么理解|怎么看|如何理解|能不能|能不能实现|是否|啥意思|听说过|介绍一下|评价|对比)"
-)
-
-
-def _is_deliver_task(user_message: str) -> bool:
-    """判断是否为需求交付型任务（而非讨论/闲聊/纯运维指令）。
+def _on_pre_llm_call(**kwargs: Any) -> dict:
+    """pre_llm_call 回调：会话首轮注入一次采访规则。
 
     Contract:
-        Preconditions: user_message 为字符串（可为空）
-        Postconditions: 返回 True 当且仅当消息以交付动词开头且非讨论句式
+        Preconditions: kwargs 由 ``agent/turn_context.py::_collect_pre_llm_call_context``
+          传入，含 ``is_first_turn`` 与 ``user_message``。
+        Postconditions: 首轮返回 ``{"context": _INTERVIEW_RULE}``；非首轮返回 ``{}``
+          （规则已在会话历史中，重复注入只浪费 token）。
     """
-    if not user_message:
-        return False
-    msg = user_message.strip()
-    if _DISCUSS_RE.match(msg):
-        return False
-    return bool(_DELIVER_RE.match(msg))
-
-
-def _on_pre_llm_call(**kwargs) -> dict:
-    """pre_llm_call 回调：交付型任务注入采访清单要求。"""
-    user_message = kwargs.get("user_message", "")
-    if not _is_deliver_task(user_message):
+    if not kwargs.get("is_first_turn"):
         return {}
     logger.debug(
-        "requirement_interview: 注入采访要求 (user_message: %s)",
-        user_message,
+        "requirement_interview: 注入采访规则 (user_message: %s)",
+        kwargs.get("user_message", ""),
     )
     return {"context": _INTERVIEW_RULE}
 
 
-def register(ctx):
+def register(ctx: Any) -> None:
     """插件入口。"""
     ctx.register_hook("pre_llm_call", _on_pre_llm_call)
     logger.info("requirement_interview 插件已注册——反向采访澄清就绪")
