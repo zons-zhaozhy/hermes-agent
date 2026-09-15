@@ -21,6 +21,16 @@ Reviewing a skill PR: check the target directory — heavy-dep or niche skills g
 stored under `skills.config.<key>`, prompted during setup, injected at load). Top-level `tags:` /
 `category:` are accepted and mirrored from `metadata.hermes.*` by the loader.
 
+`metadata.hermes.provenance` — the evidence strength the skill's knowledge is backed by. Three
+fields: `source` (where it came from), `evidence` (one of `observed` — backed by a real tool output
+the agent pasted; `documented` — backed by an authoritative source; `inferred` — reasoned but not
+directly verified; `unverified` — session narration with no check), and `applies_when` (the trigger
+condition when the description alone is not enough). `evidence` defaults to `unverified` when absent,
+so a skill that never declares evidence never masquerades as observed. The curator's effectiveness
+audit reads `evidence` and flags `[NEVER-INHERITED]` skills (use=0, view=0, evidence=unverified) for
+an explicit keep / rewrite / archive decision — a deposited-but-never-inherited skill is a dead
+lesson, not a silent keeper.
+
 ## Authoring standards (HARDLINE — enforced by `tests/skills/test_authoring_standards.py`)
 
 Every new or modernised skill — bundled, optional, or contributed — meets all of these before merge:
