@@ -230,6 +230,14 @@ JUDGE_USER_PROMPT_TEMPLATE = (
     "- If the tool calls section shows zero verification commands (no "
     "terminal/test/build calls) but the agent claims completion, this is "
     "almost certainly premature — return CONTINUE.\n"
+    "- EVIDENCE TIERS: the tool calls section ends with "
+    "'[observed_evidence=N, preparatory=M]'. OBSERVED calls (terminal, "
+    "execute_code, browser, fetch) produced runtime output; PREPARATORY "
+    "calls (write_file, patch, edits) only staged state — prepared is NOT "
+    "observed. A completion claim where the goal's outcome is 'X now "
+    "works/exists/runs' needs observed_evidence > 0 behind it; if only "
+    "preparatory calls were made, the claim is unverified — return "
+    "CONTINUE.\n"
     "- TRAJECTORY DRIFT: if the turn trajectory above shows the agent "
     "spending many consecutive turns on the same sub-problem — judge "
     "repetition counts SEMANTICALLY (same table/file/symptom recurring, "
@@ -265,7 +273,9 @@ JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "file contents excerpt, an output line, a command result). If "
     "ANY criterion lacks specific evidence in the response, the goal "
     "is NOT done — return CONTINUE (or WAIT if blocked on a listed "
-    "background process).\n\n"
+    "background process). Do not count PREPARATORY calls (write_file, "
+    "patch — see '[observed_evidence=N, preparatory=M]') as evidence "
+    "that a runtime criterion works; prepared is not observed.\n\n"
     "Is the goal AND every additional criterion satisfied?"
 )
 
@@ -288,6 +298,12 @@ JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE = (
     "- If the tool calls section shows zero verification commands but the "
     "agent claims the verification criterion is met, treat the claim as "
     "unverified — return CONTINUE.\n"
+    "- EVIDENCE TIERS: '[observed_evidence=N, preparatory=M]' in the tool "
+    "calls section splits runtime-output calls from edit/staging calls. "
+    "Prepared is NOT observed: satisfying the Verification criterion "
+    "requires observed_evidence > 0 (a run/test/build whose output you can "
+    "see), not merely that the files were written. If observed_evidence = 0 "
+    "and the criterion is runtime in nature, return CONTINUE.\n"
     "- If the response shows the agent is waiting on a listed background "
     "process to satisfy the Verification criterion (e.g. CI is the "
     "verification and it's still running), return WAIT on that process "
@@ -1060,49 +1076,75 @@ def _render_turn_trajectory_block(turn_reasons: Optional[List[str]]) -> str:
     )
 
 
+# Tools that only PREPARE state (edits staged, files written, plans drafted) vs tools whose
+# results are OBSERVED runtime output (command/test output, live execution, process state).
+# The judge uses this split: a completion claim backed only by preparatory calls is unverified.
+_OBSERVED_EVIDENCE_TOOLS = frozenset({
+    "terminal", "execute_code", "process_manage", "browser_exec", "web_extract",
+    "web_search", "cronjob",
+})
+
+
+def _collect_turn_tool_names(history: List[Dict[str, Any]]) -> List[str]:
+    """Tool-call function names from the current turn (after the last user message)."""
+    turn_start = 0
+    for i in range(len(history) - 1, -1, -1):
+        if history[i].get("role") == "user":
+            turn_start = i + 1
+            break
+    names: List[str] = []
+    for msg in history[turn_start:]:
+        if msg.get("role") != "assistant":
+            continue
+        tcs = msg.get("tool_calls")
+        if not tcs:
+            continue
+        for tc in tcs:
+            if isinstance(tc, dict):
+                fn = tc.get("function", {})
+                if isinstance(fn, dict):
+                    name = fn.get("name", "")
+                    if name:
+                        names.append(name)
+    return names
+
+
+def _render_evidence_split(names: List[str]) -> str:
+    """Observed-vs-preparatory annotation for a list of tool names."""
+    observed = sum(1 for n in names if n in _OBSERVED_EVIDENCE_TOOLS)
+    return f"[observed_evidence={observed}, preparatory={len(names) - observed}]"
+
+
 def extract_tool_calls_summary(history: Optional[List[Dict[str, Any]]]) -> Optional[str]:
     """Extract a brief summary of tool calls from the last agent turn.
 
     The turn is delimited by the most recent user message: every assistant
     message after it belongs to this turn (a turn is typically many assistant
     messages — tool-call rounds followed by a final text summary). Produces a
-    summary like "3 call(s): terminal, read_file, search_files". Returns None
-    when history is unavailable.
+    summary like "3 call(s): terminal, read_file, search_files" annotated with
+    an evidence split: how many calls are OBSERVED runtime output (terminal,
+    execute_code, browser, fetch) vs merely PREPARATORY (write_file, patch,
+    edits). Returns None when history is unavailable.
 
     Contract:
         Preconditions: history is a list of role-keyed message dicts (or None).
         Postconditions: returns None iff history is falsy; otherwise a str that
-        is "0 calls (text-only response)" when the turn made no tool calls.
+        is "0 calls (text-only response)" when the turn made no tool calls;
+        when calls exist the string always contains both
+        "observed_evidence=<n>" and "preparatory=<n>" counts with n >= 0.
     """
     if not history:
         return None
     try:
-        # Find the start of the current turn: the last user message.
-        turn_start = 0
-        for i in range(len(history) - 1, -1, -1):
-            if history[i].get("role") == "user":
-                turn_start = i + 1
-                break
-        names: list[str] = []
-        for msg in history[turn_start:]:
-            if msg.get("role") != "assistant":
-                continue
-            tcs = msg.get("tool_calls")
-            if not tcs:
-                continue
-            for tc in tcs:
-                if isinstance(tc, dict):
-                    fn = tc.get("function", {})
-                    if isinstance(fn, dict):
-                        name = fn.get("name", "")
-                        if name:
-                            names.append(name)
+        names = _collect_turn_tool_names(history)
         if not names:
             return "0 calls (text-only response)"
-        return f"{len(names)} call(s): {', '.join(names)}"
-    except Exception:
+        return (
+            f"{len(names)} call(s): {', '.join(names)} {_render_evidence_split(names)}"
+        )
+    except Exception as exc:
+        logger.warning("goal judge: tool-calls summary extraction failed: %s", exc)
         return None
-    return None
 
 
 def judge_goal(

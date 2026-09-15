@@ -122,7 +122,11 @@ _COMPLETION_INSTRUCTIONS = (
     "issuing git/workdir-specific commands.\n\n"
     "Keep your final summary tight: lead with outcomes, prefer bullet points over paragraphs, and don't replay your "
     "whole process. Your response is returned to the parent agent as a summary, and overlong summaries crowd out the "
-    "parent's context window."
+    "parent's context window.\n\n"
+    "CLAIM BOUNDARY (mandatory in your summary): end with two short sections — 'VERIFIED:' listing each claim backed "
+    "by a tool result you actually ran (paste the key output line / file path / URL), and 'UNVERIFIED:' listing claims "
+    "you assert without direct tool output (inferences, expectations, things you prepared but did not execute). Never "
+    "mix the two; the parent re-checks UNVERIFIED claims itself before reporting them to the user."
 )
 _ORCHESTRATOR_BLOCK = (
     "\n## Subagent Spawning (Orchestrator Role)\n"
