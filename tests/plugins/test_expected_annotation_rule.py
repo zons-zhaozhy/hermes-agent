@@ -154,3 +154,23 @@ def test_r5b_passes_real_kwargs():
     finally:
         with _read_tracker_lock:
             _read_tracker.pop("r5b-ok", None)
+
+
+# ── R7: 冲突标记禁入 ───────────────────────────────────────────────────────
+
+def test_r7_blocks_conflict_marker():
+    """写入含 git merge 冲突标记的 .py → block 并报行号。三种标记全覆盖。"""
+    for mark in ("<<<<<<< HEAD", "=======", ">>>>>>> upstream/main"):
+        code = f"x = 1\n{mark}\ny = 2\n"
+        args = {"path": "tests/foo/test_conflict.py", "content": code}
+        out = mod.on_pre_tool_call(tool_name="write_file", args=args)
+        assert out.get("action") == "block", mark  # 期望: 任一冲突标记单独成行即拦
+        assert "R7" in out["message"]  # 期望: 消息标识规则号
+
+
+def test_r7_passes_clean_code():
+    """正常代码含等号赋值/比较不误伤 → 放行。"""
+    code = "def f(x: int) -> int:\n    a = x == 3\n    b = '======= text'\n    return a\n"
+    args = {"path": "tests/foo/test_clean.py", "content": code}
+    out = mod.on_pre_tool_call(tool_name="write_file", args=args)
+    assert out == {}  # 期望: 非整行冲突标记零误拦

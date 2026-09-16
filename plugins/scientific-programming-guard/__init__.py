@@ -463,6 +463,19 @@ def on_pre_tool_call(**kwargs):
         path = str(args.get("path", ""))
         if not path.endswith(".py"):
             return {}
+        # R7 冲突标记禁入: merge 残留(<<<<<<< / ======= / >>>>>>> 单独成行)
+        # 一旦写入即污染文件, git add 不校验——写前拦。
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            stripped = line.strip()
+            if stripped in ("<<<<<<< HEAD", "=======", ">>>>>>> upstream/main") \
+                    or stripped.startswith("<<<<<<< ") or stripped.startswith(">>>>>>> "):
+                return {
+                    "action": "block",
+                    "message": (
+                        f"R7 冲突标记残留: line {lineno} '{stripped}' —"
+                        "git merge 冲突标记未解决就写入。先逐块裁定冲突再写。"
+                    ),
+                }
         tree = ast.parse(text)
         # 防错层规则——所有 .py 生效
         issues = _check_complexity_budget(tree)

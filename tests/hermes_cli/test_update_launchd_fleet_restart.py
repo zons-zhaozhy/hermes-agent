@@ -658,7 +658,6 @@ class TestIncompleteWarningOnMacos:
         _warn_incomplete_gateway_fleet_restart(["ai.hermes.gateway-merit-ops"])
         out = capsys.readouterr().out
         assert "Update incomplete" in out
-<<<<<<< HEAD
         # macOS branch (#88848): a launchd label here means launchd lost the
         # job — recovery guidance is bootstrap, not kickstart.
         assert "launchctl bootstrap" in out
@@ -671,7 +670,3 @@ class TestIncompleteWarningOnMacos:
             out = capsys.readouterr().out
             assert "systemctl" in out
             assert "launchctl" not in out
-=======
-        assert "launchctl bootstrap" in out
-        assert "systemctl" not in out
->>>>>>> upstream/main

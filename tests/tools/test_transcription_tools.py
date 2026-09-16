@@ -1335,10 +1335,6 @@ class TestRunCommandSttIdleTimeout:
                 "for idx in range(1, 9):",
                 "    time.sleep(0.05)",
                 "    print(f'tick {idx}', file=sys.stderr, flush=True)",
-<<<<<<< HEAD
-                "    time.sleep(0.08)",
-=======
->>>>>>> upstream/main
                 "print('done', flush=True)",
             ]),
             encoding="utf-8",
