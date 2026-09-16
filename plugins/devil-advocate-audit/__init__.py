@@ -78,6 +78,24 @@ _REMINDER = (
     "若本次已在审查或用户已豁免，忽略本条。"
 )
 
+# 动作拦截:红牌不只是提醒——armed 状态下对非审查类工具调用发 block,
+# 强制先走 delegate_task 反方审查正门。用户豁免词解除武装。
+_WAIVE_JUDGE_SYSTEM = (
+    "用户是否明示豁免反方审查？判断这条消息里用户是否明确说了"
+    "类似'豁免/不用审/跳过审查/我拍板/我批准/别审了'的意思。"
+    "只是提问、讨论、下指令干活不算豁免。"
+    "只回答 JSON：{\"waive\": true} 或 {\"waive\": false}"
+)
+
+_BLOCK_MSG_TEMPLATE = (
+    "[DevilAdvocateAudit 强制] 本会话存在未经反方审查的重大决策。"
+    "在委派反方审查子代理之前，非审查类动作一律冻结。\n"
+    "  正门：delegate_task 委派一个只找漏洞的唱反调子代理审查该决策"
+    "（goal 须含'反方审查/挑漏洞/批判'语义）。\n"
+    "  豁免：请用户明示豁免（说'豁免反方审查'即可）。\n"
+    "  当前被拦工具：{tool_name}"
+)
+
 
 def _plugin_disabled() -> bool:
     return os.environ.get("DEVIL_ADVOCATE_AUDIT_DISABLE", "").lower() in {
@@ -201,6 +219,14 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
         elif merged.get("decision") is not True:
             return None
         st["count"] = _count(sid) + 1
+        # 用户明示豁免 → 记 waived 并解除武装（不再注入红牌、不再拦截）。
+        # 豁免判定同样计入 judge_calls 成本阀——上限语义=LLM 判定调用总数。
+        if _count(sid, "judge_calls") < _MAX_JUDGE_CALLS:
+            st["judge_calls"] = _count(sid, "judge_calls") + 1
+            if _user_waived(text):
+                st["waived"] = True
+                return None
+        st["armed"] = True
         return {"context": _REMINDER}
     except Exception as e:
         logger.warning("devil-advocate-audit hook failed: %s", e,
@@ -208,7 +234,56 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _user_waived(text: str) -> bool:
+    """LLM 语义判定用户是否明示豁免反方审查。fail-open 返回 False。
+
+    Contract:
+      Preconditions: text is non-empty str
+      Postconditions: 返回 True/False；绝不 raise
+    """
+    assert text, "text must be non-empty"
+    return llm_judge_bool(
+        task="devil_advocate_waive",
+        system=_WAIVE_JUDGE_SYSTEM,
+        text=text,
+        timeout=_JUDGE_TIMEOUT,
+        true_key="waive",
+    ) is True
+
+
+def on_pre_tool_call(**kwargs) -> Optional[Dict[str, Any]]:
+    """armed（重大决策未审）时对非 delegate 工具发 block 强制先过反方审查。
+
+    Contract:
+      Postconditions: 仅当 armed=True 且未 reviewed/waived 且工具不属于
+      {delegate_task, delegate} 时返回 block 指令；其余一律返回 None
+      (放行)。judge 不在此路径——armed 状态由 pre_llm_call 预先语义判定
+      写入，此处纯状态读取，零 LLM 延迟。
+    """
+    try:
+        if _plugin_disabled():
+            return None
+        sid = kwargs.get("session_id", "") or kwargs.get("task_id", "")
+        if not sid:
+            return None
+        st = get_session_state(sid, _NAMESPACE)
+        if not st.get("armed") or st.get("reviewed") or st.get("waived"):
+            return None
+        tool_name = str(kwargs.get("tool_name", ""))
+        if tool_name in {"delegate_task", "delegate"}:
+            return None  # 正门：反方审查委派本身放行
+        return {
+            "action": "block",
+            "message": _BLOCK_MSG_TEMPLATE.format(tool_name=tool_name),
+        }
+    except Exception as e:
+        logger.warning("devil-advocate-audit pre_tool_call failed: %s", e,
+                       exc_info=True)
+        return None
+
+
 def register(ctx) -> None:
+    ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
     logger.info("devil-advocate-audit registered")

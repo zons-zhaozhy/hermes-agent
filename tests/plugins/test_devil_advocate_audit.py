@@ -77,7 +77,7 @@ def test_judge_true_triggers(plugin, mock_judge):
     assert mock_judge == []  # judge 尚未被调
     out = plugin.on_pre_llm_call(**_msg("我决定整个系统迁移到新的存储架构"))
     assert out is not None and "反方审查" in out["context"]
-    assert len(mock_judge) == 1
+    assert len(mock_judge) == 2  # 决策判定 + 豁免判定
 
 
 def test_judge_false_no_trigger(plugin, monkeypatch):
@@ -98,7 +98,7 @@ def test_judge_exception_fail_open(plugin, monkeypatch):
 def test_message_dedup(plugin, mock_judge):
     plugin.on_pre_llm_call(**_msg("方案A定稿，全面切换"))
     plugin.on_pre_llm_call(**_msg("方案A定稿，全面切换"))
-    assert len(mock_judge) == 1  # 第二次命中 hash 去重
+    assert len(mock_judge) == 2  # 首次=决策+豁免两判；第二次命中 hash 去重零调用
 
 
 def test_judge_call_cap(plugin, mock_judge):
@@ -165,3 +165,63 @@ def test_fail_open_on_bad_state(plugin, monkeypatch):
                         lambda sid, key="count": (_ for _ in ()).throw(
                             RuntimeError("x")))
     assert plugin.on_pre_llm_call(**_msg("方案定稿")) is None
+
+
+# ── 动作拦截（armed → block 非 delegate 工具）──────────────────────
+
+def _tool(tool_name: str, sid: str = SID) -> Dict[str, Any]:
+    return {"session_id": sid, "tool_name": tool_name, "args": {}}
+
+
+@pytest.fixture
+def armed(plugin: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """让会话进入 armed 状态：重大决策 + 未豁免（waive 判 False）。"""
+    monkeypatch.setattr(
+        "agent.auxiliary_client.call_llm",
+        lambda *a, **k: _resp('{"decision": true, "waive": false}'))
+    out = plugin.on_pre_llm_call(**_msg("我决定整个系统迁移到新存储架构"))
+    assert out is not None  # 前置：红牌已注入=armed 已置位
+
+
+def test_armed_blocks_non_delegate_tool(plugin: Any, armed: None) -> None:
+    out = plugin.on_pre_tool_call(**_tool("terminal"))
+    assert out is not None and out["action"] == "block"
+    assert "terminal" in out["message"] and "反方审查" in out["message"]
+
+
+def test_armed_allows_delegate_gate(plugin: Any, armed: None) -> None:
+    assert plugin.on_pre_tool_call(**_tool("delegate_task")) is None
+
+
+def test_reviewed_disarms_block(plugin: Any, armed: None,
+                                monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "agent.auxiliary_client.call_llm",
+        lambda *a, **k: _resp_by_key(True))
+    plugin.on_post_tool_call(**_delegate(
+        "只找漏洞地审查这个方案：列出所有设计缺陷与风险"))
+    assert plugin.on_pre_tool_call(**_tool("terminal")) is None
+
+
+def test_waived_disarms_block(plugin: Any,
+                              monkeypatch: pytest.MonkeyPatch) -> None:
+    # 同一条消息既判为重大决策又判为豁免 → waived 置位不武装
+    monkeypatch.setattr(
+        "agent.auxiliary_client.call_llm",
+        lambda *a, **k: _resp('{"decision": true, "waive": true}'))
+    out = plugin.on_pre_llm_call(**_msg("方案定了，我拍板豁免反方审查"))
+    assert out is None  # 不注入红牌
+    assert plugin.on_pre_tool_call(**_tool("terminal")) is None
+
+
+def test_not_armed_allows_all(plugin: Any, mock_judge: List[Any]) -> None:
+    # 未判为重大决策的会话：工具一律放行
+    assert plugin.on_pre_tool_call(**_tool("terminal")) is None
+
+
+def test_pre_tool_call_fail_open(plugin: Any, armed: None,
+                                 monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(sid: str, namespace: str = "") -> Any:
+        raise RuntimeError("state store gone")
+    monkeypatch.setattr(plugin, "get_session_state", boom)
+    assert plugin.on_pre_tool_call(**_tool("terminal")) is None
