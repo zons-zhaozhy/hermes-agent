@@ -31,11 +31,15 @@ class _SlowUnwindingChild:
 
     def run_conversation(self, **_kwargs):
         self.started.set()
-        assert self.interrupted.wait(timeout=1)
+        # 期望: interrupt 在超时后立即到达；窗口放宽到 5s——runner 是 20 并发满载，
+        # 测试线程可能被 GIL 竞争饿过默认 1s，饿出来的失败测的是负载不是拆卸逻辑
+        assert self.interrupted.wait(timeout=5)
         # Model the real child turn's finally path: it still performs session
         # activity/SQLite cleanup after the parent requests interruption.
         self.unwinding.set()
-        assert self.allow_finish.wait(timeout=2)
+        # 期望: 测试主线程在同窗口内完成「close 未提前触发」断言并放行；10s 而非 2s，
+        # 否则满载下 worker 先超时退出→future done→deferred close 合法触发→假失败
+        assert self.allow_finish.wait(timeout=10)
         self.finished.set()
         return {
             "final_response": "",

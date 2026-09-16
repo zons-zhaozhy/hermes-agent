@@ -752,14 +752,20 @@ def _kill_process_group_posix(proc) -> None:
     grandchildren under load. POSIX-only (_IS_WINDOWS handled by the caller)."""
     try:
         pgid = os.getpgid(proc.pid)
-    except ProcessLookupError:
-        if (pgid := getattr(proc, "_hermes_pgid", None)) is None:
-            raise
+    except (ProcessLookupError, PermissionError):
+        # start_new_session=True makes the child the session leader, so its
+        # pgid is its own pid — a safe fallback when a concurrent reaper
+        # wins the race and the pid is already gone or recycled.
+        pgid = getattr(proc, "_hermes_pgid", None)
+        if pgid is None:
+            pgid = proc.pid
     try:  # psutil children snapshot; empty on any failure (must never break the kill)
         import psutil
         descendants = psutil.Process(proc.pid).children(recursive=True)
     except Exception:
         descendants = []
+    # The pid may have been reaped between getpgid and here; a failed snapshot
+    # only widens the sweep, it must not abort the group kill.
     try:
         os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
         if not _wait_for_group_exit(proc, pgid, 1.0):
@@ -767,7 +773,10 @@ def _kill_process_group_posix(proc) -> None:
             _wait_for_group_exit(proc, pgid, 2.0)
             with contextlib.suppress(subprocess.TimeoutExpired, OSError):
                 proc.wait(timeout=0.2)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
+        # The group vanished (reaped by a concurrent session) or the pgid was
+        # recycled to another user's process — neither is a kill failure worth
+        # surfacing; the sweep below still covers snapshotted descendants.
         pass
     _sweep_escaped_descendants(descendants, pgid)
 
