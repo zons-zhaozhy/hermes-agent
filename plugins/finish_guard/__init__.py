@@ -177,28 +177,69 @@ def _on_pre_tool_call(**kwargs) -> dict:
 
 # ---------------------------------------------------------------- L2: pre_verify
 
+# commit 证据（收尾纪律「凡有改动即 commit+push 零积压」动作化）：
+# 回复含 git commit 哈希引用（7-40 位十六进制，如 f4987c83e1 / 完整 SHA）
+# 或明确的纯文档/无代码改动声明 → 视为已有交付证据。
+_COMMIT_HASH_RE = re.compile(r"\b[0-9a-f]{7,40}\b")  # re-ok: SHA哈希无str等价判定
+_NO_CODE_CHANGE_RE = re.compile(
+    r"(无代码改动|未改代码|纯文档|无文件改动|没有改动文件|0 个文件|仅查看|只读调查)"
+)  # re-ok: 中文豁免词模糊匹配无str等价
+
+
+def _has_commit_evidence(response: str) -> bool:
+    """回复是否携带 commit/无改动证据。
+
+    Contract:
+      Preconditions: response 为 str（可空）
+      Postconditions: 命中哈希引用或无改动声明返回 True，否则 False
+    """
+    if not response:
+        return False
+    return bool(_COMMIT_HASH_RE.search(response)
+                or _NO_CODE_CHANGE_RE.search(response))
+
+
 def _on_pre_verify(**kwargs) -> dict:
     """Contract: Preconditions: 本回合改过文件（核心侧 changed_paths 非空才调）；
-    Postconditions: 最终回复尾部为请示式收尾且 attempt 未超上限时返回
-    {"action":"continue","message":...} 强制续跑，否则返回 {} 放行。"""
+    Postconditions: 最终回复尾部为请示式收尾、或改动了代码文件但回复无
+    commit 证据时，且 attempt 未超上限时返回 {"action":"continue","message":...}
+    强制续跑，否则返回 {} 放行。"""
     attempt = int(kwargs.get("attempt") or 0)
     if attempt >= _MAX_PRE_VERIFY_NUDGES:
         return {}
     final_response = kwargs.get("final_response") or ""
     tail = _tail_text(final_response)
-    if not (_is_pushback(tail) or _is_false_continue(tail)):
-        return {}
-    logger.warning(
-        "finish_guard: pre_verify 拦截请示式/宣言式收尾（attempt=%d），强制续跑", attempt
-    )
-    return {
-        "action": "continue",
-        "message": (
-            "[finish_guard] 你的收尾是请示式提问或宣言式假继续（宣布「继续/下一批」"
-            "却停轮）。撤回收尾：把可逆决策标注为假设后直接连做剩余步骤，跑完拿"
-            "真实结果收尾。只有不可逆操作、凭据、付费、方向性选型才允许停下请示。"
-        ),
-    }
+    changed_paths = list(kwargs.get("changed_paths") or [])
+    code_changed = any(
+        not p.endswith((".md", ".txt", ".rst")) for p in changed_paths)
+    if _is_pushback(tail) or _is_false_continue(tail):
+        logger.warning(
+            "finish_guard: pre_verify 拦截请示式/宣言式收尾（attempt=%d），强制续跑", attempt
+        )
+        return {
+            "action": "continue",
+            "message": (
+                "[finish_guard] 你的收尾是请示式提问或宣言式假继续（宣布「继续/下一批」"
+                "却停轮）。撤回收尾：把可逆决策标注为假设后直接连做剩余步骤，跑完拿"
+                "真实结果收尾。只有不可逆操作、凭据、付费、方向性选型才允许停下请示。"
+            ),
+        }
+    # 收尾纪律动作化：改了代码文件但回复无 commit 证据 → 强制先提交再收尾
+    if code_changed and not _has_commit_evidence(final_response):
+        logger.warning(
+            "finish_guard: pre_verify 检测到代码改动无 commit 证据"
+            "（%d 个文件，attempt=%d），强制先提交", len(changed_paths), attempt
+        )
+        return {
+            "action": "continue",
+            "message": (
+                "[finish_guard] 本回合改动了代码文件但尚未提交。收尾纪律："
+                "凡有改动即 commit+push 零积压——先 git add 相关文件并"
+                " commit（消息注明改动要点）+ push，把 commit 哈希写进回复，"
+                "再收尾。纯文档改动或确无改动则在回复中明确说明。"
+            ),
+        }
+    return {}
 
 
 # ------------------------------------------------- L3: 用户可见标记（签名对齐核心）

@@ -14,6 +14,7 @@ curl-safety / log-first-diagnosis / tool-safety / no-bypass / no-pushback)
   no_bypass        被护栏拦截后禁换通道绕过
   no_pushback      输出推责话术拦截
   rule_reinjection 规则常驻重注入(.hermes-rules.md 每轮权威版注入,防纪律衰减)
+  test_discipline  禁裸 pytest——一律 scripts/run_tests.sh(CI 环境对齐)
 
 分层依据见 docs/guard-system-architecture.md。
 
@@ -36,6 +37,7 @@ from plugins.discipline import (
     no_guessing,
     no_pushback,
     rule_reinjection,
+    test_discipline,
     tool_safety,
 )
 
@@ -51,6 +53,7 @@ _SUB_GUARDS = (
     ("no_bypass", no_bypass),
     ("no_pushback", no_pushback),
     ("rule_reinjection", rule_reinjection),
+    ("test_discipline", test_discipline),
 )
 
 

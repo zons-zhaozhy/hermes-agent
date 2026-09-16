@@ -62,9 +62,43 @@ def test_pre_verify_continues_on_declared_continue():
 
 
 def test_pre_verify_passes_clean_closure():
+    """干净收尾放行：改动已带 commit 证据（哈希在回复中）。"""
+    res = fg._on_pre_verify(
+        attempt=0,
+        final_response="loom P1 契约化全部完成并推送（9ad5855552），任务收官。",
+        changed_paths=["a.py"],
+    )
+    assert res == {}
+
+
+# ---- 收尾纪律动作化：代码改动无 commit 证据 → 强制先提交 ----
+
+def test_pre_verify_code_change_without_commit_evidence():
+    """改了代码文件但回复无哈希/无改动声明 → 续跑逼提交。"""
     res = fg._on_pre_verify(
         attempt=0,
         final_response="loom P1 契约化全部完成并推送，任务收官。",
+        changed_paths=["plugins/foo.py"],
+    )
+    assert res.get("action") == "continue"
+    assert "commit" in res.get("message", "")
+
+
+def test_pre_verify_doc_change_without_commit_passes():
+    """纯文档改动不触发提交强制（.md/.txt/.rst 豁免）。"""
+    res = fg._on_pre_verify(
+        attempt=0,
+        final_response="文档已更新，任务收官。",
+        changed_paths=["docs/report.md"],
+    )
+    assert res == {}
+
+
+def test_pre_verify_no_change_declaration_passes():
+    """回复明确声明无代码改动 → 放行。"""
+    res = fg._on_pre_verify(
+        attempt=0,
+        final_response="本次仅查看，无代码改动，任务收官。",
         changed_paths=["a.py"],
     )
     assert res == {}
