@@ -11,12 +11,16 @@ v2 升级(对应四层十五律):
     R6 assert 字面量期望值缺同线「# 期望:」推导注释 → 疑似凑绿灯/瞎猜
        (根因: 本会话两起实测——true_key 漏传/endswith(python) 不匹配
         python3, 均为期望值或参数未从真实源码/文档推导)
+    R5a import 仓库内本地模块但本会话从未 read_file 过 → 参数瞎猜防线
+    R5b 调用本地模块函数传了签名中不存在的关键字参数 → 瞎编参数防线
+       (Case: llm_judge_bool(true_key="review")——签名无该键)
 
 判定全部 AST 级零正则。豁免: test_ 前缀/单行函数。
 测试: tests/plugins/test_scientific_programming_guard.py
 """
 import ast
 import logging
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +36,9 @@ _MAX_LINES = 50
 
 # R6 期望值推导注释: 断言比较的字面量必须带同线 "# 期望:" 注释
 _EXPECTED_MARK = "# 期望:"
+
+# R5 参数瞎猜拦截: 仓库根(含 pyproject.toml/setup.py)
+_REPO_MARKERS = ("pyproject.toml", "setup.py")
 
 
 def _is_network_code(text: str) -> bool:
@@ -201,8 +208,6 @@ def _check_l3_guarded_cleanup(tree: ast.AST) -> list:
 
 def _check_expected_annotation(tree: ast.AST, lines: list) -> list:
     """R6: tests/ 文件中 assert 比较/成员断言的字面量期望值缺同线推导注释 → 违规。
-
-    只查 assert 语句：二元比较(==/!=/in/not in)或容器成员断言，且期望侧
     是字面量(数字/字符串/布尔/None/列表/字典)。断言所在物理行须含
     "# 期望:" 注释说明独立推导依据；无注释=疑似凑绿灯/拍脑袋。
 
@@ -241,6 +246,205 @@ def _check_expected_annotation(tree: ast.AST, lines: list) -> list:
     return issues
 
 
+def _repo_root(start: Path) -> Path | None:
+    """向上找仓库根(含 pyproject.toml/setup.py 的最近祖先目录)。
+
+    Contract:
+      Preconditions: start 是存在的路径
+      Postconditions: 找到返回该目录 Path, 到根目录仍无标记返回 None
+    """
+    cur = start.resolve()
+    for candidate in (cur, *cur.parents):
+        if any((candidate / m).exists() for m in _REPO_MARKERS):
+            return candidate
+    return None
+
+
+def _resolve_local_module(mod_name: str, test_path: Path) -> Path | None:
+    """把 import 的模块名解析为仓库内源文件路径; 第三方/标准库返回 None。
+
+    Contract:
+      Preconditions: mod_name 是点分模块名; test_path 是测试文件绝对路径
+      Postconditions: 仓库内存在对应 .py 返回其 Path, 否则 None
+    """
+    root = _repo_root(test_path)
+    if root is None:
+        return None
+    rel = mod_name.replace(".", "/")
+    for cand in (root / rel, root / (rel + ".py")):
+        if cand.suffix == ".py" and cand.exists():
+            return cand
+        if (cand / "__init__.py").exists():
+            return cand / "__init__.py"
+    return None
+
+
+def _top_level_defs(src: str) -> tuple[set, dict]:
+    """模块顶层可见符号: 定义名集合 + {函数名: 形参名集合}。
+
+    Contract:
+      Preconditions: src 是 Python 源码文本(可含仅类型的定义)
+      Postconditions: 返回 (名字集合, 函数形参表); 解析失败返回空集
+    """
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return set(), {}
+    names: set = set()
+    params: dict = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                a = node.args
+                p = {x.arg for x in (list(a.posonlyargs) + list(a.args) + list(a.kwonlyargs))}
+                if a.vararg:
+                    p.add(a.vararg.arg)
+                if a.kwarg:
+                    p.add("**" + a.kwarg.arg)
+                params[node.name] = p
+        elif isinstance(node, ast.Assign):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                names.add(alias.asname or alias.name.split(".")[0])
+    return names, params
+
+
+def _check_unverified_local_imports(tree: ast.AST, path: str) -> list:
+    """R5a: tests/ 文件 import 仓库内本地模块, 但该模块在 本会话从未 read_file 过 → 违规。
+
+    只拦 import 语句(静态可判), 不拦调用点。import 目标解析不到仓库内
+    .py 的(第三方/标准库)放行。
+
+    Contract:
+      Preconditions: tree 是 tests/ 文件的 AST; path 是其绝对路径
+      Postconditions: 返回违规消息列表(空=合规); 模块文件读取失败跳过该项
+    """
+    issues = []
+    test_path = Path(path).resolve()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            targets = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            targets = [node.module]
+        else:
+            continue
+        for mod in targets:
+            src_file = _resolve_local_module(mod, test_path)
+            if src_file is None:
+                continue
+            if not _session_has_read(src_file):
+                issues.append(
+                    f"line {node.lineno}: import {mod} 引用本地模块 {src_file.name}, "
+                    f"但本会话从未 read_file 过它——先读源码再引用其符号, "
+                    f"禁凭记忆猜参数/属性(参数瞎猜防线)。"
+                )
+    return issues
+
+
+def _check_guessed_kwargs(tree: ast.AST, path: str) -> list:
+    """R5b: 调用本地模块函数时传了签名中不存在的关键字参数 → 违规。
+
+    Case: llm_judge_bool(true_key="review")——签名无该键, 静默 fail-open。
+    跨模块调用按 import 源解析目标文件; 同文件调用按本文本解析。
+
+    Contract:
+      Preconditions: tree 是 tests/ 文件的 AST; path 是其绝对路径
+      Postconditions: 返回违规消息列表(空=合规); 解析不出目标文件跳过
+    """
+    issues = []
+    test_path = Path(path).resolve()
+    src_text = ""
+    try:
+        src_text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        src_text = ""
+    own_params = _top_level_defs(src_text)[1]
+
+    mod_targets: dict = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                mod_targets[a.asname or a.name.split(".")[0]] = a.name
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            src_file = _resolve_local_module(node.module, test_path)
+            if src_file is not None:
+                try:
+                    mod_targets_local = _top_level_defs(src_file.read_text(encoding="utf-8"))[1]
+                except OSError:
+                    continue
+                for a in node.names:
+                    mod_targets[a.asname or a.name] = mod_targets_local
+
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and node.keywords):
+            continue
+        func = node.func
+        fname = None
+        param_source = None
+        if isinstance(func, ast.Name):
+            fname = func.id
+            # from X import f 后的 f(...): 目标签名来自被导入模块而非本文件
+            bound = mod_targets.get(fname)
+            param_source = bound if isinstance(bound, dict) else own_params
+        elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            fname = func.attr
+            bound = mod_targets.get(func.value.id)
+            param_source = bound if isinstance(bound, dict) else None
+        if fname is None or param_source is None:
+            continue
+        known = param_source.get(fname)
+        if known is None:
+            continue
+        # **kwargs 可变参函数任何键名都合法, 豁免
+        if any(a.startswith("**") for a in known):
+            continue
+        bad = [k.arg for k in node.keywords if k.arg not in known and k.arg != "task_id"]
+        if bad:
+            issues.append(
+                f"line {node.lineno}: {fname}(...) 传了签名不存在的关键字参数 {bad} "
+                f"——参数必须从目标模块源码推导, 禁猜(参数瞎猜防线)。"
+            )
+    return issues
+
+
+def _session_has_read(src_file: Path) -> bool:
+    """本会话(进程内所有 task)是否读过该文件。
+
+    读信号来自 tools.file_tools_read_tracking 的进程级 _read_tracker
+    (read_history 按任务记录 read_file 触过的路径)。
+
+    Contract:
+      Preconditions: src_file 是绝对路径
+      Postconditions: 任一 task 的读记录命中该路径(原串或归一化) → True;
+        否则 False; 记账模块不可导入 → True(探测失败不拦车, fail-open)
+    """
+    try:
+        from tools.file_tools_read_tracking import _read_tracker
+    except Exception:
+        logger.warning("R5 read-ledger 不可达, 参数防线探测 fail-open", exc_info=True)
+        return True
+    target = str(src_file)
+    target_norm = str(src_file.resolve())
+    for task_data in _read_tracker.values():
+        history = task_data.get("read_history")
+        if not history:
+            continue
+        for entry in history:
+            entry_str = str(entry)
+            if entry_str == target or entry_str == target_norm:
+                return True
+            try:
+                if str(Path(entry).resolve()) == target_norm:
+                    return True
+            except (OSError, ValueError):
+                continue
+    return False
+
+
 def on_pre_tool_call(**kwargs):
     """pre_tool_call 入口——写 .py 前机检科学编程纪律。
 
@@ -270,6 +474,8 @@ def on_pre_tool_call(**kwargs):
         # 测试纪律层——仅 tests/ 下文件生效
         if "/tests/" in path or path.startswith("tests/"):
             issues += _check_expected_annotation(tree, text.splitlines())
+            issues += _check_unverified_local_imports(tree, path)
+            issues += _check_guessed_kwargs(tree, path)
         if issues:
             return {
                 "action": "block",

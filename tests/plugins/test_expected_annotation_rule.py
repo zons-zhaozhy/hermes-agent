@@ -74,3 +74,83 @@ def test_integration_passes_non_tests_path():
         "content": "def f(x: int) -> int:\n    assert x == 42\n    return x\n",
     }
     assert mod.on_pre_tool_call(tool_name="write_file", args=args) == {}  # 期望: 非tests路径R6不启用(R3/R4合规)
+
+
+# ── R5a: import 本地模块前必须读过 ──────────────────────────────────────────
+
+def test_r5a_flags_unread_local_import():
+    """tests/ 文件 import 仓库内真实模块(如 tools.file_fingerprint), 本测试
+    进程从未 read_file 过它 → R5a 报违规。"""
+    code = "from tools.file_fingerprint import content_fingerprint\n\n\ndef test_x():\n    assert content_fingerprint('a') == 'x'  # 期望: 推导注释存在, 只验R5a\n"
+    args = {"path": "tests/foo/test_r5a.py", "content": code}
+    out = mod.on_pre_tool_call(tool_name="write_file", args=args)
+    assert out.get("action") == "block"  # 期望: 未读过的本地模块import被拦
+    assert any("read_file" in m for m in out["message"].splitlines()[1:])  # 期望: 消息点名read_file
+
+
+def test_r5a_passes_stdlib_import():
+    """stdlib/第三方 import 解析不到仓库内 .py → 放行。"""
+    code = "import json\nimport os\n\n\ndef test_x():\n    assert json.dumps({}) == '{}'  # 期望: json.dumps空dict标准输出\n"
+    args = {"path": "tests/foo/test_r5a_std.py", "content": code}
+    out = mod.on_pre_tool_call(tool_name="write_file", args=args)
+    assert out == {}  # 期望: 非本地模块零违规
+
+
+def test_r5a_passes_after_session_read(monkeypatch):
+    """同一文件, read_history 有记录 → R5a 放行。直接向 _read_tracker 注入
+    记录, 验证判定逻辑(不依赖真实 read_file 调用链)。"""
+    code = "from tools.file_fingerprint import content_fingerprint\n\n\ndef test_x():\n    assert content_fingerprint('a') == 'x'  # 期望: 推导注释存在, 只验R5a\n"
+    from tools.file_tools_read_tracking import _read_tracker, _task_data
+    with __import__("tools.file_tools_read_tracking", fromlist=["_read_tracker_lock"])._read_tracker_lock:
+        _task_data("r5a-probe")["read_history"].add("tools/file_fingerprint.py")
+    try:
+        args = {"path": "tests/foo/test_r5a_read.py", "content": code}
+        out = mod.on_pre_tool_call(tool_name="write_file", args=args)
+        assert out == {}  # 期望: 读记录存在后import放行
+    finally:
+        with __import__("tools.file_tools_read_tracking", fromlist=["_read_tracker_lock"])._read_tracker_lock:
+            _read_tracker.pop("r5a-probe", None)
+
+
+# ── R5b: 关键字参数必须存在于目标签名 ──────────────────────────────────────
+
+def test_r5b_flags_invented_kwarg():
+    """跨模块调用传了签名不存在的键 → 违规。目标=本仓库真实模块真实函数,
+    传入键 record_read 签名里没有(精确复刻 true_key 案)。先注入读记录
+    满足 R5a, 独立验证 R5b。"""
+    from tools.file_tools_read_tracking import _read_tracker, _task_data, _read_tracker_lock
+    with _read_tracker_lock:
+        _task_data("r5b-probe")["read_history"].add("tools/file_fingerprint.py")
+    try:
+        code = ("from tools.file_fingerprint import record_read\n"
+                "\n"
+                "\n"
+                "def test_x():\n"
+                "    record_read('t', '/x.py', 'aaa', true_key='review')  # 期望: true_key非签名键, 只验R5b拦\n")
+        args = {"path": "tests/foo/test_r5b.py", "content": code}
+        out = mod.on_pre_tool_call(tool_name="write_file", args=args)
+        assert out.get("action") == "block"  # 期望: 瞎编关键字参数被拦
+        assert any("true_key" in m for m in out["message"].splitlines()[1:])  # 期望: 消息点名坏参数
+    finally:
+        with _read_tracker_lock:
+            _read_tracker.pop("r5b-probe", None)
+
+
+def test_r5b_passes_real_kwargs():
+    """传真实存在的键(record_read(task_id, resolved_path, fingerprint)) → 放行。
+    注入读记录满足 R5a 后独立验证 R5b。"""
+    from tools.file_tools_read_tracking import _read_tracker, _task_data, _read_tracker_lock
+    with _read_tracker_lock:
+        _task_data("r5b-ok")["read_history"].add("tools/file_fingerprint.py")
+    try:
+        code = ("from tools.file_fingerprint import record_read\n"
+                "\n"
+                "\n"
+                "def test_x():\n"
+                "    record_read(task_id='t', resolved_path='/x.py', fingerprint='aaa')  # 期望: 三键皆真实签名键\n")
+        args = {"path": "tests/foo/test_r5b_ok.py", "content": code}
+        out = mod.on_pre_tool_call(tool_name="write_file", args=args)
+        assert out == {}  # 期望: 真实参数零违规
+    finally:
+        with _read_tracker_lock:
+            _read_tracker.pop("r5b-ok", None)
