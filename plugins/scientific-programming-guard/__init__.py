@@ -7,6 +7,10 @@ v2 升级(对应四层十五律):
   运行层(仅网络/DB 交互代码生效, 判定=结构化导入集合):
     R1 finally 中 close 在哨兵 put 之前 → 消费方饿死(律 11 并发正确性)
     R2 finally 清理未包 try/except → 掩盖原始异常(律 11)
+  测试纪律层(仅 tests/ 下 .py 生效):
+    R6 assert 字面量期望值缺同线「# 期望:」推导注释 → 疑似凑绿灯/瞎猜
+       (根因: 本会话两起实测——true_key 漏传/endswith(python) 不匹配
+        python3, 均为期望值或参数未从真实源码/文档推导)
 
 判定全部 AST 级零正则。豁免: test_ 前缀/单行函数。
 测试: tests/plugins/test_scientific_programming_guard.py
@@ -25,6 +29,9 @@ _NET_HINTS = (".connect(", "cursor()", "execute_many", "query_stream")
 
 _MAX_CC = 10
 _MAX_LINES = 50
+
+# R6 期望值推导注释: 断言比较的字面量必须带同线 "# 期望:" 注释
+_EXPECTED_MARK = "# 期望:"
 
 
 def _is_network_code(text: str) -> bool:
@@ -192,6 +199,48 @@ def _check_l3_guarded_cleanup(tree: ast.AST) -> list:
     return issues
 
 
+def _check_expected_annotation(tree: ast.AST, lines: list) -> list:
+    """R6: tests/ 文件中 assert 比较/成员断言的字面量期望值缺同线推导注释 → 违规。
+
+    只查 assert 语句：二元比较(==/!=/in/not in)或容器成员断言，且期望侧
+    是字面量(数字/字符串/布尔/None/列表/字典)。断言所在物理行须含
+    "# 期望:" 注释说明独立推导依据；无注释=疑似凑绿灯/拍脑袋。
+
+    Contract:
+      Preconditions: tree 是合法 AST; lines 是源码物理行列表
+      Postconditions: 返回违规消息列表(空=合规), 每条含行号
+    """
+    issues = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assert):
+            continue
+        test = node.test
+        literal = False
+        if isinstance(test, ast.Compare) and len(test.ops) == 1:
+            comp = test.comparators[0]
+            # 「is not None」健全性检查豁免——断言的是存在性而非期望值内容,
+            # 强制注释只会制造噪音
+            if (isinstance(test.ops[0], (ast.IsNot, ast.Is))
+                    and isinstance(comp, ast.Constant)
+                    and comp.value is None):
+                literal = not isinstance(test.ops[0], ast.IsNot)
+            else:
+                literal = isinstance(comp, (
+                    ast.Constant, ast.List, ast.Dict, ast.Tuple))
+        elif isinstance(test, ast.Constant):
+            literal = test.value in (True, False, None)
+        if not literal:
+            continue
+        lineno = node.lineno
+        if lineno - 1 < len(lines) and _EXPECTED_MARK in lines[lineno - 1]:
+            continue
+        issues.append(
+            f"line {lineno}: assert 字面量期望值缺同线「{_EXPECTED_MARK}」推导注释"
+            f"——期望值必须独立推导并注明依据，禁先写代码再凑绿灯(测试纪律)。"
+        )
+    return issues
+
+
 def on_pre_tool_call(**kwargs):
     """pre_tool_call 入口——写 .py 前机检科学编程纪律。
 
@@ -218,6 +267,9 @@ def on_pre_tool_call(**kwargs):
         if _is_network_code(text):
             issues += _check_l4_sentinel_before_close(tree)
             issues += _check_l3_guarded_cleanup(tree)
+        # 测试纪律层——仅 tests/ 下文件生效
+        if "/tests/" in path or path.startswith("tests/"):
+            issues += _check_expected_annotation(tree, text.splitlines())
         if issues:
             return {
                 "action": "block",
