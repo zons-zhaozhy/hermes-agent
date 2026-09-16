@@ -1778,14 +1778,11 @@ class CheckpointManager:
         # Real pruning — drop old commits beyond max_snapshots.
         self._prune(store, working_dir, ref)
 
-        # Enforce global size cap — but not on every checkpoint.
-        # _dir_size_bytes is O(N) even with du; checking every _take()
-        # causes CPU spikes when the store has many files (py-spy
-        # confirmed _dir_size_bytes → stat() holding GIL at 100% CPU).
-        # Check every 50th checkpoint instead.
-        self._take_counter = getattr(self, "_take_counter", 0) + 1
-        if self._take_counter % 50 == 0:
-            self._enforce_size_cap(store)
+        # Enforce global size cap. Upstream checks every checkpoint: the
+        # measurement is one `du -sk` (C-speed) plus at most ONE snapshot-drop
+        # round, so the cost is bounded. (The old fork-side 50-checkpoint
+        # throttle guarded an O(N) Python stat-loop that no longer exists.)
+        self._enforce_size_cap(store)
 
         return True
 
@@ -1927,15 +1924,6 @@ def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:
 _PRUNE_MARKER_NAME = ".last_prune"
 
 
-def _delete_ref(store: Path, ref: str) -> bool:
-    """Delete a ref from the store.  Returns True on success."""
-    ok, _, _ = _run_git(
-        ["update-ref", "-d", ref], store, str(store.parent),
-        allowed_returncodes={128},
-    )
-    return ok
-
-
 def _workdir_is_observably_gone(
     workdir: str,
     parent_dev: Optional[int] = None,
@@ -2036,224 +2024,120 @@ def _dir_has_any_entry(directory: Path) -> bool:
     return False
 
 
-def prune_checkpoints(
-    retention_days: int = 7,
-    delete_orphans: bool = True,
-    checkpoint_base: Optional[Path] = None,
-    max_total_size_mb: int = 0,
-    orphan_allowlist: Optional[set] = None,
-) -> Dict[str, int]:
-    """Delete stale/orphan checkpoints and reclaim store space.
+def _empty_prune_result() -> Dict[str, int]:
+    return dict.fromkeys(("scanned", "deleted_orphan", "deleted_stale", "errors", "bytes_freed"), 0)
 
-    A project entry is deleted when either:
 
-    * ``delete_orphans=True`` and its ``workdir`` no longer exists on disk
-      (the original project was deleted / moved); OR
-    * its ``last_touch`` is older than ``retention_days`` days.
+def _unlink_quiet(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
-    ``orphan_allowlist``, when not ``None``, restricts orphan deletion to
-    the given identities (v2 project ``_hash`` strings and/or pre-v2 shadow
-    repo paths as ``str``). This lets a caller that showed the user a
-    confirmation preview (built from ``store_status()``) bind the resulting
-    deletion to exactly what was displayed — a project that only becomes
-    orphaned *after* the preview (e.g. its workdir vanishes while the human
-    is answering the prompt) is skipped rather than swept up under the
-    earlier confirmation. Pass ``None`` (the default) to delete every
-    currently-orphaned project, e.g. for ``--force`` or unattended callers
-    that never show a preview.
 
-    Additionally, if ``max_total_size_mb > 0`` and the store exceeds that
-    after orphan/stale pruning, the oldest commit per remaining project is
-    dropped until the store is under the cap.
+def _mtime_or_none(path: Path) -> Optional[float]:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
 
-    Legacy-archive dirs (``legacy-*``) older than ``retention_days`` are
-    also deleted.
 
-    Returns a dict with counts ``{"scanned", "deleted_orphan",
-    "deleted_stale", "errors", "bytes_freed"}``.
+def _legacy_archives(base: Path) -> List[Path]:
+    return [c for c in list(base.iterdir()) if c.is_dir() and c.name.startswith(_LEGACY_PREFIX)]
 
-    Never raises — maintenance must never block interactive startup.
+
+def _newest_mtime(path: Path) -> float:
+    """Newest mtime under ``path`` (0.0 when nothing is statable).
+
+    Contract:
+      Postconditions: 只在 stat 得到的条目里取 max; 遍历异常按 0.0 起算返回
     """
-    base = checkpoint_base or CHECKPOINT_BASE
-    result = {
-        "scanned": 0,
-        "deleted_orphan": 0,
-        "deleted_stale": 0,
-        "errors": 0,
-        "bytes_freed": 0,
-    }
-    if not base.exists():
-        return result
-
-    store = _store_path(base)
-    with _store_lock(store):
-        return _prune_checkpoints_locked(
-            base=base, store=store, result=result,
-            retention_days=retention_days,
-            delete_orphans=delete_orphans,
-            orphan_allowlist=orphan_allowlist,
-            max_total_size_mb=max_total_size_mb,
-            size_before=_dir_size_bytes(base),
-        )
-
-
-def _prune_checkpoints_locked(
-    base: Path, store: Path, result: Dict[str, int],
-    retention_days: int, delete_orphans: bool,
-    orphan_allowlist: Optional[set], max_total_size_mb: int,
-    size_before: int,
-) -> Dict[str, int]:
-    """Contract:
-    Preconditions: caller holds the store flock; base exists.
-    Postconditions: never raises; result counts reflect completed deletions;
-    gc runs exactly once per invocation while holding the lock.
-    """
-    # --- Legacy pre-v2 per-project shadow repos (kept directly under base) ---
-    # Pre-v2 layout: ``base/<hash>/HEAD`` etc.  We treat these exactly as the
-    # v1 pruner did so behaviour is unchanged for anyone still on that layout
-    # or sitting on a mid-migration system.
-    cutoff = 0.0
-    if retention_days > 0:
-        cutoff = time.time() - retention_days * 86400
-
-    for child in base.iterdir():
-        if not child.is_dir():
-            continue
-        if child.name == _STORE_DIRNAME:
-            continue
-        if child.name.startswith(_LEGACY_PREFIX):
-            # Legacy archive: prune by dir mtime using same retention rule.
-            if retention_days <= 0:
-                continue
+    newest = 0.0
+    try:
+        for p in path.rglob("*"):
             try:
-                m = child.stat().st_mtime
+                mt = p.stat().st_mtime
+                newest = max(newest, mt)
             except OSError:
                 continue
-            if m >= cutoff:
-                continue
-            try:
-                size = _dir_size_bytes(child)
-                shutil.rmtree(child)
-                result["bytes_freed"] += size
-                result["deleted_stale"] += 1
-            except OSError as exc:
-                result["errors"] += 1
-                logger.warning("Failed to delete legacy archive %s: %s", child, exc)
+    except OSError:
+        pass
+    return newest
 
-    # Pre-v2 per-project shadow repos.  Scanned via the same helper
-    # `store_status()` uses for its orphan preview, so a confirmation prompt
-    # built from that preview always matches what gets deleted here.
-    for repo in _pre_v2_shadow_repos(base):
-        child = repo["path"]
+
+def _int_or_none(value) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _sweep(entries, result: Dict[str, int], delete) -> None:
+    """Shared orphan/stale sweep.  ``entries`` yields ``(item, gone, allowed, is_stale)`` where
+    ``is_stale`` is a thunk (may do I/O, so only evaluated for non-orphans); "orphan" wins."""
+    for item, gone, allowed, is_stale in entries:
         result["scanned"] += 1
-        reason: Optional[str] = None
-        if (
-            delete_orphans
-            and not repo["marker_unreadable"]
-            and (
-                repo["workdir"] is None
-                # The frozen pre-v2 layout has no metadata channel to carry a
-                # recorded parent identity, so only the structural checks
-                # (parent present + populated / live mount point) apply here.
-                or _workdir_is_observably_gone(
-                    repo["workdir"], require_parent_identity=False,
-                )
-            )
-            and (orphan_allowlist is None or str(child) in orphan_allowlist)
-        ):
-            reason = "orphan"
-        if reason is None and retention_days > 0:
-            newest = 0.0
-            try:
-                for p in child.rglob("*"):
-                    try:
-                        mt = p.stat().st_mtime
-                        newest = max(newest, mt)
-                    except OSError:
-                        continue
-            except OSError:
-                pass
-            if newest > 0 and newest < cutoff:
-                reason = "stale"
-        if reason is None:
-            continue
-        try:
-            size = _dir_size_bytes(child)
-            shutil.rmtree(child)
-            result["bytes_freed"] += size
-            if reason == "orphan":
-                result["deleted_orphan"] += 1
-            else:
-                result["deleted_stale"] += 1
-        except OSError as exc:
-            result["errors"] += 1
-            logger.warning("Failed to prune checkpoint repo %s: %s", child.name, exc)
+        reason = "orphan" if gone and allowed else "stale" if is_stale() else None
+        if reason is not None:
+            delete(item, reason)
 
-    # --- v2 shared store: per-project ref pruning via metadata ---
-    store = _store_path(base)
-    if (store / "HEAD").exists():
+
+def _rmtree_counted(child: Path, result: Dict[str, int], key: str, fail_fmt: str, label) -> None:
+    """rmtree ``child``, crediting bytes + ``result[key]``; failures count as ``errors`` when tracked."""
+    try:
+        size = _dir_size_bytes(child)
+        shutil.rmtree(child)
+        result["bytes_freed"] += size
+        result[key] += 1
+    except OSError as exc:
+        if "errors" in result:
+            result["errors"] += 1
+        logger.warning(fail_fmt, label, exc)
+
+
+def _prune_legacy_archives(base: Path, cutoff: float, result: Dict[str, int]) -> None:
+    """Delete ``legacy-*`` archives whose mtime predates ``cutoff`` (skipped when retention is off)."""
+    for child in _legacy_archives(base) if cutoff > 0 else ():
+        mtime = _mtime_or_none(child)
+        if mtime is not None and mtime < cutoff:
+            _rmtree_counted(child, result, "deleted_stale", "Failed to delete legacy archive %s: %s", child)
+
+
+def _prune_pre_v2_repos(base: Path, cutoff: float, delete_orphans: bool,
+                        orphan_allowlist: Optional[set], result: Dict[str, int]) -> None:
+    """Sweep pre-v2 per-project shadow repos exactly as the v1 pruner did (scan shared with
+    ``store_status``; the frozen layout has no recorded parent identity, so orphan detection
+    uses the structural checks only)."""
+    def entries():
+        for repo in _pre_v2_shadow_repos(base):
+            child = repo["path"]
+            gone = delete_orphans and not repo["marker_unreadable"] and (
+                repo["workdir"] is None
+                or _workdir_is_observably_gone(repo["workdir"], require_parent_identity=False))
+            yield (child, gone, orphan_allowlist is None or str(child) in orphan_allowlist,
+                   lambda c=child: cutoff > 0 and 0 < _newest_mtime(c) < cutoff)
+
+    _sweep(entries(), result, lambda child, reason: _rmtree_counted(
+        child, result, f"deleted_{reason}", "Failed to prune checkpoint repo %s: %s", child.name))
+
+
+def _prune_v2_projects(store: Path, cutoff: float, delete_orphans: bool,
+                       orphan_allowlist: Optional[set], result: Dict[str, int]) -> None:
+    """Drop the ref, index and metadata of orphan/stale projects in the shared store."""
+    def entries():
         for meta in _list_projects(store):
             dir_hash = meta.get("_hash") or ""
             workdir = meta.get("workdir") or ""
             if not dir_hash:
                 continue
-            result["scanned"] += 1
-            reason = None
-            parent_dev = meta.get("workdir_parent_dev")
-            parent_ino = meta.get("workdir_parent_ino")
-            if not isinstance(parent_dev, int) or isinstance(parent_dev, bool):
-                parent_dev = None
-            if not isinstance(parent_ino, int) or isinstance(parent_ino, bool):
-                parent_ino = None
-            if (
-                delete_orphans
-                and (
-                    not workdir
-                    or _workdir_is_observably_gone(
-                        workdir,
-                        parent_dev=parent_dev,
-                        parent_ino=parent_ino,
-                    )
-                )
-                and (orphan_allowlist is None or dir_hash in orphan_allowlist)
-            ):
-                reason = "orphan"
-            elif retention_days > 0:
-                last_touch = float(meta.get("last_touch", 0) or 0)
-                if last_touch > 0 and last_touch < cutoff:
-                    reason = "stale"
-            if reason is None:
-                continue
-            ref = _ref_name(dir_hash)
-            _delete_ref(store, ref)
-            # Drop per-project index and metadata.
-            try:
-                idx = _index_path(store, dir_hash)
-                if idx.exists():
-                    idx.unlink()
-            except OSError:
-                pass
-            try:
-                mp = _project_meta_path(store, dir_hash)
-                if mp.exists():
-                    mp.unlink()
-            except OSError:
-                pass
-            if reason == "orphan":
-                result["deleted_orphan"] += 1
-            else:
-                result["deleted_stale"] += 1
+            gone = delete_orphans and (not workdir or _workdir_is_observably_gone(
+                workdir, parent_dev=_int_or_none(meta.get("workdir_parent_dev")),
+                parent_ino=_int_or_none(meta.get("workdir_parent_ino"))))
+            yield (dir_hash, gone, orphan_allowlist is None or dir_hash in orphan_allowlist,
+                   lambda m=meta: cutoff > 0 and 0 < float(m.get("last_touch", 0) or 0) < cutoff)
 
-        # GC the store to reclaim unreachable objects from dropped refs.
-        _run_git(
-            ["reflog", "expire", "--expire=now", "--all"],
-            store, str(base),
-        )
-        _run_git(
-            ["gc", "--prune=now", "--quiet"],
-            store, str(base), timeout=_GIT_TIMEOUT * 3,
-        )
-        _repair_bare_repo_dirs(store)
+    def delete(dir_hash: str, reason: str) -> None:
+        _delete_ref(store, _ref_name(dir_hash))
+        _unlink_quiet(_index_path(store, dir_hash))
+        _unlink_quiet(_project_meta_path(store, dir_hash))
+        result[f"deleted_{reason}"] += 1
 
     _sweep(entries(), result, delete)
 
@@ -2503,17 +2387,9 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
 def clear_legacy(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
     """Delete all ``legacy-*`` archive directories and report any failures."""
     base = checkpoint_base or _resolve_checkpoint_base()
-    out = {"bytes_freed": 0, "deleted": 0, "errors": 0}
+    out: Dict[str, int] = {"bytes_freed": 0, "deleted": 0, "errors": 0}
     if not base.exists():
         return out
-    for child in list(base.iterdir()):
-        if not child.is_dir() or not child.name.startswith(_LEGACY_PREFIX):
-            continue
-        try:
-            size = _dir_size_bytes(child)
-            shutil.rmtree(child)
-            out["bytes_freed"] += size
-            out["deleted"] += 1
-        except OSError as exc:
-            logger.warning("Could not delete legacy archive %s: %s", child, exc)
+    for child in _legacy_archives(base):
+        _rmtree_counted(child, out, "deleted", "Could not delete legacy archive %s: %s", child)
     return out

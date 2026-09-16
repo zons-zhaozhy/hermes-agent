@@ -857,13 +857,6 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 # Per-path lock serializes read→modify→write across concurrent
                 # subagents; different paths stay fully parallel.
                 _lock.enter_context(file_state.lock_path(_resolved))
-            # A whole-file overwrite of content this task never saw, or that
-            # changed since, is refused HERE — before the write — instead of
-            # warning after the clobber (#65604). Nothing below runs.
-            blocker = _stale_overwrite_blocker(path, _resolved, task_id)
-            if blocker:
-                return json.dumps(_stale_write_refusal(path, blocker, _resolved), ensure_ascii=False)
-            warnings = _edit_warnings([path], path_to_resolved, task_id)
 
             # Hashline freshness gate for overwrite writes — MORE dangerous than
             # patch (no old-content check at all): same protocol as patch_tool.
@@ -872,27 +865,31 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             from tools.file_fingerprint import (content_fingerprint, fingerprint_matches,
                                                 last_seen as _fp_last_seen,
                                                 record_write as _fp_record_write)
-            if _resolved:
-                _auto_fp = expected_fingerprint or _fp_last_seen(task_id, _resolved)
-                if _auto_fp:
-                    try:
-                        _fp_read = _get_file_ops(task_id)._cat(_resolved)
-                        _current = _fp_read.stdout if _fp_read.exit_code == 0 else None
-                    except Exception:
-                        logger.debug("write_file fingerprint gate read failed", exc_info=True)
-                        _current = None
-                    if _current is not None and not fingerprint_matches(_current, _auto_fp):
-                        if expected_fingerprint:
-                            return tool_error(
-                                f"FINGERPRINT MISMATCH for '{path}': the file changed since the "
-                                "read_file that produced this fingerprint. Your overwrite would "
-                                "destroy those changes and was NOT applied. Re-read the file, "
-                                "merge your changes, then write with the new fingerprint.",
-                                path=path)
-                        warnings = list(warnings) + [
-                            f"file '{path}' changed since your last full read_file (fingerprint "
-                            "stale) — your overwrite will destroy unseen changes; re-read first "
-                            "if this file matters."]
+            if _resolved and expected_fingerprint:
+                try:
+                    _fp_read = _get_file_ops(task_id)._cat(_resolved)
+                    _current = _fp_read.stdout if _fp_read.exit_code == 0 else None
+                except Exception:
+                    logger.debug("write_file fingerprint gate read failed", exc_info=True)
+                    _current = None
+                if _current is not None and not fingerprint_matches(_current, expected_fingerprint):
+                    return tool_error(
+                        f"FINGERPRINT MISMATCH for '{path}': the file changed since the "
+                        "read_file that produced this fingerprint. Your overwrite would "
+                        "destroy those changes and was NOT applied. Re-read the file, "
+                        "merge your changes, then write with the new fingerprint.",
+                        path=path)
+
+            # Stale-overwrite refusal (upstream #65604) — fires BEFORE any disk
+            # mutation and before the auto-fingerprint warn below: a whole-file
+            # overwrite of content this task never saw in full, or that changed
+            # since that read, is refused outright. This completes the fork's
+            # 0907 fingerprint contract ("写入侧强制", whose no-credential case
+            # was an explicitly transitional warn-only phase).
+            blocker = _stale_overwrite_blocker(path, _resolved, task_id)
+            if blocker:
+                return json.dumps(_stale_write_refusal(path, blocker, _resolved), ensure_ascii=False)
+            warnings = _edit_warnings([path], path_to_resolved, task_id)
 
             rewrite_hint = _whole_file_rewrite_hint(task_id, _resolved, content)
             result_dict = _get_file_ops(task_id).write_file(_resolved or path, content).to_dict()

@@ -127,7 +127,7 @@ class TestWriteFileIntegration:
         assert "FINGERPRINT MISMATCH" in out
         assert "external edit" in f.read_text(encoding="utf-8")
 
-    def test_overwrite_without_credential_proceeds_with_warning(self, tmp_path):
+    def test_overwrite_without_credential_refused_stale_write(self, tmp_path):
         from tools.file_tools import read_file_tool, write_file_tool
         f = tmp_path / "t.py"
         f.write_text("v1\n", encoding="utf-8")
@@ -135,9 +135,11 @@ class TestWriteFileIntegration:
         f.write_text("v2\n", encoding="utf-8")  # external change
         out = write_file_tool(str(f), "v3\n", task_id="fp-w2")
         d = json.loads(out)
-        assert not d.get("error"), d.get("error")
-        assert "fingerprint" in str(d.get("_warning", ""))
-        assert f.read_text(encoding="utf-8") == "v3\n"
+        # 写入侧强制（0907 指纹契约终态，上游 #65604 blocker 落地）:
+        # 无凭证的陈旧覆写同样拒——写前拦截, 磁盘内容原样保留。
+        assert d.get("stale_write_blocked") is True, d
+        assert "modified since you last read" in d.get("error", "")
+        assert f.read_text(encoding="utf-8") == "v2\n"
 
 
 class TestFinishGuardStall:

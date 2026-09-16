@@ -1209,20 +1209,26 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # keep working off Popen instead of lying about an exit that didn't
             # happen. The reader is gone either way — no output will be captured.
             rc = exit_code()
-            if rc is None:
+            if rc is None and session.process is not None:
                 try:
                     rc = session.process.wait(timeout=30)
                 except Exception:
                     rc = None
-            if rc is None and session.process is not None:
-                with session._lock:
-                    if not session.exited:
-                        session.detached = True
-                logger.warning(
-                    "%s reader ended but child pid=%s is still alive — marking "
-                    "session detached (no false 'exited' notification); status "
-                    "remains discoverable via poll()/kill",
-                    label, getattr(session.process, "pid", "?"))
+                if rc is None:
+                    with session._lock:
+                        if not session.exited:
+                            session.detached = True
+                    logger.warning(
+                        "%s reader ended but child pid=%s is still alive — marking "
+                        "session detached (no false 'exited' notification); status "
+                        "remains discoverable via poll()/kill",
+                        label, getattr(session.process, "pid", "?"))
+                    return
+            if rc is None:
+                # Unknown status (incl. sessions with no Popen handle): must
+                # stay tracked for later reconciliation — publishing a
+                # completion here would be a false "exited (None)" signal.
+                logger.warning("%s wait failed; leaving process tracked: %s", label, e)
                 return
             logger.warning("%s wait failed; recording known exit status: %s", label, e)
         self._finish_exited(session, exit_code())
