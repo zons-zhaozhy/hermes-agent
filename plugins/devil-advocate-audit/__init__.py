@@ -11,8 +11,8 @@ pre_llm_call 钩子：用辅助 LLM 语义判断当轮消息是否构成"重大�
 成本控制：
 - 消息 hash 去重（同一消息只判一次）
 - judge 调用每会话硬上限 _MAX_JUDGE_CALLS（防高负荷会话烧 token）
-- delegate_task 调用后本会话静默（reviewed=True）
-- 红牌每会话最多 _MAX_REMINDERS 次
+- delegate_task 调用后本会话静默（reviewed=True）——仅当该委派经语义
+  判定确属"反方审查/唱反调/挑漏洞"且成功完成；只读查询/跑腿类委派不免检
 - fail-open：judge 失败/超时记日志透传，不阻塞主流程
 
 缓存安全：注入 context 不改 system prompt/历史/toolset。
@@ -53,7 +53,6 @@ logger = logging.getLogger(__name__)
 
 _NAMESPACE = "devil_advocate_audit"
 
-_MAX_REMINDERS = 2
 _MAX_JUDGE_CALLS = 30
 _JUDGE_TIMEOUT = 8.0  # 慢调用截断：fail-open 漏一次提醒 << 用户等 13s
 
@@ -61,7 +60,14 @@ _JUDGE_SYSTEM = (
     "你是决策审查哨兵。判断下面这条会话消息是否构成'重大方案定稿或决策承诺'——"
     "即：即将拍板采用某技术方案/架构选型/上生产部署/模型替换/大规模重构等"
     "影响面大且难回退的决策。只是讨论、提问、调研、汇报进度不算。"
-    "只回答 JSON：{\"decision\": true} 或 {\"decision\": false}"
+    "只回答 JSON：{\\\"decision\\\": true} 或 {\\\"decision\\\": false}"
+)
+
+_DELEGATE_JUDGE_SYSTEM = (
+    "你是委派任务分类器。判断下面这个 delegate_task 委派的 goal 是否属于"
+    "'反方审查/唱反调/挑漏洞/独立审查某方案'类任务——即目的是质疑、批判、"
+    "找缺陷、对抗性验证既有方案。普通的只读查询、数据收集、并行跑腿、"
+    "只回答 JSON：{\\\"review\\\": true} 或 {\\\"review\\\": false}"
 )
 
 _REMINDER = (
@@ -113,17 +119,55 @@ def _is_major_decision(text: str) -> Optional[bool]:
     )
 
 
-def on_post_tool_call(**kwargs) -> None:
-    """delegate_task 调用 = 反方审查已做 → 本会话静默。
+def _extract_delegate_goals(args: Any) -> str:
+    """从 delegate 载荷提取 tasks[].goal 拼接文本（只读，无副作用）。"""
+    if not isinstance(args, dict):
+        return ""
+    tasks = args.get("tasks")
+    if not isinstance(tasks, list):
+        return ""
+    return "\n".join(
+        str(t.get("goal") or "")
+        for t in tasks
+        if isinstance(t, dict) and t.get("goal")
+    )
+
+
+def _delegate_is_review(goals_text: str) -> bool:
+    """LLM 语义判定委派 goal 是否属反方审查类。fail-open 返回 False。
 
     Contract:
-      Postconditions: 仅当 tool_name 属于 delegate 集合时写 reviewed 标记
+      Preconditions: goals_text is non-empty str
+      Postconditions: 返回 True/False；绝不 raise
     """
-    tool_name = str(kwargs.get("tool_name", ""))
-    if tool_name in {"delegate_task", "delegate"}:
-        sid = kwargs.get("session_id", "") or kwargs.get("task_id", "")
-        if sid:
-            get_session_state(sid, _NAMESPACE)["reviewed"] = True
+    assert goals_text, "goals_text must be non-empty"
+    return llm_judge_bool(
+        task="devil_advocate_delegate",
+        system=_DELEGATE_JUDGE_SYSTEM,
+        text=goals_text,
+        timeout=_JUDGE_TIMEOUT,
+        true_key="review",
+    ) is True
+
+
+def on_post_tool_call(**kwargs) -> None:
+    """delegate_task 委派语义判定确属反方审查且成功 → 本会话静默。
+
+    Contract:
+      Postconditions: 仅当 tool_name 属于 delegate 集合、status=success、
+      goal 经 LLM 语义判定为反方审查类时写 reviewed 标记；judge 失败
+      (fail-open) 不写标记。
+    """
+    if str(kwargs.get("tool_name", "")) not in {"delegate_task", "delegate"}:
+        return
+    if str(kwargs.get("status") or "") != "success":
+        return
+    sid = kwargs.get("session_id", "") or kwargs.get("task_id", "")
+    if not sid:
+        return
+    goals = _extract_delegate_goals(kwargs.get("args"))
+    if goals and _delegate_is_review(goals):
+        get_session_state(sid, _NAMESPACE)["reviewed"] = True
 
 
 def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
@@ -136,8 +180,6 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
             return None
         st = get_session_state(sid, _NAMESPACE)
         if st.get("reviewed"):
-            return None
-        if _count(sid) >= _MAX_REMINDERS:
             return None
         if _count(sid, "judge_calls") >= _MAX_JUDGE_CALLS:
             return None
