@@ -73,7 +73,30 @@ class _SessionState:
         self._last_response_reminded = ""
 
 
-_state = _SessionState()
+# session_id -> state。并发会话/子代理各自独立计数：全局单例会让
+# A 会话的只读探查给 B 会话的首次写入触发拦截门（互相污染）。
+_states: dict[str, _SessionState] = {}
+_STATES_CAP = 256  # 防膨胀；正常会话数远低于此
+
+
+def _state_for(session_id: str) -> _SessionState:
+    """Contract: Postconditions: 返回该 session 的状态对象（惰性建），
+    超上限时清空重建（最坏退化为计数重置，不是拦截失效）。"""
+    st = _states.get(session_id)
+    if st is None:
+        if len(_states) >= _STATES_CAP:
+            _states.clear()
+        st = _SessionState()
+        _states[session_id] = st
+    return st
+
+
+def _hook_session_id(kwargs: dict) -> str:
+    """Contract: Postconditions: 非 dict kwargs 返回 'default'；优先
+    session_id，缺省回退 task_id，再回退 'default'（与拦截门同源）。"""
+    if not isinstance(kwargs, dict):
+        return "default"
+    return str(kwargs.get("session_id") or kwargs.get("task_id") or "default")
 
 
 def _is_complex_task(conversation_messages: list[dict]) -> bool:
@@ -102,59 +125,67 @@ def _is_analysis_output(text: str) -> bool:
 
 # ── Layer 1: post_tool_call ────────────────────────────────────
 
-def _on_post_tool_call(**kwargs):
+def _on_post_tool_call(**kwargs) -> None:
+    sid = _hook_session_id(kwargs)
+    st = _state_for(sid)
     tool_name = kwargs.get("tool_name", "")
     if not tool_name:
         return
+    status = str(kwargs.get("status") or "ok")
+    # 被守卫拦下（blocked）或失败（error）的调用没有真实生效——
+    # 不计入解锁凭据，否则本插件自己 block 的 write_file 会立刻
+    # 置 persist_called=True 把拦截门一击自溃。
+    effective = status == "ok"
+    st.tool_call_count += 1
 
-    _state.tool_call_count += 1
-
-    if tool_name == "todo":
-        _state.todo_called = True
+    if tool_name == "todo" and effective:
+        st.todo_called = True
         logger.info("persistence-enforcer: TODO created, block lifted")
 
-    if tool_name in PERSIST_TRACK:
-        _state.persist_called = True
+    if tool_name in PERSIST_TRACK and effective:
+        st.persist_called = True
 
 
 # ── Layer 2: pre_llm_call (提醒) ───────────────────────────────
 
-def _on_pre_llm_call(**kwargs):
+def _on_pre_llm_call(**kwargs) -> dict:
+    st = _state_for(_hook_session_id(kwargs))
     conversation_history = kwargs.get("conversation_history", [])
     if not conversation_history:
         return {}
 
-    if _state.tool_call_count < WARN_THRESHOLD:
+    if st.tool_call_count < WARN_THRESHOLD:
         return {}
-    if _state.todo_called:
+    if st.todo_called:
         return {}
-    if _state.todo_reminded:
+    if st.todo_reminded:
         return {}
     if not _is_complex_task(conversation_history):
         return {}
 
-    _state.todo_reminded = True
+    st.todo_reminded = True
     logger.info(
         "persistence-enforcer: pre_llm — TODO reminder (calls=%d)",
-        _state.tool_call_count,
+        st.tool_call_count,
     )
-    return {"context": _TODO_REMINDER.format(count=_state.tool_call_count)}
+    return {"context": _TODO_REMINDER.format(count=st.tool_call_count)}
 
 
 # ── Layer 3: pre_tool_call (硬拦截) ────────────────────────────
 
-def _on_pre_tool_call(**kwargs):
+def _on_pre_tool_call(**kwargs) -> dict:
     """达到硬拦截阈值 → 阻止 write_file/patch，直到创建 TODO。"""
     tool_name = kwargs.get("tool_name", "")
     if not tool_name:
         return {}
+    st = _state_for(_hook_session_id(kwargs))
 
     # 不满足拦截条件：通过
-    if _state.tool_call_count < BLOCK_THRESHOLD:
+    if st.tool_call_count < BLOCK_THRESHOLD:
         return {}
-    if _state.todo_called:
+    if st.todo_called:
         return {}
-    if _state.persist_called:
+    if st.persist_called:
         return {}
 
     # 只拦截代码编辑工具，其他全部放行
@@ -163,12 +194,12 @@ def _on_pre_tool_call(**kwargs):
 
     logger.warning(
         "persistence-enforcer: BLOCKING %s (calls=%d, no TODO, no persist)",
-        tool_name, _state.tool_call_count,
+        tool_name, st.tool_call_count,
     )
     return {
         "action": "block",
         "message": _BLOCK_MESSAGE.format(
-            count=_state.tool_call_count,
+            count=st.tool_call_count,
             tool_name=tool_name,
         ),
     }
@@ -176,12 +207,13 @@ def _on_pre_tool_call(**kwargs):
 
 # ── Layer 4: transform_llm_output (分析提醒) ───────────────────
 
-def _on_transform_llm_output(**kwargs):
-    if _state.persist_called:
+def _on_transform_llm_output(**kwargs) -> str:
+    st = _state_for(_hook_session_id(kwargs))
+    if st.persist_called:
         return ""
-    if _state.tool_call_count < WARN_THRESHOLD:
+    if st.tool_call_count < WARN_THRESHOLD:
         return ""
-    if _state.output_reminded:
+    if st.output_reminded:
         return ""
 
     response_text = kwargs.get("response_text", "")
@@ -189,16 +221,16 @@ def _on_transform_llm_output(**kwargs):
         return ""
     if not _is_analysis_output(response_text):
         return ""
-    if response_text == _state._last_response_reminded:
+    if response_text == st._last_response_reminded:
         return ""
 
-    _state.output_reminded = True
-    _state._last_response_reminded = response_text
+    st.output_reminded = True
+    st._last_response_reminded = response_text
 
-    reminder = _ANALYSIS_PERSIST_REMINDER.format(count=_state.tool_call_count)
+    reminder = _ANALYSIS_PERSIST_REMINDER.format(count=st.tool_call_count)
     logger.info(
         "persistence-enforcer: transform_llm_output — persist reminder (calls=%d)",
-        _state.tool_call_count,
+        st.tool_call_count,
     )
     return response_text + reminder
 
