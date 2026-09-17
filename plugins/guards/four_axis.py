@@ -155,6 +155,20 @@ def on_pre_tool_call(**kwargs) -> Optional[Dict[str, Any]]:
     if tool_name not in _WRITE_TOOLS:
         return None
 
+    # cron 会话豁免：主闸门（agent_init.py ReadThinkGate 装配处）对 platform=="cron"
+    # 显式 enabled=False——无人值守会话无法回答 gate 提示。主闸门 disabled 意味着
+    # check_batch 恒 early-return，四轴 marker 永不写入；副防线若仍按 marker 缺失
+    # 拦截，cron 会话的 write_file/patch 会结构性死锁（输出再多四轴证据也无效）。
+    # 与主闸门同一设计意图：cron 会话 ID 恒为 cron_{job_id}_{timestamp} 前缀
+    # （hermes_state_portability.list_cron_job_runs 的扫描契约）。
+    session_id = str(kwargs.get("session_id") or "")
+    if session_id.startswith("cron_"):
+        logger.debug(
+            "four-axis guard: skipping %s — cron session (main gate exempt) %s",
+            tool_name, session_id,
+        )
+        return None
+
     args = kwargs.get("args") or {}
     target = str(args.get("path") or args.get("file_path") or "")
     if _is_agent_owned_path(target):
