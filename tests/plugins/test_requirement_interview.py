@@ -52,6 +52,12 @@ class TestSectionRender:
         assert "拍板铁律" in content
         assert "适用条件" in content
 
+    def test_rule_contains_clarify_gate_contract(self):
+        # 期望：GATE 纪律四要素齐全——批量问/停轮等答/禁自问自答/拒绝回答落假设
+        content = ri._interview_section({"platform": "cli"})
+        for anchor in ("澄清 GATE", "本轮终止等用户回答", "自问自答", "GOTCHA"):
+            assert anchor in content, f"GATE 契约缺锚点: {anchor}"
+
     def test_subagent_excluded(self):
         assert ri._interview_section({"platform": "subagent"}) == ""
 
