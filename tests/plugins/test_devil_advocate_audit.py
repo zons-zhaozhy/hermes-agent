@@ -40,11 +40,17 @@ def _msg(text: str) -> Dict[str, str]:
     return {"session_id": SID, "user_message": text}
 
 
-def _delegate(goal: str, status: str = "success") -> Dict[str, Any]:
+def _delegate(goal: str, status: str = "ok", single: bool = False) -> Dict[str, Any]:
+    # 期望: status 默认值必须是框架 observer 真词表的成功态 "ok"
+    # （model_tools._tool_result_observer_fields 只产生 ok/error/blocked/
+    # rejected；此前伪造 "success" 导致测试词表与运行时脱节、死锁未被测出）
+    payload: Dict[str, Any] = (
+        {"goal": goal} if single else {"tasks": [{"goal": goal}]}
+    )
     return {
         "session_id": SID,
         "tool_name": "delegate_task",
-        "args": {"tasks": [{"goal": goal}]},
+        "args": payload,
         "result": {},
         "status": status,
     }
@@ -143,6 +149,27 @@ def test_failed_delegate_does_not_silence(plugin, monkeypatch):
         "只找漏洞地审查这个方案", status="error"))
     out = plugin.on_pre_llm_call(**_msg("我决定整个系统切换新架构"))
     assert out is not None  # 委派失败≠已审查
+
+
+def test_single_task_delegate_silences(plugin, monkeypatch):
+    """顶层 goal= 单任务委派形态同样免检——此前只认 tasks[] 形态。"""
+    monkeypatch.setattr(
+        "agent.auxiliary_client.call_llm",
+        lambda *a, **k: _resp_by_key(True))
+    plugin.on_post_tool_call(**_delegate(
+        "只找漏洞地审查这个方案：列出所有设计缺陷与风险", single=True))
+    assert plugin.on_pre_llm_call(**_msg("任何消息")) is None
+
+
+def test_legacy_success_word_no_longer_silences(plugin, monkeypatch):
+    """框架从不产生 status=success；若再出现该词不置 reviewed（防词表回退）。"""
+    monkeypatch.setattr(
+        "agent.auxiliary_client.call_llm",
+        lambda *a, **k: _resp_by_key(True))
+    plugin.on_post_tool_call(**_delegate(
+        "只找漏洞地审查这个方案", status="success"))
+    out = plugin.on_pre_llm_call(**_msg("我决定整个系统切换新架构"))
+    assert out is not None  # 期望: 非框架词表的 status 一律不解冻
 
 
 def test_delegate_judge_fail_open(plugin, monkeypatch):

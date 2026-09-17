@@ -138,17 +138,25 @@ def _is_major_decision(text: str) -> Optional[bool]:
 
 
 def _extract_delegate_goals(args: Any) -> str:
-    """从 delegate 载荷提取 tasks[].goal 拼接文本（只读，无副作用）。"""
+    """从 delegate 载荷提取 goals 拼接文本（只读，无副作用）。
+
+    两种委派形态都要认：tasks[].goal 批量形态 + 顶层 goal= 单任务形态
+    （框架 schema 两者都允许，见 DELEGATE_TASK_SCHEMA）。
+    """
     if not isinstance(args, dict):
         return ""
+    texts = []
+    single = args.get("goal")
+    if isinstance(single, str) and single.strip():
+        texts.append(single)
     tasks = args.get("tasks")
-    if not isinstance(tasks, list):
-        return ""
-    return "\n".join(
-        str(t.get("goal") or "")
-        for t in tasks
-        if isinstance(t, dict) and t.get("goal")
-    )
+    if isinstance(tasks, list):
+        texts.extend(
+            str(t.get("goal") or "")
+            for t in tasks
+            if isinstance(t, dict) and t.get("goal")
+        )
+    return "\n".join(t for t in texts if t)
 
 
 def _delegate_is_review(goals_text: str) -> bool:
@@ -172,13 +180,15 @@ def on_post_tool_call(**kwargs) -> None:
     """delegate_task 委派语义判定确属反方审查且成功 → 本会话静默。
 
     Contract:
-      Postconditions: 仅当 tool_name 属于 delegate 集合、status=success、
-      goal 经 LLM 语义判定为反方审查类时写 reviewed 标记；judge 失败
+      Postconditions: 仅当 tool_name 属于 delegate 集合、status=ok（框架
+      observer 词表的唯一成功态）、goal 经 LLM 语义判定为反方审查类时写 reviewed 标记；judge 失败
       (fail-open) 不写标记。
     """
     if str(kwargs.get("tool_name", "")) not in {"delegate_task", "delegate"}:
         return
-    if str(kwargs.get("status") or "") != "success":
+    # 框架词表（model_tools._tool_result_observer_fields）成功态唯一真名是
+    # "ok"；写 "success" 等一个永不出现的词 = armed 永不解除的死锁。
+    if str(kwargs.get("status") or "") != "ok":
         return
     sid = kwargs.get("session_id", "") or kwargs.get("task_id", "")
     if not sid:
