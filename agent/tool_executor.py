@@ -1734,7 +1734,16 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     from agent.terminal_approval_batch import terminal_approval_batch, terminal_approval_runs
     for calls in terminal_approval_runs(agent, assistant_message.tool_calls):
         with terminal_approval_batch(agent, calls, messages, effective_task_id):
-            _execute_tool_calls_sequential(agent, SimpleNamespace(tool_calls=calls), messages, effective_task_id, api_call_count, finalize=False)
+            _execute_tool_calls_sequential(
+                agent,
+                # content 必须透传——ReadThinkGate 扫四轴证据靠它；丢失后 sequential
+                # 段的 check_batch 收到空串，四轴 marker 永不写入（segmented 场景）
+                SimpleNamespace(
+                    tool_calls=calls,
+                    content=getattr(assistant_message, "content", None),
+                ),
+                messages, effective_task_id, api_call_count, finalize=False,
+            )
         if getattr(agent, "_incremental_persistence_failed", False):
             return
     if finalize:
