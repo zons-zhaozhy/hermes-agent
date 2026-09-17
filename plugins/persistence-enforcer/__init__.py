@@ -28,6 +28,8 @@ BLOCK_THRESHOLD = 10   # 硬拦截阈值
 # write_file 是可持久化工具，但在无 TODO 时会被拦截
 # PERSIST_TRACK 用于 post_tool_call 追踪——包含 write_file
 PERSIST_TRACK = frozenset({"write_file", "skill_manage", "memory"})
+# 框架工具名 todo → todo_list 曾更名；两个名字都认，防止解锁条件随更名永假
+TODO_TOOLS = frozenset({"todo", "todo_list"})
 # 拦截目标：只挡代码编辑工具（write_file, patch）
 # terminal/delegate/browser/read 等全部放行——agent 需要它们做调查
 BLOCKED_TOOLS = frozenset({"write_file", "patch"})
@@ -39,7 +41,7 @@ COMPLEX_TASK_KEYWORDS = frozenset({
 
 _TODO_REMINDER = (
     "\n[PERSISTENCE-ENFORCER] {count} 次工具调用，尚未创建 TODO 列表。\n"
-    "大的、复杂的、耗时长的任务必须在动手前用 `todo` 工具创建任务列表。\n"
+    "大的、复杂的、耗时长的任务必须在动手前用 `todo_list` 工具创建任务列表。\n"
     "每个子任务完成后必须立即将结果持久化（skill_manage/write_file）。\n"
     "不要等到最后再汇总——上下文压缩会吞掉内存中的结果。"
 )
@@ -48,7 +50,7 @@ _BLOCK_MESSAGE = (
     "[PERSISTENCE-ENFORCER BLOCK] {count} 次工具调用，无 TODO、无持久化。\n"
     "{tool_name} 已被拦截。\n\n"
     "在用 `write_file`/`patch` 编辑代码之前，你必须：\n"
-    "1. 调用 `todo` 创建任务列表\n"
+    "1. 调用 `todo_list` 创建任务列表\n"
     "2. 将已完成的分析结果用 `skill_manage` 或 `write_file` 持久化\n\n"
     "只读工具不受限制——你仍可以调查。创建 TODO 后立即解封。"
 )
@@ -138,7 +140,7 @@ def _on_post_tool_call(**kwargs) -> None:
     effective = status == "ok"
     st.tool_call_count += 1
 
-    if tool_name == "todo" and effective:
+    if tool_name in TODO_TOOLS and effective:
         st.todo_called = True
         logger.info("persistence-enforcer: TODO created, block lifted")
 
