@@ -60,6 +60,9 @@ def _agent_owned_prefixes() -> tuple[Path, ...]:
         home / "cache",
         home / "memories",
         home / "skill_suggestions",  # 每日审计报告等 agent 自产文档（同 2026-08-15 设计意图）
+        home / "skills",  # skill 复测记录/滚动表等 agent 自维护产物——非核心代码编辑，
+        # 与 skill_suggestions 同类；skills 下含 agent 按 skill_view 纪律落盘的
+        # run-XXX 复测文档，属四轴闸门设计范围外（escape-valve-runbook: core code edit）
     )
 
 
