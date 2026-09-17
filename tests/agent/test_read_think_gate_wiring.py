@@ -20,6 +20,7 @@ Expectations derive from the 851bdcf641 design invariants:
 """
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -128,7 +129,7 @@ class TestMarkerPathProfileAware:
         from agent.read_think_gate import _four_axis_marker_path
 
         p = _four_axis_marker_path()
-        assert p == tmp_path / "cache" / "four_axis_gate.json"
+        assert p == tmp_path / "cache" / f"four_axis_gate_{os.getpid()}.json"
 
     def test_plugin_marker_path_matches_gate_path(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

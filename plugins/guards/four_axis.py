@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -36,11 +37,13 @@ def _marker_file() -> Path:
     """解析 marker 文件路径（与 ReadThinkGate 写入端同一解析方式）。
 
     Returns:
-        Path: hermes_home/cache/four_axis_gate.json
+        Path: hermes_home/cache/four_axis_gate_{pid}.json
     """
     from hermes_constants import get_hermes_home
 
-    return get_hermes_home() / "cache" / "four_axis_gate.json"
+    # 带 PID 与写端 read_think_gate._four_axis_marker_path 对齐——同进程同路径，
+    # 跨进程隔离，防并发会话互踩（详见写端注释）。
+    return get_hermes_home() / "cache" / f"four_axis_gate_{os.getpid()}.json"
 
 # 2026-08-15 修复：agent 自维护产物（日报/指标/state/cron 输出/缓存/记忆）不是
 # "核心代码编辑"，无调用方无编译影响，属闸门设计范围外（escape-valve-runbook

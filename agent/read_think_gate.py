@@ -52,11 +52,15 @@ def _four_axis_marker_path() -> Path:
     """解析四轴 marker 文件路径（profile-aware，每次调用现算）。
 
     Returns:
-        Path: hermes_home/cache/four_axis_gate.json
+        Path: hermes_home/cache/four_axis_gate_{pid}.json
     """
     from hermes_constants import get_hermes_home
 
-    return get_hermes_home() / "cache" / "four_axis_gate.json"
+    # 文件名带 PID：多 hermes 进程并发时（CLI 多会话/桌面端/cron 同机），共享单例
+    # marker 会被兄弟进程的 turn-start 清除（begin_turn unlink），导致证据齐备仍被
+    # 副防线拦截。写读两端（本模块 + plugins/guards/four_axis.py）同进程内解析出
+    # 同一路径，跨进程天然隔离。
+    return get_hermes_home() / "cache" / f"four_axis_gate_{os.getpid()}.json"
 
 # 四轴关键词表（2026-08-26 恢复：e12e46fd3 删除后 use_llm_judge=false 时四轴无解锁路径）。
 # 子串匹配 O(n) 无回溯（历史上 re.search 曾致灾难性回溯 CPU 100%，禁用正则）。
@@ -105,13 +109,28 @@ _FOUR_AXIS_REQUIRED_TOOLS: frozenset[str] = frozenset(
 
 
 def _clear_four_axis_marker() -> None:
-    """清除四轴 marker 文件——每个 turn 开始时调用。"""
+    """清除四轴 marker 文件——每个 turn 开始时调用。
+
+    同时清扫陈旧的跨进程 marker（four_axis_gate_*.json）：进程退出后其 PID 命名
+    的 marker 不再被任何 turn-start 清除，避免长期运行后 cache 目录堆积。
+    """
     try:
         _marker = _four_axis_marker_path()
         if _marker.exists():
             _marker.unlink()
     except Exception:
         logger.warning("failed to clear four-axis marker file", exc_info=True)
+    try:
+        _cache_dir = _four_axis_marker_path().parent
+        _cutoff = time.time() - 86400
+        for _stale in _cache_dir.glob("four_axis_gate_*.json"):
+            try:
+                if _stale.stat().st_mtime < _cutoff:
+                    _stale.unlink()
+            except OSError:
+                continue
+    except Exception:
+        logger.warning("failed to sweep stale four-axis marker files", exc_info=True)
 
 # 默认门控的执行类工具——只覆盖代码编辑工具。
 # terminal/browser/delegate_task/cronjob/process 等运维交互工具不在默认门控范围——
