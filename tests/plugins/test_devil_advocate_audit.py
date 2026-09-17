@@ -110,8 +110,7 @@ def test_message_dedup(plugin, mock_judge):
 def test_judge_call_cap(plugin, mock_judge):
     for i in range(35):
         plugin.on_pre_llm_call(**_msg(f"消息 {i}"))
-    # 30 次上限后不再调
-    assert len(mock_judge) <= 30
+    assert len(mock_judge) <= 65  # 期望: ≤65 —— 决策判定cap=30；cap前armed置位后每消息1次豁免探测(35)
 
 
 def test_reminder_no_session_cap(plugin, mock_judge):
@@ -170,6 +169,38 @@ def test_legacy_success_word_no_longer_silences(plugin, monkeypatch):
         "只找漏洞地审查这个方案", status="success"))
     out = plugin.on_pre_llm_call(**_msg("我决定整个系统切换新架构"))
     assert out is not None  # 期望: 非框架词表的 status 一律不解冻
+
+
+def test_waive_not_capped(plugin, monkeypatch):
+    # 期望: cap 满 + armed 态下豁免词仍可解除武装——豁免判定不被
+    # judge_calls cap 挡（被挡=armed 死锁无解，用户拍板权至上）
+    from plugins._shared_state import get_session_state
+    st0 = get_session_state(SID, "devil_advocate_audit")
+    st0["judge_calls"] = 30
+    st0["armed"] = True  # 先 armed（cap 前已置位），再打满 cap 验证豁免出口仍开
+    replies = iter([
+        type("R", (), {"choices": [type("C", (), {"message": type(
+            "M", (), {"content": '{"waive": true}'})()})()]})(),      # cap 后豁免判定 True
+    ])
+    monkeypatch.setattr("agent.auxiliary_client.call_llm",
+                        lambda *a, **k: next(replies))
+    plugin.on_pre_llm_call(**_msg("豁免反方审查，这个方案我拍板了"))
+    st = get_session_state(SID, "devil_advocate_audit")
+    assert st.get("waived") is True  # 期望: True —— cap=30+armed 态豁免词仍解除武装
+
+
+def test_armed_persists_until_resolved(plugin, monkeypatch):
+    # 期望: armed 未 reviewed/waived 前持续拦截，豁免/审查任一出口才解除
+    from plugins._shared_state import get_session_state
+    st0 = get_session_state(SID, "devil_advocate_audit")
+    st0["armed"] = True
+    out = plugin.on_pre_tool_call(
+        session_id=SID, tool_name="write_file", args={"path": "/tmp/x"})
+    assert out is not None and out.get("action") == "block"
+    st0["waived"] = True
+    out2 = plugin.on_pre_tool_call(
+        session_id=SID, tool_name="write_file", args={"path": "/tmp/x"})
+    assert out2 is None  # 期望: waived 后放行
 
 
 def test_delegate_judge_fail_open(plugin, monkeypatch):

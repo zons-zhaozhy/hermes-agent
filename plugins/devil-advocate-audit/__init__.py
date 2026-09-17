@@ -209,10 +209,15 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
         st = get_session_state(sid, _NAMESPACE)
         if st.get("reviewed"):
             return None
-        if _count(sid, "judge_calls") >= _MAX_JUDGE_CALLS:
-            return None
         text = str(kwargs.get("user_message", "") or "")
         if not text.strip():
+            return None
+        if _count(sid, "judge_calls") >= _MAX_JUDGE_CALLS:
+            # cap 满：决策判定停摆，但 armed 会话仍须保留豁免出口——
+            # 否则冻结无解（用户说豁免词也到不了判定）。仅 armed 态探测，
+            # waived/reviewed 置位后本分支不再触发，成本有界。
+            if st.get("armed") and _user_waived(text):
+                st["waived"] = True
             return None
         h = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
         if h in _seen_hash(sid):
@@ -229,13 +234,11 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
         elif merged.get("decision") is not True:
             return None
         st["count"] = _count(sid) + 1
-        # 用户明示豁免 → 记 waived 并解除武装（不再注入红牌、不再拦截）。
-        # 豁免判定同样计入 judge_calls 成本阀——上限语义=LLM 判定调用总数。
-        if _count(sid, "judge_calls") < _MAX_JUDGE_CALLS:
-            st["judge_calls"] = _count(sid, "judge_calls") + 1
-            if _user_waived(text):
-                st["waived"] = True
-                return None
+        # 用户明示豁免 → 记 waived 并解除武装。豁免判定不设 cap——
+        # cap 只限"决策判定"；豁免是用户主动出口，被 cap 挡=armed 死锁无解。
+        if _user_waived(text):
+            st["waived"] = True
+            return None
         st["armed"] = True
         return {"context": _REMINDER}
     except Exception as e:
