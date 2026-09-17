@@ -176,13 +176,13 @@ def on_post_tool_call(**kwargs) -> None:
     """delegate_task 委派语义判定确属反方审查且成功 → 本会话静默。
 
     Contract:
-      Postconditions: 仅当 tool_name 属于 delegate 集合、status=success、
-      goal 经 LLM 语义判定为反方审查类时写 reviewed 标记；judge 失败
-      (fail-open) 不写标记。
+      Postconditions: 仅当 tool_name 属于 delegate 集合、status=ok（框架
+      observer 词表唯一成功态，不兼容 success）、goal 经 LLM 语义判定
+      为反方审查类时写 reviewed 标记；judge 失败 (fail-open) 不写标记。
     """
     if str(kwargs.get("tool_name", "")) not in {"delegate_task", "delegate"}:
         return
-    if str(kwargs.get("status") or "") not in {"ok", "success"}:
+    if str(kwargs.get("status") or "") != "ok":
         return
     sid = kwargs.get("session_id", "") or kwargs.get("task_id", "")
     if not sid:
