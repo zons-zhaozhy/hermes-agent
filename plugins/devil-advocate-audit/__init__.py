@@ -138,17 +138,21 @@ def _is_major_decision(text: str) -> Optional[bool]:
 
 
 def _extract_delegate_goals(args: Any) -> str:
-    """从 delegate 载荷提取 tasks[].goal 拼接文本（只读，无副作用）。"""
+    """从 delegate 载荷提取 goal 文本（tasks[].goal + 顶层 goal，只读）。"""
     if not isinstance(args, dict):
         return ""
+    parts = []
+    top_goal = str(args.get("goal") or "")
+    if top_goal:
+        parts.append(top_goal)
     tasks = args.get("tasks")
-    if not isinstance(tasks, list):
-        return ""
-    return "\n".join(
-        str(t.get("goal") or "")
-        for t in tasks
-        if isinstance(t, dict) and t.get("goal")
-    )
+    if isinstance(tasks, list):
+        parts.extend(
+            str(t.get("goal") or "")
+            for t in tasks
+            if isinstance(t, dict) and t.get("goal")
+        )
+    return "\n".join(p for p in parts if p)
 
 
 def _delegate_is_review(goals_text: str) -> bool:
@@ -178,7 +182,7 @@ def on_post_tool_call(**kwargs) -> None:
     """
     if str(kwargs.get("tool_name", "")) not in {"delegate_task", "delegate"}:
         return
-    if str(kwargs.get("status") or "") != "success":
+    if str(kwargs.get("status") or "") not in {"ok", "success"}:
         return
     sid = kwargs.get("session_id", "") or kwargs.get("task_id", "")
     if not sid:
@@ -199,10 +203,15 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
         st = get_session_state(sid, _NAMESPACE)
         if st.get("reviewed"):
             return None
-        if _count(sid, "judge_calls") >= _MAX_JUDGE_CALLS:
-            return None
         text = str(kwargs.get("user_message", "") or "")
         if not text.strip():
+            return None
+        if _count(sid, "judge_calls") >= _MAX_JUDGE_CALLS:
+            # cap 满：决策判定停摆，但 armed 会话仍须保留豁免出口——
+            # 否则冻结无解（用户说豁免词也到不了判定）。仅 armed 态探测，
+            # waived/reviewed 置位后本分支不再触发，成本有界。
+            if st.get("armed") and _user_waived(text):
+                st["waived"] = True
             return None
         h = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
         if h in _seen_hash(sid):
@@ -219,13 +228,11 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
         elif merged.get("decision") is not True:
             return None
         st["count"] = _count(sid) + 1
-        # 用户明示豁免 → 记 waived 并解除武装（不再注入红牌、不再拦截）。
-        # 豁免判定同样计入 judge_calls 成本阀——上限语义=LLM 判定调用总数。
-        if _count(sid, "judge_calls") < _MAX_JUDGE_CALLS:
-            st["judge_calls"] = _count(sid, "judge_calls") + 1
-            if _user_waived(text):
-                st["waived"] = True
-                return None
+        # 用户明示豁免 → 记 waived 并解除武装。豁免判定不设 cap——
+        # cap 只限"决策判定"；豁免是用户主动出口，被 cap 挡=armed 死锁无解。
+        if _user_waived(text):
+            st["waived"] = True
+            return None
         st["armed"] = True
         return {"context": _REMINDER}
     except Exception as e:
