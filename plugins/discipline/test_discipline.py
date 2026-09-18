@@ -6,11 +6,18 @@
 每文件子进程隔离），裸 pytest 在 16 核开发机上跑出的结果与 CI 漂移
 （历史多次"本地绿 CI 红"事故的根因）。
 
+仓库感知（2026-09-19 误报根修）：包装器纪律只适用于真有该包装器的
+仓库（hermes-agent）。无包装器仓库（如 ontox，CI 即裸 python -m pytest）
+被拦后正门不存在=堵死合法通道。判定升级：从命令内 cd 目标/workdir 沿
+目录树向上探测 scripts/run_tests.sh，存在才拦，不存在放行（该仓库的
+规范执行方式就是裸 pytest，与 CI 一致）。
+
 判定规则（shlex 令牌级，无正则）：
   - 令牌含 "pytest" 或 ("python" + "-m" + "pytest" 序列) 即视为 pytest 调用
   - 命令以 scripts/run_tests.sh（或 ./scripts/run_tests.sh）为前缀 → 放行
   - 纯探针（pytest --version / --help / --collect-only）→ 放行
   - run_tests_parallel.py 直接调用 → 放行（同一包装器体系的内层）
+  - 目标仓库（cd/workdir 向上）无 scripts/run_tests.sh → 放行（仓库感知）
 
 只拦 terminal 工具；不拦只读命令；fail-open（解析失败放行）。
 
@@ -25,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import shlex
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -33,6 +41,39 @@ _WRAPPER_PREFIXES = ("scripts/run_tests.sh", "./scripts/run_tests.sh")
 _PARALLEL_RUNNER = "run_tests_parallel.py"
 # 纯探针旗标：不执行测试，只查询，放行
 _PROBE_FLAGS = {"--version", "-V", "--help", "-h", "--collect-only", "--co"}
+
+
+def _repo_has_wrapper(start_dir: str) -> bool:
+    """目录树向上探测 scripts/run_tests.sh 是否存在（仓库感知核心）。
+
+    Contract:
+      Preconditions: start_dir 为命令中 cd/workdir 指示的目录（可能不存在）
+      Postconditions: 返回 True/False；任何 IO 异常返回 True（fail-closed，
+        即探测失败时保守拦截——包装器仓库的纪律不因探测故障而松动）
+    """
+    try:
+        p = Path(start_dir).expanduser().resolve()
+        for parent in [p, *p.parents]:
+            if (parent / "scripts" / "run_tests.sh").is_file():
+                return True
+        return False
+    except OSError:
+        return True
+
+
+def _target_dir_from_command(tokens: List[str]) -> str:
+    """从命令令牌提取目标目录：最后一个 cd 参数；无 cd 时返回进程 cwd。
+
+    pytest 在 cd 之后执行，故 cd 目标才是判定基准。
+    """
+    import os
+    cd_target = None
+    for i, tok in enumerate(tokens):
+        if tok == "cd" and i + 1 < len(tokens) and tokens[i + 1] not in ("&&", ";"):
+            cd_target = tokens[i + 1]
+    if cd_target:
+        return cd_target
+    return os.getcwd()
 
 
 def _is_module_invocation(tokens: List[str]) -> bool:
@@ -66,7 +107,13 @@ def _is_bare_pytest(command: str) -> bool:
     # 纯探针放行
     if _PROBE_FLAGS & set(tokens):
         return False
-    return tokens[0].endswith("pytest") or _is_module_invocation(tokens)
+    is_pytest = tokens[0].endswith("pytest") or _is_module_invocation(tokens)
+    if not is_pytest:
+        return False
+    # 仓库感知：目标仓库无包装器 → 该仓库规范即裸 pytest，放行
+    if not _repo_has_wrapper(_target_dir_from_command(tokens)):
+        return False
+    return True
 
 
 def on_pre_tool_call(**kwargs: Any) -> Optional[Dict[str, Any]]:

@@ -54,7 +54,28 @@ def test_broken_shell_string_fail_open():
 
 
 def test_empty_command_allowed():
-    assert _run("") is None
+    assert _run("") is None  # 期望: 空命令无 pytest 令牌, 放行
+
+
+def test_repo_without_wrapper_allowed(tmp_path, monkeypatch):
+    """仓库感知：目标仓库无 scripts/run_tests.sh → 放行（如 ontox，CI 即裸 pytest）。"""
+    repo = tmp_path / "repo_no_wrapper"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+    assert _run(f"cd {repo} && python3 -m pytest tests/ -q") is None  # 期望: 无包装器仓库放行
+    assert _run("python3 -m pytest tests/ -q") is None  # 期望: 无 cd 时 cwd=无包装器仓库, 同样放行
+
+
+def test_repo_with_wrapper_blocked(tmp_path, monkeypatch):
+    """仓库感知：目标仓库有 scripts/run_tests.sh → 仍拦（如 hermes-agent）。"""
+    repo = tmp_path / "repo_with_wrapper"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "scripts" / "run_tests.sh").write_text("#!/bin/bash\n")
+    monkeypatch.chdir(repo)
+    out = _run(f"cd {repo} && python3 -m pytest tests/ -q")
+    assert out is not None and out["action"] == "block"  # 期望: 有包装器仓库仍拦截
+    out = _run("pytest tests/foo/ -x")
+    assert out is not None and out["action"] == "block"  # 期望: 无 cd 时 cwd=有包装器仓库, 仍拦截
 
 
 def test_registered_gated_hook(monkeypatch):
