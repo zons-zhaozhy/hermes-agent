@@ -30,6 +30,11 @@ BLOCK_THRESHOLD = 10   # 硬拦截阈值
 PERSIST_TRACK = frozenset({"write_file", "skill_manage", "memory"})
 # 框架工具名 todo → todo_list 曾更名；两个名字都认，防止解锁条件随更名永假
 TODO_TOOLS = frozenset({"todo", "todo_list"})
+# 死锁降级阈值：连续 N 次拦截仍无解锁凭据 → 判定解锁工具在本会话
+# 工具集中不可得（cron/one-shot 会话无 todo_list/skill_manage/memory），
+# 放行并注入警告。拦截意图是督促建 TODO，不是让交付无解。
+DEBLOCK_AFTER = 2
+
 # 拦截目标：只挡代码编辑工具（write_file, patch）
 # terminal/delegate/browser/read 等全部放行——agent 需要它们做调查
 BLOCKED_TOOLS = frozenset({"write_file", "patch"})
@@ -44,6 +49,12 @@ _TODO_REMINDER = (
     "大的、复杂的、耗时长的任务必须在动手前用 `todo_list` 工具创建任务列表。\n"
     "每个子任务完成后必须立即将结果持久化（skill_manage/write_file）。\n"
     "不要等到最后再汇总——上下文压缩会吞掉内存中的结果。"
+)
+
+_DEBLOCK_MESSAGE = (
+    "[PERSISTENCE-ENFORCER 死锁解除] {count} 次调用、连续 {blocks} 次拦截后仍无 TODO/"
+    "持久化凭据，且解锁工具（todo_list/skill_manage/memory）在本会话工具集中不存在。\n"
+    "{tool_name} 已放行——请将结果写入文件系统完成持久化。"
 )
 
 _BLOCK_MESSAGE = (
@@ -72,6 +83,8 @@ class _SessionState:
         self.persist_called = False
         self.todo_reminded = False
         self.output_reminded = False
+        self.consecutive_blocks = 0
+        self.deblock_pending = False
         self._last_response_reminded = ""
 
 
@@ -156,6 +169,13 @@ def _on_pre_llm_call(**kwargs) -> dict:
     if not conversation_history:
         return {}
 
+    if st.deblock_pending:
+        # 死锁解除后的首次 LLM 调用：注入放行警告（一次性，防重复噪音）
+        st.deblock_pending = False
+        return {"context": _DEBLOCK_MESSAGE.format(
+            count=st.tool_call_count, tool_name="write_file/patch", blocks=DEBLOCK_AFTER
+        )}
+
     if st.tool_call_count < WARN_THRESHOLD:
         return {}
     if st.todo_called:
@@ -194,15 +214,33 @@ def _on_pre_tool_call(**kwargs) -> dict:
     if tool_name not in BLOCKED_TOOLS:
         return {}
 
+    # 死锁降级：连续 DEBLOCK_AFTER 次拦截后仍无任何解锁凭据，判定为
+    # 解锁凭据在本会话工具集中不可得（cron/one-shot 会话无 todo_list/
+    # skill_manage/memory）。此时放行并注入响亮警告——拦截的设计意图是
+    # 督促建 TODO，不是让交付无解；静默死锁比放行更违背设计原则。
+    if st.consecutive_blocks >= DEBLOCK_AFTER:
+        # 死锁解除：放行（pre_tool_call 契约只认 block/approve/modify，
+        # 返回 {} 即放行且不改参数）。警告经 Layer 2 pre_llm_call 注入
+        # （deblock_pending 标记）+ logger.warning，零静默。
+        logger.warning(
+            "persistence-enforcer: DEADLOCK BREAKER — %s passed after %d "
+            "consecutive blocks (calls=%d): unlock tools unavailable in "
+            "this session's toolset",
+            tool_name, st.consecutive_blocks, st.tool_call_count,
+        )
+        st.consecutive_blocks = 0
+        st.deblock_pending = True
+        return {}
+
     logger.warning(
         "persistence-enforcer: BLOCKING %s (calls=%d, no TODO, no persist)",
         tool_name, st.tool_call_count,
     )
+    st.consecutive_blocks += 1
     return {
         "action": "block",
         "message": _BLOCK_MESSAGE.format(
-            count=st.tool_call_count,
-            tool_name=tool_name,
+            count=st.tool_call_count, tool_name=tool_name
         ),
     }
 
