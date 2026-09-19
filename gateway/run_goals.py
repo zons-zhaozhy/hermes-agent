@@ -332,12 +332,51 @@ class GatewayGoalsMixin:
         hooks = [("loop completion", self._post_turn_loop_completion)]
         if final_text.strip():
             hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
+        else:
+            # Recoverable provider failure (429/overload/5xx after retry exhaustion): park an
+            # active goal on a timer so it retries automatically when the provider window
+            # reopens, instead of stalling until the next user message.
+            _reason = agent_result.get("failure_reason") if isinstance(agent_result, dict) else None
+            if _reason:
+                await self._park_goal_on_provider_failure(session_entry, str(_reason))
         for label, hook in hooks:
             try:
                 await hook(session_entry=session_entry, source=source, final_response=final_text,
                            tool_calls_summary=_tcs)
             except Exception as exc:
                 logger.debug("%s hook failed: %s", label, exc)
+
+    async def _park_goal_on_provider_failure(self, session_entry: Any, failure_reason: str) -> None:
+        """Park an active goal after a recoverable provider failure (see
+        ``GoalManager.park_on_provider_failure``). Runs the park in an executor because the
+        GoalManager persists synchronously; a failure here must never break the post-turn
+        hook chain, so it only logs.
+
+        Contract:
+            Preconditions: session_entry has a ``session_id``; failure_reason is a non-empty
+                string from the turn result's ``failure_reason``.
+            Postconditions: never raises; parks only when a goal is active AND the reason is
+                in _PROVIDER_FAILURE_PARK_REASONS.
+        """
+        try:
+            from hermes_cli.goals import GoalManager, _PROVIDER_FAILURE_PARK_SECONDS
+
+            sid = getattr(session_entry, "session_id", None) or ""
+            if not sid:
+                return
+            max_turns = self._goal_max_turns_from_config()
+            mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
+            if not mgr.is_active():
+                return
+            await self._run_in_executor_with_context(
+                lambda: mgr.park_on_provider_failure(failure_reason, wait_seconds=_PROVIDER_FAILURE_PARK_SECONDS),
+            )
+            logger.info(
+                "goal continuation: parked after provider failure %s (retry in %ss): session=%s",
+                failure_reason, _PROVIDER_FAILURE_PARK_SECONDS, sid,
+            )
+        except Exception as exc:
+            logger.debug("goal provider-failure park failed: %s", exc)
 
     @staticmethod
     def _final_text_for_post_turn_hooks(agent_result, event=None) -> str:

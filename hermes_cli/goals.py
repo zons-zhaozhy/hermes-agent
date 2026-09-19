@@ -73,6 +73,17 @@ DEFAULT_GATE_MAX_RETRIES = 3
 # Longest a pid/session wait barrier may hold the loop before judging resumes. Timed barriers
 # (``waiting_until``) carry their own deadline and are exempt.
 _MAX_BARRIER_WAIT_S = 30 * 60
+# Recoverable provider failure reasons (turn result ``failure_reason``) worth parking the goal
+# loop on: the provider window (rate limit / overload / outage) reopens on its own, so an
+# automatic retry beats stalling until the next user message. Mirrors the kanban
+# _TRANSIENT_PROVIDER_REASONS set in cli.py but drops billing (credit exhaustion needs the
+# user to top up, not a retry) and timeout (no provider window to wait out).
+_PROVIDER_FAILURE_PARK_REASONS = frozenset({
+    "rate_limit", "upstream_rate_limit", "overloaded", "server_error",
+})
+# Default park duration for provider-failure retries; long enough to ride out a typical
+# rate-limit window rollover without hammering a still-limited provider.
+_PROVIDER_FAILURE_PARK_SECONDS = 30 * 60
 # Bounded tail of a failed gate's combined stdout/stderr fed back to the agent.
 _GATE_OUTPUT_TAIL_CHARS = 3000
 
@@ -1841,6 +1852,28 @@ class GoalManager:
         if seconds <= 0:
             raise ValueError("seconds must be a positive integer")
         return self._park(reason, waiting_until=time.time() + seconds, waiting_on_delegations=max(0, int(on_delegations)))
+
+    def park_on_provider_failure(self, failure_reason: str, *, wait_seconds: int) -> Optional[GoalState]:
+        """Park the loop after a turn died on a recoverable provider failure (429 rate limit,
+        overload, transient server error) so it retries automatically once the provider
+        window likely reopened, instead of stalling until the next user message.
+
+        Contract:
+            Preconditions: failure_reason is a non-empty string from the turn result's
+                ``failure_reason``; wait_seconds > 0.
+            Postconditions: returns the parked GoalState when the goal is active AND the
+                reason is recoverable; returns None otherwise (never raises).
+        """
+        if failure_reason not in _PROVIDER_FAILURE_PARK_REASONS:
+            return None
+        try:
+            return self.wait_for_seconds(
+                max(1, int(wait_seconds)),
+                reason=f"provider {failure_reason} — turn failed; auto-retry parked",
+            )
+        except Exception as exc:
+            logger.warning("goal %s: provider-failure park failed: %s", self.session_id, exc)
+            return None
 
     def stop_waiting(self) -> bool:
         """Clear any active wait barrier (pid / session / time). Returns True if one was cleared."""

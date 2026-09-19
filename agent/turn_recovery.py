@@ -1155,9 +1155,39 @@ def _resolve_rate_limit_min_wait(agent: Any) -> float:
             logger.warning("Invalid agent.rate_limit.min_wait_seconds in config.yaml: %r — using 0.", raw)
             return float(cached or 0.0)
         return max(0.0, value)
-    except Exception:
+    except Exception as exc:
         logger.warning("config read failed in _resolve_rate_limit_min_wait; using cached/init value", exc_info=True)
         return float(cached or 0.0)
+
+
+# Default Retry-After cap (seconds) when agent.rate_limit.max_wait_seconds is absent/invalid.
+# 600 covers common provider reset windows; multi-hour quota buckets raise it via config.
+_DEFAULT_RATE_LIMIT_MAX_WAIT_S = 600.0
+
+
+def _resolve_rate_limit_max_wait(agent: Any) -> float:
+    """Resolve the Retry-After cap; config wins so edits apply without restart.
+
+    Prefers a fresh read of ``agent.rate_limit.max_wait_seconds``; falls back to 600s.
+    Values below 1s are treated as unset (the cap must stay >= min_wait_seconds territory).
+    Never raises.
+    """
+    cached = getattr(agent, "_rate_limit_max_wait_seconds", 0.0)
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        raw = ((cfg.get("agent") or {}).get("rate_limit") or {}).get("max_wait_seconds")
+        if raw is None:
+            return float(cached or _DEFAULT_RATE_LIMIT_MAX_WAIT_S)
+        value = float(raw)
+        if value != value or value in (float("inf"), float("-inf")) or value < 1.0:
+            logger.warning("Invalid agent.rate_limit.max_wait_seconds in config.yaml: %r — using default 600.", raw)
+            return float(cached or _DEFAULT_RATE_LIMIT_MAX_WAIT_S)
+        return value
+    except Exception:
+        logger.warning("config read failed in _resolve_rate_limit_max_wait; using default", exc_info=True)
+        return float(cached or _DEFAULT_RATE_LIMIT_MAX_WAIT_S)
 
 
 def compute_error_backoff(
@@ -1189,10 +1219,12 @@ def compute_error_backoff(
             _payload = _nested if isinstance(_nested, dict) else _error_body
             _retry_after = parse_retry_after_seconds(_payload.get("retry_after"))
     if _retry_after is not None:
-        # Cap at 10 minutes. Anthropic Tier 1 input-token buckets reset in ~171s, so a 120s cap
-        # caused us to retry before the actual reset window and re-trip the limit. 600s covers all
-        # realistic provider reset windows while still rejecting pathological values. (#26293)
-        _retry_after = min(_retry_after, 600)
+        # Cap at the configurable rate-limit wait ceiling (default 10 minutes). Anthropic
+        # Tier 1 input-token buckets reset in ~171s, so a 120s cap caused us to retry before
+        # the actual reset window and re-trip the limit. 600s covers common reset windows
+        # while rejecting pathological values (#26293); providers with longer windows
+        # (multi-hour quota buckets) raise the ceiling via agent.rate_limit.max_wait_seconds.
+        _retry_after = min(_retry_after, _resolve_rate_limit_max_wait(agent))
         if _retry_after <= 0:
             # A zero/expired cooldown (retry-after: 0, or an HTTP-date in the
             # past, which the parser clamps to 0.0) carries no usable wait —

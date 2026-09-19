@@ -31,6 +31,7 @@ def _agent(floor):
     )
     agent._emit_status = agent.statuses.append
     agent._buffer_status = agent.statuses.append
+    agent._emit_wait_notice = lambda *a, **k: None
     return agent
 
 

@@ -689,6 +689,17 @@ class CLILoopsMixin:
         # empty stream): judging would say "continue" and trip the parse-failure backstop.
         last_response = self._last_assistant_response_text()
         if not last_response.strip():
+            # Recoverable provider failure (429/overload/5xx after retry exhaustion): park the
+            # goal on a timer so it retries automatically when the provider window reopens,
+            # instead of stalling until the next user message.
+            _result = getattr(self, "_last_turn_result", None)
+            _reason = _result.get("failure_reason") if isinstance(_result, dict) else None
+            if _reason:
+                from hermes_cli.goals import _PROVIDER_FAILURE_PARK_SECONDS
+                if mgr.park_on_provider_failure(str(_reason), wait_seconds=_PROVIDER_FAILURE_PARK_SECONDS):
+                    _cprint(
+                        f"  {_DIM}⏳ Provider {_reason} — goal parked, auto-retry in "
+                        f"{_PROVIDER_FAILURE_PARK_SECONDS // 60} min (no turn burned).{_RST}")
             return
         _active_deleg = 0
         _tcs = None
