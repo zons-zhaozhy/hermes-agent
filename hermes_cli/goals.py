@@ -877,6 +877,9 @@ _GOAL_TAIL_KEEPER_CHARS = 2000
 
 # Judge-reason transport sentinel prefix (mirrors the literal written into turn_reasons).
 _JUDGE_UNREACHABLE_PREFIX = "[judge unreachable"
+# Transport-error reason prefix from judge_goal's except branch ("judge error: <ExceptionType>")
+# — also a sentinel: the judge said nothing usable, so it must not stack as a repeated verdict.
+_JUDGE_ERROR_PREFIX = "judge error:"
 
 
 def judge_reason_fingerprint(reason: str) -> Optional[str]:
@@ -885,19 +888,21 @@ def judge_reason_fingerprint(reason: str) -> Optional[str]:
     Normalizes whitespace and case, then takes the first 160 chars — enough to
     catch template refusals from weak judge models ("no concrete evidence ...")
     while letting genuinely different reasons hash apart. Transport sentinels
-    (``[judge unreachable …]``) and empty/blank reasons return ``None``: the
-    caller must neither count nor reset on them.
+    (``[judge unreachable …]`` and ``judge error: …``) and empty/blank reasons
+    return ``None``: the caller must neither count nor reset on them.
 
     Contract:
       Preconditions: reason is a str (possibly empty).
       Postconditions:
-        - returns None for blank input or the unreachable sentinel
+        - returns None for blank input, the unreachable sentinel, or a
+          transport-error reason (the judge produced no verdict this turn)
         - returns a non-empty str otherwise; equal outputs ⇔ inputs match after
           whitespace/case normalization over the first 160 chars
     """
     if not reason or not reason.strip():
         return None
-    if reason.strip().startswith(_JUDGE_UNREACHABLE_PREFIX):
+    _stripped = reason.strip()
+    if _stripped.startswith(_JUDGE_UNREACHABLE_PREFIX) or _stripped.lower().startswith(_JUDGE_ERROR_PREFIX):
         return None
     normalized = " ".join(reason.split()).lower()
     return normalized[:160]
