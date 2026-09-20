@@ -59,7 +59,35 @@ def is_model_unreachable_failure(exc: BaseException, agent: Any = None) -> bool:
         return False
     from cron.scheduler_preflight import _is_transient_provider_resolve_error
 
-    return _is_transient_provider_resolve_error(exc)
+    if _is_transient_provider_resolve_error(exc):
+        return True
+    # The agent summarizes transient network/DNS failures into a fixed offline phrase
+    # (agent/api_error_summary._summarize_api_error) before the text crosses the process
+    # boundary, so the cause chain carrying the original DNS/connect error is lost by the
+    # time the scheduler classifies the RuntimeError. Match the exact phrase — and the
+    # provider quota-window 429 that likewise fails before any model call — so those runs
+    # re-enter the bounded re-run ladder instead of silently waiting a full period.
+    msg = str(exc)
+    if _OFFLINE_SUMMARY_PHRASE in msg:
+        return True
+    return _is_provider_quota_rate_limit(msg)
+
+
+# Exact output of ApiErrorSummaryMixin._summarize_api_error's offline branch. A leading
+# fragment (not the full sentence) keeps it robust to the trailing "try again." hint.
+_OFFLINE_SUMMARY_PHRASE = "Hermes can't reach the model provider"
+
+# Provider quota-window 429 (e.g. zai "已达到 5 小时的使用上限。您的限额将在 … 重置。") fails the
+# first model call with zero completed API calls — spend-neutral to re-run after a ladder delay.
+_QUOTA_RATE_LIMIT_NEEDLES = ("使用上限", "usage limit", "rate limit exceeded")
+
+
+def _is_provider_quota_rate_limit(message: str) -> bool:
+    """A quota-window 429 message means the provider refused the FIRST call of the run —
+    zero completed API calls, so a bounded re-run after the window edges open is
+    spend-neutral. Auth/billing 401/402 texts never match these needles."""
+    lowered = message.lower()
+    return any(needle in lowered for needle in _QUOTA_RATE_LIMIT_NEEDLES)
 
 
 def _is_recurring(job: Dict[str, Any]) -> bool:
