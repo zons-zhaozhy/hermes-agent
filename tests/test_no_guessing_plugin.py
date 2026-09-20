@@ -103,12 +103,17 @@ def test_r5_background_sleep_allowed():
     assert not r
 
 
-def test_r6_diagnostic_stderr_swallowed_blocked():
-    assert _pre("curl -s localhost:9222/json 2>/dev/null", "s10").get("action") == "block"
-    # 真机 0826 误拦修复: grep/ls 常规检索的 stderr 丢弃不拦
-    assert not _pre("grep -rln FOO ~/.hermes/ 2>/dev/null | head", "s10")
-    assert not _pre("ls /nonexistent 2>/dev/null", "s10")
-    assert not _pre("npm run build 2>/dev/null", "s10")
+def test_r6_diagnostic_stderr_swallowed_rewritten():
+    # 期望: 诊断命令 curl 带 2>/dev/null 应被自动改写为 2>&1（modify 而非 block）——
+    # 根因: 2>/dev/null 在诊断命令里吞掉报错证据，改写保留错误流且零 round-trip
+    r = _pre("curl -s localhost:9222/json 2>/dev/null", "s10")
+    assert r.get("action") == "modify"  # 期望: R6 已从 block 改为 modify
+    assert "2>/dev/null" not in r["args"]["command"]  # 期望: 吞错重定向被消除
+    assert "2>&1" in r["args"]["command"]  # 期望: 改写为保留错误流
+    # 真机 0826 误拦修复: grep/ls 常规检索的 stderr 丢弃不碰（非诊断命令）
+    assert not _pre("grep -rln FOO ~/.hermes/ 2>/dev/null | head", "s10")  # 期望: grep 非诊断，不碰
+    assert not _pre("ls /nonexistent 2>/dev/null", "s10")  # 期望: ls 非诊断，不碰
+    assert not _pre("npm run build 2>/dev/null", "s10")  # 期望: 构建非诊断，不碰
 
 
 def test_reminder_after_failure():

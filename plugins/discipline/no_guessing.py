@@ -31,6 +31,7 @@ Contract:
 import json
 import logging
 import shlex
+from typing import Optional
 
 from plugins._shared_state import get_session_state
 
@@ -207,11 +208,7 @@ _BLOCK_SLEEP_LOOP = (
 )
 
 # 规则6：诊断命令吞错——2>/dev/null 会把报错证据扔掉，违反 log-first 诊断纪律
-# （仅拦诊断类命令；编译/构建输出重定向属正常用法不拦）
-_BLOCK_SWALLOW_ERR = (
-    "[NO-GUESSING BLOCK] 诊断命令带 2>/dev/null——报错信息是定位根因的第一证据，禁止吞掉。\n"
-    "诊断一律 2>&1 保留错误流；确要过滤输出用 grep 管道而非丢弃 stderr。"
-)
+# （仅处理诊断类命令；编译/构建输出重定向属正常用法不碰）。机械改写 2>&1，不 block。
 
 
 def _is_diagnostic_command(command: str) -> bool:
@@ -258,13 +255,22 @@ def _check_sleep_wait(command: str, sleep_limit: int = 10, is_background: bool =
     return _BLOCK_SLEEP_LOOP
 
 
-def _check_swallowed_stderr(command: str):
-    """规则6：诊断类命令重定向 stderr 到 /dev/null → block。"""
-    if "2>/dev/null" not in command and "2>/dev/null" not in command.replace(" ", ""):
-        return None
+def _rewrite_swallowed_stderr(command: str) -> Optional[str]:
+    """规则6：诊断类命令重定向 stderr 到 /dev/null → 改写为 2>&1（不吞错）。
+
+    机械抓手（2026-09-20 根修）：R6 30 天 3000+ 次，block 拦不住 shell 惯性
+    （探测可能不存在资源时顺手写 2>/dev/null）。与其 block 逼重写，不如直接
+    改写命令——诊断命令里 2>/dev/null 永远错误（报错是定位根因第一证据），
+    改写为 2>&1 保留错误流，治本且零 round-trip。
+    """
     if not _is_diagnostic_command(command):
         return None
-    return _BLOCK_SWALLOW_ERR
+    if "2>/dev/null" in command:
+        return command.replace("2>/dev/null", "2>&1")
+    # 带空格形式（2> /dev/null）——space-stripped 才命中，一并改写
+    if "2>/dev/null" in command.replace(" ", ""):
+        return command.replace("2> /dev/null", "2>&1")
+    return None
 
 
 def _normalize(command: str) -> str:
@@ -442,10 +448,12 @@ def _on_pre_tool_call(**kwargs):
     if msg:
         return _block_with_escalation("R5", command, msg, sid)
 
-    # 规则6：诊断命令 2>/dev/null 吞错
-    msg = _check_swallowed_stderr(command)
-    if msg:
-        return _block_with_escalation("R6", command, msg, sid)
+    # 规则6：诊断命令 2>/dev/null 吞错 → 机械改写 2>&1（不 block，直接修命令）
+    rewritten = _rewrite_swallowed_stderr(command)
+    if rewritten:
+        # 记档保留习惯度量（level 仅信息性——已自动改写，不再 escalation）
+        _record_violation("R6", command, "L1", sid)
+        return {"action": "modify", "args": {"command": rewritten}}
 
     # 规则7：脚本间接执行封堵——0829 实锤绕过：write_file 写 .sh 藏
     # build.sh 命令,再 bash <file>.sh 规避 R3 关键词扫描。间接执行不得豁免
