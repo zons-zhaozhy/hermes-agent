@@ -116,6 +116,17 @@ def test_r6_diagnostic_stderr_swallowed_rewritten():
     assert not _pre("npm run build 2>/dev/null", "s10")  # 期望: 构建非诊断，不碰
 
 
+def test_r6_echo_string_false_positive_not_rewritten():
+    # 2026-09-21 实锤: echo 文案里含 2>/dev/null 字样不是真实重定向，不能被误改写
+    # （否则 echo 文案被腐坏成 2>&1）。shlex 会把它合成带引号的 token，不单独出现。
+    assert not _pre('echo "（无 2>/dev/null）" && ps aux | grep foo', "s10b")
+    # 真实重定向仍在引号外，才改写
+    r2 = _pre("ps aux 2>/dev/null | grep foo", "s10b")
+    assert r2.get("action") == "modify"  # 期望: 真实重定向仍改写
+    assert "2>/dev/null" not in r2["args"]["command"]
+    assert "2>&1" in r2["args"]["command"]
+
+
 def test_reminder_after_failure():
     _post("ping r", "s11", exit_code=1, output="t")
     r = m._on_pre_llm_call(session_id="s11")

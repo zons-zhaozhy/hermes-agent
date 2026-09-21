@@ -262,15 +262,28 @@ def _rewrite_swallowed_stderr(command: str) -> Optional[str]:
     （探测可能不存在资源时顺手写 2>/dev/null）。与其 block 逼重写，不如直接
     改写命令——诊断命令里 2>/dev/null 永远错误（报错是定位根因第一证据），
     改写为 2>&1 保留错误流，治本且零 round-trip。
+
+    2026-09-21 修：只改写真实的重定向 token（未被引号包裹）。echo 文案/注释里
+    含 2>/dev/null 字样（如 echo "（无 2>/dev/null）"）不是真实重定向——shlex
+    会把它合成一个带引号的 token，不单独出现 2>/dev/null；据此区分，避免误伤
+    无害命令、也避免把 echo 文案腐坏成 2>&1。
     """
     if not _is_diagnostic_command(command):
         return None
-    if "2>/dev/null" in command:
-        return command.replace("2>/dev/null", "2>&1")
-    # 带空格形式（2> /dev/null）——space-stripped 才命中，一并改写
-    if "2>/dev/null" in command.replace(" ", ""):
-        return command.replace("2> /dev/null", "2>&1")
-    return None
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return None
+    # 真实重定向 token 必须作为独立 token 出现（"2>/dev/null"，或 "2>" 与 "/dev/null" 相邻）
+    has_real_redirect = (
+        "2>/dev/null" in tokens
+        or ("2>" in tokens and "/dev/null" in tokens)
+    )
+    if not has_real_redirect:
+        return None
+    rewritten = command.replace("2>/dev/null", "2>&1")
+    rewritten = rewritten.replace("2> /dev/null", "2>&1")
+    return rewritten
 
 
 def _normalize(command: str) -> str:
