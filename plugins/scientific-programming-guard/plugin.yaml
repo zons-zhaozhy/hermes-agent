@@ -1,0 +1,5 @@
+name: scientific-programming-guard
+version: 2.0.0
+description: "科学编程守卫——R3圈复杂度预算/R4缺类型注解(所有.py)+R1哨兵先于close/R2清理守卫(网络代码), 对应skill:scientific-programming"
+hooks:
+  - pre_tool_call

@@ -1,0 +1,6 @@
+name: blame-shield
+version: "1.0.0"
+description: 推责/免责话术拦截——pre_llm_call注入自检规则，从源头消灭推责输出。不是事后剥离，是生成前拦截。
+author: stan
+hooks:
+  - pre_llm_call

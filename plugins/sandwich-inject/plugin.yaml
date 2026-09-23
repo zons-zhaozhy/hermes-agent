@@ -1,0 +1,7 @@
+name: sandwich-inject
+version: "1.0.0"
+description: "三明治架构——Pre-hook 强制注入 SOP/知识库（不让 Agent 做选择题）+ Post-hook 工具契约校验（必须调用必需工具否则重试，连续违规转人工）。零核心改动，挂现有 pre_llm_call hook 点。"
+author: stan
+kind: standalone
+hooks:
+  - pre_llm_call

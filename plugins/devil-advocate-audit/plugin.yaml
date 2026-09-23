@@ -1,0 +1,3 @@
+name: devil-advocate-audit
+version: 1.0.0
+description: 反方审查检查点——重大决策信号（方案定稿/上云/重构/选型）未见 delegate 反方审查时注入红牌。决策与审查分脑，防单视角"想错"。

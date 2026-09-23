@@ -1,0 +1,288 @@
+"""
+persistence-enforcer plugin v2.0 — 强制复杂任务创建 TODO + 结构化持久化。
+
+四层拦截——从劝导到强制：
+
+Layer 1 (post_tool_call): 追踪工具调用次数和类型。
+Layer 2 (pre_llm_call): ≥5 次调用 + 复杂关键词 + 无 TODO → LLM 调用前注入提醒。
+Layer 3 (pre_tool_call): ≥10 次调用 + 无 TODO + 无持久化 → 硬拦截 write_file/patch。
+  → 只放行：只读工具 + todo + 持久化工具。
+  → 一旦创建 TODO → 解除拦截。
+Layer 4 (transform_llm_output): LLM 输出含结构化分析 + 未持久化 → 追加提醒。
+  原始回复完整保留，只追加。
+
+设计原则：
+  - 提醒先于拦截（5 次提醒 → 10 次拦截）
+  - 拦截不是目的——让 agent 创建 TODO 后立即放行
+  - 只读工具永不禁用（agent 总要能调查）
+"""
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+# ── 阈值 ──────────────────────────────────────────────────────
+WARN_THRESHOLD = 5     # 提醒阈值
+BLOCK_THRESHOLD = 10   # 硬拦截阈值
+
+# write_file 是可持久化工具，但在无 TODO 时会被拦截
+# PERSIST_TRACK 用于 post_tool_call 追踪——包含 write_file
+PERSIST_TRACK = frozenset({"write_file", "skill_manage", "memory"})
+# 框架工具名 todo → todo_list 曾更名；两个名字都认，防止解锁条件随更名永假
+TODO_TOOLS = frozenset({"todo", "todo_list"})
+# 死锁降级阈值：连续 N 次拦截仍无解锁凭据 → 判定解锁工具在本会话
+# 工具集中不可得（cron/one-shot 会话无 todo_list/skill_manage/memory），
+# 放行并注入警告。拦截意图是督促建 TODO，不是让交付无解。
+DEBLOCK_AFTER = 2
+
+# 拦截目标：只挡代码编辑工具（write_file, patch）
+# terminal/delegate/browser/read 等全部放行——agent 需要它们做调查
+BLOCKED_TOOLS = frozenset({"write_file", "patch"})
+
+COMPLEX_TASK_KEYWORDS = frozenset({
+    "审计", "审查", "全量", "全面", "深度", "重构", "架构",
+    "audit", "review", "refactor", "migration", "迁移",
+})
+
+_TODO_REMINDER = (
+    "\n[PERSISTENCE-ENFORCER] {count} 次工具调用，尚未创建 TODO 列表。\n"
+    "大的、复杂的、耗时长的任务必须在动手前用 `todo_list` 工具创建任务列表。\n"
+    "每个子任务完成后必须立即将结果持久化（skill_manage/write_file）。\n"
+    "不要等到最后再汇总——上下文压缩会吞掉内存中的结果。"
+)
+
+_DEBLOCK_MESSAGE = (
+    "[PERSISTENCE-ENFORCER 死锁解除] {count} 次调用、连续 {blocks} 次拦截后仍无 TODO/"
+    "持久化凭据，且解锁工具（todo_list/skill_manage/memory）在本会话工具集中不存在。\n"
+    "{tool_name} 已放行——请将结果写入文件系统完成持久化。"
+)
+
+_BLOCK_MESSAGE = (
+    "[PERSISTENCE-ENFORCER BLOCK] {count} 次工具调用，无 TODO、无持久化。\n"
+    "{tool_name} 已被拦截。\n\n"
+    "在用 `write_file`/`patch` 编辑代码之前，你必须：\n"
+    "1. 调用 `todo_list` 创建任务列表\n"
+    "2. 将已完成的分析结果用 `skill_manage` 或 `write_file` 持久化\n\n"
+    "只读工具不受限制——你仍可以调查。创建 TODO 后立即解封。"
+)
+
+_ANALYSIS_PERSIST_REMINDER = (
+    "\n\n[PERSISTENCE-ENFORCER] 上一条回复包含结构化分析结果"
+    "（{count} 次工具调用）。\n"
+    "立即调用 `skill_manage` 或 `write_file` 将分析结果持久化到文件系统。\n"
+    "上下文压缩会把没有落盘的内容全部丢弃。"
+)
+
+
+# ── 状态（per-session，进程内） ────────────────────────────────
+
+class _SessionState:
+    def __init__(self):
+        self.tool_call_count = 0
+        self.todo_called = False
+        self.persist_called = False
+        self.todo_reminded = False
+        self.output_reminded = False
+        self.consecutive_blocks = 0
+        self.deblock_pending = False
+        self._last_response_reminded = ""
+
+
+# session_id -> state。并发会话/子代理各自独立计数：全局单例会让
+# A 会话的只读探查给 B 会话的首次写入触发拦截门（互相污染）。
+_states: dict[str, _SessionState] = {}
+_STATES_CAP = 256  # 防膨胀；正常会话数远低于此
+
+
+def _state_for(session_id: str) -> _SessionState:
+    """Contract: Postconditions: 返回该 session 的状态对象（惰性建），
+    超上限时清空重建（最坏退化为计数重置，不是拦截失效）。"""
+    st = _states.get(session_id)
+    if st is None:
+        if len(_states) >= _STATES_CAP:
+            _states.clear()
+        st = _SessionState()
+        _states[session_id] = st
+    return st
+
+
+def _hook_session_id(kwargs: dict) -> str:
+    """Contract: Postconditions: 非 dict kwargs 返回 'default'；优先
+    session_id，缺省回退 task_id，再回退 'default'（与拦截门同源）。"""
+    if not isinstance(kwargs, dict):
+        return "default"
+    return str(kwargs.get("session_id") or kwargs.get("task_id") or "default")
+
+
+def _is_complex_task(conversation_messages: list[dict]) -> bool:
+    for msg in conversation_messages:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            for kw in COMPLEX_TASK_KEYWORDS:
+                if kw in content:
+                    return True
+    return False
+
+
+def _is_analysis_output(text: str) -> bool:
+    if len(text) < 300:
+        return False
+    lines = text.split("\n")
+    heading_count = sum(1 for l in lines if l.strip().startswith("#"))
+    evidence_markers = sum(
+        1 for l in lines
+        if any(m in l for m in ("[实测]", "[文档]", "[推断]", "|", "├", "└", "=="))
+    )
+    return heading_count >= 2 or evidence_markers >= 3
+
+
+# ── Layer 1: post_tool_call ────────────────────────────────────
+
+def _on_post_tool_call(**kwargs) -> None:
+    sid = _hook_session_id(kwargs)
+    st = _state_for(sid)
+    tool_name = kwargs.get("tool_name", "")
+    if not tool_name:
+        return
+    status = str(kwargs.get("status") or "ok")
+    # 被守卫拦下（blocked）或失败（error）的调用没有真实生效——
+    # 不计入解锁凭据，否则本插件自己 block 的 write_file 会立刻
+    # 置 persist_called=True 把拦截门一击自溃。
+    effective = status == "ok"
+    st.tool_call_count += 1
+
+    if tool_name in TODO_TOOLS and effective:
+        st.todo_called = True
+        logger.info("persistence-enforcer: TODO created, block lifted")
+
+    if tool_name in PERSIST_TRACK and effective:
+        st.persist_called = True
+
+
+# ── Layer 2: pre_llm_call (提醒) ───────────────────────────────
+
+def _on_pre_llm_call(**kwargs) -> dict:
+    st = _state_for(_hook_session_id(kwargs))
+    conversation_history = kwargs.get("conversation_history", [])
+    if not conversation_history:
+        return {}
+
+    if st.deblock_pending:
+        # 死锁解除后的首次 LLM 调用：注入放行警告（一次性，防重复噪音）
+        st.deblock_pending = False
+        return {"context": _DEBLOCK_MESSAGE.format(
+            count=st.tool_call_count, tool_name="write_file/patch", blocks=DEBLOCK_AFTER
+        )}
+
+    if st.tool_call_count < WARN_THRESHOLD:
+        return {}
+    if st.todo_called:
+        return {}
+    if st.todo_reminded:
+        return {}
+    if not _is_complex_task(conversation_history):
+        return {}
+
+    st.todo_reminded = True
+    logger.info(
+        "persistence-enforcer: pre_llm — TODO reminder (calls=%d)",
+        st.tool_call_count,
+    )
+    return {"context": _TODO_REMINDER.format(count=st.tool_call_count)}
+
+
+# ── Layer 3: pre_tool_call (硬拦截) ────────────────────────────
+
+def _on_pre_tool_call(**kwargs) -> dict:
+    """达到硬拦截阈值 → 阻止 write_file/patch，直到创建 TODO。"""
+    tool_name = kwargs.get("tool_name", "")
+    if not tool_name:
+        return {}
+    st = _state_for(_hook_session_id(kwargs))
+
+    # 不满足拦截条件：通过
+    if st.tool_call_count < BLOCK_THRESHOLD:
+        return {}
+    if st.todo_called:
+        return {}
+    if st.persist_called:
+        return {}
+
+    # 只拦截代码编辑工具，其他全部放行
+    if tool_name not in BLOCKED_TOOLS:
+        return {}
+
+    # 死锁降级：连续 DEBLOCK_AFTER 次拦截后仍无任何解锁凭据，判定为
+    # 解锁凭据在本会话工具集中不可得（cron/one-shot 会话无 todo_list/
+    # skill_manage/memory）。此时放行并注入响亮警告——拦截的设计意图是
+    # 督促建 TODO，不是让交付无解；静默死锁比放行更违背设计原则。
+    if st.consecutive_blocks >= DEBLOCK_AFTER:
+        # 死锁解除：放行（pre_tool_call 契约只认 block/approve/modify，
+        # 返回 {} 即放行且不改参数）。警告经 Layer 2 pre_llm_call 注入
+        # （deblock_pending 标记）+ logger.warning，零静默。
+        logger.warning(
+            "persistence-enforcer: DEADLOCK BREAKER — %s passed after %d "
+            "consecutive blocks (calls=%d): unlock tools unavailable in "
+            "this session's toolset",
+            tool_name, st.consecutive_blocks, st.tool_call_count,
+        )
+        st.consecutive_blocks = 0
+        st.deblock_pending = True
+        return {}
+
+    logger.warning(
+        "persistence-enforcer: BLOCKING %s (calls=%d, no TODO, no persist)",
+        tool_name, st.tool_call_count,
+    )
+    st.consecutive_blocks += 1
+    return {
+        "action": "block",
+        "message": _BLOCK_MESSAGE.format(
+            count=st.tool_call_count, tool_name=tool_name
+        ),
+    }
+
+
+# ── Layer 4: transform_llm_output (分析提醒) ───────────────────
+
+def _on_transform_llm_output(**kwargs) -> str:
+    st = _state_for(_hook_session_id(kwargs))
+    if st.persist_called:
+        return ""
+    if st.tool_call_count < WARN_THRESHOLD:
+        return ""
+    if st.output_reminded:
+        return ""
+
+    response_text = kwargs.get("response_text", "")
+    if not response_text:
+        return ""
+    if not _is_analysis_output(response_text):
+        return ""
+    if response_text == st._last_response_reminded:
+        return ""
+
+    st.output_reminded = True
+    st._last_response_reminded = response_text
+
+    reminder = _ANALYSIS_PERSIST_REMINDER.format(count=st.tool_call_count)
+    logger.info(
+        "persistence-enforcer: transform_llm_output — persist reminder (calls=%d)",
+        st.tool_call_count,
+    )
+    return response_text + reminder
+
+
+# ── 注册 ──────────────────────────────────────────────────────
+
+def register(ctx):
+    ctx.register_hook("post_tool_call", _on_post_tool_call)
+    ctx.register_hook("pre_llm_call", _on_pre_llm_call)
+    ctx.register_hook("pre_tool_call", _on_pre_tool_call)
+    ctx.register_hook("transform_llm_output", _on_transform_llm_output)
+    logger.info(
+        "persistence-enforcer v2.0 registered (warn=%d, block=%d)",
+        WARN_THRESHOLD, BLOCK_THRESHOLD,
+    )

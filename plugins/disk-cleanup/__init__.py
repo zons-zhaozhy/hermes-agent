@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import json
 import re
 import shlex
 import threading
@@ -28,8 +29,66 @@ _lock = threading.Lock()
 _TERMINAL_PATH_REGEX = re.compile(r"(?:^|\s)(/[^\s'\"`]+|\~/[^\s'\"`]+)")
 
 
-def _extract_path_arg(args: Dict[str, Any], result: str) -> Set[str]:
-    """write_file/patch: the single ``path`` arg (re-tracking existing files is a no-op)."""
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _tracker_key(task_id: str, session_id: str) -> str:
+    return task_id or session_id or "default"
+
+
+def _record_track(task_id: str, session_id: str, path: Path, category: str) -> None:
+    """Record that we tracked *path* as *category* during this turn."""
+    if category != "test":
+        return
+    key = _tracker_key(task_id, session_id)
+    with _lock:
+        _recent_test_tracks.setdefault(key, set()).add(str(path))
+
+
+def _drain(task_id: str, session_id: str) -> Set[str]:
+    """Pop the set of test paths tracked during this turn."""
+    key = _tracker_key(task_id, session_id)
+    with _lock:
+        return _recent_test_tracks.pop(key, set())
+
+
+def _attempt_track(path_str: str, task_id: str, session_id: str) -> None:
+    """Best-effort auto-track. Never raises.
+
+    Contract:
+      Preconditions: path_str 是任意字符串（可能超长/含换行/非法字节）。
+      Postconditions: 本函数绝不向上抛异常——所有 OSError（含超长路径的
+      [Errno 63] ENAMETOOLONG）在 exists() 探测处就地消化，只记 debug 日志。
+    """
+    try:
+        p = Path(path_str).expanduser()
+        if not p.exists():
+            return
+    except OSError:
+        # 超长/非法路径触发 ENAMETOOLONG 等——best-effort 语义下静默放弃，
+        # 不让钩子分发器把 WARNING 刷进 errors.log（历史缺陷：156 条 Errno 63）。
+        logger.debug("disk-cleanup: skip unstat-able path (%d chars)", len(path_str))
+        return
+    category = dg.guess_category(p)
+    if category is None:
+        return
+    newly = dg.track(str(p), category, silent=True)
+    if newly:
+        _record_track(task_id, session_id, p, category)
+
+
+def _extract_paths_from_write_file(args: Dict[str, Any], _result: str = "") -> Set[str]:
+    path = args.get("path")
+    return {path} if isinstance(path, str) and path else set()
+
+
+def _extract_paths_from_patch(args: Dict[str, Any], _result: str = "") -> Set[str]:
+    # The patch tool creates new files via the `mode="patch"` path too, but
+    # most of its use is editing existing files — we only care about new
+    # ephemeral creations, so treat patch conservatively and only pick up
+    # the single-file `path` arg.  Track-then-cleanup is idempotent, so
+    # re-tracking an already-tracked file is a no-op (dedup in track()).
     path = args.get("path")
     return {path} if isinstance(path, str) and path else set()
 
@@ -42,14 +101,26 @@ def _extract_paths_from_terminal(args: Dict[str, Any], result: str) -> Set[str]:
         with contextlib.suppress(ValueError):  # tokenise — catches `touch /tmp/hermes-x/test_foo.py`
             paths.update(tok for tok in shlex.split(cmd, posix=True) if tok.startswith(("/", "~")))
     # Only scan the result text if it's a reasonable size (avoid 50KB dumps).
+    # result 可能是 JSON 字符串（terminal 工具的钩子负载形态）：JSON 内换行是
+    # 字面 \n 两字符，正则的 [^\s]+ 会把它当普通字符吞掉，跨"行"匹配出
+    # /tmp/foo.md\n---\ndeleg_* 超长伪路径。先解码 JSON 取 output 字段再扫描。
     if isinstance(result, str) and len(result) < 4096:
-        paths.update(_TERMINAL_PATH_REGEX.findall(result))
+        scan_text = result
+        if result.lstrip().startswith("{"):
+            try:
+                parsed = json.loads(result)
+                if isinstance(parsed, dict) and isinstance(parsed.get("output"), str):
+                    scan_text = parsed["output"]
+            except (json.JSONDecodeError, ValueError):
+                pass
+        for match in _TERMINAL_PATH_REGEX.findall(scan_text):
+            paths.add(match)
     return paths
 
 
 _PATH_EXTRACTORS: Dict[str, Callable[[Dict[str, Any], str], Set[str]]] = {
-    "write_file": _extract_path_arg,
-    "patch": _extract_path_arg,
+    "write_file": _extract_paths_from_write_file,
+    "patch": _extract_paths_from_patch,
     "terminal": _extract_paths_from_terminal}
 
 

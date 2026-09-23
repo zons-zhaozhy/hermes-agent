@@ -1,0 +1,8 @@
+name: quality-auditor
+version: "1.0.0"
+description: "Revives the dead-wired quality auditor (agent/quality_auditor.py). post_llm_call fires the 10-dimension audit on an auxiliary model; pre_llm_call injects last-turn feedback into the next user message. Zero core changes — survives upstream syncs."
+author: stan
+kind: standalone
+hooks:
+  - post_llm_call
+  - pre_llm_call

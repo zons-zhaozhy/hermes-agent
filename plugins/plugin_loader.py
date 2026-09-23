@@ -56,10 +56,9 @@ def iter_plugin_dirs(root: Path) -> List[Path]:
 def read_plugin_description(plugin_dir: Path) -> str:
     """Return ``description`` from ``plugin.yaml`` (empty string if absent/unreadable)."""
     try:
-        from utils import fast_safe_load
-
+        import yaml
         with open(plugin_dir / "plugin.yaml", encoding="utf-8-sig") as f:
-            meta = fast_safe_load(f) or {}
+            meta = yaml.safe_load(f) or {}
         return meta.get("description", "")
     except Exception:
         return ""

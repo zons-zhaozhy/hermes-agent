@@ -1,0 +1,5 @@
+name: lazy-blocker
+version: "1.0.0"
+description: "Intercept lazy deferral endings — blocked/handed-off claims without an attempted alternative"
+hooks:
+  - pre_llm_call

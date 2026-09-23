@@ -1,0 +1,10 @@
+name: read-think-gate
+version: "1.0.0"
+description: Turn 级推理/执行两阶段门控（四轴闸门）——经 pre_tool_batch hook 批级拦截未调查先动手的写入工具。原 agent/read_think_gate.py 核内实现整体外迁（fork 窄腰原则），行为与不变量零变化：gate crash 永不阻断执行、每 assistant_message 恰一次 check_batch、四轴证据轮内累积、cron 平台豁免。
+author: stan
+hooks:
+  - pre_tool_batch
+  - pre_llm_call
+  - on_session_start
+  - on_session_reset
+  - on_session_end

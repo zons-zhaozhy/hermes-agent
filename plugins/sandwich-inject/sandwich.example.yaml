@@ -1,0 +1,45 @@
+# sandwich-inject 示例配置 —— 放到 ~/.hermes/sandwich.yaml
+#
+# 三明治架构：
+#   上层 Pre-hook  —— 每轮 LLM 请求前强制注入 SOP + 知识库（不让 Agent 做"要不要查"的选择题）
+#   下层 Post-hook —— 校验上轮是否调用了必需工具，未调用则追加报错重试，连续违规转人工
+#
+# 激活规则：用户消息命中某场景的 match_keywords → 该会话锁定此场景，
+#           后续轮次即使不再出现关键词也持续注入（防多轮失活）。
+
+scenes:
+  # ── AML 可疑交易分析场景 ──────────────────────────────────────
+  - name: aml-suspicious-trade
+    match_keywords: ["AML", "可疑交易", "大额交易"]
+    sop: |
+      【强制SOP - 必须严格遵循】
+      1. 必须先查询数据库获取原始交易数据（禁止凭空回答）
+      2. 必须引用央行令〔2016〕第3号监管条款
+      3. 输出必须包含合规声明
+    knowledge: |
+      大额交易报告标准：单笔或当日累计≥20万人民币
+      可疑交易报告时限：交易发生后 5 个工作日内
+    # 知识文件（可选，路径相对或绝对；带 mtime 缓存，改文件自动刷新）
+    knowledge_files:
+      - ~/.hermes/sandwich-kb/aml-regulations.md
+    # 必需工具契约：上轮必须调用过这些工具，否则注入校验报错
+    required_tools:
+      - mcp__dbhub__execute_sql_aml_v8
+    # 连续违规上限：达到后注入 NEED_HUMAN_INTERVENTION 转人工
+    max_retries: 3
+
+  # ── 模板审核场景 ───────────────────────────────────────────────
+  - name: oms-template-review
+    match_keywords: ["模板", "schema 校验", "模板审核"]
+    sop: |
+      【强制SOP - 必须严格遵循】
+      1. 必须先加载模板 JSON 文件再审查
+      2. 审查必须逐项核对必填字段
+    required_tools: ["read_file"]
+    max_retries: 2
+
+# 说明：
+# - 无 required_tools 的场景 = 纯知识注入（不做工具契约校验）
+# - max_retries 缺省 3；required_tools 缺省空
+# - 环境变量 HERMES_SANDWICH_CONFIG 可覆盖配置文件路径
+# - 禁用插件：删除本文件（无文件 = 零行为）

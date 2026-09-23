@@ -1,0 +1,6 @@
+name: declare_act_guard
+description: "宣告-动手配对守卫——上条assistant宣告行动意图却零tool_call且未列须拍板时,LLM语义判定后注入SOP(动手或列拍板,禁裸宣告)。取代词表枚举"
+version: 1.0.0
+author: stan
+hooks:
+  - pre_llm_call

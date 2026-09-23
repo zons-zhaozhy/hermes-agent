@@ -1,0 +1,8 @@
+name: outcome-collector
+version: "1.0.0"
+description: "Collect structured tool-call outcomes (ok/error) into a dedicated SQLite DB for pattern analysis. Powers the self-evolving feedback flywheel — Layer 0 signal capture."
+author: stan
+hooks:
+  - post_tool_call
+  - pre_llm_call
+  - on_session_end

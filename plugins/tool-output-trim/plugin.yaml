@@ -1,0 +1,7 @@
+name: tool-output-trim
+version: "1.0.0"
+description: "Bound historical tool-result size at the llm_request seam — head+tail-trim tool outputs older than keep_recent when over max_chars. Send-side view only; session log stays intact."
+author: stan
+kind: standalone
+middleware:
+  - llm_request

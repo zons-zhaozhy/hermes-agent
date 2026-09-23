@@ -1,0 +1,6 @@
+name: post-response-hooks
+version: "1.0.0"
+description: Integrates post_response_hooks framework into the plugin lifecycle. Runs correction_tracker, behavior_regression, and bottom_logic_check after each LLM response.
+author: zons-zhaozhy
+hooks:
+  - post_llm_call

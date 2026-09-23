@@ -1,0 +1,16 @@
+name: dao-recurring-error-guard
+version: "1.0.0"
+description: |
+  道生法检查点（心法四：重复即成规）——按错误指纹（工具名×错误类别）
+  计数会话内同类失败，第 3 次且未见沉淀动作（write_file/patch/
+  skill_manage/git commit）时，pre_llm_call 注入提醒：
+  第三次必须成规则/skill/脚本，禁止再逐个手工处理。
+
+  设计依据：~/knowledge-base/classics/落实笔记-七心法七功法.md 心法四。
+  聚合刻意保守（有限类别词表），宁可漏报不误报。
+  沉淀动作出现即静默（规则已产出）。
+  关闭：DAO_RECURRING_ERROR_GUARD_DISABLE=1
+author: stan
+hooks:
+  - post_tool_call
+  - pre_llm_call
