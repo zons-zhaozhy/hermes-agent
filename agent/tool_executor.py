@@ -1501,6 +1501,66 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
     return True
 
 
+def _extract_block_message(result: Any) -> Optional[str]:
+    """Normalize one ``pre_tool_batch`` hook return into a block message (or None).
+
+    Contract:
+      Postconditions: a plain non-blank string blocks with itself; a dict blocks
+        only on action == "block" with a non-blank string message; everything
+        else (None, empty, unrecognized shapes) proceeds.
+    """
+    if isinstance(result, str) and result.strip():
+        return result
+    if isinstance(result, dict) and str(result.get("action") or "").lower() == "block":
+        candidate = result.get("message")
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate
+    return None
+
+
+def _first_batch_block(results: Any) -> Optional[str]:
+    """First resolved block message across ``pre_tool_batch`` results, else None."""
+    for result in results or []:
+        message = _extract_block_message(result)
+        if message is not None:
+            return message
+    return None
+
+
+def _run_pre_tool_batch_hooks(agent: Any, assistant_message: Any, parsed_calls: list) -> Optional[str]:
+    """Emit the ``pre_tool_batch`` hook once per batch; return the resolved block
+    message when any plugin blocks the WHOLE batch, else ``None``.
+
+    Contract:
+      Postconditions: crash-safe — any hook/dispatch failure logs a warning and
+        the batch proceeds (a gate plugin must never take dispatch down).
+    """
+    payload = {
+        "assistant_content": getattr(assistant_message, "content", None) or "",
+        "tool_calls": [{"name": pc.name, "args": pc.args} for pc in parsed_calls],
+        "session_id": getattr(agent, "session_id", None) or "",
+        "task_id": getattr(agent, "current_task_id", None) or "",
+        "turn_id": getattr(agent, "current_turn_id", None) or "",
+        "platform": getattr(agent, "platform", None) or "",
+        "model": getattr(agent, "model", None) or "",
+    }
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+        return _first_batch_block(invoke_hook("pre_tool_batch", **payload))
+    except Exception:
+        logger.warning("pre_tool_batch hook dispatch failed", exc_info=True)
+        return None
+
+
+def _append_gate_blocked_results(agent: Any, messages: list, tool_calls: list, effective_task_id: str, block: str) -> None:
+    """Emit one gate-blocked result per tool call so the batch stays well-formed."""
+    for tool_call in tool_calls:
+        _name = getattr(getattr(tool_call, "function", None), "name", "") or "tool"
+        messages.append(make_tool_result_message(
+            _name, block, _pairing_tool_call_id(tool_call), effect_disposition="none",
+        ))
+
+
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
     """Execute tool calls concurrently; results are appended in original call order.
     ``finalize=False`` skips end-of-batch budget enforcement and /steer injection (the
@@ -1521,6 +1581,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         return
 
     parsed_calls = [_parse_tool_call(agent, tc) for tc in tool_calls]
+
+    # pre_tool_batch: agent-level batch gate hook (crash-safe; a misbehaving gate
+    # plugin must never block tool execution).
+    _gate_block = _run_pre_tool_batch_hooks(agent, assistant_message, parsed_calls)
+    if _gate_block is not None:
+        _append_gate_blocked_results(agent, messages, tool_calls, effective_task_id, _gate_block)
+        return
 
     tool_names_str = ", ".join(pc.name for pc in parsed_calls)
     if _tool_progress_enabled(agent):
@@ -1775,7 +1842,16 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     from agent.terminal_approval_batch import terminal_approval_batch, terminal_approval_runs
     for calls in terminal_approval_runs(agent, assistant_message.tool_calls):
         with terminal_approval_batch(agent, calls, messages, effective_task_id):
-            _execute_tool_calls_sequential(agent, SimpleNamespace(tool_calls=calls), messages, effective_task_id, api_call_count, finalize=False)
+            _execute_tool_calls_sequential(
+                agent,
+                # content 必须透传——ReadThinkGate 扫四轴证据靠它；丢失后 sequential
+                # 段的 check_batch 收到空串，四轴 marker 永不写入（segmented 场景）
+                SimpleNamespace(
+                    tool_calls=calls,
+                    content=getattr(assistant_message, "content", None),
+                ),
+                messages, effective_task_id, api_call_count, finalize=False,
+            )
         if getattr(agent, "_incremental_persistence_failed", False):
             return
     if finalize:
@@ -1788,6 +1864,13 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
     owns turn-end work)."""
     _tool_budget = _budget_for_agent(agent)  # once per turn, not per result
     tool_calls = assistant_message.tool_calls
+
+    # pre_tool_batch: agent-level batch gate hook (crash-safe).
+    _parsed = [_parse_tool_call(agent, tc) for tc in tool_calls]
+    _gate_block = _run_pre_tool_batch_hooks(agent, assistant_message, _parsed)
+    if _gate_block is not None:
+        _append_gate_blocked_results(agent, messages, tool_calls, effective_task_id, _gate_block)
+        return
 
     for i, tool_call in enumerate(tool_calls, 1):
         if getattr(agent, "_incremental_persistence_failed", False):
@@ -1856,7 +1939,10 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
     for kind, calls in segments:
         if getattr(agent, "_incremental_persistence_failed", False):
             return
-        segment_message = SimpleNamespace(tool_calls=list(calls))
+        segment_message = SimpleNamespace(
+            tool_calls=list(calls),
+            content=getattr(assistant_message, "content", None),
+        )
         run_segment = execute_tool_calls_concurrent if kind == "parallel" else execute_tool_calls_sequential
         run_segment(agent, segment_message, messages, effective_task_id, api_call_count, finalize=False)
         if getattr(agent, "_incremental_persistence_failed", False):

@@ -112,6 +112,14 @@ VALID_HOOKS: Set[str] = {
     # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
     # normalized text/lifecycle and cannot transform the stream.
     "on_stream_start", "on_stream_delta", "on_stream_end", "on_interim_message",
+    # pre_tool_batch: once per tool batch, BEFORE any call in the batch dispatches. Fires with the
+    # full batch shape an agent-level gate needs: assistant_content (the producing assistant
+    # message's text), tool_calls=[{name, args}, ...] (original order), session_id, task_id,
+    # turn_id, platform, model. Return a string (or {"action": "block", "message": str}) to block
+    # the WHOLE batch with that message (each call gets one synthetic result row so replay role
+    # alternation stays well-formed); None/anything else proceeds. Observer-mutator contract:
+    # never modifies args; fail-open in the emitter (a gate crash must never block dispatch).
+    "pre_tool_batch",
     # pre_verify: once per turn when the agent edited code and is about to verify/finish. Return
     # {"action": "continue", "message"} (or Claude-Code Stop {"decision": "block", "reason"}) to keep
     # going; anything else finishes. Bounded by agent.max_verify_nudges.
