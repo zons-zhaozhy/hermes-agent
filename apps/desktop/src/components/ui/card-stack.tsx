@@ -63,7 +63,10 @@ export function CardStack<T>({
       data-stack-count={items.length}
       style={{
         paddingTop: !expanded && items.length ? 8 : 0,
-        minHeight: items.length || height ? height + (expanded ? 0 : 8) : undefined
+        // An exiting card stays painted by AnimatePresence, but its footprint
+        // must retire continuously too or the scroller clamps by a full card.
+        minHeight: items.length ? height + (expanded ? 0 : 8) : 0,
+        transition: !items.length && !reduced ? 'min-height 220ms ease-in-out' : undefined
       }}
     >
       {!expanded && items.length > 1 && (
@@ -84,6 +87,9 @@ export function CardStack<T>({
           transition={reduced ? { duration: 0 } : PROMOTION}
         />
       )}
+      {/* Merge: upstream's continuous min-height retirement (comment above) plus the
+          local onExitComplete reset, so a stale measured height never applies to
+          the next batch of cards. */}
       <AnimatePresence
         initial={false}
         onExitComplete={() => {

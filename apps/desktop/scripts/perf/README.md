@@ -40,7 +40,6 @@ heap/DOM counters. Keep the same panes and workload for before/after captures.
 Record restarts, HMR, and code updates separately: a fresh renderer is not a
 valid after measurement for a long-running renderer. Heap counters alone do not
 prove a leak. Heavy render/atom counters must be stopped before timing.
-
 ## Dev vs prod
 
 By default the harness measures the **dev** renderer (fast to spin up, good for

@@ -10,6 +10,7 @@ has already succeeded by then, so the ZIP cannot fix the actual failure.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -116,6 +117,8 @@ def _porcelain_run(stdout: str, returncode: int = 0):
         joined = " ".join(str(c) for c in cmd)
         if "status" in joined and "--porcelain" in joined:
             return subprocess.CompletedProcess(cmd, returncode, stdout=stdout, stderr="")
+        if "ls-tree" in joined:  # tracked root entries = what the ZIP ships
+            return subprocess.CompletedProcess(cmd, 0, stdout="hermes_cli\nscratch\n", stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     return fake_run
@@ -275,15 +278,8 @@ def test_zip_overlay_flag_is_valid_against_real_git(tmp_path):
     a real .gitignore and asserts the guard both runs clean AND still sees
     ignored user files.
     """
-    # Build the repo in a SUBDIRECTORY of tmp_path: the conftest HERMES_HOME
-    # sandbox (tmp_path/hermes_test/) lives in tmp_path itself, and the guard
-    # deliberately counts gitignored files as user data — so any repo rooted
-    # at tmp_path is never clean on a host where the sandbox materialized
-    # (SOUL.md, logs/). A nested repo root isolates the two completely.
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    (repo / ".gitignore").write_text("*.local\nvenv/\n")
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_text("*.local\nvenv/\n.venv/\n", encoding="utf-8")
     subprocess.run(
         ["git", "-C", str(repo), "add", ".gitignore"], check=True
     )
@@ -296,16 +292,26 @@ def test_zip_overlay_flag_is_valid_against_real_git(tmp_path):
         check=True,
     )
     # Clean tree: guard must pass (flag valid, no false refusal).
-    assert update_cmd._zip_overlay_block_reason(repo) is None
-    # Ignored user file: guard must block.
-    (repo / "data.local").write_text("x")
-    reason = update_cmd._zip_overlay_block_reason(repo)
+    assert update_cmd._zip_overlay_block_reason(tmp_path) is None
+    # Ignored user file under a shipped (tracked) dir: the swap would delete it, guard must block.
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "data.local").write_text("x", encoding="utf-8")
+    reason = update_cmd._zip_overlay_block_reason(tmp_path, shipped={"pkg"})
     assert reason is not None
     # Ignored preserved entry: still no refusal.
-    (repo / "data.local").unlink()
-    (repo / "venv").mkdir()
-    (repo / "venv" / "lib.py").write_text("x")
-    assert update_cmd._zip_overlay_block_reason(repo) is None
+    shutil.rmtree(tmp_path / "pkg")
+    (tmp_path / "venv").mkdir()
+    (tmp_path / "venv" / "lib.py").write_text("x", encoding="utf-8")
+    assert update_cmd._zip_overlay_block_reason(tmp_path) is None
+    # uv-default ``.venv`` is a supported layout (#112958): the ignored dir is the live runtime,
+    # not user data the overlay would destroy — refusing here made ZIP fallback impossible.
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / ".venv" / "lib.py").write_text("x", encoding="utf-8")
+    status = subprocess.run(
+        ["git", "-C", str(tmp_path), "status", "--porcelain", "--untracked-files=all", "--ignored=matching"],
+        capture_output=True, text=True,
+    ).stdout
+    assert update_cmd._zip_overlay_block_reason(tmp_path) is None, status
 
 
 def test_zip_overlay_requests_ignored_files_from_git(tmp_path, monkeypatch):

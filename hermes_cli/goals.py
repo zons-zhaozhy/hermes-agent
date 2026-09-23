@@ -166,11 +166,15 @@ CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE = (
     "gate itself is wrong or cannot pass, say so clearly and stop."
 )
 
+# 合并取舍/merge-take: 本段由两侧并集合成 —— 头行(四裁决)与 BLOCKED 段(含错误归因要求)取上游；
+# DONE 段的 CONCRETE EVIDENCE 严格判据 + CONTINUE 反例清单保留本地定制(本地曾把 blocked 并入 DONE，
+# 上游已把 BLOCKED 独立为第四裁决，且代码侧两版都处理 blocked)；JSON 形状取本地措辞并补回上游的
+# blocked 形状，否则"四裁决"提示词没有对应的输出形状。
 JUDGE_SYSTEM_PROMPT = (
     "You are a strict judge evaluating whether an autonomous agent has "
     "achieved a user's stated goal. You receive the goal text, the agent's "
     "most recent response, and — when present — a list of background "
-    "processes the agent has running. Decide one of three verdicts.\n\n"
+    "processes the agent has running. Decide one of four verdicts.\n\n"
     "DONE — the goal is fully satisfied. ALL of these must be true:\n"
     "- The response shows CONCRETE EVIDENCE the goal was completed: a "
     "command output, test result, file contents excerpt, or a URL/deliverable "
@@ -184,6 +188,21 @@ JUDGE_SYSTEM_PROMPT = (
     "- 'The file is created' without showing its contents or a command proving it\n"
     "- 'Deployed successfully' without a URL, log line, or status check\n"
     "- Any generic success assertion that an independent observer cannot verify\n\n"
+    "BLOCKED — the goal cannot be satisfied as stated:\n"
+    "- The response explains the goal is genuinely unachievable (impossible, "
+    "out of scope, no valid path to the deliverable), or refuses to "
+    "fabricate a deliverable that cannot exist, OR\n"
+    "- The response explains progress is blocked and the next step needs "
+    "user input to proceed.\n"
+    "Return BLOCKED with the reason describing what is blocking. BLOCKED is "
+    "a refusal, not a completion — never return BLOCKED for a goal that "
+    "was achieved.\n"
+    "When the block is an error the agent hit (an HTTP status, an API, "
+    "sign-in or token failure), quote the error text verbatim in the reason "
+    "and attribute it only to a provider, service or credential the response "
+    "itself names. Never infer one the response does not name — an unnamed "
+    "401 belongs to the model provider the agent was calling, not to some "
+    "other service's token.\n\n"
     "WAIT — the goal is NOT done, but the next step is to wait for async "
     "work to finish rather than act again. Choose this ONLY when the agent's "
     "progress is genuinely gated on something running on its own:\n"
@@ -210,6 +229,7 @@ JUDGE_SYSTEM_PROMPT = (
     "take right now. This is the default when in doubt.\n\n"
     "Reply ONLY with a single JSON object on one line. Shapes:\n"
     '{"verdict": "done", "reason": "<one sentence citing the concrete evidence>"}\n'
+    '{"verdict": "blocked", "reason": "<one sentence>"}\n'
     '{"verdict": "continue", "reason": "<one sentence saying what evidence is missing>"}\n'
     '{"verdict": "wait", "wait_on_session": "<id>", "reason": "<one sentence>"}\n'
     '{"verdict": "wait", "wait_on_pid": <int>, "reason": "<one sentence>"}\n'
@@ -1361,6 +1381,7 @@ def judge_goal(
 
     try:
         from agent.auxiliary_client import call_llm
+        from agent.auxiliary_unavailable import AuxiliaryClientUnavailable
     except Exception as exc:
         logger.debug("goal judge: auxiliary client import failed: %s", exc)
         return "continue", "auxiliary client unavailable", False, None, False
@@ -1417,6 +1438,11 @@ def judge_goal(
 
     try:
         raw = _call_goal_judge_llm(call_llm, JUDGE_SYSTEM_PROMPT, prompt, timeout)
+    except AuxiliaryClientUnavailable as exc:
+        # No client at all (e.g. a dead Nous refresh token): name the cause so the user is sent to
+        # re-authenticate, not to context-length / model debugging (#42177). Still fails open.
+        logger.info("goal judge: auxiliary client unavailable (%s) — falling through to continue", exc)
+        return "continue", f"goal_judge auxiliary client unavailable: {exc}", False, None, True
     except Exception as exc:
         logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
         return "continue", f"judge error: {type(exc).__name__}", False, None, True
@@ -2227,7 +2253,8 @@ KANBAN_GOAL_CONTINUATION_TEMPLATE = (
     "calling one of them."
 )
 
-# Judge says done but the worker never called kanban_complete/kanban_block: one explicit nudge.
+# Judge says done but the worker never made a terminal board call
+# (kanban_complete/kanban_request_review/kanban_block): one explicit nudge.
 KANBAN_GOAL_FINALIZE_TEMPLATE = (
     "[The work looks complete, but the task is still open]\n"
     "Reason: {reason}\n\n"
@@ -2320,11 +2347,19 @@ def run_kanban_goal_loop(
         # The kanban worker loop has no wait-barrier concept (workers finish
         # via kanban_complete / kanban_block, not by parking), so a WAIT
         # verdict is treated as CONTINUE here.
-        verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(
-            goal_text,
-            last_response,
-            turn_reasons=kanban_turn_reasons or None,
-        )
+        # The between-turns judge runs outside any agent turn: bind the per-task relay-affinity
+        # scope (same shape as the handoff gates) so the relay does not reject the call (#113669).
+        from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
+        affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id}")
+        try:
+            verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(
+                goal_text,
+                last_response,
+                turn_reasons=kanban_turn_reasons or None,
+            )
+        finally:
+            if affinity_token is not None:
+                reset_affinity_scope(affinity_token)
         if verdict == "wait":
             verdict = "continue"
         if reason and str(reason).strip():

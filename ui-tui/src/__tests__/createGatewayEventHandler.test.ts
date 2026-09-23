@@ -1,5 +1,11 @@
+import type { ConnectionOperationTarget } from '@hermes/shared/gateway-events'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import {
+  $connectionOperation,
+  dismissConnectionOperation,
+  resetConnectionOperationsForTests
+} from '../app/connectionOperationStore.js'
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { createServerRequestHandler } from '../app/createServerRequestHandler.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
@@ -64,7 +70,10 @@ const buildCtx = (appended: Msg[]) =>
 const serverRequest = (method: string, params: Record<string, unknown>, id = `srq-${method}`) => {
   const respond = vi.fn()
 
-  const handled = createServerRequestHandler({ ringPromptBell: vi.fn(), setStatus: status => patchUiState({ status }) })({
+  const handled = createServerRequestHandler({
+    ringPromptBell: vi.fn(),
+    setStatus: status => patchUiState({ status })
+  })({
     fail: vi.fn(),
     id,
     method,
@@ -81,13 +90,15 @@ describe('createGatewayEventHandler', () => {
     resetUiState()
     resetTurnState()
     resetServerRequestsForTests()
+    resetConnectionOperationsForTests()
     turnController.fullReset()
     patchUiState({ showReasoning: true })
   })
 
   it('heals missed completion and blocking prompts only from the focused authoritative idle snapshot', () => {
     patchUiState({ sid: 'focused' })
-    const onEvent = createGatewayEventHandler(buildCtx([]))
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
     onEvent({ session_id: 'focused', payload: {}, type: 'message.start' } as any)
     serverRequest('approval', { session_id: 'focused', request_id: 'approval', command: 'test' })
     const busyOverlay = getOverlayState().approval
@@ -104,6 +115,86 @@ describe('createGatewayEventHandler', () => {
     expect(getUiState().status).toBe('ready')
     expect(getOverlayState().approval).toBeNull()
     expect(getTurnState().tools).toEqual([])
+
+    const target: ConnectionOperationTarget = { action: 'install', kind: 'mcp', name: 'asana', state: 'pending' }
+    onEvent({
+      session_id: 'focused',
+      payload: {
+        deadline_at: 10,
+        op_id: 'op-1',
+        seq: 2,
+        targets: [target],
+        timeout_seconds: 30
+      },
+      type: 'connection.request'
+    })
+    expect($connectionOperation.get()).toMatchObject({ opId: 'op-1', seq: 2, targets: [target] })
+    expect(getOverlayState().connection).toEqual({ opId: 'op-1' })
+
+    onEvent({
+      session_id: 'focused',
+      payload: {
+        deadline_at: 11,
+        op_id: 'op-1',
+        seq: 1,
+        settled: false,
+        targets: [{ ...target, state: 'failed' }]
+      },
+      type: 'connection.update'
+    })
+    expect($connectionOperation.get()).toMatchObject({ seq: 2, targets: [target] })
+
+    // Esc on the "Finishing…" card drops it and it must not come back on a replay, but the settling
+    // frame that follows still records how each app ended.
+    const request = {
+      deadline_at: 10,
+      op_id: 'op-1',
+      seq: 2,
+      targets: [target],
+      timeout_seconds: 30
+    }
+
+    dismissConnectionOperation('op-1')
+    expect($connectionOperation.get()).toBeNull()
+    onEvent({ session_id: 'focused', payload: request, type: 'connection.request' })
+    expect($connectionOperation.get()).toBeNull()
+    expect(getOverlayState().connection).toBeNull()
+
+    onEvent({
+      session_id: 'focused',
+      payload: {
+        deadline_at: 12,
+        op_id: 'op-1',
+        seq: 3,
+        settled: true,
+        targets: [{ ...target, state: 'connected' }]
+      },
+      type: 'connection.update'
+    })
+    expect(ctx.system.sys.mock.calls.map((call: unknown[]) => call[0])).toEqual(['asana: connected'])
+  })
+
+  it('keeps the durable session id when a session.info payload omits it', () => {
+    patchUiState({ sid: 'focused', storedSid: 'durable-1' })
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    // Agent-less producers (_fallback_session_info, lazy cwd switch) send no stored_session_id.
+    onEvent({
+      session_id: 'focused',
+      payload: { cwd: '/tmp/a', model: 'test', skills: {}, tools: {} },
+      type: 'session.info'
+    } as any)
+    expect(getUiState().storedSid).toBe('durable-1')
+    expect(getUiState().info?.stored_session_id).toBe('durable-1')
+
+    // A payload that carries one is authoritative.
+    onEvent({
+      session_id: 'focused',
+      payload: { model: 'test', skills: {}, stored_session_id: 'durable-2', tools: {} },
+      type: 'session.info'
+    } as any)
+    expect(getUiState().storedSid).toBe('durable-2')
+    expect(getUiState().info?.stored_session_id).toBe('durable-2')
   })
 
   it('keeps the durable session id when a session.info payload omits it', () => {
@@ -1706,7 +1797,9 @@ describe('createGatewayEventHandler', () => {
   it('renders a failed turn from error_surface instead of the raw provider JSON', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
-    const raw = 'Error code: 401 - {"error": {"message": "Incorrect API key provided", "type": "invalid_request_error"}}'
+
+    const raw =
+      'Error code: 401 - {"error": {"message": "Incorrect API key provided", "type": "invalid_request_error"}}'
 
     onEvent({
       payload: {
@@ -1777,7 +1870,10 @@ describe('createGatewayEventHandler', () => {
     const ctx = buildCtx([])
     const onEvent = createGatewayEventHandler(ctx)
 
-    onEvent({ payload: { message: 'invalid params for prompt.submit: turn_author: Extra inputs are not permitted' }, type: 'error' } as any)
+    onEvent({
+      payload: { message: 'invalid params for prompt.submit: turn_author: Extra inputs are not permitted' },
+      type: 'error'
+    } as any)
 
     const line = String((ctx.system.sys as any).mock.calls.at(-1)?.[0])
     expect(line).toContain('/update')

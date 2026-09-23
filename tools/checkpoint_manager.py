@@ -67,7 +67,8 @@ except ImportError:  # pragma: no cover - Windows
 from hermes_cli._subprocess_compat import windows_hide_flags
 from typing import Dict, List, Optional, Set, Tuple
 
-from utils import env_int
+from hermes_cli.gitlock import clear_stale_tmp_packs
+from utils import env_int, rmtree_readonly
 
 logger = logging.getLogger(__name__)
 
@@ -1110,6 +1111,20 @@ class CheckpointManager:
         """Reset per-turn dedup.  Call at the start of each agent iteration."""
         self._checkpointed_dirs.clear()
 
+    def unsupported_backend_reason(self, task_id: str = "default") -> Optional[str]:
+        """Explain why host checkpoints are off limits for a container-backed session.
+
+        Classifies the task's backend at call time (nothing is remembered), so /rollback is
+        refused before the first mutation and follows a backend change within the session."""
+        from tools.file_tools_paths import container_backend_for_task
+        backend = container_backend_for_task(task_id)
+        if backend is None:
+            return None
+        return (
+            f"Checkpoints are not taken for terminal.backend={backend}: "
+            "file paths belong to the container, not this host."
+        )
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -1131,7 +1146,7 @@ class CheckpointManager:
             digest = _hash_file(path)
             if digest is None:
                 return
-            store, dir_hash = _store_path(), _project_hash(self.get_working_dir_for_path(str(path)))
+            store, dir_hash = _store_path(), self._ledger_key(str(path))
             _save_ledger(store, dir_hash, {**_load_ledger(store, dir_hash), str(path): {"sha256": digest, "ts": time.time()}})
         except Exception as exc:
             logger.debug("record_agent_write failed for %s: %s", file_path, exc)
@@ -1171,7 +1186,10 @@ class CheckpointManager:
         if not ok:
             return {"success": False, "error": f"Could not compute changed files: {err}"}
 
-        ledger = _load_ledger(store, dir_hash)
+        # dir_hash above is the walked key; the ledger was written under the marker-walked
+        # project key too (same _ledger_key as the write side). Reading a mismatched key
+        # looked like "no ledger" and degraded to a full restore over user edits.
+        ledger = _load_ledger(store, self._ledger_key(abs_dir))
         if not ledger:
             # No agent-write ledger yet (pre-existing store, or Hermes has
             # not written any files here since the ledger was introduced).
@@ -1586,6 +1604,10 @@ class CheckpointManager:
             if failed_deletes:
                 result["failed_deletes"] = failed_deletes
         return result
+
+    def _ledger_key(self, path: str) -> str:
+        """Agent-write ledger key: hash of the marker-walked project dir, for writer and reader alike."""
+        return _project_hash(self.get_working_dir_for_path(path))
 
     def get_working_dir_for_path(self, file_path: str) -> str:
         """Resolve a file path to its working directory for checkpointing."""
@@ -2083,7 +2105,7 @@ def _rmtree_counted(child: Path, result: Dict[str, int], key: str, fail_fmt: str
     """rmtree ``child``, crediting bytes + ``result[key]``; failures count as ``errors`` when tracked."""
     try:
         size = _dir_size_bytes(child)
-        shutil.rmtree(child)
+        rmtree_readonly(child)
         result["bytes_freed"] += size
         result[key] += 1
     except OSError as exc:
@@ -2160,6 +2182,10 @@ def prune_checkpoints(retention_days: int = 7, delete_orphans: bool = True, chec
     _prune_pre_v2_repos(base, cutoff, delete_orphans, orphan_allowlist, result)
     store = _store_path(base)
     if _store_has_head(store):
+        # A gc killed by the store timeout strands tmp_pack_* files that gc.auto=0 means git
+        # itself never reclaims; sweep them even when no ref moved (a sweep is a directory
+        # listing, unlike the pack-rewriting gc gated on refs below).
+        clear_stale_tmp_packs(store)
         # gc rewrites the whole pack — the entire cost of a prune on a large store — so it runs
         # only when a ref moved: deleted here, or rewritten by a checkpoint that left it pending.
         deleted_before = result["deleted_orphan"] + result["deleted_stale"]
@@ -2376,7 +2402,7 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
         return out
     size = _dir_size_bytes(base)
     try:
-        shutil.rmtree(base)
+        rmtree_readonly(base)
         out["bytes_freed"] = size
         out["deleted"] = True
     except OSError as exc:

@@ -1,11 +1,10 @@
-"""Post-update maintenance for ``hermes update``: pre-update backup snapshot, state-db verify/restore, curator/FTS notices, FHS path guard, completion summary, stale-module purge.
+"""Post-update maintenance for ``hermes update``: pre-update backup snapshot, state-db verify/restore, curator/FTS notices, FHS path guard, completion summary.
 
 Split out of ``update_cmd.py``, which re-imports every name so ``hermes_cli.update_cmd.<name>``
 still resolves/monkeypatches. Origin helpers are imported lazily per function (no cycle;
 test patches on ``update_cmd`` stay effective).
 """
 
-import importlib
 import logging
 from contextlib import suppress
 import os
@@ -22,24 +21,6 @@ from hermes_cli.update_cmd_common import _best_effort
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
 
-
-_UPDATE_RUNTIME_RELOAD_MODULES = "hermes_constants", "tools.environments.local", "tools.lazy_deps"
-
-#: Modules EXECUTING the update survive the purge: evicting them buys nothing (running frames
-#: keep them alive) and reloading them mid-flight is the one genuinely unsafe move.
-#: Two root modules carry process-wide identity state and are refreshed in place by
-#: ``_reload_updated_runtime_modules`` instead: ``hermes_logging`` (a fresh copy starts a SECOND
-#: QueueListener over the same log files while the first keeps running) and ``hermes_constants``
-#: (its ``_HERMES_HOME_OVERRIDE`` ContextVar — a token taken through the old module cannot reset a
-#: fresh module's var, and an override set before the purge would silently vanish).
-_STALE_PURGE_PROTECTED = frozenset({"hermes_cli", "hermes_cli.main", "hermes_logging", "hermes_constants"})
-
-#: The updater's own module family (``update_cmd*``, ``update_receipt``, ``update_inventory``,
-#: ``update_lock``, ...) is protected as a prefix: these hold per-run state — the open receipt
-#: singleton, the pre-update plan's ``RuntimeRecord`` class identity, the lock — and evicting
-#: one swaps in a fresh module whose ``_current`` is None (receipt silently never written) or
-#: whose dataclass fails every ``isinstance`` against the plan built before the purge.
-_STALE_PURGE_PROTECTED_PREFIX = "hermes_cli.update_"
 
 _PRE_UPDATE_SNAPSHOT_KEEP = 1
 
@@ -76,6 +57,9 @@ def _load_updates_cfg() -> dict:
     return updates if isinstance(updates, dict) else {}
 
 
+# 合并取舍/merge-take: 上游删除了 stale-module purge 整套机制（连同其测试），本地保留并修好；
+# tests/hermes_cli/test_update_stale_module_purge.py 与 conftest 仍在树内直接调用该函数，
+# 删掉会让本地测试失去被测对象（本地 _evict_module 另含父包属性解绑修复）。
 def _reload_modules(names, *, modules, log) -> None:
     """``importlib.reload`` each module of *names* cached in *modules*; failures go to *log*."""
     importlib.invalidate_caches()
@@ -165,6 +149,7 @@ def _reload_updated_runtime_modules() -> None:
             modules=_m().sys.modules,
             log=lambda name, exc: logger.debug("Could not reload updated module %s: %s", name, exc),
         )
+
 
 
 def _print_curator_first_run_notice() -> None:
@@ -373,6 +358,7 @@ def _reload_process_scan_modules() -> None:
     )
 
 
+
 def _finish_dashboard_update_cleanup(
     node_failures: list[str], already_restarted_units: "set[str] | None" = None
 ) -> None:
@@ -383,18 +369,31 @@ def _finish_dashboard_update_cleanup(
 
     See #83595.
     """
-    from hermes_cli.update_cmd import _m, _reload_process_scan_modules
+    from hermes_cli.update_cmd import _m, _record_update_step
     if node_failures:
         print()
         print("  ℹ Leaving running dashboard process(es) untouched because the")
         print("    Node.js dependency refresh did not complete.")
         return
 
-    _reload_process_scan_modules()
-
-    stop_result = _m()._kill_stale_dashboard_processes(
-        restart_managed=True, already_restarted_units=already_restarted_units
-    )
+    try:
+        from hermes_constants import get_hermes_home
+        stop_result = _m()._kill_stale_dashboard_processes(
+            restart_managed=True, already_restarted_units=already_restarted_units,
+            scope_home=str(get_hermes_home()),
+        )
+    except Exception as exc:
+        # Isolated like every sibling post-update step: a failure here (#112604) used to abort
+        # the fleet matrix, reconciliation and the inner receipt finalize that follow it. A
+        # dashboard/serve left on pre-update code is still caught by the survivor probe →
+        # reconciliation (exit 1).
+        logger.warning("Post-update dashboard cleanup failed: %s", exc)
+        _record_update_step("dashboard_cleanup", False, f"{type(exc).__name__}: {exc}")
+        print()
+        print(f"⚠ Could not refresh running dashboard/serve process(es): {exc}")
+        print("  If one is still running, restart it so it serves the updated code:")
+        print("    hermes dashboard --port <port>   (or: systemctl --user restart hermes-dashboard)")
+        return
     if not stop_result.get("unrecovered"):
         return
 
@@ -903,8 +902,21 @@ def _run_pre_update_backup(args) -> Optional[str]:
         return None
 
     snapshot_id = None
-    with _best_effort('Pre-update snapshot failed: %s'):
+    try:
         snapshot_id = _run_quick_snapshots()
+    except Exception as exc:
+        logger.warning("Pre-update snapshot failed: %s", exc)
+        snapshot_detail = f" ({exc})"
+    else:
+        snapshot_detail = ""
+    if not snapshot_id:
+        # Best-effort by design (8ed599dc054: a broken backup never blocks the update), but a
+        # swallowed failure is how a user discovers post-hoc that the receipt says
+        # ``ok: false`` and nothing was there to restore (#114592). Say it on stdout, once,
+        # before any code moves.
+        print(f"  ⚠ Pre-update snapshot FAILED — no recovery point was saved{snapshot_detail}.")
+        print("  Continuing with update (set updates.pre_update_backup: off to silence this).")
+        print()
 
     if mode != "full":
         if snapshot_id:
@@ -970,8 +982,8 @@ def _sync_profiles_after_update() -> None:
             print(f"→ Seeded .env for {len(backfilled)} profile(s) (copied from default): {', '.join(backfilled)}")
 
     with suppress(Exception):
-        from plugins.memory.honcho.cli import sync_honcho_profiles_quiet
-        synced = sync_honcho_profiles_quiet()
+        from plugins.memory import import_provider_module
+        synced = import_provider_module("honcho", "cli").sync_honcho_profiles_quiet()
         if synced:
             print(f"\n-> Honcho: synced {synced} profile(s)")
 

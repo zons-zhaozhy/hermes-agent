@@ -54,6 +54,10 @@ _LIVE_RAW_IDS = _LIVE_FREE_MODELS + [
 ]
 
 
+
+
+
+
 class TestProviderModelIdsOpencodeFree:
     def test_live_catalog_revalidation_excludes_delisted(self):
         """The delisted model must NOT appear when the live relay no longer lists it."""
@@ -88,8 +92,6 @@ class TestProviderModelIdsOpencodeFree:
         with patch("hermes_cli.models._fetch_opencode_free_models", return_value=[]):
             result = provider_model_ids("opencode-free")
         assert result == _STATIC_FLOOR
-
-
 class TestOpencodeFreeCacheFingerprint:
     def test_keyless_provider_has_stable_fingerprint(self):
         """opencode-free is in the stable-fingerprint set (no credential to rotate)."""
@@ -128,8 +130,6 @@ class TestOpencodeFreeCacheFingerprint:
         entry = written["opencode-free"]
         assert entry["fp"].startswith("keyless:opencode-free")
         assert isinstance(entry["at"], float) and not isinstance(entry["at"], bool)
-
-
 class TestOpencodeFreeFollowUps:
     """Follow-up hardening on top of the salvaged live-catalog fix (#95943)."""
 

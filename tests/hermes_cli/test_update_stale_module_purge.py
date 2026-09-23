@@ -30,6 +30,32 @@ from hermes_cli import update_cmd
 
 
 @pytest.fixture(autouse=True)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 def _restore_sys_modules():
     """Snapshot & restore sys.modules around each test.
 
@@ -66,14 +92,10 @@ def _restore_sys_modules():
         for key in [k for k, v in current.items() if isinstance(v, types.ModuleType) and k not in attrs]:
             del current[key]
         current.update(attrs)
-
-
 def _fake_module(name: str) -> types.ModuleType:
     mod = types.ModuleType(name)
     mod.__stale_sentinel__ = True
     return mod
-
-
 def _install_stale_main_dashboard(**attrs) -> types.ModuleType:
     """A pre-pull ``main_dashboard`` stand-in, bound the way ``hermes_cli.main``'s eager import
     leaves it: in ``sys.modules`` AND as an attribute of the protected ``hermes_cli`` package."""
@@ -84,8 +106,6 @@ def _install_stale_main_dashboard(**attrs) -> types.ModuleType:
     sys.modules["hermes_cli.main_dashboard"] = stale
     hermes_cli.main_dashboard = stale
     return stale
-
-
 def test_purge_evicts_hermes_prefixed_modules():
     victims = [
         "hermes_cli.cli_output",
@@ -110,16 +130,12 @@ def test_purge_evicts_hermes_prefixed_modules():
     finally:
         for name in added:
             sys.modules.pop(name, None)
-
-
 def test_purge_protects_executing_modules():
     # The updater's own modules must survive — they're running this code.
     cli_main._purge_stale_hermes_modules()
     assert sys.modules.get("hermes_cli.update_cmd") is update_cmd
     assert sys.modules.get("hermes_cli.main") is cli_main
     assert "hermes_cli" in sys.modules
-
-
 def test_purge_preserves_active_update_receipt(tmp_path, monkeypatch):
     """A receipt begun before the post-pull purge must still be finalizable."""
     import hermes_cli.update_receipt as receipt
@@ -143,8 +159,6 @@ def test_purge_preserves_active_update_receipt(tmp_path, monkeypatch):
     finally:
         receipt._current = None
         post_purge_receipt._current = None
-
-
 def test_purge_leaves_prefix_lookalikes_alone():
     # `gateway_foo` starts with the string prefix "gateway" but is NOT the
     # gateway package — the root-segment check must spare it.
@@ -161,8 +175,6 @@ def test_purge_leaves_prefix_lookalikes_alone():
     finally:
         for name in added:
             sys.modules.pop(name, None)
-
-
 def test_purge_never_raises_on_weird_sys_modules():
     # Entries with None values (import machinery quirk) must not break it.
     sys.modules["hermes_cli._purge_test_none"] = None  # type: ignore[assignment]
@@ -170,8 +182,6 @@ def test_purge_never_raises_on_weird_sys_modules():
         cli_main._purge_stale_hermes_modules()
     finally:
         sys.modules.pop("hermes_cli._purge_test_none", None)
-
-
 def test_stale_symbol_scenario_end_to_end():
     """Reproduce the field failure shape: a cached module missing a symbol
     that freshly-imported code needs — purge, then re-import resolves it."""
@@ -197,8 +207,6 @@ def test_stale_symbol_scenario_end_to_end():
         sys.modules.pop(name, None)
         if real is not None:
             sys.modules[name] = real
-
-
 def test_purge_keeps_plan_record_class_identity():
     # The pre-update plan is built BEFORE the purge; reconciliation after it filters with
     # ``isinstance(r, RuntimeRecord)``. An evicted ``update_inventory`` yields a fresh class,
@@ -208,8 +216,6 @@ def test_purge_keeps_plan_record_class_identity():
     cli_main._purge_stale_hermes_modules()
     from hermes_cli.update_inventory import RuntimeRecord as after
     assert after is before
-
-
 def test_stale_top_level_utils_scenario_end_to_end():
     """The 2026-09-12 field failure: `hermes update` from a pre-`base_url_origin`
     checkout kept the old top-level `utils` cached, and the restart phase's import of
@@ -232,8 +238,6 @@ def test_stale_top_level_utils_scenario_end_to_end():
         sys.modules.pop("utils", None)
         if real is not None:
             sys.modules["utils"] = real
-
-
 def test_purge_protects_hermes_logging():
     # A second copy of hermes_logging starts a second QueueListener over the same log
     # files while the first keeps running: its listener/handler state is module-global.
@@ -247,8 +251,6 @@ def test_purge_protects_hermes_logging():
         sys.modules.pop("hermes_logging", None)
         if real is not None:
             sys.modules["hermes_logging"] = real
-
-
 def test_purge_drops_stale_package_attribute_so_from_import_rereads_source():
     """Field failure #112604: `hermes_cli.main` imports `main_dashboard` at CLI start, so the
     updater process holds it as an ATTRIBUTE of the (protected) `hermes_cli` package. Evicting
@@ -266,8 +268,6 @@ def test_purge_drops_stale_package_attribute_so_from_import_rereads_source():
     assert pulled is not stale, "call-time import was handed the pre-pull module"
     assert getattr(pulled, "__stale_sentinel__", False) is False
     assert hasattr(pulled, "_loaded_launchd_backend_jobs")
-
-
 def test_dashboard_cleanup_survives_a_pre_pull_main_dashboard():
     """End-to-end shape of #112604: the post-update dashboard cleanup runs after the purge, and
     `_kill_stale_dashboard_processes` resolves its helpers then. With the pre-pull
