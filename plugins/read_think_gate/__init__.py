@@ -148,3 +148,19 @@ def pre_tool_batch(
     except Exception:
         logger.warning("read-think-gate: check_batch failed", exc_info=True)
         return None
+
+
+def register(ctx) -> None:
+    """Plugin-loader contract — without this the loader refuses the plugin
+    (``Plugin 'read-think-gate' has no register() function``) and the four-axis
+    marker writer never runs, deadlocking every write tool behind the guards
+    plugin's secondary line.
+
+    Hook names mirror the ``hooks:`` list in plugin.yaml exactly.
+    """
+    ctx.register_hook("pre_tool_batch", pre_tool_batch)
+    ctx.register_hook("pre_llm_call", pre_llm_call)
+    ctx.register_hook("on_session_start", on_session_start)
+    ctx.register_hook("on_session_reset", on_session_reset)
+    ctx.register_hook("on_session_end", on_session_end)
+    logger.info("read-think-gate registered (5 hooks)")
