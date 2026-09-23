@@ -26,13 +26,13 @@ import { cn } from '@/lib/utils'
 import {
   $agentPluginBusy,
   $agentPlugins,
+  $agentPluginsError,
+  $agentPluginsStatus,
   type AgentPluginRow,
   type AgentPluginServerState,
   type AgentPluginUpdateOutcome,
   type GatewayRequest,
   isDesktopRelevantPlugin,
-  $agentPluginsError,
-  $agentPluginsStatus,
   loadAgentPlugins,
   removeAgentPlugin,
   saveAgentPluginSettings,
@@ -51,7 +51,6 @@ import { Pill } from '../../settings/primitives'
 import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
 
 import type { CapabilityView } from './capability-tabs'
-import { CatalogBrowser } from './catalog-browser'
 import { type CatalogEntry, parseCatalog } from './catalog-data'
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
 import { PluginSettingsForm } from './plugin-settings-form'
@@ -636,6 +635,7 @@ export const PluginsTab = memo(function PluginsTab({
   }, [open, p, scope])
 
   const agentBusy = (row: AgentPluginRow) => busyKey === (row.key ?? row.name) || busyKey === row.name
+
   const installedEntries = useMemo(() => parseCatalog('plugins', packages.map(pkg => ({
     name: pkg.name,
     identifier: pkg.agent?.catalog_name ?? pkg.desktop?.packageOrigin?.catalogName ?? pkg.key,
@@ -646,10 +646,13 @@ export const PluginsTab = memo(function PluginsTab({
     sha: pkg.agent?.installed_sha ?? pkg.desktop?.packageOrigin?.sha ?? '',
     version: pkg.agent?.version ?? ''
   }))).map((entry, index) => ({ ...entry, id: `installed:${packages[index].key}` })), [packages])
+
   const packageById = useMemo(() => new Map(packages.map(pkg => [`installed:${pkg.key}`, pkg])), [packages])
+
   const isInstalled = (entry: CatalogEntry) => packageById.has(entry.id) || agentRows.some(row =>
     (row.catalog_name === entry.name || row.name === entry.name) && !row.update_available
   )
+
   const install = (entry: CatalogEntry) => openPluginInstallRequest({
     catalogName: entry.name,
     profile: scope,

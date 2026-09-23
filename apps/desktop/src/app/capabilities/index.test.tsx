@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import type * as ReactRouterDom from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -341,17 +341,14 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       entry
     ]))
 
-    await act(async () => {
-      render(
-        <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={['/skills']}>
-            <CapabilitiesView embedded fixedConnection="homelab" fixedProfile="researcher" />
-          </MemoryRouter>
-        </QueryClientProvider>
-      )
-    })
+    // The picker iframe owns discovery now; the install contract lives in
+    // SkillCatalog, so exercise it directly with the pinned scope object.
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SkillCatalog installedNames={new Set()} profile={{ connectionId: 'homelab', profile: 'researcher' }} />
+      </QueryClientProvider>
+    )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
     fireEvent.click(await screen.findByRole('button', { name: /^community-research/ }))
     expect(screen.getByRole('heading', { name: entry.name })).toBeTruthy()
     await act(async () => {
@@ -380,13 +377,10 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
 
     const scopedView = (connectionId: string, profile: string) => (
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/skills']}>
-          <CapabilitiesView embedded fixedConnection={connectionId} fixedProfile={profile} />
-        </MemoryRouter>
+        <SkillCatalog installedNames={new Set()} key={`${connectionId}:${profile}`} profile={{ connectionId, profile }} />
       </QueryClientProvider>
     )
     const view = render(scopedView('homelab', 'researcher'))
-    fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
     fireEvent.click(await screen.findByRole('button', { name: /^community-research/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Install' }))
     const pending = screen.getByRole<HTMLButtonElement>('button', { name: 'Installing...' })
@@ -424,7 +418,11 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     expect(installHubSkill).toHaveBeenCalledTimes(2)
   })
 
-  it('loads the public catalog only on Browse and reuses it across skills and tools tab switches', async () => {
+  it('loads the public catalog only when the browse view is enabled, and one fetch serves repeated views', async () => {
+    // The picker iframe owns discovery in the Capabilities view now; the lazy-
+    // load contract lives in useCatalog(kind, enabled): the feed is fetched
+    // only while the browse view is mounted, and the query cache means one
+    // fetch serves every remount (tab switches) for the same kind.
     const fetchCatalog = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => [{
@@ -437,38 +435,33 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     })
     vi.stubGlobal('fetch', fetchCatalog)
 
-    await renderSkills() // ?tab=toolsets
-    await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
-    expect(fetchCatalog).not.toHaveBeenCalled()
-    cleanup()
+    queryClient.clear()
 
-    await act(async () => {
-      render(
-        <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={['/capabilities']}>
-            <CapabilitiesView embedded />
-          </MemoryRouter>
-        </QueryClientProvider>
-      )
-    })
+    const { renderHook } = await import('@testing-library/react')
+    const { useCatalog } = await import('./plugins/catalog-data')
 
-    expect(screen.queryByRole('heading', { name: 'catalog-research' })).toBeNull()
-    expect(fetchCatalog).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
-    expect(await screen.findByRole('heading', { name: 'catalog-research' })).toBeTruthy()
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    )
+    const view1 = renderHook(() => useCatalog('skills', true), { wrapper })
+    await waitFor(() => expect(view1.result.current.isSuccess).toBe(true))
     expect(fetchCatalog).toHaveBeenCalledTimes(1)
-    expect(fetchCatalog.mock.calls[0][0]).toMatch(/\/docs\/api\/skills\.json$/)
+    expect(fetchCatalog.mock.calls[0][0]).toMatch(/\/skills\.json$/)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Installed' }))
-    expect(screen.queryByRole('heading', { name: 'catalog-research' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
-    expect(await screen.findByRole('heading', { name: 'catalog-research' })).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /^Tools/ }))
-    await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
-    expect(screen.queryByRole('heading', { name: 'catalog-research' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /^Skills/ }))
-    expect(await screen.findByRole('heading', { name: 'catalog-research' })).toBeTruthy()
+    view1.unmount()
+
+    // Same kind remounts (the tab-bounce shape): served from cache, no second fetch.
+    const view2 = renderHook(() => useCatalog('skills', true), { wrapper })
+    await waitFor(() => expect(view2.result.current.isSuccess).toBe(true))
     expect(fetchCatalog).toHaveBeenCalledTimes(1)
+
+    // Disabled (installed view) never fetches: a fresh kind with enabled=false
+    // stays pending forever (enabled gates the queryFn), and the cached skills
+    // kind gains no new fetch either.
+    const view3 = renderHook(() => useCatalog('plugins', false), { wrapper })
+    expect(view3.result.current.isPending).toBe(true)
+    expect(fetchCatalog).toHaveBeenCalledTimes(1)
+    view3.unmount()
   })
 
   it('shows a vision explainer that deep-links to Settings → Models', async () => {
@@ -571,66 +564,50 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     }
   })
 
-  it('offers optional skills through Browse and guards installed skills using the scoped installed list', async () => {
+  it('routes hub picker installs through the scoped profile and refuses picks already installed', async () => {
+    // The Skills tab embeds the real hub as an iframe; a card click posts
+    // { type: 'hermes-skill-pick', name, identifier } to the parent. The
+    // picker must install through installHubSkill with the scoped profile and
+    // refuse (toast, no call) a pick whose name/identifier is already
+    // installed in that scope.
     const { installHubSkill } = await import('@/store/hub-actions')
-    getSkills.mockResolvedValue([
-      {
-        name: 'web-research',
-        description: 'Research the web',
-        category: 'research',
-        enabled: true,
-        usage: 3,
-        provenance: 'bundled'
-      }
-    ])
-    queryClient.setQueryData(['public-catalog', 'skills'], parseCatalog('skills', [
-      {
-        name: 'gif-search',
-        description: 'Search GIFs',
-        source: 'optional',
-        installIdentifier: 'official/gifs/gif-search',
-        category: 'gifs',
-        tags: ['gifs']
-      },
-      {
-        name: 'web-research',
-        description: 'Research the web',
-        source: 'optional',
-        identifier: 'official/research/web-research',
-        category: 'research'
-      }
-    ]))
+    const { EmbeddedHubPicker } = await import('./skills/embedded-hub-picker')
 
-    await act(async () => {
-      render(
-        <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={['/capabilities?tab=skills']}>
-            <CapabilitiesView fixedProfile="researcher" />
-          </MemoryRouter>
-        </QueryClientProvider>
+    const installedNames = new Set(['web-research'])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <EmbeddedHubPicker installedNames={installedNames} profile="researcher" />
+      </QueryClientProvider>
+    )
+
+    const pick = (identifier: string, name: string) => {
+      fireEvent(
+        window,
+        new MessageEvent('message', {
+          data: { type: 'hermes-skill-pick', identifier, name },
+          origin: 'https://hermes-agent.nousresearch.com'
+        })
       )
-    })
+    }
 
-    expect(await screen.findByRole('switch', { name: 'web-research' })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /^gif-search/ })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Install' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
-    fireEvent.click(await screen.findByRole('button', { name: /^web-research/ }))
-
-    // Browse keeps installed entries discoverable, but never reinstallable.
-    const detail = within(screen.getByRole('main'))
-    const installed = detail.getByRole<HTMLButtonElement>('button', { name: 'Installed' })
-    expect(installed.disabled).toBe(true)
-    fireEvent.click(installed)
+    // Installed pick → refused, no install call.
+    pick('official/research/web-research', 'web-research')
     expect(installHubSkill).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: /^gif-search/ }))
-    expect(detail.getByRole('heading', { name: 'gif-search' })).toBeTruthy()
-    expect(screen.queryByRole('switch')).toBeNull()
 
-    await act(async () => {
-      fireEvent.click(detail.getByRole('button', { name: 'Install' }))
-    })
-
+    // New pick → installed with the scoped profile.
+    pick('official/gifs/gif-search', 'gif-search')
     expect(installHubSkill).toHaveBeenCalledExactlyOnceWith('official/gifs/gif-search', 'researcher')
+
+    // Foreign-origin messages never reach the install path.
+    vi.mocked(installHubSkill).mockClear()
+    fireEvent(
+      window,
+      new MessageEvent('message', {
+        data: { type: 'hermes-skill-pick', identifier: 'evil/evil', name: 'evil' },
+        origin: 'https://evil.example.com'
+      })
+    )
+    expect(installHubSkill).not.toHaveBeenCalled()
   })
 })

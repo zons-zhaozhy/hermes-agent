@@ -7,7 +7,7 @@ import { $pluginRecords } from '@/contrib/plugins-store'
 import { queryClient } from '@/lib/query-client'
 import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
 import { $confirmRequest, settleConfirm } from '@/store/confirm'
-import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
+import { $notifications } from '@/store/notifications'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
 import { $connection } from '@/store/session'
 
@@ -59,10 +59,17 @@ function seedCatalog(entries = [weatherEntry]) {
   queryClient.setQueryData(['public-catalog', 'plugins'], parseCatalog('plugins', entries))
 }
 
-async function selectCatalogEntry(name: string) {
-  fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
-  fireEvent.click(await screen.findByRole('button', { name: text => text.startsWith(name) }))
-  expect(screen.getByRole('heading', { name })).toBeTruthy()
+// The catalog picker is now an embedded iframe (docs site) that posts
+// { type: 'hermes-plugin-pick', name, repo, sha?, subdir? } to the parent,
+// which routes it through openCatalogPluginInstall. Drive that real link.
+async function pickCatalogEntry(entry: { name: string, repo: string, sha?: string, subdir?: string }) {
+  fireEvent(
+    window,
+    new MessageEvent('message', {
+      data: { type: 'hermes-plugin-pick', ...entry },
+      origin: 'https://hermes-agent.nousresearch.com'
+    })
+  )
 }
 
 afterEach(() => {
@@ -151,7 +158,8 @@ describe('PluginsTab', () => {
 
     expect(screen.queryByText('fal')).toBeNull()
     expect(screen.queryByRole('row')).toBeNull()
-    expect(screen.getByText('No matches')).toBeTruthy()
+    // The empty state renders emptyAll + emptyHint as sibling text nodes in one <p>.
+    expect(screen.getByText((_, element) => element?.textContent === 'No plugins yet. Browse the catalog below and install a reviewed plugin with one click.')).toBeTruthy()
   })
 
   // A desktop half can only be copied out of a backend that runs on THIS
@@ -215,8 +223,8 @@ describe('PluginsTab', () => {
 
     renderPlugins({ profile: 'workbot', scopeLabel: 'workbot' })
 
-    expect(screen.getAllByRole('button', { name: /^Media Studio/ })).toHaveLength(1)
-    expect(screen.getAllByRole('row')).toHaveLength(1)
+    expect(screen.getAllByRole('row', { name: /^Media Studio/ })).toHaveLength(1)
+    expect(screen.getAllByRole('row')).toHaveLength(2)
     const detail = within(screen.getByRole('row', { name: /^Media Studio/ }))
     expect(detail.getByText('Agent + Desktop')).toBeTruthy()
     expect(detail.getByRole('switch', { name: 'Desktop: Media Studio' }).getAttribute('aria-checked')).toBe('true')
@@ -270,23 +278,20 @@ describe('PluginsTab', () => {
     )
   })
 
-  it('opens the dual-target install modal for the selected catalog entry in the scoped profile', async () => {
-    seedCatalog([
-      { ...weatherEntry, name: 'other-plugin', repo: 'https://github.com/example/other-plugin' },
-      weatherEntry
-    ])
+  it('opens the install modal for a picker selection in the scoped profile', async () => {
     renderPlugins({ profile: 'workbot' })
 
-    await selectCatalogEntry(weatherEntry.name)
     expect($pluginInstallRequest.get()).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    await pickCatalogEntry({ name: weatherEntry.name, repo: weatherEntry.repo, sha: weatherEntry.sha })
 
-    expect($pluginInstallRequest.get()).toMatchObject({
-      catalogName: weatherEntry.name,
-      repo: weatherEntry.repo,
-      profile: 'workbot',
-      sha: weatherEntry.sha
-    })
+    await waitFor(() =>
+      expect($pluginInstallRequest.get()).toMatchObject({
+        catalogName: weatherEntry.name,
+        repo: weatherEntry.repo,
+        profile: 'workbot',
+        sha: weatherEntry.sha
+      })
+    )
   })
 
   it('toggles by canonical key through plugins.manage', async () => {
@@ -341,25 +346,25 @@ describe('PluginsTab', () => {
     expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'toggle' }))
   })
 
-  it('appends the selected subdir for multi-plugin repos without changing its catalog pin', async () => {
+  it('appends the picked subdir for multi-plugin repos without changing its catalog pin', async () => {
     const entry = {
       ...weatherEntry,
       name: 'nested-plugin',
       repo: 'https://github.com/example/plugins-monorepo',
       subdir: 'packages/nested-plugin'
     }
-    seedCatalog([entry])
     renderPlugins({ profile: null })
 
-    await selectCatalogEntry(entry.name)
-    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    await pickCatalogEntry(entry)
 
-    expect($pluginInstallRequest.get()).toMatchObject({
-      catalogName: entry.name,
-      repo: `${entry.repo}#${entry.subdir}`,
-      profile: null,
-      sha: entry.sha
-    })
+    await waitFor(() =>
+      expect($pluginInstallRequest.get()).toMatchObject({
+        catalogName: entry.name,
+        repo: `${entry.repo}#${entry.subdir}`,
+        profile: null,
+        sha: entry.sha
+      })
+    )
   })
 })
 
@@ -368,63 +373,33 @@ describe('PluginsTab catalog UX', () => {
     $agentPlugins.set([])
     $agentPluginsStatus.set('ready')
     closePluginInstallRequest()
+    $notifications.set([])
     requestGateway.mockReset()
     requestGateway.mockImplementation(async () => ({ plugins: $agentPlugins.get() }))
     $pluginRecords.set({})
   })
 
-  it('fetches only on Browse, with no extra requests for selection, search, or tab bounce', async () => {
-    const fetchCatalog = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => [weatherEntry, { ...weatherEntry, name: 'garden-plugin', category: 'garden', description: 'Garden planning' }]
-    })
-    vi.stubGlobal('fetch', fetchCatalog)
-    await act(async () => { renderPlugins({ profile: null }) })
+  it('ignores catalog picks from a foreign origin and picks without a repo', async () => {
+    renderPlugins({ profile: 'workbot' })
 
-    expect(fetchCatalog).not.toHaveBeenCalled()
-    expect(screen.queryByRole('heading', { name: weatherEntry.name })).toBeNull()
-    await selectCatalogEntry('garden-plugin')
-    const search = screen.getByRole<HTMLInputElement>('textbox', { name: 'Search plugins' })
-    fireEvent.change(search, { target: { value: 'weather' } })
-    expect(await screen.findByRole('heading', { name: weatherEntry.name })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /^garden-plugin/ })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Installed', pressed: false }))
-    expect(screen.queryByRole('heading', { name: weatherEntry.name })).toBeNull()
-    // The parent retains the shared search across navigation. Clearing from
-    // the empty state must propagate through onQueryChange, not local state.
-    expect(search.value).toBe('weather')
-    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }))
-    expect(search.value).toBe('')
-    await selectCatalogEntry('garden-plugin')
-
-    expect(fetchCatalog).toHaveBeenCalledTimes(1)
-    expect(fetchCatalog.mock.calls[0][0]).toMatch(/\/docs\/api\/plugins\.json$/)
-    expect(fetchCatalog.mock.calls[0][1]).toMatchObject({ credentials: 'omit' })
+    // Foreign origin: the picker iframe is cross-origin; only the trusted
+    // catalog origin's messages may open an install dialog.
+    fireEvent(
+      window,
+      new MessageEvent('message', {
+        data: { type: 'hermes-plugin-pick', name: 'evil', repo: 'https://evil.example.com/x.git' },
+        origin: 'https://evil.example.com'
+      })
+    )
+    // Trusted origin but incomplete payload (no repo): dropped.
+    fireEvent(
+      window,
+      new MessageEvent('message', {
+        data: { type: 'hermes-plugin-pick', name: 'no-repo' },
+        origin: 'https://hermes-agent.nousresearch.com'
+      })
+    )
     expect($pluginInstallRequest.get()).toBeNull()
-  })
-
-  it('offers an explicit retry after a catalog failure rather than refetching on tab bounce', async () => {
-    const fetchCatalog = vi.fn()
-      .mockResolvedValueOnce({ ok: false, status: 503 })
-      .mockResolvedValue({ ok: true, json: async () => [weatherEntry] })
-    vi.stubGlobal('fetch', fetchCatalog)
-    await act(async () => { renderPlugins({ profile: null }) })
-    fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
-
-    expect(await screen.findByText('Catalog HTTP 503')).toBeTruthy()
-    expect(fetchCatalog).toHaveBeenCalledTimes(1)
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /^Installed/ }))
-    })
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
-    })
-    expect(fetchCatalog).toHaveBeenCalledTimes(1)
-    expect(screen.getByText('Catalog HTTP 503')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
-
-    expect(await screen.findByRole('heading', { name: weatherEntry.name })).toBeTruthy()
-    expect(fetchCatalog).toHaveBeenCalledTimes(2)
   })
 
   it('shows an Update chip when the catalog pin moved past the installed SHA', () => {
@@ -570,14 +545,12 @@ describe('PluginsTab catalog UX', () => {
       }
     ])
 
-    seedCatalog([{ ...weatherEntry, name: 'demo-weather' }])
     await act(async () => { renderPlugins({ profile: null }) })
-    await selectCatalogEntry('demo-weather')
-
-    const installed = within(screen.getByRole('main')).getByRole<HTMLButtonElement>('button', { name: 'Installed' })
-    expect(installed.disabled).toBe(true)
-    fireEvent.click(installed)
+    // The already-installed short-circuit lives in the shared helper: a pick
+    // whose installed row is current resolves to a success toast, no dialog.
+    await pickCatalogEntry({ name: 'demo-weather', repo: weatherEntry.repo, sha: weatherEntry.sha })
     expect($pluginInstallRequest.get()).toBeNull()
+    expect($notifications.get().some(n => n.kind === 'success')).toBe(true)
   })
 
   it('offers catalog installation for an installed entry when an update is available', async () => {
@@ -596,16 +569,16 @@ describe('PluginsTab catalog UX', () => {
     ])
 
     const entry = { ...weatherEntry, name: 'demo-weather', sha: 'b'.repeat(40) }
-    seedCatalog([entry])
     await act(async () => { renderPlugins({ profile: null }) })
-    await selectCatalogEntry(entry.name)
-    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    await pickCatalogEntry(entry)
 
-    expect($pluginInstallRequest.get()).toMatchObject({
-      catalogName: entry.name,
-      repo: entry.repo,
-      profile: null,
-      sha: entry.sha
-    })
+    await waitFor(() =>
+      expect($pluginInstallRequest.get()).toMatchObject({
+        catalogName: entry.name,
+        repo: entry.repo,
+        profile: null,
+        sha: entry.sha
+      })
+    )
   })
 })
