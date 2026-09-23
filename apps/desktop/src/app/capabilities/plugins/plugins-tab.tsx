@@ -50,8 +50,6 @@ import { PanelEmpty } from '../../overlays/panel'
 import { Pill } from '../../settings/primitives'
 import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
 
-import type { CapabilityView } from './capability-tabs'
-import { type CatalogEntry, parseCatalog } from './catalog-data'
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
 import { PluginSettingsForm } from './plugin-settings-form'
 
@@ -213,11 +211,15 @@ function ProvenancePill({ pkg }: { pkg: PluginPackage }) {
   return null
 }
 
-/** Controls for one installed plugin half in the detail pane. */
+/** Column widths shared by the header and every row so the two control
+ *  columns line up down the page like a table. */
+const HALF_COL = 'flex w-36 shrink-0 items-center gap-1.5'
+
+/** One control cell; `label` is the accessible name for screen readers only
+ *  (the visible column label lives once, in the header). */
 function HalfCell({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div aria-label={label} className="flex w-full items-center gap-3" role="cell">
-      <span className="min-w-0 flex-1 text-xs text-(--ui-text-tertiary)">{label}</span>
+    <div aria-label={label} className={HALF_COL} role="cell">
       {children}
     </div>
   )
@@ -230,8 +232,6 @@ function Dash() {
     </span>
   )
 }
-
-const HALF_COL = 'flex w-36 shrink-0 items-center gap-1.5'
 
 function PackageRow({
   pkg,
@@ -493,40 +493,15 @@ function PackageRow({
   )
 }
 
-export function PluginActions({ profile }: { profile: ProfileScope }) {
-  const { t } = useI18n()
-  const d = t.settings.plugins
-  const { requestGateway } = useGatewayRequest()
-  const scope = profileParam(profile)
-
-  return <>
-    <Button className="underline" onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })} size="xs" variant="text">
-      {d.installModal.installFromGit}
-    </Button>
-    <Tip label={d.openFolder}>
-      <Button aria-label={d.openFolder} onClick={() => void revealPluginsDir()} size="icon-xs" variant="ghost"><FolderOpen /></Button>
-    </Tip>
-    <Tip label={d.rescan}>
-      <Button aria-label={d.rescan} onClick={() => void rescanAll(requestGateway, scope)} size="icon-xs" variant="ghost"><RefreshCw /></Button>
-    </Tip>
-  </>
-}
-
 /** THE plugins surface: one row per package. Each row shows its Desktop half
  *  (this app — the same for every profile, gateway, or machine) and its Agent
- *  half (the selected profile's backend). Browse uses the shared native
- *  catalog; Install from Git remains available for unlisted packages. */
+ *  half (the selected profile's backend). Discovery sits underneath: the live
+ *  catalog picker plus Install from Git for anything not in the catalog. */
 export const PluginsTab = memo(function PluginsTab({
   profile,
   scopeSelector,
-  scopeLabel,
-  view = 'installed',
-  query = '',
-  onQueryChange
+  scopeLabel
 }: {
-  query?: string
-  onQueryChange?: (value: string) => void
-  view?: CapabilityView
   profile: ProfileScope
   /** The Capabilities profile selector; rendered in the Agent column header so
    *  it visibly governs only that column. */
@@ -536,13 +511,14 @@ export const PluginsTab = memo(function PluginsTab({
 }) {
   const { t } = useI18n()
   const p = t.skills.plugins
+  const d = t.settings.plugins
   const { requestGateway } = useGatewayRequest()
 
   const desktopRecords = useStore($pluginRecords)
   const agentRows = useStore($agentPlugins)
-  const busyKey = useStore($agentPluginBusy)
   const status = useStore($agentPluginsStatus)
   const error = useStore($agentPluginsError)
+  const busyKey = useStore($agentPluginBusy)
 
   const scope = profileParam(profile)
   const label = scopeLabel ?? scope ?? t.skills.plugins.defaultProfile
@@ -558,7 +534,6 @@ export const PluginsTab = memo(function PluginsTab({
 
   useDeepLinkHighlight({ param: 'plugin', ready: () => true, elementId: pluginElementId })
 
-  // Catalog picker viewport (persisted height, collapse toggle, top-edge sash).
   // Catalog picker viewport (persisted height, collapse toggle, top-edge sash).
   const heightOverride = useStore($paneHeightOverride(CATALOG_PANE_ID))
   const height = heightOverride ?? CATALOG_DEFAULT_PX
@@ -636,32 +611,52 @@ export const PluginsTab = memo(function PluginsTab({
 
   const agentBusy = (row: AgentPluginRow) => busyKey === (row.key ?? row.name) || busyKey === row.name
 
-  const installedEntries = useMemo(() => parseCatalog('plugins', packages.map(pkg => ({
-    name: pkg.name,
-    identifier: pkg.agent?.catalog_name ?? pkg.desktop?.packageOrigin?.catalogName ?? pkg.key,
-    description: pkg.description,
-    category: pkg.kind === 'desktop' ? 'desktop' : 'general',
-    tier: pkg.agent?.catalog_tier ?? pkg.agent?.source ?? pkg.desktop?.kind ?? '',
-    repo: pkg.desktop?.packageOrigin?.repo ?? '',
-    sha: pkg.agent?.installed_sha ?? pkg.desktop?.packageOrigin?.sha ?? '',
-    version: pkg.agent?.version ?? ''
-  }))).map((entry, index) => ({ ...entry, id: `installed:${packages[index].key}` })), [packages])
-
-  const packageById = useMemo(() => new Map(packages.map(pkg => [`installed:${pkg.key}`, pkg])), [packages])
-
-  const isInstalled = (entry: CatalogEntry) => packageById.has(entry.id) || agentRows.some(row =>
-    (row.catalog_name === entry.name || row.name === entry.name) && !row.update_available
-  )
-
-  const install = (entry: CatalogEntry) => openPluginInstallRequest({
-    catalogName: entry.name,
-    profile: scope,
-    repo: entry.subdir ? `${entry.repo}#${entry.subdir}` : entry.repo,
-    sha: entry.sha
-  })
-
   return (
     <div className="flex h-full min-h-0 flex-col">
+      <div className="min-h-32 flex-1 overflow-y-auto">
+        {/* Header: what the two columns mean, and the controls that act on
+            the whole page (install, folder, rescan). */}
+        <div className="flex flex-wrap items-start justify-between gap-3 px-3 pt-3 pb-2">
+          <p className="min-w-0 flex-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+            {p.pageBlurb}
+          </p>
+          <div className="flex shrink-0 items-center gap-1">
+            <Button
+              onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })}
+              size="sm"
+              type="button"
+              variant="secondary"
+            >
+              {d.installModal.installFromGit}
+            </Button>
+            <Tip label={d.openFolder}>
+              <Button
+                aria-label={d.openFolder}
+                onClick={() => void revealPluginsDir()}
+                size="icon"
+                type="button"
+                variant="ghost"
+              >
+                <FolderOpen className="size-3.5" />
+              </Button>
+            </Tip>
+            <Tip label={d.rescan}>
+              <Button
+                aria-label={d.rescan}
+                onClick={() => {
+                  triggerHaptic('selection')
+                  void rescanAll(requestGateway, scope)
+                }}
+                size="icon"
+                type="button"
+                variant="ghost"
+              >
+                <RefreshCw className="size-3.5" />
+              </Button>
+            </Tip>
+          </div>
+        </div>
+
         {status === 'error' ? (
           <PanelEmpty
             action={
@@ -786,6 +781,7 @@ export const PluginsTab = memo(function PluginsTab({
             ))}
           </div>
         )}
+      </div>
 
       <section
         className="relative flex min-h-9 flex-col overflow-hidden border-t border-(--ui-stroke-secondary)"
