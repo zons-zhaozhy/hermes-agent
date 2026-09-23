@@ -886,7 +886,6 @@ const ChatViewContent = memo(function ChatViewContent({
                 onAttachDroppedItems={onAttachDroppedItems}
                 onAttachImageBlob={onAttachImageBlob}
                 onAttachPastedText={onAttachPastedText}
-                onAttachPrCommentUrl={onAttachPrCommentUrl}
                 onCancel={onCancel}
                 onPasteClipboardImage={onPasteClipboardImage}
                 onPickFiles={onPickFiles}

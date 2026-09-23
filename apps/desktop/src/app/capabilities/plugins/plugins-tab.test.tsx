@@ -11,7 +11,7 @@ import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
 import { $connection } from '@/store/session'
 
-import { PageSearchShell } from '../page-search-shell'
+import { PageSearchShell } from '../../page-search-shell'
 
 import { CapabilityTabs } from './capability-tabs'
 import { parseCatalog } from './catalog-data'

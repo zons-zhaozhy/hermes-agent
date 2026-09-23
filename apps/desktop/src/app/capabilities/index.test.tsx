@@ -9,8 +9,8 @@ import type * as HermesApi from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import type * as HubActions from '@/store/hub-actions'
 
-import { parseCatalog } from './catalog-data'
-import { SkillCatalog } from './skill-catalog'
+import { parseCatalog } from './plugins/catalog-data'
+import { SkillCatalog } from './plugins/skill-catalog'
 
 const getSkills = vi.fn()
 const getToolsets = vi.fn()
