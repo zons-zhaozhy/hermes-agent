@@ -21,7 +21,9 @@ logger = logging.getLogger("run_agent")
 _REASON_LEASE_LOST = "session turn lease lost"
 
 LEASE_TTL_SECONDS = 300.0
-LEASE_WAIT_SECONDS = 1800.0
+# 等待上限与 TTL 对齐：持锁者 300s 不续期锁即过期，等更久纯属空等。
+# 超时走既有 timed_out 返回（等待方可 kill 持锁者或重开独立会话）。
+LEASE_WAIT_SECONDS = 300.0
 
 
 class DurableTurnLease:
