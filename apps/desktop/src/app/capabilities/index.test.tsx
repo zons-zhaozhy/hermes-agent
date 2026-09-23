@@ -289,13 +289,18 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     'disables catalog installation when the installed list contains %s',
     async installedName => {
       const { installHubSkill } = await import('@/store/hub-actions')
-      queryClient.setQueryData(['public-catalog', 'skills'], parseCatalog('skills', [{
-        name: 'web-research',
-        identifier: 'official/research/web-research',
-        source: 'official',
-        category: 'research',
-        description: 'Research the web'
-      }]))
+      queryClient.setQueryData(
+        ['public-catalog', 'skills'],
+        parseCatalog('skills', [
+          {
+            name: 'web-research',
+            identifier: 'official/research/web-research',
+            source: 'official',
+            category: 'research',
+            description: 'Research the web'
+          }
+        ])
+      )
 
       render(
         <QueryClientProvider client={queryClient}>
@@ -327,59 +332,78 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       identifier: 'clawhub/community-research',
       expectedIdentifier: 'clawhub/community-research'
     }
-  ])('installs $identifier with its source-qualified target in the pinned connection and profile', async ({ source, identifier, expectedIdentifier }) => {
-    const { installHubSkill } = await import('@/store/hub-actions')
-    const entry = {
-      name: 'community-research',
-      identifier,
-      source,
-      category: 'research',
-      description: 'Community research workflow'
+  ])(
+    'installs $identifier with its source-qualified target in the pinned connection and profile',
+    async ({ source, identifier, expectedIdentifier }) => {
+      const { installHubSkill } = await import('@/store/hub-actions')
+
+      const entry = {
+        name: 'community-research',
+        identifier,
+        source,
+        category: 'research',
+        description: 'Community research workflow'
+      }
+
+      queryClient.setQueryData(
+        ['public-catalog', 'skills'],
+        parseCatalog('skills', [
+          { ...entry, name: 'other-skill', source: 'github', identifier: 'github:example/skills/other-skill' },
+          entry
+        ])
+      )
+
+      // The picker iframe owns discovery now; the install contract lives in
+      // SkillCatalog, so exercise it directly with the pinned scope object.
+      render(
+        <QueryClientProvider client={queryClient}>
+          <SkillCatalog installedNames={new Set()} profile={{ connectionId: 'homelab', profile: 'researcher' }} />
+        </QueryClientProvider>
+      )
+
+      fireEvent.click(await screen.findByRole('button', { name: /^community-research/ }))
+      expect(screen.getByRole('heading', { name: entry.name })).toBeTruthy()
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+      })
+
+      expect(installHubSkill).toHaveBeenCalledExactlyOnceWith(expectedIdentifier, {
+        connectionId: 'homelab',
+        profile: 'researcher'
+      })
     }
-    queryClient.setQueryData(['public-catalog', 'skills'], parseCatalog('skills', [
-      { ...entry, name: 'other-skill', source: 'github', identifier: 'github:example/skills/other-skill' },
-      entry
-    ]))
-
-    // The picker iframe owns discovery now; the install contract lives in
-    // SkillCatalog, so exercise it directly with the pinned scope object.
-    render(
-      <QueryClientProvider client={queryClient}>
-        <SkillCatalog installedNames={new Set()} profile={{ connectionId: 'homelab', profile: 'researcher' }} />
-      </QueryClientProvider>
-    )
-
-    fireEvent.click(await screen.findByRole('button', { name: /^community-research/ }))
-    expect(screen.getByRole('heading', { name: entry.name })).toBeTruthy()
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Install' }))
-    })
-
-    expect(installHubSkill).toHaveBeenCalledExactlyOnceWith(expectedIdentifier, {
-      connectionId: 'homelab', profile: 'researcher'
-    })
-  })
+  )
 
   it('keeps a pending install tied to its entry and scope when the pinned target changes', async () => {
     const { installHubSkill } = await import('@/store/hub-actions')
     const identifier = 'clawhub/community-research'
-    queryClient.setQueryData(['public-catalog', 'skills'], parseCatalog('skills', [
-      { name: 'community-research', identifier: 'community-research', source: 'clawhub' },
-      { name: 'other-skill', identifier: 'official/research/other-skill', source: 'optional' }
-    ]))
+    queryClient.setQueryData(
+      ['public-catalog', 'skills'],
+      parseCatalog('skills', [
+        { name: 'community-research', identifier: 'community-research', source: 'clawhub' },
+        { name: 'other-skill', identifier: 'official/research/other-skill', source: 'optional' }
+      ])
+    )
     let finishFirst!: () => void
     let finishSecond!: () => void
-    const firstInstall = new Promise<void>(resolve => { finishFirst = resolve })
-    const secondInstall = new Promise<void>(resolve => { finishSecond = resolve })
-    vi.mocked(installHubSkill)
-      .mockReturnValueOnce(firstInstall)
-      .mockReturnValueOnce(secondInstall)
+    const firstInstall = new Promise<void>(resolve => {
+      finishFirst = resolve
+    })
+    const secondInstall = new Promise<void>(resolve => {
+      finishSecond = resolve
+    })
+    vi.mocked(installHubSkill).mockReturnValueOnce(firstInstall).mockReturnValueOnce(secondInstall)
 
     const scopedView = (connectionId: string, profile: string) => (
       <QueryClientProvider client={queryClient}>
-        <SkillCatalog installedNames={new Set()} key={`${connectionId}:${profile}`} profile={{ connectionId, profile }} />
+        <SkillCatalog
+          installedNames={new Set()}
+          key={`${connectionId}:${profile}`}
+          profile={{ connectionId, profile }}
+        />
       </QueryClientProvider>
     )
+
     const view = render(scopedView('homelab', 'researcher'))
     fireEvent.click(await screen.findByRole('button', { name: /^community-research/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Install' }))
@@ -388,7 +412,8 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     expect(pending.querySelector('svg.animate-spin')).not.toBeNull()
     fireEvent.click(pending)
     expect(installHubSkill).toHaveBeenCalledExactlyOnceWith(identifier, {
-      connectionId: 'homelab', profile: 'researcher'
+      connectionId: 'homelab',
+      profile: 'researcher'
     })
 
     fireEvent.click(screen.getByRole('button', { name: /^other-skill/ }))
@@ -402,7 +427,8 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     expect(nextInstall.disabled).toBe(false)
     fireEvent.click(nextInstall)
     expect(installHubSkill).toHaveBeenNthCalledWith(2, identifier, {
-      connectionId: 'other-gateway', profile: 'writer'
+      connectionId: 'other-gateway',
+      profile: 'writer'
     })
 
     await act(async () => {
@@ -425,14 +451,17 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     // fetch serves every remount (tab switches) for the same kind.
     const fetchCatalog = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => [{
-        name: 'catalog-research',
-        identifier: 'official/research/catalog-research',
-        source: 'official',
-        category: 'research',
-        description: 'Research from the public snapshot'
-      }]
+      json: async () => [
+        {
+          name: 'catalog-research',
+          identifier: 'official/research/catalog-research',
+          source: 'official',
+          category: 'research',
+          description: 'Research from the public snapshot'
+        }
+      ]
     })
+
     vi.stubGlobal('fetch', fetchCatalog)
 
     queryClient.clear()
@@ -443,6 +472,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     const wrapper = ({ children }: { children: React.ReactNode }) => (
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     )
+
     const view1 = renderHook(() => useCatalog('skills', true), { wrapper })
     await waitFor(() => expect(view1.result.current.isSuccess).toBe(true))
     expect(fetchCatalog).toHaveBeenCalledTimes(1)

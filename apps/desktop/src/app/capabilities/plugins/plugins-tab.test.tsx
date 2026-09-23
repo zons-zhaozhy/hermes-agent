@@ -62,7 +62,7 @@ function seedCatalog(entries = [weatherEntry]) {
 // The catalog picker is now an embedded iframe (docs site) that posts
 // { type: 'hermes-plugin-pick', name, repo, sha?, subdir? } to the parent,
 // which routes it through openCatalogPluginInstall. Drive that real link.
-async function pickCatalogEntry(entry: { name: string, repo: string, sha?: string, subdir?: string }) {
+async function pickCatalogEntry(entry: { name: string; repo: string; sha?: string; subdir?: string }) {
   fireEvent(
     window,
     new MessageEvent('message', {
@@ -159,7 +159,13 @@ describe('PluginsTab', () => {
     expect(screen.queryByText('fal')).toBeNull()
     expect(screen.queryByRole('row')).toBeNull()
     // The empty state renders emptyAll + emptyHint as sibling text nodes in one <p>.
-    expect(screen.getByText((_, element) => element?.textContent === 'No plugins yet. Browse the catalog below and install a reviewed plugin with one click.')).toBeTruthy()
+    expect(
+      screen.getByText(
+        (_, element) =>
+          element?.textContent ===
+          'No plugins yet. Browse the catalog below and install a reviewed plugin with one click.'
+      )
+    ).toBeTruthy()
   })
 
   // A desktop half can only be copied out of a backend that runs on THIS
@@ -353,6 +359,7 @@ describe('PluginsTab', () => {
       repo: 'https://github.com/example/plugins-monorepo',
       subdir: 'packages/nested-plugin'
     }
+
     renderPlugins({ profile: null })
 
     await pickCatalogEntry(entry)
@@ -545,7 +552,9 @@ describe('PluginsTab catalog UX', () => {
       }
     ])
 
-    await act(async () => { renderPlugins({ profile: null }) })
+    await act(async () => {
+      renderPlugins({ profile: null })
+    })
     // The already-installed short-circuit lives in the shared helper: a pick
     // whose installed row is current resolves to a success toast, no dialog.
     await pickCatalogEntry({ name: 'demo-weather', repo: weatherEntry.repo, sha: weatherEntry.sha })
@@ -569,7 +578,9 @@ describe('PluginsTab catalog UX', () => {
     ])
 
     const entry = { ...weatherEntry, name: 'demo-weather', sha: 'b'.repeat(40) }
-    await act(async () => { renderPlugins({ profile: null }) })
+    await act(async () => {
+      renderPlugins({ profile: null })
+    })
     await pickCatalogEntry(entry)
 
     await waitFor(() =>
