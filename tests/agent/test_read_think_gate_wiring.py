@@ -125,7 +125,7 @@ def _spy_on_agent(agent: AIAgent) -> _GateSpy:
     production does, minus the loader's registry bookkeeping."""
     spec = importlib.util.spec_from_file_location(
         "read_think_gate_plugin_under_test",
-        Path(__file__).resolve().parents[2] / "plugins" / "read-think-gate" / "__init__.py",
+        Path(__file__).resolve().parents[2] / "plugins" / "read_think_gate" / "__init__.py",
     )
     assert spec is not None and spec.loader is not None
     plugin = importlib.util.module_from_spec(spec)
@@ -356,7 +356,7 @@ class TestGateFailsafe:
         # swallowed by the plugin hook body (never reach the executor).
         spec = importlib.util.spec_from_file_location(
             "read_think_gate_plugin_crasher",
-            Path(__file__).resolve().parents[2] / "plugins" / "read-think-gate" / "__init__.py",
+            Path(__file__).resolve().parents[2] / "plugins" / "read_think_gate" / "__init__.py",
         )
         assert spec is not None and spec.loader is not None
         crasher_plugin = importlib.util.module_from_spec(spec)

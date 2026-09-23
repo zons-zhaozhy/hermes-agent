@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
-_GATE_PATH = Path(__file__).resolve().parent / "read-think-gate" / "gate.py"
+_GATE_PATH = Path(__file__).resolve().parent / "read_think_gate" / "gate.py"
 
 
 def _load_gate_module() -> ModuleType:
