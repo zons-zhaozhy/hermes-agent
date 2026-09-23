@@ -71,7 +71,10 @@ export function resolveDeepLinkAction(payload: DeepLinkPayload | null | undefine
   // Merge: keep the local guard so a plugin action word ('install') is never
   // taken for a repo identifier when no repo/identifier param is set.
   const repo = (
-    payload.params?.repo || payload.params?.identifier || (payload.kind !== 'plugin' ? payload.name : '') || ''
+    payload.params?.repo ||
+    payload.params?.identifier ||
+    (payload.kind !== 'plugin' ? payload.name : '') ||
+    ''
   ).trim()
 
   if (payload.kind === 'plugin' && payload.name === 'install' && repo) {
