@@ -52,6 +52,36 @@ def test_unreachable_failure_pulls_next_run_earlier_then_ladder_exhausts(tmp_cro
     assert datetime.fromisoformat(j["next_run_at"]) - now > timedelta(hours=1)
 
 
+def test_offline_summary_phrase_and_quota_429_re_enter_the_ladder():
+    """The agent's fixed offline summary (cause chain lost across the process boundary)
+    and the provider quota-window 429 both fail with ZERO completed API calls — they must
+    be classified unreachable so the bounded ladder re-runs them instead of silently
+    waiting a full period (2026-09-16..18 三省·午 three-day outage)."""
+    from cron.unreachable_retry import is_model_unreachable_failure
+
+    class _Agent:
+        session_api_calls = 0
+
+    offline = RuntimeError(
+        "Hermes can't reach the model provider. You may be offline. "
+        "Check your internet connection and try again.")
+    quota = RuntimeError(
+        "HTTP 429: 已达到 5 小时的使用上限。您的限额将在 2026-09-16 16:14:29 重置。")
+    for exc in (offline, quota):
+        assert is_model_unreachable_failure(exc, _Agent()), str(exc)[:40]
+
+    # Any run that already completed a model call is never spend-neutral — the guard
+    # outranks the text match.
+    spent = _Agent()
+    spent.session_api_calls = 1
+    assert not is_model_unreachable_failure(offline, spent)
+    assert not is_model_unreachable_failure(quota, spent)
+
+    # A model-reached failure text (agent produced a real error mid-run) stays out.
+    assert not is_model_unreachable_failure(
+        RuntimeError("agent error: tool X failed"), _Agent())
+
+
 def test_reaching_the_model_resets_ladder_and_oneshots_never_retry(tmp_cron_home):
     """Any run that reached the model clears retry state; one-shots (pre-claimed
     dispatch, at-most-times #38758) never enter the ladder."""
