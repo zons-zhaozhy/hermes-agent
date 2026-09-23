@@ -1,11 +1,11 @@
 """Behavioral tests for the quality-auditor plugin.
 
 These test the PLUGIN's contract (hook wiring, tool-stat extraction,
-feedback gating), not the underlying agent/quality_auditor.py module
-(that has its own suite in tests/agent/test_quality_auditor.py).
+feedback gating), not the underlying plugins/quality_auditor/auditor.py module
+(that has its own suite in tests/plugins/test_quality_auditor_module.py).
 
 Real-import policy: the plugin module is imported for real (no mocks of
-the plugin itself); the agent.quality_auditor functions it delegates to
+the plugin itself); the plugins.quality_auditor.auditor functions it delegates to
 are monkeypatched at the module boundary because they hit the network.
 """
 
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-_PLUGIN_DIR = Path(__file__).resolve().parents[2] / "plugins" / "quality-auditor"
+_PLUGIN_DIR = Path(__file__).resolve().parents[2] / "plugins" / "quality_auditor"
 
 
 def _load_plugin():
@@ -87,9 +87,9 @@ def test_post_llm_call_skips_trivial_responses(plugin, monkeypatch):
     fired = []
 
     import types
-    fake_mod = types.ModuleType("agent.quality_auditor")
+    fake_mod = types.ModuleType("quality_auditor_plugin.auditor")
     fake_mod.fire_quality_audit = lambda **kw: fired.append(kw)
-    monkeypatch.setitem(sys.modules, "agent.quality_auditor", fake_mod)
+    monkeypatch.setitem(sys.modules, "quality_auditor_plugin.auditor", fake_mod)
 
     plugin.on_post_llm_call(assistant_response="too short", session_id="s1")
     plugin.on_post_llm_call(assistant_response="", session_id="s1")
@@ -100,9 +100,9 @@ def test_post_llm_call_skips_trivial_responses(plugin, monkeypatch):
 def test_post_llm_call_fires_with_turn_stats(plugin, monkeypatch):
     fired = []
     import types
-    fake_mod = types.ModuleType("agent.quality_auditor")
+    fake_mod = types.ModuleType("quality_auditor_plugin.auditor")
     fake_mod.fire_quality_audit = lambda **kw: fired.append(kw)
-    monkeypatch.setitem(sys.modules, "agent.quality_auditor", fake_mod)
+    monkeypatch.setitem(sys.modules, "quality_auditor_plugin.auditor", fake_mod)
 
     history = [
         {"role": "user", "content": "do it"},
@@ -125,13 +125,13 @@ def test_post_llm_call_fires_with_turn_stats(plugin, monkeypatch):
 
 def test_post_llm_call_never_raises(plugin, monkeypatch):
     import types
-    fake_mod = types.ModuleType("agent.quality_auditor")
+    fake_mod = types.ModuleType("quality_auditor_plugin.auditor")
 
     def boom(**kw):
         raise RuntimeError("aux model down")
 
     fake_mod.fire_quality_audit = boom
-    monkeypatch.setitem(sys.modules, "agent.quality_auditor", fake_mod)
+    monkeypatch.setitem(sys.modules, "quality_auditor_plugin.auditor", fake_mod)
     # must not propagate — a plugin must never break the host
     plugin.on_post_llm_call(assistant_response="A" * 80, session_id="s")
 
@@ -143,9 +143,9 @@ def test_post_llm_call_never_raises(plugin, monkeypatch):
 
 def test_pre_llm_call_returns_context_when_feedback_exists(plugin, monkeypatch):
     import types
-    fake_mod = types.ModuleType("agent.quality_auditor")
+    fake_mod = types.ModuleType("quality_auditor_plugin.auditor")
     fake_mod.get_last_audit_feedback = lambda sid: "[Quality feedback] Issue: X"
-    monkeypatch.setitem(sys.modules, "agent.quality_auditor", fake_mod)
+    monkeypatch.setitem(sys.modules, "quality_auditor_plugin.auditor", fake_mod)
 
     out = plugin.on_pre_llm_call(session_id="sess-1")
     assert out == {"context": "[Quality feedback] Issue: X"}
@@ -153,19 +153,19 @@ def test_pre_llm_call_returns_context_when_feedback_exists(plugin, monkeypatch):
 
 def test_pre_llm_call_returns_none_when_no_feedback(plugin, monkeypatch):
     import types
-    fake_mod = types.ModuleType("agent.quality_auditor")
+    fake_mod = types.ModuleType("quality_auditor_plugin.auditor")
     fake_mod.get_last_audit_feedback = lambda sid: None
-    monkeypatch.setitem(sys.modules, "agent.quality_auditor", fake_mod)
+    monkeypatch.setitem(sys.modules, "quality_auditor_plugin.auditor", fake_mod)
 
     assert plugin.on_pre_llm_call(session_id="sess-1") is None
 
 
 def test_pre_llm_call_requires_session_id(plugin, monkeypatch):
     import types
-    fake_mod = types.ModuleType("agent.quality_auditor")
+    fake_mod = types.ModuleType("quality_auditor_plugin.auditor")
     called = []
     fake_mod.get_last_audit_feedback = lambda sid: called.append(sid)
-    monkeypatch.setitem(sys.modules, "agent.quality_auditor", fake_mod)
+    monkeypatch.setitem(sys.modules, "quality_auditor_plugin.auditor", fake_mod)
 
     assert plugin.on_pre_llm_call(session_id="") is None
     assert called == []  # short-circuited before any file read
@@ -173,13 +173,13 @@ def test_pre_llm_call_requires_session_id(plugin, monkeypatch):
 
 def test_pre_llm_call_never_raises(plugin, monkeypatch):
     import types
-    fake_mod = types.ModuleType("agent.quality_auditor")
+    fake_mod = types.ModuleType("quality_auditor_plugin.auditor")
 
     def boom(sid):
         raise OSError("disk gone")
 
     fake_mod.get_last_audit_feedback = boom
-    monkeypatch.setitem(sys.modules, "agent.quality_auditor", fake_mod)
+    monkeypatch.setitem(sys.modules, "quality_auditor_plugin.auditor", fake_mod)
     assert plugin.on_pre_llm_call(session_id="s") is None
 
 

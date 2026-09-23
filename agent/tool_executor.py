@@ -49,14 +49,12 @@ from agent.tool_dispatch_helpers import (
 )
 from tools.terminal_tool_lifecycle import get_active_env
 from tools.thread_context import propagate_context_to_thread
-from agent.read_think_gate import GATED_TOOL_NAMES
 from tools.tool_result_storage import (
     maybe_persist_tool_result,
     enforce_turn_budget,
     extract_persisted_path,
 )
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
-from agent.self_check import get_self_check
 
 # A tool result this large (raw stdout, file dumps) is the biggest allocation a turn ever drops.
 # The commit only flags it: the string is still referenced by the publish frames here, so the
@@ -1503,25 +1501,58 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
     return True
 
 
-def _run_read_think_gate(agent, assistant_message, parsed_calls) -> Optional[str]:
-    """Invoke the ReadThinkGate pre-dispatch check. Returns the block message when
-    the gate blocks this batch, else ``None``. Crash-safe: any gate failure logs a
-    warning and allows execution."""
-    gate = getattr(agent, "_read_think_gate", None)
-    if gate is None:
-        return None
+def _extract_block_message(result: Any) -> Optional[str]:
+    """Normalize one ``pre_tool_batch`` hook return into a block message (or None).
+
+    Contract:
+      Postconditions: a plain non-blank string blocks with itself; a dict blocks
+        only on action == "block" with a non-blank string message; everything
+        else (None, empty, unrecognized shapes) proceeds.
+    """
+    if isinstance(result, str) and result.strip():
+        return result
+    if isinstance(result, dict) and str(result.get("action") or "").lower() == "block":
+        candidate = result.get("message")
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate
+    return None
+
+
+def _first_batch_block(results: Any) -> Optional[str]:
+    """First resolved block message across ``pre_tool_batch`` results, else None."""
+    for result in results or []:
+        message = _extract_block_message(result)
+        if message is not None:
+            return message
+    return None
+
+
+def _run_pre_tool_batch_hooks(agent: Any, assistant_message: Any, parsed_calls: list) -> Optional[str]:
+    """Emit the ``pre_tool_batch`` hook once per batch; return the resolved block
+    message when any plugin blocks the WHOLE batch, else ``None``.
+
+    Contract:
+      Postconditions: crash-safe — any hook/dispatch failure logs a warning and
+        the batch proceeds (a gate plugin must never take dispatch down).
+    """
+    payload = {
+        "assistant_content": getattr(assistant_message, "content", None) or "",
+        "tool_calls": [{"name": pc.name, "args": pc.args} for pc in parsed_calls],
+        "session_id": getattr(agent, "session_id", None) or "",
+        "task_id": getattr(agent, "current_task_id", None) or "",
+        "turn_id": getattr(agent, "current_turn_id", None) or "",
+        "platform": getattr(agent, "platform", None) or "",
+        "model": getattr(agent, "model", None) or "",
+    }
     try:
-        return gate.check_batch(
-            getattr(assistant_message, "content", None) or "",
-            [pc.name for pc in parsed_calls],
-            tool_args=[pc.args for pc in parsed_calls],
-        )
+        from hermes_cli.lifecycle import invoke_hook
+        return _first_batch_block(invoke_hook("pre_tool_batch", **payload))
     except Exception:
-        logger.warning("ReadThinkGate check_batch failed (tool dispatch wiring)", exc_info=True)
+        logger.warning("pre_tool_batch hook dispatch failed", exc_info=True)
         return None
 
 
-def _append_gate_blocked_results(agent, messages, tool_calls, effective_task_id, block: str) -> None:
+def _append_gate_blocked_results(agent: Any, messages: list, tool_calls: list, effective_task_id: str, block: str) -> None:
     """Emit one gate-blocked result per tool call so the batch stays well-formed."""
     for tool_call in tool_calls:
         _name = getattr(getattr(tool_call, "function", None), "name", "") or "tool"
@@ -1551,9 +1582,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
     parsed_calls = [_parse_tool_call(agent, tc) for tc in tool_calls]
 
-    # ReadThinkGate: pre-dispatch reasoning check (crash-safe; gate misbehaviour
-    # must never block tool execution).
-    _gate_block = _run_read_think_gate(agent, assistant_message, parsed_calls)
+    # pre_tool_batch: agent-level batch gate hook (crash-safe; a misbehaving gate
+    # plugin must never block tool execution).
+    _gate_block = _run_pre_tool_batch_hooks(agent, assistant_message, parsed_calls)
     if _gate_block is not None:
         _append_gate_blocked_results(agent, messages, tool_calls, effective_task_id, _gate_block)
         return
@@ -1834,9 +1865,9 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
     _tool_budget = _budget_for_agent(agent)  # once per turn, not per result
     tool_calls = assistant_message.tool_calls
 
-    # ReadThinkGate: pre-dispatch reasoning check (crash-safe).
+    # pre_tool_batch: agent-level batch gate hook (crash-safe).
     _parsed = [_parse_tool_call(agent, tc) for tc in tool_calls]
-    _gate_block = _run_read_think_gate(agent, assistant_message, _parsed)
+    _gate_block = _run_pre_tool_batch_hooks(agent, assistant_message, _parsed)
     if _gate_block is not None:
         _append_gate_blocked_results(agent, messages, tool_calls, effective_task_id, _gate_block)
         return

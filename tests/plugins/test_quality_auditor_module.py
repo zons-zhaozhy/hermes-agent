@@ -7,7 +7,7 @@ inject_audit_feedback, get_last_audit_feedback, aggregate_daily, fire_quality_au
 Does NOT test _call_auxiliary_llm (requires HTTP backend) — mock it out.
 
 Run:
-    scripts/run_tests.sh tests/agent/test_quality_auditor.py -v
+    scripts/run_tests.sh tests/plugins/test_quality_auditor_module.py -v
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from agent.quality_auditor import (
+from plugins.quality_auditor.auditor import (
     _build_audit_prompt,
     _format_audit_feedback,
     _write_audit_entry,
@@ -135,12 +135,12 @@ class TestInjectAuditFeedback(unittest.TestCase):
     """inject_audit_feedback() message wrapping."""
 
     def test_returns_original_when_no_feedback(self):
-        with patch("agent.quality_auditor.get_last_audit_feedback", return_value=None):
+        with patch("plugins.quality_auditor.auditor.get_last_audit_feedback", return_value=None):
             result = inject_audit_feedback("sess1", "hello")
         self.assertEqual(result, "hello")
 
     def test_prepends_feedback(self):
-        with patch("agent.quality_auditor.get_last_audit_feedback",
+        with patch("plugins.quality_auditor.auditor.get_last_audit_feedback",
                    return_value="[Quality feedback] Score: 4/10"):
             result = inject_audit_feedback("sess1", "hello")
         self.assertIn("[Quality feedback]", result)
@@ -172,7 +172,7 @@ class TestWriteAuditEntry(unittest.TestCase):
 
     def test_writes_valid_jsonl(self):
         audit_file = self._state_dir / "quality_audit.jsonl"
-        with patch("agent.quality_auditor.get_hermes_home",
+        with patch("plugins.quality_auditor.auditor.get_hermes_home",
                    return_value=self._hermes_home):
             _write_audit_entry({"total_score": 7.5, "session_id": "s1"})
         lines = audit_file.read_text().strip().split("\n")
@@ -184,7 +184,7 @@ class TestWriteAuditEntry(unittest.TestCase):
 
     def test_appends_multiple_entries(self):
         audit_file = self._state_dir / "quality_audit.jsonl"
-        with patch("agent.quality_auditor.get_hermes_home",
+        with patch("plugins.quality_auditor.auditor.get_hermes_home",
                    return_value=self._hermes_home):
             _write_audit_entry({"total_score": 5.0})
             _write_audit_entry({"total_score": 8.0})
@@ -277,7 +277,7 @@ class TestAggregateDaily(unittest.TestCase):
     def _patch_home(self):
         """Patch get_hermes_home in the quality_auditor module's namespace."""
         p = patch.object(
-            __import__("agent.quality_auditor", fromlist=["get_hermes_home"]),
+            __import__("plugins.quality_auditor.auditor", fromlist=["get_hermes_home"]),
             "get_hermes_home",
             return_value=Path(self._tmpdir),
         )
@@ -358,14 +358,14 @@ class TestFireQualityAudit(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_disabled_auditor_skipped(self):
-        with patch("agent.quality_auditor._AUDIT_ENABLED", False):
+        with patch("plugins.quality_auditor.auditor._AUDIT_ENABLED", False):
             result = fire_quality_audit("hello world" * 10, "response" * 20)
         self.assertIsNone(result)
 
     def test_fast_timeout_returns_entry(self):
-        with patch("agent.quality_auditor._AUDIT_ENABLED", True), \
-             patch("agent.quality_auditor._build_audit_entry") as mock_build, \
-             patch("agent.quality_auditor._write_audit_entry") as mock_write:
+        with patch("plugins.quality_auditor.auditor._AUDIT_ENABLED", True), \
+             patch("plugins.quality_auditor.auditor._build_audit_entry") as mock_build, \
+             patch("plugins.quality_auditor.auditor._write_audit_entry") as mock_write:
             mock_build.return_value = {"total_score": 7.0, "issues": [], "fatal_issues": []}
             result = fire_quality_audit(
                 "message" * 20, "response" * 20,
@@ -384,8 +384,8 @@ class TestFireQualityAudit(unittest.TestCase):
             time.sleep(100)  # way longer than timeout
             return {"total_score": 7.0}
 
-        with patch("agent.quality_auditor._AUDIT_ENABLED", True), \
-             patch("agent.quality_auditor._build_audit_entry", side_effect=slow_build):
+        with patch("plugins.quality_auditor.auditor._AUDIT_ENABLED", True), \
+             patch("plugins.quality_auditor.auditor._build_audit_entry", side_effect=slow_build):
             result = fire_quality_audit(
                 "message" * 20, "response" * 20,
                 fast_timeout=0.01,
@@ -393,7 +393,7 @@ class TestFireQualityAudit(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_background_mode_returns_none(self):
-        with patch("agent.quality_auditor._AUDIT_ENABLED", True):
+        with patch("plugins.quality_auditor.auditor._AUDIT_ENABLED", True):
             result = fire_quality_audit("message" * 20, "response" * 20)
         self.assertIsNone(result)  # background mode returns None
 

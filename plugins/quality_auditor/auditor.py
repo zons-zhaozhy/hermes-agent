@@ -407,7 +407,7 @@ def inject_audit_feedback(
     Call this in the agent's turn processing, before the message reaches
     the LLM. Example integration point (run_agent.py or cli.py):
 
-        from agent.quality_auditor import inject_audit_feedback
+        from .auditor import inject_audit_feedback
         user_msg = inject_audit_feedback(session_id, user_msg)
 
     Returns the original message unchanged if no feedback is available.

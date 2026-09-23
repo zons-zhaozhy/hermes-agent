@@ -453,7 +453,7 @@ def _judge_investigation(
             return True, "", False
 
         feedback = raw.replace("NEEDS_MORE_WORK", "").strip()
-        logger.info("read-think gate: judge NEEDS_MORE_WORK: %s", feedback[:100])
+        logger.info("read-think gate: judge NEEDS_MORE_WORK: %s", feedback)
         return False, feedback, False
 
     except Exception:
@@ -569,11 +569,11 @@ def _classify_via_llm(user_message: str, history_summary: str = "") -> str | Non
                 _complexity_cache[key] = level
                 logger.info(
                     "read-think gate: LLM classified complexity=%s (raw=%r, model=%s)",
-                    level, raw[:50], model,
+                    level, raw, model,
                 )
                 return level
 
-        logger.warning("read-think gate: LLM returned unparseable result %r → fallback", raw[:100])
+        logger.warning("read-think gate: LLM returned unparseable result %r → fallback", raw)
         return None
 
     except Exception:
@@ -942,7 +942,7 @@ class ReadThinkGate:
                         # 动态加入 _gated_tools，让 tool_executor 分发路径也能拦截
                         self._gated_tools.add("terminal")
                         logger.info(
-                            "read-think gate: terminal command writes file → treated as gated: %s", cmd[:80],
+                            "read-think gate: terminal command writes file → treated as gated: %s", cmd,
                         )
                         break
 
@@ -1101,7 +1101,7 @@ class ReadThinkGate:
                         logger.info(
                             "read-think gate: judge rejected (reads=%d, complexity=%s, history=%d): %s",
                             self._read_only_count, self._active_complexity,
-                            len(self._judge_feedback_history), feedback[:80],
+                            len(self._judge_feedback_history), feedback,
                         )
                         return False
                     else:

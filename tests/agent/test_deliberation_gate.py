@@ -4,7 +4,7 @@ Covers: reasoning-phase gating, investigation tracking, unlock conditions,
 round-based anti-loop, config parsing, tool classification, gated_tools config.
 """
 
-from agent.read_think_gate import (
+from plugins.read_think_gate_host import (
     ReadThinkGate,
     ReadThinkGateConfig,
     GATED_TOOL_NAMES,
@@ -421,42 +421,42 @@ class TestVulnerabilityFixes:
 
     def test_terminal_redirect_blocked(self):
         """terminal with > redirect to file should be treated as gated."""
-        from agent.read_think_gate import _terminal_writes_file
+        from plugins.read_think_gate_host import _terminal_writes_file
         assert _terminal_writes_file("echo x > /tmp/test.py")
 
     def test_terminal_write_command_detected(self):
         """echo 'code' > file.py is detected as file write."""
-        from agent.read_think_gate import _terminal_writes_file
+        from plugins.read_think_gate_host import _terminal_writes_file
         assert _terminal_writes_file("echo 'import os' > /tmp/malicious.py")
 
     def test_terminal_readonly_command_not_flagged(self):
         """ls -la should NOT be detected as file write."""
-        from agent.read_think_gate import _terminal_writes_file
+        from plugins.read_think_gate_host import _terminal_writes_file
         assert not _terminal_writes_file("ls -la /tmp/")
 
     def test_terminal_sed_inplace_detected(self):
         """sed -i is an in-place edit, should be detected."""
-        from agent.read_think_gate import _terminal_writes_file
+        from plugins.read_think_gate_host import _terminal_writes_file
         assert _terminal_writes_file("sed -i 's/old/new/g' config.py")
 
     def test_terminal_devnull_not_flagged(self):
         """> /dev/null is NOT a file write (it's a sink)."""
-        from agent.read_think_gate import _terminal_writes_file
+        from plugins.read_think_gate_host import _terminal_writes_file
         assert not _terminal_writes_file("pip install > /dev/null 2>&1")
 
     def test_terminal_grep_cp_not_flagged(self):
         """grep 'cp ' is NOT a file write (it's a search)."""
-        from agent.read_think_gate import _terminal_writes_file
+        from plugins.read_think_gate_host import _terminal_writes_file
         assert not _terminal_writes_file("grep -rn 'cp ' *.py")
 
     def test_terminal_git_commit_mv_not_flagged(self):
         """git commit -m 'mv old file' is NOT a file write."""
-        from agent.read_think_gate import _terminal_writes_file
+        from plugins.read_think_gate_host import _terminal_writes_file
         assert not _terminal_writes_file("git commit -m 'mv old file'")
 
     def test_terminal_docker_cp_flagged(self):
         """docker cp to absolute path IS a file write."""
-        from agent.read_think_gate import _terminal_writes_file
+        from plugins.read_think_gate_host import _terminal_writes_file
         # docker cp writes to /local — /local starts with / which is a path
         # This should be caught by the redirect/cp logic
         # Note: docker cp is an edge case — if not caught, it's acceptable
@@ -483,17 +483,17 @@ class TestVulnerabilityFixes:
 
     def test_memory_does_not_count_as_investigation(self):
         """memory tool should not increment _read_only_count."""
-        from agent.read_think_gate import READ_ONLY_INVESTIGATION_TOOLS
+        from plugins.read_think_gate_host import READ_ONLY_INVESTIGATION_TOOLS
         assert "memory" not in READ_ONLY_INVESTIGATION_TOOLS
 
     def test_read_file_counts_as_investigation(self):
         """read_file should be in the investigation whitelist."""
-        from agent.read_think_gate import READ_ONLY_INVESTIGATION_TOOLS
+        from plugins.read_think_gate_host import READ_ONLY_INVESTIGATION_TOOLS
         assert "read_file" in READ_ONLY_INVESTIGATION_TOOLS
 
     def test_search_files_counts_as_investigation(self):
         """search_files should be in the investigation whitelist."""
-        from agent.read_think_gate import READ_ONLY_INVESTIGATION_TOOLS
+        from plugins.read_think_gate_host import READ_ONLY_INVESTIGATION_TOOLS
         assert "search_files" in READ_ONLY_INVESTIGATION_TOOLS
 
     def test_read_only_count_not_increased_by_memory(self):
@@ -593,7 +593,7 @@ class TestVulnerabilityFixes:
         # _judge_investigation returns (False, msg, True) for infra failures
         # _try_unlock should increment _judge_fail_count when was_infra_failure=True
         # This is verified by the 3-tuple return type
-        from agent.read_think_gate import _judge_investigation
+        from plugins.read_think_gate_host import _judge_investigation
         import inspect
         sig = inspect.signature(_judge_investigation)
         assert "fail_count" in sig.parameters

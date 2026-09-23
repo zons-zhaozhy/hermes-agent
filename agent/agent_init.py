@@ -33,7 +33,6 @@ from agent.model_metadata import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
-from agent.read_think_gate import ReadThinkGate, ReadThinkGateConfig
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
@@ -521,10 +520,6 @@ _CONTROL_STATE: Dict[str, Any] = {
     "_trim_after_tool_batch": False,  # a >=1 MB tool result was committed; trim once the batch unwinds
     "_tool_guardrails": ToolCallGuardrailController,
     "_tool_guardrail_halt_decision": None,
-    # ReadThinkGate — reasoning-phase gate (fork): scans assistant content for
-    # four-axis evidence and writes ~/.hermes/cache/four_axis_gate.json markers
-    # consumed by the four-axis-guard plugin's secondary line of defense.
-    "_read_think_gate": ReadThinkGate,
     # Interrupts. Hard cancellation is separate from redirect/message state; the Event makes
     # the cause atomic for auxiliary stream pollers.
     "_interrupt_requested": False,
@@ -1221,22 +1216,6 @@ def _apply_display_config(agent, _agent_cfg, platform):
         )
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
-
-    # ReadThinkGate config-driven init — overrides the default instance set via
-    # _CONTROL_STATE, reading the config.yaml `read_think_gate` section (enabled /
-    # max_reasoning_rounds / ...). Cron sessions are exempt: unattended jobs cannot
-    # answer gate prompts, and a blocked gate would starve the pipeline writes.
-    try:
-        _rtg_cfg = ReadThinkGateConfig.from_mapping(
-            _agent_cfg.get("read_think_gate", {})
-        )
-        if getattr(agent, "platform", "") == "cron":
-            import dataclasses as _dc
-            _rtg_cfg = _dc.replace(_rtg_cfg, enabled=False)
-        agent._read_think_gate = ReadThinkGate(_rtg_cfg)
-    except Exception as _dg_err:
-        _ra().logger.warning("Read-think gate config ignored: %s", _dg_err)
-        agent._read_think_gate = ReadThinkGate()
 
 
 def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:

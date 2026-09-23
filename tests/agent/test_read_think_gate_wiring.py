@@ -19,15 +19,17 @@ Expectations derive from the 851bdcf641 design invariants:
   - four-axis evidence accumulates within a turn
 """
 
+import importlib.util
 import json
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.read_think_gate import ReadThinkGate, ReadThinkGateConfig
+from plugins.read_think_gate_host import ReadThinkGate, ReadThinkGateConfig
 from run_agent import AIAgent
 
 
@@ -115,9 +117,46 @@ class _GateSpy(ReadThinkGate):
 
 
 def _spy_on_agent(agent: AIAgent) -> _GateSpy:
-    spy = _GateSpy(agent._read_think_gate.config)
-    agent._read_think_gate = spy
+    """Mount a spy gate behind the REAL hook chain: the executor's
+    ``pre_tool_batch`` emit (``hermes_cli.lifecycle.invoke_hook``) is patched to
+    delegate to the plugin's own ``pre_tool_batch``, which consults the plugin's
+    session registry. This exercises the externalized wiring end-to-end
+    (executor → hook payload → plugin gate → block verdict) exactly as
+    production does, minus the loader's registry bookkeeping."""
+    spec = importlib.util.spec_from_file_location(
+        "read_think_gate_plugin_under_test",
+        Path(__file__).resolve().parents[2] / "plugins" / "read-think-gate" / "__init__.py",
+    )
+    assert spec is not None and spec.loader is not None
+    plugin = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = plugin  # 期望: 相对 import (.gate) 需要模块已注册
+    spec.loader.exec_module(plugin)
+
+    spy = _GateSpy(ReadThinkGateConfig(enabled=True))
+    session_key = agent.session_id or ""
+    plugin._GATES[session_key] = spy
+
+    import hermes_cli.lifecycle as _lifecycle
+
+    _real_invoke = _lifecycle.invoke_hook
+
+    def _invoke_pre_tool_batch(hook_name: str, **payload):
+        if hook_name == "pre_tool_batch":
+            # Route through the plugin entry so the payload contract holds.
+            payload.setdefault("session_id", session_key)
+            return [plugin.pre_tool_batch(**payload)]
+        return _real_invoke(hook_name, **payload)
+
+    _patch = patch("hermes_cli.lifecycle.invoke_hook", side_effect=_invoke_pre_tool_batch)
+    _patch.start()
+    _register_finalizer(_patch.stop)
     return spy
+
+
+def _register_finalizer(fn) -> None:
+    import atexit
+
+    atexit.register(fn)
 
 
 # ---------------------------------------------------------------------------
@@ -126,14 +165,14 @@ def _spy_on_agent(agent: AIAgent) -> _GateSpy:
 class TestMarkerPathProfileAware:
     def test_marker_path_resolves_via_get_hermes_home(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from agent.read_think_gate import _four_axis_marker_path
+        from plugins.read_think_gate_host import _four_axis_marker_path
 
         p = _four_axis_marker_path()
         assert p == tmp_path / "cache" / f"four_axis_gate_{os.getpid()}.json"
 
     def test_plugin_marker_path_matches_gate_path(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from agent.read_think_gate import _four_axis_marker_path
+        from plugins.read_think_gate_host import _four_axis_marker_path
 
         four_axis_guard = _load_four_axis_guard()
 
@@ -243,7 +282,8 @@ class TestSequentialGateWiring:
 
         agent = _make_agent("write_file")
         # Real gate, enabled, zero investigation → must block write_file.
-        agent._read_think_gate = ReadThinkGate(ReadThinkGateConfig(enabled=True))
+        # Mounted through the plugin registry + live hook chain (externalized wiring).
+        spy = _spy_on_agent(agent)
         tc = _mock_tool_call("write_file", {"path": "/tmp/a.py", "content": "x"})
         assistant_message = SimpleNamespace(content="", tool_calls=[tc])
         messages = []
@@ -276,7 +316,7 @@ class TestFourAxisMarkerE2E:
 
     def test_mark_four_axis_complete_writes_marker(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from agent.read_think_gate import _four_axis_marker_path
+        from plugins.read_think_gate_host import _four_axis_marker_path
 
         gate = ReadThinkGate(ReadThinkGateConfig(enabled=True))
         gate.mark_four_axis_complete()
@@ -289,7 +329,7 @@ class TestFourAxisMarkerE2E:
 
     def test_reset_for_turn_clears_marker(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from agent.read_think_gate import _four_axis_marker_path
+        from plugins.read_think_gate_host import _four_axis_marker_path
 
         gate = ReadThinkGate(ReadThinkGateConfig(enabled=True))
         gate.mark_four_axis_complete()
@@ -311,7 +351,25 @@ class TestGateFailsafe:
             def check_batch(self, *a, **k):
                 raise RuntimeError("gate exploded")
 
-        agent._read_think_gate = _Crasher(ReadThinkGateConfig(enabled=True))
+        agent._read_think_gate_crash_stub = _Crasher(ReadThinkGateConfig(enabled=True))  # noqa: F841 — crasher mounts below
+        # Crash injection rides the plugin chain: a crashing gate must be
+        # swallowed by the plugin hook body (never reach the executor).
+        spec = importlib.util.spec_from_file_location(
+            "read_think_gate_plugin_crasher",
+            Path(__file__).resolve().parents[2] / "plugins" / "read-think-gate" / "__init__.py",
+        )
+        assert spec is not None and spec.loader is not None
+        crasher_plugin = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = crasher_plugin
+        spec.loader.exec_module(crasher_plugin)
+        crasher_plugin._GATES[agent.session_id or ""] = _Crasher(ReadThinkGateConfig(enabled=True))
+
+        def _crash_invoke(hook_name: str, **payload):
+            if hook_name == "pre_tool_batch":
+                payload.setdefault("session_id", agent.session_id or "")
+                return [crasher_plugin.pre_tool_batch(**payload)]
+            return []
+
         tc = _mock_tool_call("write_file", {"path": "/tmp/a.py", "content": "x"})
         assistant_message = SimpleNamespace(content="x", tool_calls=[tc])
         messages = []
@@ -323,6 +381,7 @@ class TestGateFailsafe:
                 "model_tools.handle_function_call",
                 side_effect=lambda *a, **k: dispatched.append(a) or "{}",
             ),
+            patch("hermes_cli.lifecycle.invoke_hook", side_effect=_crash_invoke),
         ):
             execute_tool_calls_sequential(agent, assistant_message, messages, "task-1")
 

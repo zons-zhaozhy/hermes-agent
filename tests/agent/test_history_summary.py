@@ -1,6 +1,6 @@
 """_build_history_summary 专项测试 + 历史上下文端到端验证。"""
 
-from agent.read_think_gate import _build_history_summary
+from plugins.read_think_gate_host import _build_history_summary
 
 
 class TestBuildHistorySummary:

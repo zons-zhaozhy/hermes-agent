@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from agent.decision_tree import WorldModel
+from .tree import WorldModel
 
 logger = logging.getLogger(__name__)
 

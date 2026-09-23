@@ -64,7 +64,7 @@ def _load_hooks_from_config():
         return []
 
     try:
-        from agent.post_response_hooks import load_hooks
+        from .framework import load_hooks
         _hooks = load_hooks(hook_configs)
         _hooks_loaded = True
         logger.info("Loaded %d post-response hooks via plugin", len(_hooks))
@@ -103,7 +103,7 @@ def _on_post_llm_call(**kwargs):
     }
 
     try:
-        from agent.post_response_hooks import run_post_response_checks
+        from .framework import run_post_response_checks
         result = run_post_response_checks(hooks, assistant_response, context)
 
         if result is not None and not result.passed:

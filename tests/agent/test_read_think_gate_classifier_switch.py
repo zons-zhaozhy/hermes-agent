@@ -17,7 +17,7 @@ Expectations are derived from the config contract, not the implementation:
 
 from unittest.mock import patch
 
-from agent.read_think_gate import ReadThinkGate, ReadThinkGateConfig
+from plugins.read_think_gate_host import ReadThinkGate, ReadThinkGateConfig
 
 
 def _gate(**config_overrides) -> ReadThinkGate:
@@ -32,9 +32,9 @@ def _gate(**config_overrides) -> ReadThinkGate:
 def test_classifier_off_bypasses_llm():
     """Config says no LLM → _classify_via_llm must never be called."""
     gate = _gate(use_llm_classifier=False)
-    with patch("agent.read_think_gate._classify_via_llm") as llm:
+    with patch("plugins.read_think_gate_host._classify_via_llm") as llm:
         with patch(
-            "agent.read_think_gate._fallback_detect", return_value="complex"
+            "plugins.read_think_gate_host._fallback_detect", return_value="complex"
         ) as fallback:
             gate.reset_for_turn(user_message="重构这个模块")
     llm.assert_not_called()
@@ -46,7 +46,7 @@ def test_classifier_on_uses_llm():
     """Config says LLM → LLM path is used (existing behavior preserved)."""
     gate = _gate(use_llm_classifier=True)
     with patch(
-        "agent.read_think_gate._classify_via_llm", return_value="normal"
+        "plugins.read_think_gate_host._classify_via_llm", return_value="normal"
     ) as llm:
         gate.reset_for_turn(user_message="修个typo")
     llm.assert_called_once()
@@ -56,8 +56,8 @@ def test_classifier_on_uses_llm():
 def test_empty_message_defaults_normal_no_llm():
     """No user message → 'normal' without any classification machinery."""
     gate = _gate(use_llm_classifier=False)
-    with patch("agent.read_think_gate._classify_via_llm") as llm:
-        with patch("agent.read_think_gate._fallback_detect") as fallback:
+    with patch("plugins.read_think_gate_host._classify_via_llm") as llm:
+        with patch("plugins.read_think_gate_host._fallback_detect") as fallback:
             gate.reset_for_turn(user_message="")
     llm.assert_not_called()
     fallback.assert_not_called()
@@ -67,7 +67,7 @@ def test_empty_message_defaults_normal_no_llm():
 def test_adaptive_off_skips_classification():
     """complexity_adaptive=False → no classification regardless of switch."""
     gate = _gate(complexity_adaptive=False, use_llm_classifier=True)
-    with patch("agent.read_think_gate._classify_via_llm") as llm:
+    with patch("plugins.read_think_gate_host._classify_via_llm") as llm:
         gate.reset_for_turn(user_message="重构整个系统")
     llm.assert_not_called()
     assert gate._active_complexity == "normal"

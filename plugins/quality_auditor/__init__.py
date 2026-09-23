@@ -122,7 +122,7 @@ def on_post_llm_call(**kwargs):
     tool_call_count, tool_names = _extract_tool_stats(conversation_history)
 
     try:
-        from agent.quality_auditor import fire_quality_audit
+        from .auditor import fire_quality_audit
     except Exception:
         logger.exception("quality-auditor: module import failed")
         return
@@ -156,7 +156,7 @@ def on_pre_llm_call(**kwargs):
     if not session_id:
         return None
     try:
-        from agent.quality_auditor import get_last_audit_feedback
+        from .auditor import get_last_audit_feedback
         feedback = get_last_audit_feedback(session_id)
     except Exception:
         logger.exception("quality-auditor: feedback read failed")

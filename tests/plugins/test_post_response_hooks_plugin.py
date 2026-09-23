@@ -1,7 +1,7 @@
 """Tests for the post_response_hooks framework and plugin integration.
 
 Regression (Aug 2026): ``plugins/post_response_hooks`` imported
-``agent.post_response_hooks`` which never existed in the repo (git history:
+``plugins/post_response_hooks/framework.py`` which never existed in the repo (git history:
 the 2026-08-14 plugin migration commit ba0b26cca4 moved plugins/ but not the
 framework file that lived in the old ~/.hermes/hermes-agent checkout). Every
 session logged ``No module named 'agent.post_response_hooks'`` and the three
@@ -33,7 +33,7 @@ class TestHookResultContract:
 
     def test_hookresult_attributes(self):
         sys.path.insert(0, str(REPO_ROOT))
-        from agent.post_response_hooks import HookResult
+        from plugins.post_response_hooks.framework import HookResult
 
         ok = HookResult(passed=True)
         assert ok.passed is True
@@ -54,7 +54,7 @@ class TestFrameworkLoader:
     @pytest.fixture
     def framework(self):
         sys.path.insert(0, str(REPO_ROOT))
-        import agent.post_response_hooks as fw
+        import plugins.post_response_hooks.framework as fw
         return fw
 
     def test_load_hooks_real_scripts(self, framework):
@@ -93,7 +93,7 @@ class TestFrameworkLoader:
 
     def test_run_checks_nudge_wins_over_pass(self):
         sys.path.insert(0, str(REPO_ROOT))
-        import agent.post_response_hooks as fw
+        import plugins.post_response_hooks.framework as fw
 
         class _Pass:
             @property
@@ -119,7 +119,7 @@ class TestFrameworkLoader:
 
     def test_run_checks_exception_isolated(self):
         sys.path.insert(0, str(REPO_ROOT))
-        import agent.post_response_hooks as fw
+        import plugins.post_response_hooks.framework as fw
 
         class _Boom:
             @property

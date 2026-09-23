@@ -17,7 +17,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from agent.decision_tree import (
+from .tree import (
     WorldModel,
     _optional_float,
 )

@@ -115,6 +115,14 @@ VALID_HOOKS: Set[str] = {
     # pre_verify: once per turn when the agent edited code and is about to verify/finish. Return
     # {"action": "continue", "message"} (or Claude-Code Stop {"decision": "block", "reason"}) to keep
     # going; anything else finishes. Bounded by agent.max_verify_nudges.
+    # pre_tool_batch: once per tool batch, BEFORE any call in the batch dispatches. Fires with the
+    # full batch shape an agent-level gate needs: assistant_content (the producing assistant
+    # message's text), tool_calls=[{name, args}, ...] (original order), session_id, task_id,
+    # turn_id, platform, model. Return a string (or {"action": "block", "message": str}) to block
+    # the WHOLE batch with that message (each call gets one synthetic result row so replay role
+    # alternation stays well-formed); None/anything else proceeds. Observer-mutator contract:
+    # never modifies args; fail-open in the emitter (a gate crash must never block dispatch).
+    "pre_tool_batch",
     "pre_verify", "pre_api_request", "post_api_request", "api_request_error",
     # pre/post_auxiliary_call: once per physical provider attempt of an auxiliary LLM call
     # (agent/auxiliary_hooks.py — titling, compression, MoA, vision, approval, ...). Same payload

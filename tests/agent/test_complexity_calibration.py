@@ -10,7 +10,7 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from agent.read_think_gate import (
+from plugins.read_think_gate_host import (
     detect_complexity,
     _classify_via_llm,
     _fallback_detect,
@@ -192,12 +192,12 @@ class TestDetectComplexityDegradation:
 
     def test_llm_available_uses_llm_result(self):
         """LLM 可用时使用 LLM 结果。"""
-        with patch("agent.read_think_gate._classify_via_llm", return_value="complex"):
+        with patch("plugins.read_think_gate_host._classify_via_llm", return_value="complex"):
             assert detect_complexity("修复一个bug") == "complex"
 
     def test_llm_unavailable_falls_back_to_keywords(self):
         """LLM 不可用时降级到关键词匹配。"""
-        with patch("agent.read_think_gate._classify_via_llm", return_value=None):
+        with patch("plugins.read_think_gate_host._classify_via_llm", return_value=None):
             assert detect_complexity("重构系统") == "complex"
             assert detect_complexity("修typo") == "simple"
             assert detect_complexity("修复bug") == "normal"

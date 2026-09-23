@@ -12,7 +12,7 @@ Key concepts:
 - Three anti-self-deception checks: FOLLOW_THROUGH, PERF_GAP, SELF_CHECK
 
 Usage (standalone, no Hermes dependencies):
-    from agent.decision_tree import WorldModel
+    from plugins.decision_tree.tree import WorldModel
 
     wm = WorldModel(task_name="fix-login-bug")
     wm.init_tree("Fix the login timeout issue on mobile")
