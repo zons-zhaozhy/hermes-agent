@@ -1,6 +1,10 @@
 # 上游同步防冲突账本（SSOT）
 
-最后核验: 2026-09-24 · main 站上 upstream/main e34bc10874, 落后 0
+最后核验: 2026-09-24 · main 站上 upstream/main f799fd8578, 落后 0
+
+> 注意: `git rev-list --count main..upstream/main` 在官方导入完整历史后不再可信
+> (仓库现有 11 个根提交, upstream 可达 ~39.9k vs fork 可达 ~206)。真实落后量用
+> `git log --format='%ci' <merge-base>..upstream/main | awk '$1>="日期"'` 按日期计数。
 
 ## 一、本地独有面（= 唯一可能冲突的地方, 已压到最小）
 
