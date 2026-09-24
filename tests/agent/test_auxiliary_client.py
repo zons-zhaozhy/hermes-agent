@@ -1727,7 +1727,10 @@ class TestStaleFallbackCandidateSkip:
         assert result.choices[0].message.content == "openrouter-serves"
         # The chain was walked a second time after the stale candidate was quarantined.
         assert mock_fb.call_count == 2
-        assert mock_mark.call_count == 1
+        # 期望: 两次隔离——主端点超时先被短TTL隔离(慢端点不重打全额超时预算),
+        # stale 凭据检疫后再隔离一次; 末次隔离指向 stale 的 anthropic。
+        assert mock_mark.call_count == 2
+        assert mock_mark.call_args_list[0].kwargs["reason"] == "request timed out (transient slow endpoint)"
         assert mock_mark.call_args.args[0] == "anthropic"
         assert mock_mark.call_args.kwargs["base_url"] == "https://api.anthropic.com"
         assert mock_mark.call_args.kwargs["reason"] == "stale fallback credential"
