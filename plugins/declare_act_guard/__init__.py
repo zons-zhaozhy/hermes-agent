@@ -106,7 +106,6 @@ def _judge_violation(text: str) -> Optional[bool]:
         task="declare_act_guard",
         system=system,
         text=text[:4000],
-        timeout=20.0,
         true_key="violation",
     )
 

@@ -46,7 +46,6 @@ _NAMESPACE = "completion_boundary_audit"
 _MIN_LENGTH = 80
 _MAX_REMINDERS = 3
 _MAX_JUDGE_CALLS = 30
-_JUDGE_TIMEOUT = 8.0
 
 _JUDGE_SYSTEM = (
     "你是交付审查哨兵。判断下面这条 AI 最终回复是否同时满足："
@@ -104,7 +103,6 @@ def needs_boundary_audit(text: str) -> Optional[bool]:
         system=_JUDGE_SYSTEM,
         text=text,
         true_key="needs_audit",
-        timeout=_JUDGE_TIMEOUT,
     )
 
 

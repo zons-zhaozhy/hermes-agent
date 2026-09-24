@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 
 _NAMESPACE = "reply_certainty_checker"
 _MAX_JUDGE_CALLS = 30
-_JUDGE_TIMEOUT = 8.0
 
 # —— 回复侧合并判定（certainty + boundary 共用一次 LLM 调用）——
 # 两插件同为 transform_llm_output、同一回复文本，合并成一次 multi judge，
@@ -48,7 +47,7 @@ REPLY_SIDE_KEYS = ["uncertain", "needs_audit"]
 _REPLY_SIDE_CACHE: Dict[str, Dict[str, Optional[bool]]] = {}
 
 
-def judge_reply_side(text: str, timeout: float = _JUDGE_TIMEOUT) -> Dict[str, Optional[bool]]:
+def judge_reply_side(text: str) -> Dict[str, Optional[bool]]:
     """一次调用同时判 uncertain/needs_audit 两维度；异常 → 全 None。
 
     同一回复文本进程内只发起一次真实调用（缓存命中直接返回），供
@@ -71,7 +70,6 @@ def judge_reply_side(text: str, timeout: float = _JUDGE_TIMEOUT) -> Dict[str, Op
         system=REPLY_SIDE_SYSTEM,
         text=text[:4000],
         keys=REPLY_SIDE_KEYS,
-        timeout=timeout,
     )
     _REPLY_SIDE_CACHE[h] = result
     return result

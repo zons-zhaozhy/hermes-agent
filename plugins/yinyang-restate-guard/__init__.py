@@ -56,7 +56,7 @@ USER_SIDE_KEYS = ["challenge", "decision"]
 _USER_SIDE_CACHE: Dict[str, Dict[str, Optional[bool]]] = {}
 
 
-def judge_user_side(message: str, timeout: float = 8.0) -> Dict[str, Optional[bool]]:
+def judge_user_side(message: str) -> Dict[str, Optional[bool]]:
     """一次调用同时判定 challenge/decision 两维度；异常 → 全 None。
 
     同一消息进程内只发起一次真实调用（缓存命中直接返回），供
@@ -75,7 +75,6 @@ def judge_user_side(message: str, timeout: float = 8.0) -> Dict[str, Optional[bo
         system=USER_SIDE_SYSTEM,
         text=message,
         keys=USER_SIDE_KEYS,
-        timeout=timeout,
     )
     _USER_SIDE_CACHE[h] = result
     return result
@@ -121,7 +120,6 @@ def is_challenge(message: str) -> Optional[bool]:
         system=_JUDGE_SYSTEM,
         text=message,
         true_key="challenge",
-        timeout=8.0,
     )
 
 

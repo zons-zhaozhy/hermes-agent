@@ -121,8 +121,8 @@ from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_lengt
 from hermes_cli.config import get_hermes_home
 from hermes_cli.config_providers import _canonical_api_mode
 from agent.auxiliary_health import (
-    _custom_health_base_url, _unhealthy_cache_key, fallback_candidate_quarantine_ttl,
-    fallback_candidate_unavailable_reason,
+    _TRANSIENT_CANDIDATE_QUARANTINE_SECONDS, _custom_health_base_url, _unhealthy_cache_key,
+    fallback_candidate_quarantine_ttl, fallback_candidate_unavailable_reason,
 )
 from agent.auxiliary_unavailable import (
     AuxiliaryClientUnavailable, clear_nous_credential_failure, missing_provider_credentials_message,
@@ -7639,6 +7639,17 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
                        "for slow or reasoning models) on %s, trying fallback",
                        task or "call", tag, route.base_info or resolved_provider, route.timeout,
                        task or "call", resolved_provider)
+        # A timed-out endpoint is transiently slow, not dead: quarantine it briefly (same TTL
+        # class as a per-minute 429) so the next aux calls in this window skip the doomed
+        # full-budget wait instead of re-paying it every call.
+        _mark_provider_unhealthy(
+            _recoverable_pool_provider(resolved_provider, route.client, main_runtime=route.main_runtime)
+            or resolved_provider,
+            ttl=_TRANSIENT_CANDIDATE_QUARANTINE_SECONDS,
+            base_url=route.base_info,
+            reason="request timed out (transient slow endpoint)",
+            level=logging.INFO,
+        )
     else:
         logger.info("Auxiliary %s%s: %s on %s (%s), trying fallback",
                     task or "call", tag, reason, resolved_provider, first_err)
