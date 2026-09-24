@@ -15,7 +15,7 @@ pre_llm_call 通道(agent/turn_context.py _collect_pre_llm_call_context,
 Contract:
   Preconditions: plugin system 提供 pre_llm_call 钩子。
   Postconditions: 存在规则文件且可读时,返回 {"context": "<digest>"};
-                  否则返回 {} (不注入)。
+                  否则返回 {} (不注入),并在该 cwd 首次缺文件时响亮告警一次。
   Invariants: 注入文本 <= _MAX_DIGEST_CHARS;永不抛异常阻断主循环。
 """
 
@@ -29,7 +29,9 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 _RULES_FILENAME = ".hermes-rules.md"
-_MAX_DIGEST_CHARS = 1200
+# 注入体量硬上限:容纳全部常驻规则节(实测全文 4521 字符),超限即截断
+# 会静默丢弃尾部节——上限须 >= 规则文件实际体量,扩容前先量全文长度。
+_MAX_DIGEST_CHARS = 5000
 # 周期性重注入间隔:注入会随用户消息持久化进历史,每轮都注=历史里堆积
 # 大量重复副本(本身也是一种污染)。科学节奏:首注 + 版本变更即注 +
 # 每 N 轮补一注对抗衰减。N 取 10:足够稀疏不堆积,足够密集不衰减。
@@ -47,6 +49,10 @@ _PREFIX_TEMPLATE = (
 
 # 会话态:session_id → {"version": str, "calls": int}
 _session_state: Dict[str, Dict[str, Any]] = {}
+
+# 缺失告警去重(进程级):规则源丢失曾静默整整一天无人察觉——按 cwd 各喊一次,
+# 既响亮又不刷屏。无规则文件的普通仓库会各喊一条,属预期代价。
+_WARNED_MISSING_CWD: set[str] = set()
 
 
 def _find_rules_file() -> Optional[Path]:
@@ -90,6 +96,15 @@ def _on_pre_llm_call(**kwargs) -> Dict[str, Any]:
     """重读规则文件,按「首注+版本变更+周期补注」节奏注入权威版摘要。"""
     rules_path = _find_rules_file()
     if rules_path is None:
+        cwd = str(Path.cwd())
+        if cwd not in _WARNED_MISSING_CWD:
+            _WARNED_MISSING_CWD.add(cwd)
+            logger.warning(
+                "rule-reinjection: cwd 与 git root 均无 %s (cwd=%s)——常驻规则不再注入,"
+                "长会话纪律失去重注入保护;若本机应有规则源,请确认文件在位。",
+                _RULES_FILENAME,
+                cwd,
+            )
         return {}
     try:
         text = rules_path.read_text(encoding="utf-8")
