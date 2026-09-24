@@ -6,6 +6,24 @@
 > (仓库现有 11 个根提交, upstream 可达 ~39.9k vs fork 可达 ~206)。真实落后量用
 > `git log --format='%ci' <merge-base>..upstream/main | awk '$1>="日期"'` 按日期计数。
 
+## 〇、macOS 本机全量测试的既有失败底账（0924 实测, 勿再当新缺陷排查）
+
+本机全量 `scripts/run_tests.sh` 有约 27 文件持续失败, 已定性为 macOS 环境限制+上游测试
+缺标记, 非代码缺陷、非同步引入。判据: 同批文件在 premerge 树(merge 前代码)同构失败;
+f799fd8578 在官方 Linux CI "Python tests / Run tests" = success。
+
+- Linux 语义断言裸跑 macOS（上游缺 linux_only 标记, 违反 AGENTS.md「用标记禁裸 skipif」）:
+  test_scratch_dir(setgid 位, chmod 504≠1528)/test_voice_mode(PulseAudio socket)/
+  test_cross_vm_fs_wal_refusal(virtiofs/9p)/test_bot_desktop_resources(runtime.py:450
+  内存读取被 is_supported_host() 仅 Linux 门控)/test_cua_no_overlay(CuaDriver.app)
+- 本机缺二进制/凭据类: test_wake_word(需 pip install ai-edge-litert)/test_holographic/
+  test_openrouter/image_gen 等
+- 时序抖动类(满载 20 worker 下偶发, 单跑绿): test_slash_worker_mcp_discovery(subprocess
+  +MCP 发现窗口)
+- 收集超时类: test_run_agent.py 等 3 大文件, 单跑 --collect-only 4.62s 正常, 系 runner
+  并行限时形态
+- 处置: 不修(修 macOS 语义=打乱上游); 上游侧理想修法=补 linux_only 标记, 本地不代改
+
 ## 一、本地独有面（= 唯一可能冲突的地方, 已压到最小）
 
 | 文件 | 差异 | 冲突风险 | 处置 |
