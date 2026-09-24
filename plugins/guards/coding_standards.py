@@ -218,6 +218,10 @@ _SECRET_NAME_KEYWORDS = frozenset({
     "jwt_secret", "db_password", "admin_secret",
 })
 
+# 环境变量名引用形态：全大写 ASCII 字母开头 + 大写字母/数字/下划线（≥2 字符）。
+# 用于区分「password = "IC_DB_PASSWORD"（env 名引用）」与「password = "真密钥"」。
+_ENV_NAME_RE = __import__("re").compile(r"[A-Z][A-Z0-9_]+")
+
 
 def _iter_name_value_pairs(tree: ast.AST):
     """产出 (name_lower, value_node) 对 — 覆盖所有硬编码值出现形态。
@@ -262,6 +266,11 @@ def _check_hardcoded_secret(tree: ast.AST, lines: List[str], skip_tests: bool = 
         if isinstance(value, ast.Constant) and isinstance(value.value, str):
             val = value.value
             if val and not val.startswith("${"):
+                # 环境变量名引用形态（如 "IC_DB_PASSWORD"）不是密钥值——
+                # 全大写下划线 ASCII 标识符是 env 名的通用约定，
+                # 真密钥不会取这种形态（无混合大小写/数字盐/符号）
+                if _ENV_NAME_RE.fullmatch(val):
+                    continue
                 violations.append(Violation(
                     rule_id="R007", line=node.lineno, col=node.col_offset,
                     severity="error",
