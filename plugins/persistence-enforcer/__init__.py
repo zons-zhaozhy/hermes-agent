@@ -18,12 +18,30 @@ Layer 4 (transform_llm_output): LLM 输出含结构化分析 + 未持久化 → 
 """
 
 import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 # ── 阈值 ──────────────────────────────────────────────────────
+# 可经 plugins.entries.persistence-enforcer.settings.{warn,block}_threshold
+# 覆盖（register 时读取）；非法值（非 int/<1）回退默认并响亮告警。
 WARN_THRESHOLD = 5     # 提醒阈值
 BLOCK_THRESHOLD = 10   # 硬拦截阈值
+
+
+def _coerce_threshold(raw: object, default: int, name: str) -> int:
+    """Contract: Postconditions: 返回 >=1 的 int；非法值返回 default 并
+    logger.warning（不静默兜底成 0/负数导致门永不触发或永拦）。"""
+    try:
+        value = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        if raw is not None:
+            logger.warning("persistence-enforcer: %s=%r 非法，回退默认 %d", name, raw, default)
+        return default
+    if value < 1:
+        logger.warning("persistence-enforcer: %s=%d <1，回退默认 %d", name, value, default)
+        return default
+    return value
 
 # write_file 是可持久化工具，但在无 TODO 时会被拦截
 # PERSIST_TRACK 用于 post_tool_call 追踪——包含 write_file
@@ -277,7 +295,13 @@ def _on_transform_llm_output(**kwargs) -> str:
 
 # ── 注册 ──────────────────────────────────────────────────────
 
-def register(ctx):
+def register(ctx: Any) -> None:
+    # 阈值可配置化：plugins.entries.persistence-enforcer.settings.{warn,block}_threshold
+    global WARN_THRESHOLD, BLOCK_THRESHOLD
+    BLOCK_THRESHOLD = _coerce_threshold(
+        ctx.get_config("block_threshold"), BLOCK_THRESHOLD, "block_threshold")
+    WARN_THRESHOLD = _coerce_threshold(
+        ctx.get_config("warn_threshold"), WARN_THRESHOLD, "warn_threshold")
     ctx.register_hook("post_tool_call", _on_post_tool_call)
     ctx.register_hook("pre_llm_call", _on_pre_llm_call)
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
