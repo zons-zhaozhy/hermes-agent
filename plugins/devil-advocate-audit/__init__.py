@@ -37,9 +37,17 @@ from plugins._shared_state import get_session_state
 from importlib import import_module as _import_module
 
 
-def _judge_user_side(message: str):
+_YINYANG_LOOKUP_FAILED = False
+
+
+def _judge_user_side(message: str) -> Optional[Dict[str, Optional[bool]]]:
     # 运行时插件模块名 = hermes_plugins.<slug>（连字符转下划线，
     # 见 hermes_cli/plugins.py _directory_module_name）；依次尝试两个命名空间。
+    # 查询失败缓存到进程生命期：yinyang 未启用时 import 必然失败且不会中途启用，
+    # 每条消息重试两次 import 只产噪声（0924 实测单日 92 条重复 WARNING）。
+    global _YINYANG_LOOKUP_FAILED
+    if _YINYANG_LOOKUP_FAILED:
+        return None
     for modname in ("hermes_plugins.yinyang_restate_guard",
                     "plugins.yinyang_restate_guard"):
         try:
@@ -47,6 +55,7 @@ def _judge_user_side(message: str):
             return mod.judge_user_side(message)
         except Exception as e:
             logger.warning("user-side merge via %s unavailable: %s", modname, e)
+    _YINYANG_LOOKUP_FAILED = True
     return None
 
 logger = logging.getLogger(__name__)
@@ -54,7 +63,7 @@ logger = logging.getLogger(__name__)
 _NAMESPACE = "devil_advocate_audit"
 
 _MAX_JUDGE_CALLS = 30
-_JUDGE_TIMEOUT = 8.0  # 慢调用截断：fail-open 漏一次提醒 << 用户等 13s
+# judge 预算交由 auxiliary.<task>.timeout 统一治理（config.yaml），插件不再自带秒数。
 
 _JUDGE_SYSTEM = (
     "你是决策审查哨兵。判断下面这条会话消息是否构成'重大方案定稿或决策承诺'——"
@@ -133,7 +142,6 @@ def _is_major_decision(text: str) -> Optional[bool]:
         task="devil_advocate_audit",
         system=_JUDGE_SYSTEM,
         text=text,
-        timeout=_JUDGE_TIMEOUT,
     )
 
 
@@ -171,7 +179,6 @@ def _delegate_is_review(goals_text: str) -> bool:
         task="devil_advocate_delegate",
         system=_DELEGATE_JUDGE_SYSTEM,
         text=goals_text,
-        timeout=_JUDGE_TIMEOUT,
         true_key="review",
     ) is True
 
@@ -259,7 +266,6 @@ def _user_waived(text: str) -> bool:
         task="devil_advocate_waive",
         system=_WAIVE_JUDGE_SYSTEM,
         text=text,
-        timeout=_JUDGE_TIMEOUT,
         true_key="waive",
     ) is True
 
