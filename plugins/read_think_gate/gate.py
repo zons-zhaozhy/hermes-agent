@@ -788,9 +788,10 @@ class ReadThinkGate:
         """
         if not content:
             return
-        # 四轴关键词通常在结论部分。对超长文本只扫描尾部 8KB，
-        # 避免超大 content 做全文扫描的 CPU 开销。
-        scan_text = content if len(content) <= 8192 else content[-8192:]
+        # 全文扫描：四轴证据可能出现在正文任何位置（此前 8KB 尾窗截断会把
+        # 前段写好的四轴证据顶出窗口造成误拦——子串匹配 O(n) 无回溯，
+        # 30 关键词 × 100KB 亚毫秒级，无 CPU 顾虑）。
+        scan_text = content
         for axis, keywords in _FOUR_AXIS_KEYWORDS.items():
             if axis in self._four_axis_found:
                 continue
