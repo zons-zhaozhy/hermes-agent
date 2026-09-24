@@ -10,8 +10,10 @@ Behavior contract is unchanged:
 * four-axis evidence accumulates within a turn and spills to
   ``~/.hermes/cache/four_axis_gate.json`` for the guards plugin's second line;
 * cron platforms are exempt (unattended jobs cannot answer gate prompts);
-* a gate crash never blocks dispatch (the emitter is fail-open; the plugin
-  additionally guards its own hook body).
+* a crashing gate fails CLOSED at the dispatcher (policy hooks fail closed:
+  the crash surfaces as a named block directive in the tool result, never a
+  silent allow); the emitter itself is still crash-safe — a dispatch failure
+  logs a warning, it cannot take the executor down.
 
 The gate instance is per-session (``_GATES`` registry keyed by session_id,
 dropped on session end/reset). Config section: ``read_think_gate`` in
@@ -132,22 +134,22 @@ def pre_tool_batch(
     """Batch-level gate check; return ``{"action": "block", "message": ...}`` or None.
 
     Contract:
-      Postconditions: never raises (crash → allow); returns the block payload
-        only when the gate blocks this WHOLE batch.
+      Postconditions: a crashing gate RAISES — the dispatcher converts the
+        exception into a fail-closed, named block directive (policy hooks
+        fail closed; see ``hermes_cli.plugins_dispatch``), so a broken guard
+        is visible in the tool result instead of silently allowing writes.
+        Only the session-registry lookup itself is guarded (no gate for a
+        batch is a legitimate "no decision" state, distinct from a crash).
     """
-    try:
-        gate = _current_gate(session_id, platform)
-        if gate is None:
-            return None
-        names = [str(tc.get("name") or "") for tc in (tool_calls or []) if isinstance(tc, dict)]
-        args = [tc.get("args") for tc in (tool_calls or []) if isinstance(tc, dict)]
-        block = gate.check_batch(assistant_content or "", names, tool_args=args)
-        if block is None:
-            return None
-        return {"action": "block", "message": block}
-    except Exception:
-        logger.warning("read-think-gate: check_batch failed", exc_info=True)
+    gate = _current_gate(session_id, platform)
+    if gate is None:
         return None
+    names = [str(tc.get("name") or "") for tc in (tool_calls or []) if isinstance(tc, dict)]
+    args = [tc.get("args") for tc in (tool_calls or []) if isinstance(tc, dict)]
+    block = gate.check_batch(assistant_content or "", names, tool_args=args)
+    if block is None:
+        return None
+    return {"action": "block", "message": block}
 
 
 def register(ctx) -> None:

@@ -11,8 +11,9 @@
 | 文件 | 差异 | 冲突风险 | 处置 |
 |---|---|---|---|
 | plugins/** + tests/plugins/** | 113 文件纯新增 | 零（官方不存在的命名空间, 官方永不改） | 长期保留 |
-| agent/tool_executor.py | 78 行: _run_pre_tool_batch_hooks/_first_batch_block/_extract_block_message + 两调用点 | 中（官方改 dispatch 逻辑时撞） | 见收窄路线 |
-| hermes_cli/plugins.py | 8 行: VALID_HOOKS + pre_tool_batch | 低（hook 名单追加式） | 等 upstream 化 |
+| agent/tool_executor.py | 78 行: _run_pre_tool_batch_hooks/_first_batch_block/_extract_block_message + 两调用点; 发射器契约已改为"callback 崩溃/超时 fail-closed(见 plugins_dispatch), 仅 dispatch 传输层 fail-open" | 中（官方改 dispatch 逻辑时撞） | 见收窄路线 |
+| hermes_cli/plugins.py | VALID_HOOKS + pre_tool_batch 注释更新为 policy/fail-closed 契约 | 低（hook 名单追加式） | 等 upstream 化 |
+| hermes_cli/plugins_dispatch.py | pre_tool_batch 加入 _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS + _hook_timeout_block_message 泛化 | 低（分类集追加式） | 与 pre_tool_call 同机制 |
 | agent/turn_facade_lease.py | 4 行: 等待上限 1800s→300s | 低 | 上游改同参数时让位 |
 | tests/agent/test_read_think_gate_*.py | 2 文件纯新增 | 零 | 长期保留 |
 | apps/desktop 2 测试 | locale/spy 修正（中文环境特有） | 零 | 值得提 upstream PR |

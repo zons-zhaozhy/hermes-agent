@@ -1532,8 +1532,10 @@ def _run_pre_tool_batch_hooks(agent: Any, assistant_message: Any, parsed_calls: 
     message when any plugin blocks the WHOLE batch, else ``None``.
 
     Contract:
-      Postconditions: crash-safe — any hook/dispatch failure logs a warning and
-        the batch proceeds (a gate plugin must never take dispatch down).
+      Postconditions: crash-safe — a dispatch failure (import/transport) logs a
+        warning and the batch proceeds (a gate plugin must never take dispatch
+        down). Callback crashes/timeouts are handled fail-closed by the
+        dispatcher (named block directive) before this seam is reached.
     """
     payload = {
         "assistant_content": getattr(assistant_message, "content", None) or "",

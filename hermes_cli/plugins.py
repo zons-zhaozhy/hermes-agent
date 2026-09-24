@@ -118,7 +118,8 @@ VALID_HOOKS: Set[str] = {
     # turn_id, platform, model. Return a string (or {"action": "block", "message": str}) to block
     # the WHOLE batch with that message (each call gets one synthetic result row so replay role
     # alternation stays well-formed); None/anything else proceeds. Observer-mutator contract:
-    # never modifies args; fail-open in the emitter (a gate crash must never block dispatch).
+    # never modifies args. POLICY hook: fails closed — a callback that raises or times out gets a
+    # named block directive (see plugins_dispatch), so a broken gate is loud, never a silent allow.
     "pre_tool_batch",
     # pre_verify: once per turn when the agent edited code and is about to verify/finish. Return
     # {"action": "continue", "message"} (or Claude-Code Stop {"decision": "block", "reason"}) to keep

@@ -339,10 +339,11 @@ class TestFourAxisMarkerE2E:
 
 
 # ---------------------------------------------------------------------------
-# Failsafe invariant (851bdcf641): gate crash never blocks execution
+# Fail-closed invariant (2026-09-24): a crashing gate must surface as a
+# NAMED block in the tool result — never a silent allow
 # ---------------------------------------------------------------------------
 class TestGateFailsafe:
-    def test_crashing_gate_does_not_block_sequential(self, tmp_path):
+    def test_crashing_gate_does_not_corrupt_execution(self, tmp_path):
         from agent.tool_executor import execute_tool_calls_sequential
 
         agent = _make_agent("write_file")
@@ -351,9 +352,9 @@ class TestGateFailsafe:
             def check_batch(self, *a, **k):
                 raise RuntimeError("gate exploded")
 
-        agent._read_think_gate_crash_stub = _Crasher(ReadThinkGateConfig(enabled=True))  # noqa: F841 — crasher mounts below
-        # Crash injection rides the plugin chain: a crashing gate must be
-        # swallowed by the plugin hook body (never reach the executor).
+        # Crash injection rides the real dispatch chain: the plugin hook body
+        # propagates the crash; the DISPATCHER converts it into a fail-closed,
+        # named block directive (policy hook), which reaches the tool result.
         spec = importlib.util.spec_from_file_location(
             "read_think_gate_plugin_crasher",
             Path(__file__).resolve().parents[2] / "plugins" / "read_think_gate" / "__init__.py",
@@ -363,12 +364,6 @@ class TestGateFailsafe:
         sys.modules[spec.name] = crasher_plugin
         spec.loader.exec_module(crasher_plugin)
         crasher_plugin._GATES[agent.session_id or ""] = _Crasher(ReadThinkGateConfig(enabled=True))
-
-        def _crash_invoke(hook_name: str, **payload):
-            if hook_name == "pre_tool_batch":
-                payload.setdefault("session_id", agent.session_id or "")
-                return [crasher_plugin.pre_tool_batch(**payload)]
-            return []
 
         tc = _mock_tool_call("write_file", {"path": "/tmp/a.py", "content": "x"})
         assistant_message = SimpleNamespace(content="x", tool_calls=[tc])
@@ -381,8 +376,36 @@ class TestGateFailsafe:
                 "model_tools.handle_function_call",
                 side_effect=lambda *a, **k: dispatched.append(a) or "{}",
             ),
-            patch("hermes_cli.lifecycle.invoke_hook", side_effect=_crash_invoke),
         ):
-            execute_tool_calls_sequential(agent, assistant_message, messages, "task-1")
+            # Real hook chain: plugin callback raises -> dispatcher's
+            # fail-closed branch turns it into {"action": "block", ...}.
+            from hermes_cli import plugins as _plugins_mod
 
-        assert dispatched, "gate crash must not block execution (failsafe invariant)"
+            real_invoke = _plugins_mod.invoke_hook
+
+            def _crash_invoke(hook_name: str, **payload):
+                if hook_name == "pre_tool_batch":
+                    payload.setdefault("session_id", agent.session_id or "")
+                    return real_invoke(hook_name, **payload)
+                return []
+
+            with patch("hermes_cli.lifecycle.invoke_hook", side_effect=_crash_invoke):
+                # Register the crashing callback on the REAL manager so the
+                # dispatcher's fail-closed branch executes.
+                mgr = _plugins_mod.get_plugin_manager()
+                mgr._hooks.setdefault("pre_tool_batch", []).append(crasher_plugin.pre_tool_batch)
+                try:
+                    execute_tool_calls_sequential(agent, assistant_message, messages, "task-1")
+                finally:
+                    hooks = mgr._hooks.get("pre_tool_batch", [])
+                    if crasher_plugin.pre_tool_batch in hooks:
+                        hooks.remove(crasher_plugin.pre_tool_batch)
+
+        assert not dispatched, "a crashing gate must fail CLOSED: no silent dispatch"
+        assert messages, "fail-closed block must still append a tool result message"
+        result_text = (
+            messages[-1].get("content", "") if isinstance(messages[-1], dict) else str(messages[-1])
+        )
+        assert "gate exploded" in result_text, (
+            f"the block must NAME the crashing callback and error: {result_text[:200]!r}"
+        )
