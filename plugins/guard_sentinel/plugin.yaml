@@ -4,3 +4,5 @@ description: 守卫面完整性哨兵——守卫插件缺席时 WARNING 级响�
 hooks:
   - on_session_start
   - on_session_reset
+tags:
+  - guard

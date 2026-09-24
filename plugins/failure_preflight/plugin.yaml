@@ -4,3 +4,5 @@ version: 1.0.0
 author: stan
 hooks:
   - pre_llm_call
+tags:
+  - guard

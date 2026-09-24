@@ -17,3 +17,5 @@ description: |
 author: stan
 hooks:
   - post_llm_call
+tags:
+  - guard

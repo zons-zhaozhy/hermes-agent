@@ -6,3 +6,5 @@ hooks:
   - pre_tool_call
   - pre_verify
   - transform_llm_output
+tags:
+  - guard

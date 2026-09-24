@@ -5,3 +5,5 @@ author: stan
 hooks:
   - post_tool_call
   - transform_llm_output
+tags:
+  - guard

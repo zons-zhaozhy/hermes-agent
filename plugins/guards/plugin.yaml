@@ -5,3 +5,5 @@ author: stan
 hooks:
   - pre_tool_call
   - post_tool_call
+tags:
+  - guard
