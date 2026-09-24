@@ -43,8 +43,13 @@ Each plan is subject to both a 5-hour usage limit and a weekly usage limit.
 ### 2.4 计费时段
 
 * **Peak hours**: Monday to Friday, 14:00–18:00 Singapore Standard Time (UTC+8). 其余时段按 **50%** 计费。
-* 特惠：2026-09-25 至 2026-10-07 全天按非高峰费率（50%）。
-* GLM-5.3-Flash 活动：2026-09-03 至 2026-10-07 每天 23:00–次日 09:00，通过 ZCode 无限量使用 GLM-5.3-Flash，其他 agent 享双倍额度。
+* 特惠：2026-09-25 至 2026-10-07 全天按非高峰费率（50%）。此条与客户端无关，确定适用。
+* GLM-5.3-Flash 活动（[文档] 详情页 https://docs.z.ai/devpack/notice/event-glm-5.3-flash）：
+  2026-09-03 至 2026-10-07 每天 23:00–次日 09:00，新加坡时间 UTC+8，周末与公假同样适用；
+  活动窗口内额度已耗尽的账户暂时无法参与，待配额刷新后可继续。
+  **适用范围存在官方两处表述冲突**：总览页写「通过 ZCode 无限量使用 GLM-5.3-Flash，其他 agent 享双倍额度」；
+  详情页写「This campaign takes effect only in ZCode version 3.10 and later」。
+  Hermes 非 ZCode 客户端，是否享双倍额度 [未查证]。详情页 "the rules below" 的具体条款未随页面渲染出正文，无法据以判定。
 
 ### 2.5 额度耗尽行为
 
@@ -146,4 +151,6 @@ System prompt / Tool definitions / Rules / Skills / MCP / Subagent definitions /
 2. 降低 `compression.threshold_tokens`（当前 200,000），直接压缩每轮重复发送的 token 量。
    代价是压缩更频繁、历史细节更早丢失，涉及对话体验，需用户裁定。
 3. 会话数收敛：只保留 1-2 个会话用 glm-5.3，其余切 deepseek（实测 deepseek 会话全程未被 429 阻断）。
-4. 利用折扣期：2026-09-25 至 10-07 全天五折；23:00-09:00 用 glm-5.3-flash 享双倍额度。
+4. 利用折扣期：2026-09-25 至 10-07 全天按非高峰费率（50%）计费——与客户端无关，确定适用。
+   GLM-5.3-Flash 夜间活动（23:00–09:00）是否适用于 Hermes [未查证]（详情页限定 ZCode 3.10+，与总览页表述冲突）。
+   但无论活动是否适用，把辅助钩子换成 glm-5.3-flash 仍划算：标准倍率 2.3/0.56/8 对 glm-5.3 的 6.9/1.7/24，约为其三分之一。
