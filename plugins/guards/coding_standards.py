@@ -222,6 +222,11 @@ _SECRET_NAME_KEYWORDS = frozenset({
 # 用于区分「password = "IC_DB_PASSWORD"（env 名引用）」与「password = "真密钥"」。
 _ENV_NAME_RE = __import__("re").compile(r"[A-Z][A-Z0-9_]+")
 
+# preflight 自检命令的绝对路径——拦截指引在任意工作仓库可照做（相对路径仅
+# hermes 仓库 cwd 下成立，其他仓库照抄必 No such file）
+import os as _os
+_PREFLIGHT_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "preflight.py")
+
 
 def _iter_name_value_pairs(tree: ast.AST):
     """产出 (name_lower, value_node) 对 — 覆盖所有硬编码值出现形态。
@@ -1127,7 +1132,7 @@ def _check_content(content: str, target: str) -> Optional[Dict[str, Any]]:
             f"    • eval() → 用 ast.literal_eval() 替代\n"
             "    • import * → 必须显式导入\n"
             "  写前预检(一次列出全部违规,禁打地鼠): "
-            "python3 plugins/guards/preflight.py <file>\n"
+            f"python3 {_PREFLIGHT_PATH} <file>\n"
             "  修复后重试。"
         ),
     }
