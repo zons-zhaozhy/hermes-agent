@@ -322,7 +322,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         total_changes = check_all_skills(baseline)
         if args.update:
             save_cache(baseline)
-            print(f"\n  Baseline updated: {CACHE_FILE} ({total_changes} skills recorded)")
+            print(f"\n  Baseline updated: {CACHE_FILE} ({len(baseline)} skills, {total_changes} drift)")
         elif total_changes > 0:
             print(f"\n  Run with --update to save the new baseline.")
             return 1
