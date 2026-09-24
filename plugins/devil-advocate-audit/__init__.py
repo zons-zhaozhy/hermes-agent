@@ -219,6 +219,12 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
         text = str(kwargs.get("user_message", "") or "")
         if not text.strip():
             return None
+        # cron 等无人值守平台禁 armed：正门（delegate_task）可能不在工具集、
+        # 豁免出口（用户明示）无人在场——armed 即无解死锁（2026-09-24 日学习
+        # job 4162e5ea 全工具冻结整轮失败实录）。降级为仅注入提醒：有
+        # delegate 工具的 cron 会话仍会被提醒引导自行反方审查。
+        platform = str(kwargs.get("platform", "") or "")
+        unattended = platform in {"cron", "subagent"}
         if _count(sid, "judge_calls") >= _MAX_JUDGE_CALLS:
             # cap 满：决策判定停摆，但 armed 会话仍须保留豁免出口——
             # 否则冻结无解（用户说豁免词也到不了判定）。仅 armed 态探测，
@@ -246,6 +252,9 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
         if _user_waived(text):
             st["waived"] = True
             return None
+        if unattended:
+            # 无人值守：不武装，只提醒（防止上面注释所述死锁）
+            return {"context": _REMINDER}
         st["armed"] = True
         return {"context": _REMINDER}
     except Exception as e:
