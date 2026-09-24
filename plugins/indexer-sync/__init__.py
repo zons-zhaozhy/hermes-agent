@@ -15,6 +15,11 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from hermes_cli.plugins import PluginContext
+
 logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────
@@ -225,22 +230,28 @@ def _debounced_sync(root_key: str):
         state["worker"] = worker
 
 
-def register(ctx):
+def register(ctx: "PluginContext") -> None:
     """Plugin entry point."""
-    _discover_tracked_repos()
-    logger.info(
-        "indexer-sync: monitoring %d repos (%d codegraph, %d gitnexus)",
-        len(_tracked),
-        sum(1 for v in _tracked.values() if v["type"] == "codegraph"),
-        sum(1 for v in _tracked.values() if v["type"] == "gitnexus"),
-    )
+    # 注册表发现+存量补同步挪后台线程:同步 find ~/code(maxdepth 5)+逐仓
+    # 数文件在多仓库机器上超过 PluginManager 的 10s 加载超时,插件被整个
+    # 拒载(register 后续 hook 注册也一起丢失)——本次治理的实测症状。
+    # _tracked 未就绪窗口内早到的写编辑不触发同步,由 _MIN_RESYNC_INTERVAL
+    # 限流语义兜底(下一个编辑仍会补同步)。
+    def _background_init() -> None:
+        _discover_tracked_repos()
+        logger.info(
+            "indexer-sync: monitoring %d repos (%d codegraph, %d gitnexus)",
+            len(_tracked),
+            sum(1 for v in _tracked.values() if v["type"] == "codegraph"),
+            sum(1 for v in _tracked.values() if v["type"] == "gitnexus"),
+        )
+        for root_key in list(_tracked.keys()):
+            info = _tracked[root_key]
+            staleness = time.time() - info.get("last_sync", 0)
+            if staleness > 3600:  # only if last sync > 1h ago (or never)
+                _debounced_sync(root_key)
 
-    # Initial sync on load (backlog from stale indices)
-    for root_key in list(_tracked.keys()):
-        info = _tracked[root_key]
-        staleness = time.time() - info.get("last_sync", 0)
-        if staleness > 3600:  # only if last sync > 1h ago (or never)
-            _debounced_sync(root_key)
+    threading.Thread(target=_background_init, name="indexer-sync-discovery", daemon=True).start()
 
     def _on_post_tool_call(
         tool_name: str = "",
