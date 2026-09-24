@@ -17,7 +17,13 @@
 | hermes_cli/plugins_dispatch.py | pre_tool_batch 加入 _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS + _hook_timeout_block_message 泛化 | 低（分类集追加式） | 与 pre_tool_call 同机制 |
 | agent/turn_facade_lease.py | 4 行: 等待上限 1800s→300s | 低 | 上游改同参数时让位 |
 | tests/agent/test_read_think_gate_*.py | 2 文件纯新增 | 零 | 长期保留 |
-| apps/desktop 2 测试 | locale/spy 修正（中文环境特有） | 零 | 值得提 upstream PR |
+| tests/agent/test_auxiliary_client.py | 457da1e3f2: 对齐 timeout 短TTL隔离定制（auxiliary_client.py 配套测试） | 零（测试文件） | 与 aux 定制同命运 |
+| tests/hermes_cli/test_pre_tool_batch_fail_closed.py | 5e0f4214ce: pre_tool_batch fail-closed 配套测试 | 零（测试文件） | 与 tool_executor 定制同命运 |
+| tests/cron/test_unreachable_retry.py | b929b65d16 配套测试 | 零（测试文件） | 与 cron 定制同命运 |
+| cron/unreachable_retry.py | b929b65d16: 恢复 unreachable ladder 的 offline 摘要+quota 429 transient 判定 | 中（官方改 retry 逻辑时撞） | 跟踪官方 retry 侧等价机制 |
+| scripts/skill_sha_drift.py | b101a20a2d/74c996fef6: skill-drift-check 依赖脚本（基线切换恢复件+噪音修复） | 低（scripts/ 追加式） | 长期保留 |
+| .hermes-rules.md | fork 根纪律文件（官方无此文件） | 零 | 长期保留；md5 与 HEAD 对齐由三问审计第4条核验 |
+| apps/desktop/src/plugins/hermes-bots/cron-detail.test.tsx + apps/desktop/src/store/voice-prefs.test.ts (3811501b22) | locale/spy 修正（中文环境特有） | 零 | 值得提 upstream PR |
 | .gitignore / docs/review/ | 追加式 | 零 | 长期保留 |
 
 ## 二、防冲突铁律（同步操作规程）
