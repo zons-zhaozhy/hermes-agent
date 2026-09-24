@@ -417,7 +417,9 @@ def _check_hardcoded_db_url(tree: ast.AST, lines: List[str]) -> List[Violation]:
         if isinstance(value, ast.Constant) and isinstance(value.value, str):
             val = value.value.lower()
             for prefix in _DB_URL_PREFIXES:
-                if val.startswith(prefix):
+                # 内容检查（与 R012 对齐）：裸协议前缀常量（拼装/判别 URL 用）
+                # 不是连接串——真实连接串必有 scheme 之后的内容
+                if val.startswith(prefix) and len(val) > len(prefix):
                     violations.append(Violation(
                         rule_id="R011", line=node.lineno, col=node.col_offset,
                         severity="error",

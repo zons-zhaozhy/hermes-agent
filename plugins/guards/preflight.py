@@ -1,7 +1,9 @@
 """coding-standards-guard 写前预检 CLI。
 
 用法:
-    python3 plugins/coding-standards-guard/preflight.py <file.py> [file2.py ...]
+    python3 plugins/guards/preflight.py <file.py> [file2.py ...]
+
+    (任意 cwd 可用——以 __file__ 定位,或直接用拦截指引中给出的绝对路径)
 
 在 write_file/patch/execute_code 提交**之前**对目标文件(或临时脚本)
 全量跑一遍与拦截器完全相同的规则集,一次性列出全部 error/warning,
