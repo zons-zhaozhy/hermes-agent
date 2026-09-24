@@ -1,0 +1,6 @@
+name: guard-sentinel
+version: 1.0.0
+description: 守卫面完整性哨兵——守卫插件缺席时 WARNING 级响亮报错，防线不再静默消失
+hooks:
+  - on_session_start
+  - on_session_reset
