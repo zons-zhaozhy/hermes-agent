@@ -103,7 +103,11 @@ def _is_in_project_git(file_path: Path) -> bool:
                 file_path.resolve().relative_to(parent.resolve())
                 return True
             except ValueError:
-                logger.warning("Path %s not in git repo %s", file_path, parent)
+                # Not belonging to this repo is the normal branch (the caller
+                # treats False as "skip this ref"), so it must not be a WARNING:
+                # one pass over every skill emitted >180k identical lines a night
+                # and buried the real drift report.
+                logger.debug("Path %s not in git repo %s", file_path, parent)
                 return False
     return False
 
@@ -115,7 +119,7 @@ def _is_in_skills_dir(file_path: Path) -> bool:
         file_path.resolve().relative_to(skills.resolve())
         return True
     except ValueError:
-        logger.warning("Path %s not in skills dir", file_path)
+        logger.debug("Path %s not in skills dir", file_path)
         return False
 
 
