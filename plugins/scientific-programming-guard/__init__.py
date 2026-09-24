@@ -21,6 +21,7 @@ v2 升级(对应四层十五律):
 import ast
 import logging
 from pathlib import Path
+from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -504,5 +505,33 @@ def on_pre_tool_call(**kwargs):
         return {}
 
 
-def register(ctx):
+_CODING_SECTION = """[科学编程预算——写代码前先对表，一次写对免返工]
+写任何代码前当轮先完成对表，超预算的函数写出来必被拦（拦截在 write_file/patch 时刻）：
+1. 单函数圈复杂度 ≤10、函数体 ≤50 行——校验+解析+写库拆成 _parse_*/_validate_*/_insert_* 单一职责小函数；
+2. 新 def 全部带类型注解（参数+返回值）；test_/单行函数豁免；
+3. 异常处理禁吞：except 必须 logger（带 exc_info）或 raise，禁裸 pass；
+4. 断言期望值同线写「# 期望:」推导注释，禁先写代码再凑绿灯；
+5. 前端补充预算：async @click 按钮必带 :loading + try/finally；颜色只用 var(--el-*)；
+6. 本段是事前提示——动手前把预算注入脑内，别等守卫拦截后再拆（拦截=已浪费一轮）。"""
+
+# 子代理与批处理会话没有 clarify 通道，预算段会诱导空转——按 platform 跳过
+_EXCLUDED_PLATFORMS = {"subagent", "batch"}
+
+
+def _coding_section(session_info: Mapping[str, Any]) -> str:
+    """渲染写码预算规范段；排除平台返回空（空段被 core 跳过）。
+
+    Contract:
+        Preconditions: session_info 为 core 冻结的只读映射，含 ``platform`` 键。
+        Postconditions: 常规会话返回 ``_CODING_SECTION``；排除平台返回 ""。
+    """
+    if str(session_info.get("platform") or "") in _EXCLUDED_PLATFORMS:
+        return ""
+    return _CODING_SECTION
+
+
+def register(ctx: Any) -> None:
+    """插件入口：事前注入(system prompt 段) + 事后拦截(pre_tool_call hook) 双层同源执法。"""
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
+    ctx.register_system_prompt_section("scientific_programming", _coding_section)
+    logger.info("scientific-programming-guard registered (hook + prompt section)")
