@@ -147,7 +147,14 @@ System prompt / Tool definitions / Rules / Skills / MCP / Subagent definitions /
 
 ## 六、处置建议（按性价比）
 
-1. 把 auxiliary 段 8 个 `glm-4.5-flash` 与 3 个 `glm-5-turbo` 统一改成 `glm-5.3-flash`（套餐内，倍率低 3 倍）。
+1. 【已执行 2026-09-25 01:10–01:20】auxiliary 段 8 个 `glm-4.5-flash` 与 3 个 `glm-5-turbo`
+   已统一改为 `glm-5.3-flash`。实测对账（对比备份 `config.yaml.bak-20260925-011046`）：
+   键数 793 = 793、无新增键无删除键、值变化恰为 11 个目标键。
+   过程记录：`hermes config set` 不支持 `[0]` 数组下标语法——对
+   `auxiliary.X.fallback_chain[0].model` 会写入**字面键** `fallback_chain[0]`（原列表不受影响），
+   已用 `hermes config unset` 清除 6 处脏键，全文件残留检查为 0。
+   6 个守卫钩子的 `fallback_chain` 保持 `glm-4.7` 未动——实测该模型被服务端路由到 `glm-5.3-flash`，
+   与本项优化目标等价，无须改动。
 2. 降低 `compression.threshold_tokens`（当前 200,000），直接压缩每轮重复发送的 token 量。
    代价是压缩更频繁、历史细节更早丢失，涉及对话体验，需用户裁定。
 3. 会话数收敛：只保留 1-2 个会话用 glm-5.3，其余切 deepseek（实测 deepseek 会话全程未被 429 阻断）。
