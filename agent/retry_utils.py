@@ -146,8 +146,8 @@ def is_zai_coding_overload_error(*, base_url: str | None, model: str | None, err
     text = _error_text(error)
     return (
         getattr(error, "status_code", None) == 429
-        and "api.z.ai/api/coding/paas/v4" in (base_url or "").lower()
-        and "glm-5.2" in (model or "").lower()
+        and "/api/coding/paas/v4" in (base_url or "").lower()
+        and (model or "").lower().startswith("glm-5")
         and ("1305" in text or "temporarily overloaded" in text)
     )
 
