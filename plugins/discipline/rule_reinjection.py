@@ -29,7 +29,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 _RULES_FILENAME = ".hermes-rules.md"
-# 注入体量硬上限:容纳全部常驻规则节(实测全文 4521 字符),超限即截断
+# 注入体量硬上限:容纳全部常驻规则节(实测全文 4769 字符,余量须 >=200),超限即截断
 # 会静默丢弃尾部节——上限须 >= 规则文件实际体量,扩容前先量全文长度。
 _MAX_DIGEST_CHARS = 5000
 # 周期性重注入间隔:注入会随用户消息持久化进历史,每轮都注=历史里堆积
