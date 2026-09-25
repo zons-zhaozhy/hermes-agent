@@ -1,4 +1,4 @@
-"""db-safety plugin — block SQL queries that guess table/column names.
+r"""db-safety plugin — block SQL queries that guess table/column names.
 
 Enforces the rule: before any SQL query (SELECT/INSERT/UPDATE/DELETE/ALTER),
 the agent must have confirmed the schema with \dt (list tables), \d table_name

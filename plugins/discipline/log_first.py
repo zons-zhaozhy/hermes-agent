@@ -33,7 +33,7 @@ _REMINDER = """\
    (no such host=DNS失败, ReadTimeout=对端慢, 401=认证缺失, exit_code≠0=执行失败)
 
 2. 如果是 DB 操作出错（表/列不存在）：
-   禁猜表名！先查 schema: \dt 看全部表名, \d table_name 看全部列名
+   禁猜表名！先查 schema: \\dt 看全部表名, \\d table_name 看全部列名
    查询返回空不等于没有数据——先确认表名/列名拼写正确
 
 3. 如果是测试 FAIL：
