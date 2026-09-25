@@ -1552,6 +1552,34 @@ class TestBuildSafeEnv:
         assert result["GITHUB_TOKEN"] == "profile-b"
         assert "NOTION_TOKEN" not in result
 
+    def test_scalar_env_values_reach_the_child_as_strings(self):
+        """A YAML scalar in the server config (`MCP_RATE_LIMIT: 60`) parses as int, while MCP
+        types StdioServerParameters.env as dict[str, str]; without normalization the whole
+        server config fails validation and the server parks."""
+        from tools.mcp_tool_config import _build_safe_env
+
+        with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
+            result = _build_safe_env({
+                "MCP_RATE_LIMIT": 60,
+                "RATIO": 0.5,
+                "FLAG": True,
+                "LABEL": "already-a-string",
+            })
+
+        assert result["MCP_RATE_LIMIT"] == "60"
+        assert result["RATIO"] == "0.5"
+        assert result["FLAG"] == "True"
+        assert result["LABEL"] == "already-a-string"
+
+    def test_non_scalar_env_value_is_rejected(self):
+        """A mapping/sequence has no environment-variable representation: fail loudly instead
+        of handing it to the MCP SDK or silently dropping it."""
+        from tools.mcp_tool_config import _build_safe_env
+
+        with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
+            with pytest.raises(ValueError, match="must be a scalar"):
+                _build_safe_env({"NESTED": {"a": 1}})
+
     def test_windows_location_vars_passed_without_secrets(self):
         """Windows launcher tools need location vars, but secrets stay filtered."""
         from tools.mcp_tool_config import _build_safe_env

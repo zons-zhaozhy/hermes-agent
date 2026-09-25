@@ -128,7 +128,21 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
         if key in os.environ:
             env[key] = os.environ[key]
     if user_env:
-        env.update(user_env)
+        # MCP types StdioServerParameters.env as dict[str, str]: a YAML scalar in the server
+        # config (`MCP_RATE_LIMIT: 60`) parses as int and fails that validation, so scalars are
+        # normalized here. Environment variables are strings by definition and int/float
+        # conversion is lossless; a mapping or sequence has no env representation and is
+        # rejected loudly rather than silently dropped.
+        for key, value in user_env.items():
+            if isinstance(value, str):
+                env[key] = value
+            elif isinstance(value, (int, float, bool)):
+                env[key] = str(value)
+            else:
+                raise ValueError(
+                    f"MCP server env.{key} must be a scalar (str/int/float/bool), "
+                    f"got {type(value).__name__}"
+                )
     from agent.delegation_context import delegated_child_subprocess_env
     return delegated_child_subprocess_env(env)
 
