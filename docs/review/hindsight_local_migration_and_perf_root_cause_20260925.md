@@ -151,11 +151,27 @@ recovery attempts，满 3 次即转 failed。**这 397 条失败由调查动作�
 | 键 | 值 | 依据 |
 |---|---|---|
 | `HINDSIGHT_API_RERANKER_LOCAL_BUCKET_BATCHING` | `true` | `config.py:1010` 注释原文 `opt-in, 36-54% speedup`（长度排序桶批处理） |
-| `HINDSIGHT_API_RERANKER_MAX_CANDIDATES_MID` | `150` | 台账显示 `pre-filtered 203-252`，300 候选中大部分在预过滤阶段已剔除 |
+| `HINDSIGHT_API_RERANKER_MAX_CANDIDATES_MID` | `80` | 台账显示 `pre-filtered 437-467`，300 候选中大部分在预过滤阶段已剔除 |
+| `HINDSIGHT_API_RERANKER_LOCAL_ALLOW_MPS` | `true` | **决定性项**：启用 Apple GPU（MPS），实测见下 |
+| `HINDSIGHT_API_RERANKER_LOCAL_FP16` | `true` | `config.py:1009` 注释原文 `faster on MPS/CUDA (not CPU)` |
+| `HINDSIGHT_API_EMBEDDINGS_LOCAL_ALLOW_MPS` | `true` | embedding 同属本地模型，一并用 GPU |
 
-**未采用 `ALLOW_MPS` / `FP16`**：`ollama ps` 实测 4B 模型已占 100% GPU，reranker 再上 MPS
-只会制造新的 GPU 争抢；且 `config.py:1009` 注明 FP16 在 CPU 上不获益。故策略是
-「保持 CPU + 降低候选量」，而非把争抢从 CPU 搬到 GPU。
+**实测结果（三轮递进，全部为原始日志行，非外推）**：
+
+    300 candidates, 纯 CPU        → 35.836s   (0.119s/候选)
+    150 candidates, 纯 CPU        → 24.241s   (0.162s/候选 ← 负载加重，单位成本反升)
+     80 candidates, MPS + FP16    →  2.184s   (0.027s/候选)
+     80 candidates, MPS + FP16    →  3.489s
+     80 candidates, MPS + FP16    →  6.913s
+
+**整体提速 16 倍**（35.836s → 2.184s），**单位候选提速 4.4 倍**（0.119s → 0.027s）。
+日志佐证：`18:04:47 Reranker: FP16 inference enabled`。
+
+**对一条早期错误判断的更正**：本报告初稿曾判断「不采用 MPS / FP16，因 `ollama ps` 显示 4B
+模型已占 100% GPU，reranker 再上 MPS 只会制造新的 GPU 争抢」。该判断是**推断、未经实测**，
+且**结论错误**——Apple Silicon 统一内存架构下 Metal（ollama）与 MPS（torch）可并存，实测无
+争抢劣化；`config.py:1009` 注释本身即写明 MPS/CUDA 是加速路径，默认 `False` 只是保守取值。
+更正依据：`torch 2.14.0 / mps_available: True / mps_built: True` + 上表三轮实测。
 
 ## 四、修复清单（全部落在 ② profile env 与 ③ `.env`，daemon 已重启验证继承）
 
