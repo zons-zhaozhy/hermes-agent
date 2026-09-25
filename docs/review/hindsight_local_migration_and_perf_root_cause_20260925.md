@@ -260,3 +260,23 @@ curl -s http://localhost:11434/api/chat -H 'Content-Type: application/json' \
   -d '{"model":"qwen3.5:4b-mlx","messages":[{"role":"user","content":"hi"}],"think":false,"stream":false,"options":{"num_predict":20}}' \
   | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['eval_count'], d['eval_duration']/1e9, 'tok/s=', d['eval_count']/(d['eval_duration']/1e9))"
 ```
+
+## 七、后续会话补记（0925 晚，启动报错根治）
+
+启动报错 `Installing Python dependencies failed … ==3.14.*` 已根治，全链实测闭环。
+
+**根因链（三层）**：
+1. PM 独立运行时要求钉版 Python 3.14（`pm/pyproject.toml:4` `>=3.14,<3.15`），本机未装 → `_toolchain(realize=False)` 返回 None → fallback `sys.executable`（3.11.12）→ uv 拒绝。解法：`source ./activate` provision 装上 3.14.7 并发布 PM runtime。
+2. 重 lock 卡 `pyproject.toml:126` psutil 的 git+https 依赖——**今晚 github.com:443 被阻断**（ping 通 113ms 但 TLS 层拒绝，`000`；对照 codeload/raw.githubusercontent.com 均 200）。解法：**带 PM 共享缓存跑 lock**（`UV_CACHE_DIR=~/.hermes/cache/uv`），psutil 直接命中 git checkout 缓存（380bd2b5），25.5s 完成解析，零网络 fetch。
+3. pilk 元数据死结：PyPI 对 2023 老包 pilk==0.2.4 不带 PEP 700 upload-time，14 天隔离窗（`uv.lock:14 P14D`）每次重新解析都拒绝。解法：`pyproject.toml [tool.uv.exclude-newer-package]` 加 `pilk = false` 豁免（精确钉版包，pin 即审查）。
+4. workspace lock check 失败（325 vs 331 包）：手动 lock 走官方源，PM activate 走桥接的清华源，registry 不一致 → uv 判 lock 过期。解法：**用 PM 通道重 lock**（`./.venv/bin/python -m pm.cli lock`），registry 统一后 check 一致。
+
+**验证台账**：
+- `uv lock`（PM 缓存+官方源）：25.5s ✓（对照：无 PM 缓存时 kevent 死等 30 分钟×N）
+- `./.venv/bin/python -m pm.cli lock`（PM 桥接源）：✓，uv.lock 重生成
+- `source ./activate` 完整链：FINAL_EXIT=0 ✓，`python` → 3.14.7（`~/.hermes/tools/python-3.14.7+...`）✓
+- 主 venv `.venv`：Python 3.14.7 ✓，`hermes --version` v0.21.5+2258 ✓，`import cli, model_tools, hermes_state` ✓
+- commit `e1c68020fb`（pyproject.toml + uv.lock 原子提交），已 push ✓
+
+**运维要点**：github.com 被阻断时，`UV_CACHE_DIR=/Users/stan/.hermes/cache/uv` 是让 uv 命中 git 依赖缓存的关键；重 lock 必须走 PM 通道保证 registry 一致性（手动 `uv lock` 用官方源会与 PM activate 的桥接源产生 325/331 包差异）。
+
