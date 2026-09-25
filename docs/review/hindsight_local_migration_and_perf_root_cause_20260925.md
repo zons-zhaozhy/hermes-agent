@@ -173,6 +173,30 @@ recovery attempts，满 3 次即转 failed。**这 397 条失败由调查动作�
 争抢劣化；`config.py:1009` 注释本身即写明 MPS/CUDA 是加速路径，默认 `False` 只是保守取值。
 更正依据：`torch 2.14.0 / mps_available: True / mps_built: True` + 上表三轮实测。
 
+**冷启动代价（补充实测，必须与稳态值区分）**：MPS 首次调用需初始化 Metal 并编译 kernel，
+daemon 重启后第一次 recall 的 embedding 阶段会从常态 0.08s 涨到 **11.895s**。
+
+[实测] `18:06:40` 那次端到端 20.432s 的完整分解（**与 reranker 无关**）：
+
+    [RECALL hermes-80050-4cc567] Query: '[IMPORTANT: You are running as a scheduled cron jo...'
+      [1] Generate query embedding: 11.895s        ← MPS 冷启动
+      [2] Parallel retrieval: 1.598s
+      [3] RRF merge: 0.002s
+      [4] Reranking [cross-encoder]: 80 candidates scored in 6.913s
+      [RECALL] Complete: 27 facts | 20.423s
+
+同刻日志佐证：`EVENT LOOP BLOCKED for >= 1.00s (5.82s and counting)`、
+`slow DB pool acquire: waited 1.582s`。同 daemon 后续两次回到 **4.606s / 5.215s**。
+
+**端到端对照（`RECALL HTTP handler_total` 原始行）**：
+
+    修复前  23.405s / 37.288s / 25.143s   → 平均 28.6s
+    修复后   4.606s /  5.215s (稳态)      → 平均  4.9s   (快 5-7 倍)
+            20.432s (含 11.895s 冷启动)
+
+**操作结论**：稳态端到端为 4.6-5.2s，**不应以重启 daemon 作为日常手段**——每次重启各引入
+一次约 12s 的冷启动，在低频率调用场景下会抵消 GPU 加速的净收益。
+
 ## 四、修复清单（全部落在 ② profile env 与 ③ `.env`，daemon 已重启验证继承）
 
 | 键 | 值 | 作用 |
