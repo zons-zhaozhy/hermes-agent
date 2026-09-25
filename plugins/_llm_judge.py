@@ -290,6 +290,7 @@ def _text_verdict(task: str, system: str, text: str, true_key: str,
             max_tokens=max_tokens,
             temperature=0.0,
             timeout=timeout,
+            extra_body={"reasoning_effort": "none"},  # 关思考自持，同 logprobs 通道（判定件不需要思考，思考型模型裸跑必超时）
         )
         content = (resp.choices[0].message.content or "").replace(" ", "").lower()
         if f'"{true_key}":true' in content:
@@ -440,7 +441,9 @@ def llm_judge_bool(task: str, system: str, text: str,
 
 def llm_judge_multi(task: str, system: str, text: str,
                     keys: List[str], timeout: float = 20.0,
-                    max_tokens: int = 64) -> Dict[str, Optional[bool]]:
+                    max_tokens: int = 64,
+                    extra_body: Optional[Dict[str, Any]] = None,
+                    ) -> Dict[str, Optional[bool]]:
     """一次辅助 LLM 调用同时判定多个语义维度，返回 {key: True/False/None}。
 
     治串行浪费：多个插件同一时机、同一文本各自调 llm_judge_bool 时，
@@ -448,18 +451,26 @@ def llm_judge_multi(task: str, system: str, text: str,
     单键缺失/解析失败 → 该键 None（fail-open），不拖垮其他键。
 
     多键判定不走 logprobs 通道：一次只读首位置 token 无法覆盖多键序列。
+    但关思考与 logprobs 通道同款自持（2026-09-25 根治）：extra_body 显式
+    reasoning_effort="none"——本地思考型模型（qwen3.5:4b-mlx）裸跑默认
+    开思考，判定超时 fail-open（errors.log 实测 reply_side_guards 三次
+    20s 超时）。不依赖 config 的 auxiliary.<task>.extra_body 条目存在。
 
     Contract:
         Preconditions: system/text 非空 str；keys 非空且各键名唯一；
                        system 已写明「只回答一个 JSON 对象，含全部键」
         Postconditions: 返回 dict 且恰好含 keys 中每个键（True/False/None）；
-                        调用异常 → 全部键 None；绝不 raise
+                        调用异常 → 全部键 None；绝不 raise；
+                        调用方 extra_body 键保留（浅合并，关思考键后写入
+                        以保证生效，调用方同名键被覆盖——判定件语义优先）
     """
     assert system and text, "system and text must be non-empty"
     assert keys and len(set(keys)) == len(keys), "keys must be non-empty unique"
     fail: Dict[str, Optional[bool]] = {k: None for k in keys}
     try:
         from agent.auxiliary_client import call_llm
+        eb = dict(extra_body) if extra_body else {}
+        eb["reasoning_effort"] = "none"
         resp = call_llm(
             task=task,
             messages=[
@@ -469,6 +480,7 @@ def llm_judge_multi(task: str, system: str, text: str,
             max_tokens=max_tokens,
             temperature=0.0,
             timeout=timeout,
+            extra_body=eb,
         )
         content = resp.choices[0].message.content or ""
         return _parse_bool_keys(content, keys)
