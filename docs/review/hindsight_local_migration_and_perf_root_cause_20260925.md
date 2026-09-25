@@ -124,6 +124,39 @@ recovery attempts，满 3 次即转 failed。**这 397 条失败由调查动作�
 但这**不影响 daemon**，因为 `.env` 优先且 daemon 自己会加载。
 [实测] 验证方式与结果：`ps eww -p <daemon_pid> | tr " " "\n" | grep ^HINDSIGHT` 四个键齐备。
 
+### 3.8 用户感知瓶颈：reranker 占 recall 总耗时 96%（本轮新发现）
+
+前 3.1-3.7 全在讲 retain/consolidation——但那些是**后台任务**。用户真正**感知到的慢**是 recall，
+因为它是同步路径。
+
+[实测] `hermes.log` 中一次 recall 的分阶段耗时（17:50:54，正由用户查询触发）：
+
+    [1] Generate query embedding: 0.079s
+    [2] Parallel retrieval (semantic/bm25/graph): 0.137s
+    [3] RRF merge: 0.004s
+    [4] Reranking [cross-encoder]: 300 candidates scored in 23.144s   ← 占 96.3%
+    [6] Token filtering: 0.027s
+    [RECALL HTTP] handler_total=23.405s
+
+**根因**：reranker 是 **CPU cross-encoder**（`config.py:1000` 默认
+`cross-encoder/ms-marco-MiniLM-L-6-v2`），300 候选在 CPU 上逐个打分，且与 ollama 的 4B 模型
+**争抢同一台机器的 CPU**。
+
+[实测] 同机对照是本结论最硬的证据：9-24 无 ollama 负载时，同样 300 候选只需
+**3.491s / 4.346s / 6.992s**；本轮 ollama 常驻后升至
+**23.144s / 26.974s / 35.836s / 81.000s**（劣化 4-23 倍）。
+
+**修复**（两键）：
+
+| 键 | 值 | 依据 |
+|---|---|---|
+| `HINDSIGHT_API_RERANKER_LOCAL_BUCKET_BATCHING` | `true` | `config.py:1010` 注释原文 `opt-in, 36-54% speedup`（长度排序桶批处理） |
+| `HINDSIGHT_API_RERANKER_MAX_CANDIDATES_MID` | `150` | 台账显示 `pre-filtered 203-252`，300 候选中大部分在预过滤阶段已剔除 |
+
+**未采用 `ALLOW_MPS` / `FP16`**：`ollama ps` 实测 4B 模型已占 100% GPU，reranker 再上 MPS
+只会制造新的 GPU 争抢；且 `config.py:1009` 注明 FP16 在 CPU 上不获益。故策略是
+「保持 CPU + 降低候选量」，而非把争抢从 CPU 搬到 GPU。
+
 ## 四、修复清单（全部落在 ② profile env 与 ③ `.env`，daemon 已重启验证继承）
 
 | 键 | 值 | 作用 |
@@ -131,12 +164,14 @@ recovery attempts，满 3 次即转 failed。**这 397 条失败由调查动作�
 | `llm_provider` / `llm_model`（① 源） | `ollama` / `qwen3.5:4b-mlx` | 迁出 zai 配额 |
 | `llm_base_url`（① 源） | **删除** | 消除 provider/endpoint 分裂源 |
 | `HINDSIGHT_API_LLM_EXTRA_BODY` | `{"think": false}` | 关 thinking（native 路径唯一有效手段） |
-| `HINDSIGHT_API_LLM_MAX_CONCURRENT` | `2` | 匹配串行后端，留一路给前台 recall |
+| `HINDSIGHT_API_LLM_MAX_CONCURRENT` | `2` → `1` | 完全串行；[实测] recall 不消费 LLM（scope 仅 3 个后台任务），无饿死前台风险 |
 | `HINDSIGHT_API_CONSOLIDATION_LLM_MAX_CONCURRENT` | `1` | 最重的任务串行 |
 | `retain_every_n_turns`（① 源） | `1` → `3` | 写入量降 2/3（攒批，非丢数据） |
 | `idle_timeout`（① 源） | `0` → `1800` | 空闲 30 分钟回收（原为永不退出） |
 | `HINDSIGHT_API_LLM_REASONING_EFFORT` | `none` | 保留：`/v1` 路径仍需（双路径兼容） |
 | `HINDSIGHT_EMBED_HEALTH_PROBE_TIMEOUT` | `10` → `120` | 防 daemon 被误判「不健康」而自杀重启（见 3.4） |
+| `HINDSIGHT_API_RERANKER_LOCAL_BUCKET_BATCHING` | `true` | 长度排序桶批处理（见 3.8） |
+| `HINDSIGHT_API_RERANKER_MAX_CANDIDATES_MID` | `150` | recall 候选上限，治理用户可感知的慢（见 3.8） |
 | `daemon_embed_manager.py:99,100` 默认值 | `10.0` → `120.0` | **改 venv 源码**：活跃会话 import 时已缓存旧值，改 env 救不了它们（见 3.4） |
 
 备份：`hindsight/config.json.bak-20260925-170005|170627|171337`、`.env.bak-20260925-170005|172221|172621`、
