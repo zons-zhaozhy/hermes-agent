@@ -749,6 +749,10 @@ parallel-web = false
 pathspec = false
 pillow = false
 piper-tts = "2026-09-04T16:47:32Z"
+# pilk==0.2.4 is exact-pinned (the pin WAS the review); PyPI serves it with no
+# upload date, so the 14-day quarantine rejects it on every fresh resolution
+# (uv lock exits: "pilk==0.2.4 has no publish time ... unsatisfiable").
+pilk = false
 prompt-toolkit = false
 psutil = false
 pvporcupine = false
