@@ -56,7 +56,11 @@ _WARNED_MISSING_CWD: set[str] = set()
 
 
 def _find_rules_file() -> Optional[Path]:
-    """按序探测规则文件:cwd → git root。命中即返回,未命中返回 None。"""
+    """按序探测规则文件:cwd → git root → 代码根。
+
+    代码根候选(本文件上三级=仓库根)覆盖 gateway/cron 类会话:它们的 cwd
+    是 HERMES_HOME(~/.hermes),既非仓库也非其 git root 内,却加载着本仓库
+    代码——规则文件住在代码根,不进候选链则这类会话永久零注入。"""
     candidates = [Path.cwd() / _RULES_FILENAME]
     try:
         cwd = Path.cwd()
@@ -66,6 +70,7 @@ def _find_rules_file() -> Optional[Path]:
                 break
     except OSError:
         pass
+    candidates.append(Path(__file__).resolve().parent.parent.parent / _RULES_FILENAME)
     for candidate in candidates:
         try:
             if candidate.is_file():
