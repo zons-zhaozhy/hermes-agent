@@ -58,6 +58,33 @@ context window；`:1534 _call_ollama_native`）。
 [实测] 某次 native 调用 `total=112.39s`，其中真正的推理仅 `load 0.06 + prompt_eval 0.049 + eval 0.55 = 0.66s`，
 其余 111.7s 全是排队；另实测 4 个任务 age 同步堆积至 121s/182s。
 
+### 3.4 第四层（最隐蔽，也是真正的自我维持机制）：daemon 自杀螺旋
+
+[文档] `daemon_embed_manager.py:92-97` 上游自述：daemon 的 `/health` 与 LLM 调用**共用同一个 asyncio
+事件循环**，慢 provider 调用会把响应 stall 数十秒；且**探测超时过短的代价是「杀掉健康的 listener」**。
+[文档] `:98-101 HEALTH_PROBE_TIMEOUT = 10.0`；`:587-590` 文档字符串写明该 slack 是故意留的
+(`That slack is deliberate: it is what lets a daemon stalled on a slow LLM call answer before we call it stale`)。
+[文档] `:645-647` 一旦判定不健康即 `Clearing unhealthy process on port ... (PID ...)` 后 `_kill_process`。
+
+因果闭环：LLM 慢 → `/health` 被同一事件循环占住 → 10s 探测超时 → 判「不健康」→ **杀 daemon**
+→ in-flight 任务被打断、recovery attempts +1 → 满 3 次即 `moved to 'failed'` → 新任务重新排队 → 回到起点。
+
+[实测] 证据：daemon PID 在**无人干预下自行变化**（75404 → 77723）；日志两次出现
+`Worker zons-2.local moved 2 tasks to 'failed' (exceeded 3 recovery attempts in schema None)`。
+
+**推论**：这解释了为什么「4 个任务占满串行队列」只是表象——真正的自维持机制是 daemon 被误判死亡后
+反复自杀重启，而每次重启都把任务推向 failed 并让新任务从零开始。因此 `think:false`（治慢调用）与
+`HEALTH_PROBE_TIMEOUT`（治误判）**必须成对修复**，单独修任一侧都无法终止螺旋。
+
+### 3.5 配置源的真实优先级（实测纠正）
+
+[实测] `.env` 才是**权威源**：daemon CLI 启动时自行加载它（`hindsight_embed/cli.py:115` 的
+`if key not in os.environ` 语义），故写在 `.env` 的键会进入 daemon 环境。
+[实测] profile env（`~/.hindsight/profiles/hermes.env`）会被插件 materialize **按 `config.json` 重写**，
+写在其中的、`config.json` 不存在的键（如 `HINDSIGHT_API_LLM_EXTRA_BODY`）会被抹掉——
+但这**不影响 daemon**，因为 `.env` 优先且 daemon 自己会加载。
+[实测] 验证方式与结果：`ps eww -p <daemon_pid> | tr " " "\n" | grep ^HINDSIGHT` 四个键齐备。
+
 ## 四、修复清单（全部落在 ② profile env 与 ③ `.env`，daemon 已重启验证继承）
 
 | 键 | 值 | 作用 |
@@ -70,6 +97,7 @@ context window；`:1534 _call_ollama_native`）。
 | `retain_every_n_turns`（① 源） | `1` → `3` | 写入量降 2/3（攒批，非丢数据） |
 | `idle_timeout`（① 源） | `0` → `1800` | 空闲 30 分钟回收（原为永不退出） |
 | `HINDSIGHT_API_LLM_REASONING_EFFORT` | `none` | 保留：`/v1` 路径仍需（双路径兼容） |
+| `HINDSIGHT_EMBED_HEALTH_PROBE_TIMEOUT` | `10` → `120` | 防 daemon 被误判「不健康」而自杀重启（见 3.4） |
 
 备份：`hindsight/config.json.bak-20260925-170005|170627|171337`、`.env.bak-20260925-170005|172221|172621`、
 `hermes.env.bak-20260925-170005|172221`。
