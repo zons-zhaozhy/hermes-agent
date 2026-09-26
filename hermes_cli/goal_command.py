@@ -142,11 +142,16 @@ def _set(mgr, arg, *, drafting, last_user_message, render, progress):
         label = "Drafted completion contract:" if drafting else "Completion contract:"
         output += f"\n{label}\n{state.contract.render_block()}"
     if drafting:
-        output += ("\nTighten any field by re-setting the goal with inline lines "
-                   "(e.g. verify: <command>), then /goal resume. Use /goal show to review."
+        output += (("\nTighten any field by re-setting the goal with inline lines "
+                    "(e.g. verify: <command>), then /goal resume. Use /goal show to review.")
                    if state.has_contract() else
-                   "\nCouldn't draft a contract (aux model unavailable) — running as a "
-                   "free-form goal. The per-turn judge still applies.")
+                   ("\nCouldn't draft a contract (aux model unavailable) — running as a "
+                    "free-form goal. The per-turn judge still applies."))
+        gate_cmd = state.contract.gate_command.strip() if state.has_contract() else ""
+        if gate_cmd:
+            output += (f"\n\n⚡ Make the verification deterministic — one command turns it "
+                       f"into a hard gate that short-circuits the judge:\n"
+                       f"    /goal gate add {gate_cmd}")
     else:
         against = " against the contract above" if state.has_contract() else ""
         output += (f"\nAfter each turn, a judge model checks if the goal is done{against}. "

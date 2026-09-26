@@ -906,6 +906,45 @@ class TestDraftContract:
             assert goals.draft_contract("anything") is None
 
 
+    def test_draft_carries_gate_command(self, hermes_home):
+        from unittest.mock import patch
+        from hermes_cli import goals
+
+        class _FakeMsg:
+            content = (
+                '{"outcome": "auth on JWT", "verification": "auth suite green", '
+                '"gate_command": "pytest -q tests/auth", "constraints": "no API change", '
+                '"boundaries": "services/auth", "stop_when": "schema change needed"}'
+            )
+        class _FakeChoice:
+            message = _FakeMsg()
+        class _FakeResp:
+            choices = [_FakeChoice()]
+        with patch("agent.auxiliary_client.call_llm",
+                   return_value=_FakeResp()):
+            contract = goals.draft_contract("Migrate auth to JWT")
+        assert contract is not None
+        assert contract.gate_command == "pytest -q tests/auth"
+        block = contract.render_block()
+        # 期望: gate_command 渲染进 contract block,judge 与 /goal show 均可见
+        assert "pytest -q tests/auth" in block
+        assert "Gate command" in block
+
+
+    def test_parse_contract_inline_gate_alias(self):
+        from hermes_cli.goals import parse_contract
+
+        headline, contract = parse_contract(
+            "Ship the parser\n"
+            "gate: pytest -q tests/parser\n"
+            "done when: parser passes corpus"
+        )
+        # 期望: gate: 别名归 gate_command 字段,不混入 headline
+        assert headline == "Ship the parser"
+        assert contract.gate_command == "pytest -q tests/parser"
+        assert contract.outcome == "parser passes corpus"
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Compose: completion contract + wait barrier in one judge call
 # ──────────────────────────────────────────────────────────────────────

@@ -240,13 +240,21 @@ JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE = (
     "Is the goal satisfied per its completion contract — done, blocked, continue, or wait?"
 )
 
-# /goal draft: turn a plain objective into a reviewable contract (after Codex's "draft the goal").
+# /goal draft: turn a plain objective into a reviewable contract (after Codex's "draft the goal
+# before working"). The gate_command field is the deterministic-enforcement bridge: it carries the
+# command that can become a quality gate (/goal gate add), so verification is executable rather
+# than prose the judge merely reads.
 DRAFT_CONTRACT_SYSTEM_PROMPT = (
     "You turn a user's plain-language objective into a structured completion "
-    "contract for an autonomous coding agent. The contract has five fields:\n"
+    "contract for an autonomous coding agent. The contract has six fields:\n"
     "- outcome: the single end state that must be true when done\n"
     "- verification: the specific test / command / artifact that PROVES the "
     "outcome (must be concrete and checkable)\n"
+    "- gate_command: ONE shell command that deterministically verifies the "
+    "outcome by exiting 0 (e.g. `pytest -q tests/foo_test.py`, `make build`, "
+    "`python -c 'import app'`). Reuse the verification command itself when it "
+    "is already runnable verbatim; use an empty string only when no honest "
+    "single command exists\n"
     "- constraints: what must NOT change or regress\n"
     "- boundaries: which files, dirs, tools, or systems are in scope\n"
     "- stop_when: the condition under which the agent should stop and ask "
@@ -257,8 +265,8 @@ DRAFT_CONTRACT_SYSTEM_PROMPT = (
     "one or two sentences. If a field genuinely cannot be inferred, use an "
     "empty string for it.\n\n"
     "Reply ONLY with a single JSON object on one line:\n"
-    '{"outcome": "...", "verification": "...", "constraints": "...", '
-    '"boundaries": "...", "stop_when": "..."}'
+    '{"outcome": "...", "verification": "...", "gate_command": "...", '
+    '"constraints": "...", "boundaries": "...", "stop_when": "..."}'
 )
 
 
@@ -267,10 +275,11 @@ DRAFT_CONTRACT_SYSTEM_PROMPT = (
 # The five contract fields, in display order (after OpenAI Codex's "strong goal" guidance: what
 # "done" means, how to prove it, what must not regress, what is in bounds, when to stop and ask).
 # A bare free-form goal stays fully supported — empty fields are omitted from every prompt.
-_CONTRACT_FIELDS = ("outcome", "verification", "constraints", "boundaries", "stop_when")
+_CONTRACT_FIELDS = ("outcome", "verification", "gate_command", "constraints", "boundaries", "stop_when")
 
 _CONTRACT_LABELS = {
-    "outcome": "Outcome", "verification": "Verification", "constraints": "Constraints",
+    "outcome": "Outcome", "verification": "Verification", "gate_command": "Gate command",
+    "constraints": "Constraints",
     "boundaries": "Boundaries", "stop_when": "Stop when blocked",
 }
 
@@ -279,6 +288,7 @@ _CONTRACT_ALIASES = {
     "outcome": "outcome", "goal": "outcome", "done": "outcome", "done when": "outcome",
     "verification": "verification", "verify": "verification", "verified by": "verification",
     "evidence": "verification", "proof": "verification",
+    "gate": "gate_command", "gate command": "gate_command", "gate cmd": "gate_command",
     "constraints": "constraints", "constraint": "constraints", "preserve": "constraints",
     "must not": "constraints", "do not change": "constraints",
     "boundaries": "boundaries", "boundary": "boundaries", "scope": "boundaries",
@@ -293,6 +303,7 @@ class GoalContract:
     """Optional structured completion contract; empty fields are omitted everywhere."""
     outcome: str = ""
     verification: str = ""
+    gate_command: str = ""
     constraints: str = ""
     boundaries: str = ""
     stop_when: str = ""
