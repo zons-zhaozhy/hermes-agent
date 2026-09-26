@@ -20,6 +20,8 @@ import sys
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
+from hermes_time import now as _hermes_now
+
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
@@ -1957,6 +1959,7 @@ def _deliver_result(
         delivery_content = (
             f"Cronjob Response: {task_name}\n"
             f"(job_id: {job.get('id', '')})\n"
+            f"(time: {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')})\n"
             f"-------------\n\n"
             f"{content}\n\n"
             "To stop or manage this job, send me a new message "
