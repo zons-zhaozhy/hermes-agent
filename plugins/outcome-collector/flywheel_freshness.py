@@ -73,6 +73,40 @@ def _age_check(name: str, path: Optional[Path], max_age_hours: float) -> Dict[st
     }
 
 
+def _latest_mtime(directory: Path, pattern: str = "*.md") -> Optional[float]:
+    """取目录下匹配文件的最新 mtime（无匹配返回 None）。
+
+    Contract:
+      Preconditions: directory 为 Path（可能不存在）
+      Postconditions: 返回最新 mtime epoch 秒或 None，永不 raise
+    """
+    if not directory.is_dir():
+        return None
+    mtimes = [p.stat().st_mtime for p in directory.glob(pattern) if p.is_file()]
+    return max(mtimes) if mtimes else None
+
+
+def _age_check_dir(name: str, directory: Path, max_age_hours: float) -> Dict[str, Any]:
+    """目录级产出时效检查（按最新文件 mtime）。
+
+    Contract:
+      Preconditions: directory 为 Path（可能不存在——按全缺失处理）
+      Postconditions: 返回含 name/ok/path/age_hours/reason 的 dict，永不 raise
+    """
+    latest = _latest_mtime(directory)
+    if latest is None:
+        return {
+            "name": name, "ok": False, "path": str(directory),
+            "age_hours": None, "reason": "missing",
+        }
+    age_h = (time.time() - latest) / 3600
+    return {
+        "name": name, "ok": age_h <= max_age_hours, "path": str(directory),
+        "age_hours": round(age_h, 1),
+        "reason": None if age_h <= max_age_hours else "stale",
+    }
+
+
 def check_freshness(home: Path) -> Dict[str, Any]:
     """逐项检查飞轮产出时效。
 
@@ -84,6 +118,13 @@ def check_freshness(home: Path) -> Dict[str, Any]:
     checks.append(_age_check("daily-audit", _latest_audit(home), max_age_hours=26))
     checks.append(_age_check("regression-alerts", home / "outcomes" / "regression_alerts.json", 26))
     checks.append(_age_check("analyzer-findings", home / "outcomes" / "findings.md", 12))
+    # 知识采集层：arXiv 论文收割每日 07:10 cron，断流 >50h 告警
+    # （2026-09-26 实证：采集断流 6 天零告警——监测盲区补齐）
+    checks.append(_age_check_dir(
+        "arxiv-papers",
+        Path("/Users/stan/Knowledge-Base/ai-research/papers"),
+        max_age_hours=50,
+    ))
 
     stale = [c for c in checks if not c["ok"]]
     return {"home": str(home), "alerts": stale, "checked": checks}
