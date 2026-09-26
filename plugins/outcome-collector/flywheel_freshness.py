@@ -7,9 +7,9 @@ heartbeat-watchdog 只盯 retro/metrics，不盯审计产出；审计 job 失效
 以非零退出码 + stderr 告警（cron/watchdog 调用方转为可见信号）。
 
 检查项（产出 → 最大静默时长）：
-  1. skill_suggestions/audit-YYYYMMDD.md     — 每日审计，>36h 未见新文件即告警
-     （21:00 产出到次日 21:00+15h 宽限）
-  2. outcomes/regression_alerts.json         — 每个 cron 日跑，>36h 未更新即告警
+  1. skill_suggestions/audit-YYYYMMDD.md     — 每日审计，>26h 未见新文件即告警
+     （每日 21:00 产出 → 次日 23:00 前未更新即告警）
+  2. outcomes/regression_alerts.json         — 每日 07:00 cron，>26h 未更新即告警
   3. outcomes/findings.md                    — 每 6h 跑，>12h 未更新即告警
 
 用法:
@@ -81,8 +81,8 @@ def check_freshness(home: Path) -> Dict[str, Any]:
       Postconditions: 返回 {"home","alerts","checked"}，永不 raise
     """
     checks: List[Dict[str, Any]] = []
-    checks.append(_age_check("daily-audit", _latest_audit(home), max_age_hours=36))
-    checks.append(_age_check("regression-alerts", home / "outcomes" / "regression_alerts.json", 36))
+    checks.append(_age_check("daily-audit", _latest_audit(home), max_age_hours=26))
+    checks.append(_age_check("regression-alerts", home / "outcomes" / "regression_alerts.json", 26))
     checks.append(_age_check("analyzer-findings", home / "outcomes" / "findings.md", 12))
 
     stale = [c for c in checks if not c["ok"]]
