@@ -1957,9 +1957,9 @@ def _deliver_result(
     if wrap_response:
         task_name = job.get("name", job["id"])
         delivery_content = (
+            f"(time: {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')})\n"
             f"Cronjob Response: {task_name}\n"
             f"(job_id: {job.get('id', '')})\n"
-            f"(time: {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')})\n"
             f"-------------\n\n"
             f"{content}\n\n"
             "To stop or manage this job, send me a new message "
