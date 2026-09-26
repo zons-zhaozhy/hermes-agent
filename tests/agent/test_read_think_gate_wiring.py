@@ -179,12 +179,17 @@ class TestMarkerPathProfileAware:
         assert four_axis_guard._marker_file() == _four_axis_marker_path()
 
     def test_agent_owned_exemptions_follow_hermes_home(self, tmp_path, monkeypatch):
+        # Path.home 钉到沙盒假家目录：负例路径的 resolve() 不得触碰真实
+        # ~/.hermes（autouse HomeIOGuard 契约），断言语义不变——前缀必须跟随
+        # HERMES_HOME，不得回退 Path.home()/.hermes 硬编码（PR #3575 同类）。
+        fake_default_home = tmp_path / "fake_default_home"
+        monkeypatch.setattr(Path, "home", lambda: fake_default_home)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         four_axis_guard = _load_four_axis_guard()
 
         assert four_axis_guard._is_agent_owned_path(str(tmp_path / "cron" / "output" / "r.md"))
         assert not four_axis_guard._is_agent_owned_path(
-            str(Path.home() / ".hermes" / "cron" / "output" / "r.md")
+            str(fake_default_home / ".hermes" / "cron" / "output" / "r.md")
         )
 
 
