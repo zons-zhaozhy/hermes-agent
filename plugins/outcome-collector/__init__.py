@@ -493,14 +493,60 @@ def _check_findings_for_injection() -> Optional[str]:
 
         summary = "\n".join(f"  {line}" for line in high_lines[:5])
 
-        return (
-            "[Outcome Analysis] Recent tool-call patterns show high error rates:\n"
-            f"{summary}\n"
+        parts = [
+            "[Outcome Analysis] Recent tool-call patterns show high error rates:",
+            summary,
             "Review these patterns and adjust your approach if you're about to "
-            "use the same tools in similar ways."
-        )
+            "use the same tools in similar ways.",
+        ]
+        alerts_ctx = _regression_alerts_context()
+        if alerts_ctx:
+            parts.append(alerts_ctx)
+        return "\n".join(parts)
     except Exception as exc:
         logger.warning("outcome-collector: findings injection check failed: %s", exc)
+        return None
+
+
+def _regression_alerts_context() -> Optional[str]:
+    """Layer 4: 未处置的纪律回退警讯（regression_alerts.json → 首turn注入）。
+
+    regressed 判定若无处置通道=写进死目录无人管（2026-09-26 实测 R5/R6
+    回退 9 天无人处置）。此函数把未处置 alerts 变成每个新会话可见的
+    处置指令；处置登记（outcomes/dispositions.json）后自动消警。
+
+    Contract:
+      Preconditions: 无（alerts 文件可能不存在——cron 未跑过属正常）
+      Postconditions: 有未处置 alerts 时返回处置指引文本；否则 None；永不 raise
+    """
+    try:
+        from hermes_constants import get_hermes_home
+
+        alerts_path = get_hermes_home() / "outcomes" / "regression_alerts.json"
+        if not alerts_path.exists():
+            return None
+        data = json.loads(alerts_path.read_text(encoding="utf-8"))
+        alerts = data.get("alerts") if isinstance(data, dict) else None
+        if not alerts:
+            return None
+        lines = []
+        for a in alerts[:5]:
+            rule = a.get("rule", "?")
+            ratio = a.get("ratio")
+            ratio_s = f"{ratio:.2f}" if isinstance(ratio, (int, float)) else "?"
+            lines.append(
+                f"  - {rule}: 验收/基线密度比 {ratio_s}（>1=回退），"
+                f"窗口 {a.get('after_window', '?')}"
+            )
+        return (
+            "[纪律回退未处置] 以下规则判定回退且未见处置动作——纪律文本已证明无效,"
+            "必须处置而非放着:改写规则/收紧执行/确认接受,三选一后把结果写入 "
+            f"{get_hermes_home() / 'outcomes' / 'dispositions.json'}"
+            "（格式 {\"<规则号>\": {\"action\": \"...\", \"date\": \"YYYY-MM-DD\"}}）即消警:\n"
+            + "\n".join(lines)
+        )
+    except Exception as exc:
+        logger.warning("outcome-collector: regression alerts injection failed: %s", exc)
         return None
 
 
@@ -548,9 +594,15 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, str]]:
     is_first_turn = kwargs.get("is_first_turn", False)
     if is_first_turn and sid and sid not in _injected_sessions:
         _injected_sessions.add(sid)
+        parts = []
         ctx = _check_findings_for_injection()
         if ctx:
-            return {"context": ctx}
+            parts.append(ctx)
+        alerts_ctx = _regression_alerts_context()
+        if alerts_ctx:
+            parts.append(alerts_ctx)
+        if parts:
+            return {"context": "\n".join(parts)}
 
     return None
 

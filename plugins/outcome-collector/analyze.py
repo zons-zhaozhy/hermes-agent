@@ -450,6 +450,29 @@ def _detect_cyclic_death_loop(
 
 # ── Main ──────────────────────────────────────────────────────────────
 
+def analyze_behavior_rewrites(conn: sqlite3.Connection, days: int) -> Dict[str, Any]:
+    """统计近 N 天 discipline 插件机械改写/拦截次数（R6 改写 + 各规则 block）。
+
+    R6 曾 30 天 4500+ 次改写而密度反升（regression 2026-09-24 实测 ratio=1.058）——
+    被改写的历史只留在当轮工具结果里,新会话不可见=反馈只到行动层没回认知层。
+    本段把改写/拦截频度变成 findings.md 可见统计。
+
+    Contract:
+      Preconditions: conn 连接到含 violations 表的库（无表则返回空 dict 键集）
+      Postconditions: 返回 {\"R<N>_last<days>d\": count, ...}；无 violations 表返回 {}
+    """
+    try:
+        rows = conn.execute(
+            "SELECT rule, COUNT(*) FROM violations "
+            "WHERE timestamp >= datetime('now', ?) GROUP BY rule",
+            (f"-{days} days",),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    suffix = f"_last{days}d"
+    return {f"{rule}{suffix}": count for rule, count in rows}
+
+
 def run_analysis(db_path: Path, days: int = 7) -> Dict[str, Any]:
     """Run full analysis and return structured findings."""
     if not db_path.exists():
@@ -466,6 +489,7 @@ def run_analysis(db_path: Path, days: int = 7) -> Dict[str, Any]:
         usage = analyze_tool_usage_breakdown(conn, days)
         trend = analyze_temporal_trend(conn, days)
         turn_outcomes = analyze_turn_outcomes(conn, days)
+        behavior_rewrites = analyze_behavior_rewrites(conn, days)
 
         # Turn failure rate > 40% is a high-signal finding
         if turn_outcomes["total_turns"] >= 5 and turn_outcomes["turn_failure_rate"] > 40:
@@ -491,6 +515,7 @@ def run_analysis(db_path: Path, days: int = 7) -> Dict[str, Any]:
             "usage_breakdown": usage,
             "temporal_trend": trend,
             "turn_outcomes": turn_outcomes,
+            "behavior_rewrites": behavior_rewrites,
         }
     finally:
         conn.close()
@@ -586,8 +611,9 @@ def write_findings_file(report: Dict) -> int:
     high = report.get("high_signal_findings", [])
     recurring = [f for f in report.get("findings", []) if f["type"] == "recurring_error"]
     turn = report.get("turn_outcomes", {})
+    rewrites = report.get("behavior_rewrites", {})
 
-    if not high and not recurring and not turn.get("by_outcome"):
+    if not high and not recurring and not turn.get("by_outcome") and not rewrites:
         print("  No findings to write.")
         return 0
 
@@ -658,6 +684,18 @@ def write_findings_file(report: Dict) -> int:
                     f"repeated {f['repetitions']}× "
                     f"(session `{f['session_id'][:8]}`)"
                 )
+        lines.append("")
+
+    # Behavior rewrites (Layer 4 认知层可见:discipline 改写/拦截频度)
+    if rewrites:
+        lines.append("## Behavior Rewrites (discipline auto-fix/blocks)")
+        lines.append(
+            "  (R6=swallowed-stderr rewrites; others=blocks. High counts with"
+            " rising density = the rule text is NOT changing behavior —"
+            " see regression_alerts.json for disposition)"
+        )
+        for key in sorted(rewrites):
+            lines.append(f"  {key}: {rewrites[key]}")
         lines.append("")
 
     # Trend

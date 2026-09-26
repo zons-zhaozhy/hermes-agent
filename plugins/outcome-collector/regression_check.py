@@ -14,6 +14,12 @@
 - 判定：验收密度 < 基线密度的 70% → effective；
   > 基线的 100% → regressed（纪律无效，候选出清）；之间 → inconclusive。
 
+Layer 4 处置闭环（2026-09-26 补——飞轮末环）：
+- regressed 判定不再只写死目录报告：同步写 ~/.hermes/outcomes/regression_alerts.json。
+- alerts 由 outcome-collector 注入链消费（每个新会话首 turn 可见），直到处置完成。
+- 处置登记 = outcomes/dispositions.json 写入 {"R6": {"action": ..., "date": ...}}；
+  已处置规则不再挂警（处置动作本身=对回退的应对决策：改写规则/收紧执行/确认接受）。
+
 USAGE:
     python plugins/outcome-collector/regression_check.py [--db PATH] [--dates PATH]
     OUTCOME_COLLECTOR_DISABLE=1  → no-op
@@ -23,7 +29,8 @@ Preconditions:
     - discipline_dates.json 为 JSON dict：{"R6": "2026-09-07", ...}；缺失则用空集（报告提示）。
 Postconditions:
     - stdout 输出人类可读判定；--json 输出结构化结果；
-      --write 落盘 ~/.hermes/skill_suggestions/regression-YYYYMMDD.md。
+    - 每次运行同步写 outcomes/regression_alerts.json（仅含未处置的 regressed 判定；
+      无 regressed 时写空 alerts 列表——文件恒存在，消费端零探键）。
 """
 
 from __future__ import annotations
@@ -192,9 +199,14 @@ def run_regression_check(db_path: Path, dates_path: Path) -> Dict[str, Any]:
         present = {r[0] for r in conn.execute("SELECT DISTINCT rule FROM violations")}
         untracked = sorted(present - tracked)
     finally:
-        conn.close()
-    return {"generated_at": today, "results": results, "untracked_rules": untracked,
-            "dates_file": str(dates_path)}
+        try:
+            conn.close()
+        except Exception:
+            print(f"WARNING: sqlite close failed: {db_path}", file=sys.stderr)
+    report = {"generated_at": today, "results": results, "untracked_rules": untracked,
+              "dates_file": str(dates_path)}
+    write_alerts_file(report)
+    return report
 
 
 def format_as_text(report: Dict[str, Any]) -> str:
@@ -238,6 +250,64 @@ def write_report_file(report: Dict[str, Any]) -> Path:
         "```",
     ]
     out.write_text("\n".join(body), encoding="utf-8")
+    return out
+
+
+def _dispositions_path() -> Path:
+    """Contract: 返回处置登记文件路径（与 alerts 同目录，HERMES_HOME 感知）。"""
+    home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    return Path(home) / "outcomes" / "dispositions.json"
+
+
+def load_dispositions(path: Path) -> Dict[str, Any]:
+    """已处置规则登记。损坏/缺失返回空 dict（告警不阻断——处置记录缺失不等于回退不存在）。
+
+    Contract:
+      Preconditions: path 为 Path 或不存在
+      Postconditions: 返回 dict（键=规则号）；损坏时打 WARNING 后返回空 dict，永不 raise
+    """
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        print(f"WARNING: dispositions 文件损坏,按无处置处理: {path}", file=sys.stderr)
+        return {}
+
+
+def write_alerts_file(report: Dict[str, Any]) -> Path:
+    """Layer 4: 把未处置的 regressed 判定写成 alerts 文件（消费端=注入链）。
+
+    恒写文件（含空 alerts）——消费端零探键。已处置规则不进 alerts。
+
+    Contract:
+      Preconditions: report 含 results 列表（元素含 rule/verdict 键）
+      Postconditions: 返回 alerts 文件路径;文件含 generated_at/dispositioned_rules/alerts 三键
+    """
+    out_dir = _dispositions_path().parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / "regression_alerts.json"
+
+    dispositioned = load_dispositions(out_dir / "dispositions.json")
+    alerts = [
+        {
+            "rule": r["rule"],
+            "verdict": r["verdict"],
+            "baseline_density_per_1k_calls": r.get("baseline_density_per_1k_calls"),
+            "after_density_per_1k_calls": r.get("after_density_per_1k_calls"),
+            "ratio": r.get("ratio"),
+            "after_window": r.get("after_window", ""),
+        }
+        for r in report.get("results", [])
+        if r.get("verdict") == "regressed" and r["rule"] not in dispositioned
+    ]
+    payload = {
+        "generated_at": report.get("generated_at", ""),
+        "dispositioned_rules": sorted(dispositioned.keys()),
+        "alerts": alerts,
+    }
+    out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return out
 
 
