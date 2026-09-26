@@ -810,6 +810,69 @@ class TestJudgeWithContract:
         assert "pytest -q passes" in user_msg
 
 
+class TestJudgeHistoryDigest:
+    """recent_history renders a compact multi-turn digest so the judge sees the trajectory."""
+
+    def _capture_llm(self, captured, content='{"verdict": "continue", "reason": "more"}'):
+        class _FakeMsg:
+            pass
+        _FakeMsg.content = content
+        class _FakeChoice:
+            message = _FakeMsg()
+        class _FakeResp:
+            choices = [_FakeChoice()]
+
+        def _fake(**kwargs):
+            captured.update(kwargs)
+            return _FakeResp()
+        return _fake
+
+    def test_digest_injected_into_prompt(self, hermes_home):
+        from unittest.mock import patch
+        from hermes_cli import goals
+
+        captured = {}
+        history = [
+            {"role": "user", "content": "fix the login bug"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "read_file"}},
+                {"function": {"name": "terminal"}}]},
+            {"role": "user", "content": "now run the tests"},
+        ]
+        with patch("agent.auxiliary_client.call_llm", side_effect=self._capture_llm(captured)):
+            goals.judge_goal("ship it", "all green", recent_history=history)
+        user_msg = next(
+            (m["content"] for m in (captured.get("messages") or []) if m["role"] == "user"), "")
+        assert "Recent conversation" in user_msg
+        assert "fix the login bug" in user_msg
+        assert "[tools: read_file, terminal]" in user_msg
+        assert "now run the tests" in user_msg
+
+    def test_no_history_keeps_prompt_unchanged(self, hermes_home):
+        from unittest.mock import patch
+        from hermes_cli import goals
+
+        captured = {}
+        with patch("agent.auxiliary_client.call_llm", side_effect=self._capture_llm(captured)):
+            goals.judge_goal("ship it", "all green")
+        with patch("agent.auxiliary_client.call_llm", side_effect=self._capture_llm(captured)):
+            goals.judge_goal("ship it", "all green", recent_history=None)
+        user_msg = next(
+            (m["content"] for m in (captured.get("messages") or []) if m["role"] == "user"), "")
+        assert "Recent conversation" not in user_msg
+
+    def test_digest_char_budget_truncates_oldest_first(self, hermes_home):
+        from hermes_cli import goals
+
+        filler = "x" * 200
+        history = [{"role": "user", "content": filler} for _ in range(30)]
+        digest = goals._render_history_digest(history)
+        assert len(digest) <= goals._JUDGE_HISTORY_MAX_CHARS + 200  # header/footer allowance
+        assert filler not in digest or digest.count(filler) < 30  # oldest entries dropped
+        # only the newest _JUDGE_HISTORY_MAX_MESSAGES messages are considered at all
+        assert digest.count("- user:") <= goals._JUDGE_HISTORY_MAX_MESSAGES
+
+
 class TestDraftContract:
     def test_draft_parses_json(self, hermes_home):
         from unittest.mock import patch

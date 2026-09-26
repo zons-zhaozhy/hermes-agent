@@ -37,6 +37,11 @@ DEFAULT_JUDGE_TIMEOUT = 30.0
 DEFAULT_JUDGE_MAX_TOKENS = 4096
 # Cap how much of the last response we send to the judge.
 _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
+# Conversation-digest budget for the judge: recent history lets the judge see what actually
+# happened across turns (user intents, tools invoked, results claimed) instead of one final
+# self-report. Hard-capped so a long session can't crowd out the goal/response themselves.
+_JUDGE_HISTORY_MAX_MESSAGES = 24
+_JUDGE_HISTORY_MAX_CHARS = 2400
 # Consecutive judge *parse* failures (empty / non-JSON) before the loop auto-pauses and points at
 # the goal_judge config. API/transport errors do NOT count — those are tracked separately below.
 # Guards against small models that cannot follow the strict JSON contract burning the whole budget.
@@ -186,7 +191,7 @@ JUDGE_BACKGROUND_BLOCK_TEMPLATE = (
 JUDGE_USER_PROMPT_TEMPLATE = (
     "Goal:\n{goal}\n\n"
     "Agent's most recent response:\n{response}\n\n"
-    "{background_block}"
+    "{history_digest}{background_block}"
     "Current time: {current_time}\n\n"
     "Is the goal satisfied — done, blocked, continue, or wait?"
 )
@@ -197,7 +202,7 @@ JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "Additional criteria the user added mid-loop (all must also be "
     "satisfied for the goal to be DONE):\n{subgoals_block}\n\n"
     "Agent's most recent response:\n{response}\n\n"
-    "{background_block}"
+    "{history_digest}{background_block}"
     "Current time: {current_time}\n\n"
     "Decision: For each numbered criterion above, find concrete "
     "evidence in the agent's response that the criterion is "
@@ -216,7 +221,7 @@ JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE = (
     "Completion contract (the authoritative definition of done):\n"
     "{contract_block}\n\n"
     "Agent's most recent response:\n{response}\n\n"
-    "{background_block}"
+    "{history_digest}{background_block}"
     "Current time: {current_time}\n\n"
     "Decision rules:\n"
     "- The goal is DONE only when the Verification criterion is satisfied AND "
@@ -868,6 +873,57 @@ def _call_goal_judge_llm(call_llm, system_prompt: str, user_prompt: str, timeout
         return ""
 
 
+def _render_history_digest(recent_history: Optional[List[Dict[str, Any]]]) -> str:
+    """Render a compact multi-turn conversation digest for the judge prompt.
+
+    Contract:
+        Preconditions: recent_history is a list of message dicts (role/content[/tool_calls])
+            in chronological order, or None.
+        Postconditions: returns "" (prompt byte-identical to the no-history case) when
+            None/empty; otherwise <=_JUDGE_HISTORY_MAX_CHARS of "- role: text" lines over
+            the most recent _JUDGE_HISTORY_MAX_MESSAGES entries, oldest dropped first.
+
+    The judge otherwise sees only the final self-report; the digest adds the session's
+    actual trajectory (user asks, tool surfaces, claimed results) so a "done" verdict can
+    be cross-checked against what happened, not just what was said.
+    """
+    if not recent_history:
+        return ""
+    entries: List[str] = []
+    for msg in recent_history[-_JUDGE_HISTORY_MAX_MESSAGES:]:
+        role = str(msg.get("role") or "").strip()
+        if role not in ("user", "assistant"):
+            continue  # tool/system rows carry no verdict-relevant semantics at digest size
+        content = msg.get("content")
+        if isinstance(content, list):  # multimodal: keep text parts, mark images
+            text = " ".join(
+                p.get("text", "") if isinstance(p, dict) and p.get("type") == "text" else "[image]"
+                for p in content if isinstance(p, dict))
+        else:
+            text = "" if content is None else str(content)
+        text = " ".join(text.split())  # collapse whitespace/newlines to one line
+        tool_calls = msg.get("tool_calls") or []
+        if tool_calls:
+            names: List[str] = []
+            for tc in tool_calls:
+                fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                name = fn.get("name", "unknown") if isinstance(fn, dict) else "unknown"
+                if name not in names:
+                    names.append(name)
+            text = (text + " " if text else "") + f"[tools: {', '.join(names[:4])}]"
+        if not text:
+            continue
+        entries.append(f"- {role}: {_truncate(text, 200)}")
+    if not entries:
+        return ""
+    # Enforce the char budget from the oldest side; keep at least the newest entry.
+    while len(entries) > 1 and sum(len(e) for e in entries) > _JUDGE_HISTORY_MAX_CHARS:
+        entries.pop(0)
+    digest = "\n".join(entries)
+    return ("Recent conversation (oldest→newest; the final response below is judged in this "
+            f"context):\n{digest}\n\n")
+
+
 def judge_goal(
     goal: str,
     last_response: str,
@@ -877,12 +933,15 @@ def judge_goal(
     background_processes: Optional[List[Dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
     active_delegations: int = 0,
+    recent_history: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[str, str, bool, Optional[Dict[str, Any]], bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
     Returns ``(verdict, reason, parse_failed, wait_directive, transport_failed)``; verdict is done /
     blocked / continue / wait / skipped. ``parse_failed`` means unusable output; transport errors
-    set ``transport_failed`` instead and fail-open to ``continue``.
+    set ``transport_failed`` instead and fail-open to ``continue``. ``recent_history`` (message
+    dicts, chronological) renders as a compact digest so the judge sees the session trajectory,
+    not only the final self-report.
     """
     if not goal.strip():
         return "skipped", "empty goal", False, None, False
@@ -904,6 +963,7 @@ def judge_goal(
     common = dict(
         goal=_truncate(goal, 2000),
         response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+        history_digest=_render_history_digest(recent_history),
         background_block=_render_background_block(background_processes)
         + (JUDGE_DELEGATIONS_BLOCK_TEMPLATE.format(count=active_delegations) if active_delegations > 0 else ""),
         current_time=safe_strftime(datetime.now(tz=timezone.utc).astimezone(), "%Y-%m-%d %H:%M:%S %Z"),
@@ -1451,6 +1511,7 @@ class GoalManager:
         self, last_response: str, *, user_initiated: bool = True,
         background_processes: Optional[List[Dict[str, Any]]] = None,
         active_delegations: int = 0,
+        recent_history: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Run gates + judge and update state. Return a decision dict (``status``, ``should_continue``,
         ``continuation_prompt``, ``verdict``, ``reason``, ``message``). Both real user prompts and our
@@ -1477,6 +1538,7 @@ class GoalManager:
         verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None, background_processes=background_processes,
             contract=state.contract if state.has_contract() else None, active_delegations=active_delegations,
+            recent_history=recent_history,
         )
         state.last_verdict = verdict
         state.last_reason = reason

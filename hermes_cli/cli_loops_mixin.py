@@ -701,7 +701,9 @@ class CLILoopsMixin:
         except Exception:
             _bg_procs = None
         decision = mgr.evaluate_after_turn(
-            last_response, user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg)
+            last_response, user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg,
+            recent_history=list(getattr(self, "conversation_history", None) or []),
+        )
         _print_decision_message(decision)
         if decision.get("should_continue"):
             prompt = decision.get("continuation_prompt")
