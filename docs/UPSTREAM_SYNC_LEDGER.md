@@ -50,7 +50,8 @@ f799fd8578 在官方 Linux CI "Python tests / Run tests" = success。
 | scripts/paradigm_triage.py | cba41a4730: 范式级信号分诊件——信号词预筛+Ollama qwen2.5:0.5b 打分(0-9)→top 队列供日学习优先消化;判断题走小模型(SystemOne 纪律) | 低（scripts/ 追加式） | 长期保留（每日 12:40 cron 范式分诊·日跑消费） |
 | .hermes-rules.md | fork 根纪律文件（官方无此文件） | 零 | 长期保留；md5 与 HEAD 对齐由三问审计第4条核验 |
 | apps/desktop/src/plugins/hermes-bots/cron-detail.test.tsx + apps/desktop/src/store/voice-prefs.test.ts (3811501b22) | locale/spy 修正（中文环境特有） | 零 | 值得提 upstream PR |
-| .gitignore / docs/review/ | 追加式 | 零 | 长期保留 |
+| .gitignore (+.codegraph/) / docs/review/ (6 文件 fork 专有审查文档) | 追加式 | 零 | 长期保留 |
+| batch_runner.py + hermes_cli/cli_commands_mixin.py + plugins/platforms/feishu/feishu_comment.py + tui_gateway/methods_prompt.py + tests/test_agent_close_lifecycle.py (aabc8f6427, 0926 cherry-pick) | 官方 94f3dbec9b one-shot AIAgent close() 泄漏修复（-x 保留官方作者; cherry-pick 前基线后→已同步件） | 低（与官方同源, 下次 merge 自动对齐） | 已同步件 |
 | hermes_cli/goals.py + hermes_cli/goal_command.py + gateway/run_goals.py + hermes_cli/cli_loops_mixin.py + evals/postmortem/review_probes/goal_scope_probe.py + tests/hermes_cli/test_goals.py + tests/gateway/test_goal_continuation_drain.py (0926 补记) | goals/judge 定制线: judge 对话语义注入(recent_history 摘要 24 条/2400 字上限)+contract verification draft 六字段+一键 gate add 桥+goal_command 三通道吞异常根治 | 中（官方改 goals/judge 框架时撞） | 官方 goals 若提供等价 judge 上下文注入则外迁 |
 | agent/retry_utils.py (0926 补记) | 4 行: retry 参数微调 | 低 | 上游改同参数时让位 |
 | tools/mcp_tool_config.py + tests/tools/test_mcp_tool.py (0926 补记) | MCP stdio env 标量归一为字符串(540014b918): YAML 标量 int/float/bool 转 str, 非标量响亮拒绝 | 低（追加式分支） | 值得提 upstream PR |
