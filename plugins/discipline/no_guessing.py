@@ -203,8 +203,16 @@ _BLOCK_RAW_LOGS = (
 
 # 规则5：纯 sleep 干等轮询（长任务铁律：>60s 或 network 一律 background+notify）
 _BLOCK_SLEEP_LOOP = (
-    "[NO-GUESSING BLOCK] 检测到 sleep 干等轮询。铁律：长任务(>60s/含网络)一律 "
+    "[NO-GUESSING BLOCK] 检测到纯 sleep 干等。铁律：长任务(>60s/含网络)一律 "
     "background=true + notify_on_complete=true，用 process wait/poll 管理，禁止 sleep 干等。"
+)
+# 2026-09-26 R5 处置（回退治理）：sleep>limit 且命令含「;后续检查」组合（如
+# `sleep 90; grep -c OK log`）是轮询退化姿势——比 background 弱但非干等，
+# 曾被一并 block 导致密度 7 天不降（2.39→2.78/千，violations 实测主力形态）。
+# 组合式降级为注入提醒（不改写不阻断），纯 sleep（无后续动作）才 block。
+_SLEEP_COMBO_HINT = (
+    "[NO-GUESSING 提醒] sleep 后接检查命令是轮询退化姿势——长任务正解="
+    "background=true + notify_on_complete + process wait/poll。本次放行，下次改姿势。"
 )
 
 # 规则6：诊断命令吞错——2>/dev/null 会把报错证据扔掉，违反 log-first 诊断纪律
@@ -233,11 +241,14 @@ def _check_raw_logs(command: str):
     return _BLOCK_RAW_LOGS
 
 
-def _check_sleep_wait(command: str, sleep_limit: int = 10, is_background: bool = False):
+def _check_sleep_wait(command: str, sleep_limit: int = 10, is_background: bool = False) -> Optional[str]:
     """规则5：纯 sleep 干等。L3 时 sleep_limit 收窄到 _L3_SLEEP_LIMIT(3s)。
     允许: 短暂等待页面渲染(≤limit 且命令含其他实质操作)；
           background=true 的 sleep（合法长任务姿势, 由 process wait/poll 管理）。
-    拦: 前台大秒数 sleep 干等。
+    拦: 前台纯 sleep 干等（sleep 后无任何后续动作）；组合式注入提醒放行。
+
+    Contract:
+      Postconditions: 返回 None（放行）/"HINT"（组合式提醒放行标记）/_BLOCK_SLEEP_LOOP
     """
     if is_background:
         return None  # background 长任务是正解姿势，永不拦
@@ -252,6 +263,12 @@ def _check_sleep_wait(command: str, sleep_limit: int = 10, is_background: bool =
         return None  # 组合命令里的短间隔，放行
     if secs <= sleep_limit:
         return None  # 短 sleep 本身无害（页面渲染等待等场景），放行
+    # 超限 sleep：组合式（; 或 && 后仍有实质命令）=轮询退化→提醒放行；纯 sleep→block
+    after = _re.split(r"sleep \d+", command, maxsplit=1)
+    tail = after[1] if len(after) > 1 else ""
+    has_followup = any(tok.strip() for tok in _re.split(r"[;&&]+", tail))
+    if has_followup:
+        return "HINT"  # 组合式轮询退化：调用方注入提醒但不阻断
     return _BLOCK_SLEEP_LOOP
 
 
@@ -453,11 +470,15 @@ def _on_pre_tool_call(**kwargs):
     if msg:
         return _block_with_escalation("R4", command, msg, sid)
 
-    # 规则5：纯 sleep 干等轮询（background 长任务放行; L3 收窄 sleep 上限）
+    # 规则5：纯 sleep 干等轮询（background 长任务放行; L3 收窄 sleep 上限; 组合式提醒放行）
     msg = _check_sleep_wait(
         command,
         sleep_limit=_L3_SLEEP_LIMIT if _current_level("R5") == "L3" else 10,
         is_background=bool(args.get("background")))
+    if msg == "HINT":
+        # 组合式轮询退化：记录违规但只注入提醒，不阻断（回退治理 2026-09-26）
+        _record_violation("R5", command, "L1", sid)
+        return {"action": "allow", "context": _SLEEP_COMBO_HINT}
     if msg:
         return _block_with_escalation("R5", command, msg, sid)
 
