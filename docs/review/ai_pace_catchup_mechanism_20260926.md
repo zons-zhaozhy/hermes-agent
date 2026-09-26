@@ -65,6 +65,7 @@ urllib timeout=60 大响应必挂死 → cron 3600s 击杀 →
 |---|---|---|---|
 | 采集 | oai_harvest_recent7.sh cron | 每日 07:10 | 修复后首轮回补 1808 篇 |
 | 断流监测 | flywheel_freshness 第4项 + watchdog 检查4 | 每 30min | 75.9h 告警→根修→0.9h 转绿 |
+| 告警出口 | watchdog/mirror-drift cron deliver=feishu 群 | exit 1 即投递 | 0926 修复：原 deliver:local 告警只落库无人知（近 7 天 4 次全 suppressed） |
 | 分诊 | 范式分诊·日跑 cron（38171bcd607b） | 每日 12:40 | 首跑 completed（17s） |
 | 消化 | 日学习 job prompt 前插优先队列指令 | 每日 12:30 | 队列≥7 分优先于星期轮排 |
 
@@ -76,3 +77,6 @@ urllib timeout=60 大响应必挂死 → cron 3600s 击杀 →
 - 分诊模型换型前先测：思考模型的 thinking 字段会吃掉 num_predict 预算
 - 哨兵 papers 阈值 50h 与采集 cron 节奏耦合：改采集频率须同步改阈值
 - 账本重试链是活的：收割失败次日自动并入，禁手动清账本
+- 告警出口通道改动（cron deliver）须同步本表：哨兵有效=检测+投递两半都在，
+  上午文档初版只记了检测半（deliver:local 断点下午才挖出）——教训：接线表
+  必须覆盖到「人看见」为止，落库≠送达
