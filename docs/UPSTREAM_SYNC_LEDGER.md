@@ -40,6 +40,7 @@ f799fd8578 在官方 Linux CI "Python tests / Run tests" = success。
 | tests/cron/test_unreachable_retry.py | b929b65d16 配套测试 | 零（测试文件） | 与 cron 定制同命运 |
 | cron/unreachable_retry.py | b929b65d16: 恢复 unreachable ladder 的 offline 摘要+quota 429 transient 判定 | 中（官方改 retry 逻辑时撞） | 跟踪官方 retry 侧等价机制 |
 | scripts/skill_sha_drift.py | b101a20a2d/74c996fef6: skill-drift-check 依赖脚本（基线切换恢复件+噪音修复） | 低（scripts/ 追加式） | 长期保留 |
+| scripts/paradigm_triage.py | cba41a4730: 范式级信号分诊件——信号词预筛+Ollama qwen2.5:0.5b 打分(0-9)→top 队列供日学习优先消化;判断题走小模型(SystemOne 纪律) | 低（scripts/ 追加式） | 长期保留（每日 12:40 cron 范式分诊·日跑消费） |
 | .hermes-rules.md | fork 根纪律文件（官方无此文件） | 零 | 长期保留；md5 与 HEAD 对齐由三问审计第4条核验 |
 | apps/desktop/src/plugins/hermes-bots/cron-detail.test.tsx + apps/desktop/src/store/voice-prefs.test.ts (3811501b22) | locale/spy 修正（中文环境特有） | 零 | 值得提 upstream PR |
 | .gitignore / docs/review/ | 追加式 | 零 | 长期保留 |
