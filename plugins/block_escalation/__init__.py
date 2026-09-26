@@ -170,13 +170,37 @@ def _note_blocked(tool_name: str, args: dict) -> None:
             count, sorted(tools))
 
 
+def _clear_streak(tool_name: str, args: dict) -> None:
+    """Contract: Preconditions: 一次非 blocked 状态的工具调用已完成；Postconditions:
+    该调用对应的意图指纹 streak 清零并撤销升级标记（意图已成功落地，惩罚作废）；
+    库异常降级为 ERROR 日志不中断。"""
+    fp = _intent_fingerprint(tool_name, args)
+    if not fp:
+        return
+    key = _fp_key(fp)
+    _escalated.discard(fp)
+    try:
+        with _db_lock:
+            conn = _get_conn()
+            try:
+                _ensure_schema(conn)
+                conn.execute("DELETE FROM block_streaks WHERE fingerprint = ?", (key,))
+                conn.commit()
+            finally:
+                conn.close()
+    except Exception as err:
+        logger.error("block_escalation: 清账失败（不中断）: %s", err)
+
+
 def _on_post_tool_call(tool_name: str = "", status: str = "", error_type: str = "",
                        args: dict | None = None, **kwargs) -> None:
     """Contract: Preconditions: 核心以 status/error_type 复播工具结果；
-    Postconditions: status=blocked 时记录意图指纹；纯观察无返回值。"""
-    if status != "blocked":
-        return
-    _note_blocked(tool_name, args or {})
+    Postconditions: status=blocked 时记录意图指纹；status=success 时同指纹
+    清账（成功落地=streak 作废，防误判残留）；纯观察无返回值。"""
+    if status == "blocked":
+        _note_blocked(tool_name, args or {})
+    elif status == "success":
+        _clear_streak(tool_name, args or {})
 
 
 def register(ctx):
