@@ -202,3 +202,71 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
         f"drains: pending keys={list(adapter._pending_messages)} "
         f"expected={adapter_key}"
     )
+
+
+@pytest.mark.asyncio
+async def test_goal_judge_receives_session_transcript_digest(hermes_home):
+    """The gateway judge input must include the session transcript digest, not just the final
+    reply — otherwise a 40-turn build reads as one cheerful summary (the shallow-judge shape)."""
+    from unittest.mock import MagicMock, patch
+    from datetime import datetime
+    import uuid
+
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionEntry
+    from hermes_cli.goals import GoalManager
+
+    src = _slack_thread_source()
+    adapter_key = build_session_key(src)
+
+    runner = object.__new__(GatewayRunner)
+    from gateway.config import GatewayConfig
+
+    runner.config = GatewayConfig(
+        platforms={Platform.SLACK: PlatformConfig(enabled=True, token="x")},
+    )
+    runner._queued_events = {}
+    sid = f"goal-hist-{uuid.uuid4().hex[:8]}"
+    session_entry = SessionEntry(
+        session_key=adapter_key,
+        session_id=sid,
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.SLACK,
+        chat_type="channel",
+    )
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = session_entry
+    runner.session_store._generate_session_key.return_value = adapter_key
+
+    transcript = [
+        {"role": "user", "content": "fix the login bug in auth.py"},
+        {"role": "assistant", "content": "patched auth.py and ran pytest"},
+    ]
+
+    # Production shape: the async facade wraps the sync store and offloads load_transcript
+    # (AsyncSessionStore.__getattr__ → asyncio.to_thread) — stub the SYNC store method.
+    from gateway.session import AsyncSessionStore
+    runner.session_store.load_transcript = MagicMock(return_value=list(transcript))
+    runner._async_session_store = AsyncSessionStore(runner.session_store)
+
+    adapter = _DrainProbeAdapter()
+    runner.adapters = {Platform.SLACK: adapter}
+
+    GoalManager(sid).set("ship it")
+    with patch(
+        "hermes_cli.goals.judge_goal",
+        return_value=("continue", "still needs work", False, None, False),
+    ) as mock_judge:
+        await runner._post_turn_goal_continuation(
+            session_entry=session_entry,
+            source=src,
+            final_response="partial progress",
+        )
+        await asyncio.sleep(0.05)
+
+    # 期望: judge_goal 收到 recent_history 且含会话原句,而非只有 final_response
+    assert mock_judge.call_count >= 1
+    kwargs = mock_judge.call_args.kwargs
+    assert kwargs.get("recent_history") == transcript
+    assert "login bug" in (kwargs.get("recent_history") or [{}])[0].get("content", "")

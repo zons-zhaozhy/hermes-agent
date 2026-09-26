@@ -290,13 +290,19 @@ class GatewayGoalsMixin:
             _bg_procs = _gather_bg(owner_task_id=getattr(session_entry, "session_id", None) or None)
             _active_deleg = count_active_delegations(getattr(session_entry, "session_id", None))
 
+        # Same transcript manual compression reads (load_transcript): lets the judge see the
+        # whole turn's conversation semantics, not just the final reply. Transcript read errors
+        # propagate to the post-turn hook logger (run_goals dispatch loop), never silently.
+        _recent_history = await self.async_session_store.load_transcript(
+            session_entry.session_id)
+
         # judge_goal() is a synchronous aux-LLM HTTP call (10-40 s; would block Discord heartbeats).
         # _run_in_executor_with_context carries the profile secret scope / aux runtime contextvars
         # without which aux credential resolution fails under multiplexing.
         decision = await self._run_in_executor_with_context(
             lambda: mgr.evaluate_after_turn(
                 final_response or "", user_initiated=True, background_processes=_bg_procs,
-                active_delegations=_active_deleg,
+                active_delegations=_active_deleg, recent_history=_recent_history,
             ),
         )
         msg = decision.get("message") or ""

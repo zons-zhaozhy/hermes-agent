@@ -7,6 +7,7 @@ from the command line / environment, never hard-coded. Usage: see the argument p
 import os,sys,tempfile,json,subprocess,time,queue,asyncio,contextlib
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 sys.path.insert(0,os.getcwd())
 home=tempfile.TemporaryDirectory(prefix='goals-probe-')
@@ -36,9 +37,12 @@ try:
    def _get_goal_manager(self): return self.mgr
   c=CLI();c.session_id='root';c.agent=SimpleNamespace(session_id='root');c._pending_input=queue.Queue();c.conversation_history=[{'role':'assistant','content':'Waiting on workers'}]
   class GW(GatewayGoalsMixin):
+   _async_session_store:Any=None  # probe stub, replaced below
    async def _post_turn_manager(self,*a):return self.mgr
    async def _run_in_executor_with_context(self,fn):return fn()
-  g=GW()
+  class _ProbeAsyncStore:
+   async def load_transcript(self, session_id):return []
+  g=GW();g._async_session_store=_ProbeAsyncStore()
   with patch.object(goals,'judge_goal',side_effect=judge):
    for label in ['cli','gateway','tui']:
     m=goals.GoalManager(session_id='root');m.set('finish');c.mgr=g.mgr=m

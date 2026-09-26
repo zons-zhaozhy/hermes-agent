@@ -364,7 +364,7 @@ def _goal_followup_after_turn(
                 _bg_procs = None
             decision = goal_mgr.evaluate_after_turn(
                 raw, user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg,
-                recent_history=list(session.get("history") or []))
+                recent_history=list(session["history"]))
             if verdict_msg := decision.get("message") or "":
                 _emit("status.update", sid, {"kind": "goal", "text": verdict_msg})
             if decision.get("should_continue") and (
