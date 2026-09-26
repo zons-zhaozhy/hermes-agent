@@ -266,6 +266,10 @@ def _check_hardcoded_secret(tree: ast.AST, lines: List[str], skip_tests: bool = 
     """
     violations = []
     for name, value, node in _iter_name_value_pairs(tree):
+        # 名字含 CJK 时永不可能是密钥变量名——Python 标识符恒 ASCII；
+        # 含 CJK 的 dict 键是消息文案（i18n 目录等），子串匹配到此为止
+        if any("\u4e00" <= ch <= "\u9fff" for ch in name):
+            continue
         if not any(kw in name for kw in _SECRET_NAME_KEYWORDS):
             continue
         if isinstance(value, ast.Constant) and isinstance(value.value, str):
