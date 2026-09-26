@@ -6,11 +6,16 @@
 > (仓库现有 11 个根提交, upstream 可达 ~39.9k vs fork 可达 ~206)。真实落后量用
 > `git log --format='%ci' <merge-base>..upstream/main | awk '$1>="日期"'` 按日期计数。
 
-## 〇、macOS 本机全量测试的既有失败底账（0924 实测, 勿再当新缺陷排查）
+## 〇、macOS 本机全量测试的既有失败底账（0924 实测, 0926 翻案大部分, 勿再当新缺陷排查）
 
 本机全量 `scripts/run_tests.sh` 有约 27 文件持续失败, 已定性为 macOS 环境限制+上游测试
 缺标记, 非代码缺陷、非同步引入。判据: 同批文件在 premerge 树(merge 前代码)同构失败;
 f799fd8578 在官方 Linux CI "Python tests / Run tests" = success。
+
+**0926 翻案**: 其中 13 失败(holographic/photon/meta_ai/openrouter/kanban)非环境限制,
+是 sync 05cb467300 误回退官方修复(占位符/剥离层/secret scope/凭据隔离/游标语义),
+8027e3ef2d+68627aa528 两批共恢复 11 文件官方实现, tests/plugins/ 全目录 1750/1750
+零失败。剩余失败=下述 Linux 语义/二进制/时序类, 维持原判。
 
 - Linux 语义断言裸跑 macOS（上游缺 linux_only 标记, 违反 AGENTS.md「用标记禁裸 skipif」）:
   test_scratch_dir(setgid 位, chmod 504≠1528)/test_voice_mode(PulseAudio socket)/
