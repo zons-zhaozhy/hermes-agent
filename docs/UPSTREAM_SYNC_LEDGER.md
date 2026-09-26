@@ -16,8 +16,10 @@ f799fd8578 在官方 Linux CI "Python tests / Run tests" = success。
   test_scratch_dir(setgid 位, chmod 504≠1528)/test_voice_mode(PulseAudio socket)/
   test_cross_vm_fs_wal_refusal(virtiofs/9p)/test_bot_desktop_resources(runtime.py:450
   内存读取被 is_supported_host() 仅 Linux 门控)/test_cua_no_overlay(CuaDriver.app)
-- 本机缺二进制/凭据类: test_wake_word(需 pip install ai-edge-litert)/test_holographic/
-  test_openrouter/image_gen 等
+- 本机缺二进制/凭据类: test_wake_word(需 pip install ai-edge-litert) 等。
+  ~~test_holographic/test_openrouter/image_gen~~ → 0926 已翻案: 此前 13 失败非
+  环境限制, 是 sync 05cb467300 误回退官方修复(占位符/剥离层/secret scope),
+  8027e3ef2d 已恢复官方实现, image_gen+memory+photon 625/625 绿
 - 时序抖动类(满载 20 worker 下偶发, 单跑绿): test_slash_worker_mcp_discovery(subprocess
   +MCP 发现窗口)
 - 收集超时类: test_run_agent.py 等 3 大文件, 单跑 --collect-only 4.62s 正常, 系 runner
