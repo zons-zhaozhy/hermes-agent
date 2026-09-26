@@ -43,6 +43,11 @@ f799fd8578 在官方 Linux CI "Python tests / Run tests" = success。
 | .hermes-rules.md | fork 根纪律文件（官方无此文件） | 零 | 长期保留；md5 与 HEAD 对齐由三问审计第4条核验 |
 | apps/desktop/src/plugins/hermes-bots/cron-detail.test.tsx + apps/desktop/src/store/voice-prefs.test.ts (3811501b22) | locale/spy 修正（中文环境特有） | 零 | 值得提 upstream PR |
 | .gitignore / docs/review/ | 追加式 | 零 | 长期保留 |
+| hermes_cli/goals.py + hermes_cli/goal_command.py + gateway/run_goals.py + hermes_cli/cli_loops_mixin.py + evals/postmortem/review_probes/goal_scope_probe.py + tests/hermes_cli/test_goals.py + tests/gateway/test_goal_continuation_drain.py (0926 补记) | goals/judge 定制线: judge 对话语义注入(recent_history 摘要 24 条/2400 字上限)+contract verification draft 六字段+一键 gate add 桥+goal_command 三通道吞异常根治 | 中（官方改 goals/judge 框架时撞） | 官方 goals 若提供等价 judge 上下文注入则外迁 |
+| agent/retry_utils.py (0926 补记) | 4 行: retry 参数微调 | 低 | 上游改同参数时让位 |
+| tools/mcp_tool_config.py + tests/tools/test_mcp_tool.py (0926 补记) | MCP stdio env 标量归一为字符串(540014b918): YAML 标量 int/float/bool 转 str, 非标量响亮拒绝 | 低（追加式分支） | 值得提 upstream PR |
+| tui_gateway/prompt_turn.py (0926 补记) | 3 行: prompt 轮次微调 | 低 | 上游改同参数时让位 |
+| pyproject.toml + uv.lock (0926 补记) | 依赖钉版差异（fork 追加依赖） | 低（追加式） | 每次 pm lock 后重新对账 |
 
 ## 二、防冲突铁律（同步操作规程）
 
