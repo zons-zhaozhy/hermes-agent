@@ -21,3 +21,12 @@
 - bot_mode_dm 投递挂死（管道 EOF 等待）→ e394e62c02，退出码权威范式
 - periodic_scheduler 锁序死锁（65848 teardown）→ 05c4ff8e7a，dispatch 移出 _cond
 - 飞书「入站死亡」 → 误报，链路 24 秒自愈，不重启（控制面 status 权威）
+
+## 2026-09-28 追加（ruamel 第三雷翻案后）
+
+### 2. 1302 账户限速二期：LLM 预算上限 + provider 分流
+- 优先级：高（上调，哨兵附议：今晚两次「重调试 turn+整刻」撞顶）
+- 方向：整刻错峰已落地（:04/:07/:10/:11），但重调试 turn（red-first 测试连跑）+cron 并发仍会撞 zai 账户限速；需 LLM 调用预算上限+跨 provider 分流兜底
+
+### 3. pm replay 触发链精确化
+- 优先级：低。已实锤「污染→replay 清空 site-packages」机制，但 23:02 replay 的确切调用方（哪次 pm ensure/verify）未定位；PM replay 发生时应有防污染告警
