@@ -167,7 +167,7 @@ def test_run_delivery_holds_profile_lock_during_turn(root, tmp_path, monkeypatch
 
         return _P()
 
-    monkeypatch.setattr(bot_mode_dm.subprocess, "run", _fake_run)
+    monkeypatch.setattr(bot_mode_dm, "_turn_child", lambda argv, env: _fake_run(argv, env=env))
     rc = bot_mode_dm._run_delivery(
         ["hermes", "-p", "ops", "chat"], str(dm), stdin_file=False
     )

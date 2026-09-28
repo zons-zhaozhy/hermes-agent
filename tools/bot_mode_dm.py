@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import io
 import json
 import logging
 import os
@@ -49,6 +50,10 @@ REPLY_COMPLETION_CHARS = MESSAGE_MAX_CHARS + 2000
 _DM_DIR_NAME = "hermes-dm"
 _DM_STALE_SECONDS = 24 * 60 * 60
 _LIVE_WAIT_SECONDS = 300
+# Grace for the daemon drain after a turn child exits: its pipes may still be held
+# open by an inherited-fd grandchild (see _turn_child), so completion is booked from
+# the exit code and this window only bounds the tail-drain wait.
+_TURN_STREAM_GRACE_SECONDS = 2.0
 
 # '<peer>/<agent>' — peer names are lowercase (``hermes peer`` normalizes them).
 _PEER_TARGET_RE = re.compile(r"^([a-z0-9][a-z0-9_-]{0,63})/([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})$")
@@ -415,15 +420,57 @@ def _delivery_lock(argv: list[str], *, stdin_file: bool):
     return acquire_turn_lock(_hermes_root(Path(_default_home())), argv[2])
 
 
+def _turn_child(argv: list[str], env: Optional[dict[str, str]]) -> subprocess.CompletedProcess:
+    """Run one CLI turn child and return its completed streams.
+
+    Exit-code authoritative: the child's exit decides completion, never pipe EOF.
+    A grandchild (the MCP parent-death supervisor, an orphaned stdio server)
+    inherits the stdout/stderr write ends, so waiting for pipe EOF would block
+    forever while the turn itself finished long ago — the delivery runner then
+    holds the profile flock and every later DM is refused 'target_busy' (same
+    bug class as #17327). Each pipe drains incrementally on its own daemon
+    thread (both, so a chatty child never blocks on an undrained pipe); once
+    the child exits, the grace window only bounds the tail drain. Data already
+    in the pipe returns from a blocked read without EOF, so the reply the CLI
+    wrote before exiting is collected; a tail still unwritten at grace expiry
+    is lost by design — the CLI flushes its answer before exit.
+    """
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, env=env)
+    out_buf: bytearray = bytearray()
+    err_buf: bytearray = bytearray()
+
+    def _drain(stream: "io.BufferedReader", buf: bytearray) -> None:
+        try:
+            while True:
+                chunk = stream.read1(65536)
+                if not chunk:
+                    return
+                buf.extend(chunk)
+        except (ValueError, OSError):
+            return
+
+    drains = [threading.Thread(target=_drain, args=(stream, buf), daemon=True,
+                               name=f"bot-turn-drain-{proc.pid}-{name}")
+              for stream, buf, name in ((proc.stdout, out_buf, "out"), (proc.stderr, err_buf, "err"))]
+    for drain in drains:
+        drain.start()
+    proc.wait()
+    for drain in drains:
+        drain.join(timeout=_TURN_STREAM_GRACE_SECONDS)
+    return subprocess.CompletedProcess(argv, proc.returncode,
+                                       bytes(out_buf).decode("utf-8", "replace"),
+                                       bytes(err_buf).decode("utf-8", "replace"))
+
+
 def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, str]] = None) -> int:
     """One Bot Chat turn via ``--query-file`` (plus one policy-gated retry); re-emits
     the transport's streams and returns its exit code. Transient failures re-run the
     same session; a context_overflow re-run lets the retried turn's pre-API compaction
     compact the transcript first (no fresh session is ever minted). Auth/quota/config never retry."""
 
-    def _turn(turn_env=env):
-        return subprocess.run([*argv, "--query-file", dm_file], check=False, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, encoding="utf-8", errors="replace", env=turn_env)
+    def _turn(turn_env: Optional[dict[str, str]] = env) -> subprocess.CompletedProcess:
+        return _turn_child([*argv, "--query-file", dm_file], turn_env)
 
     proc = _turn()
     if proc.returncode != 0:

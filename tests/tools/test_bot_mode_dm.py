@@ -6,6 +6,7 @@ deliver from anywhere else even if a schema leaks.
 """
 
 import json
+import io
 import os
 import shlex
 import subprocess
@@ -737,23 +738,31 @@ def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
         subprocess.CompletedProcess([], 0, stdout="", stderr=""),
     ]
 
-    def fake_run(argv, **kwargs):
-        calls.append((argv, kwargs))
-        return responses.pop(0)
+    class FakeProc:
+        def __init__(self, argv: list, **kwargs) -> None:
+            calls.append((argv, kwargs))
+            response = responses.pop(0)
+            self.returncode = response.returncode
+            self.stdout = io.BytesIO(response.stdout.encode("utf-8"))
+            self.stderr = io.BytesIO(response.stderr.encode("utf-8"))
+            self.pid = 4242
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+        def wait(self) -> int:
+            return self.returncode
+
+    monkeypatch.setattr(bot_mode_dm.subprocess, "Popen", FakeProc)
 
     returncode = bot_mode_dm._run_delivery(
         ["hermes", "-p", "researcher"], str(dm_file), stdin_file=False
     )
 
-    assert returncode == 0
-    assert len(calls) == 2
-    assert [kwargs["stdin"] for _argv, kwargs in calls] == [
+    assert returncode == 0  # 期望: 429=瞬态类,一次重试成功(#93091)
+    assert len(calls) == 2  # 期望: 首试+一次重试
+    assert [kwargs["stdin"] for _argv, kwargs in calls] == [  # 期望: stdin=DEVNULL 契约不变
         subprocess.DEVNULL,
         subprocess.DEVNULL,
     ]
-    assert not dm_file.exists()
+    assert not dm_file.exists()  # 期望: 消费即删,防明文残留
 
 
 @pytest.mark.parametrize("mode, author", [
@@ -770,10 +779,23 @@ def test_delivery_main_child_env_carries_only_the_argv_author(tmp_path, monkeypa
     dm_file.write_text("secret", encoding="utf-8")
     calls = []
 
+    class FakeTurnProc:
+        def __init__(self, argv: list, **kwargs) -> None:
+            calls.append((argv, kwargs))
+            self.returncode = 0
+            self.stdout = io.BytesIO(b"")
+            self.stderr = io.BytesIO(b"")
+            self.pid = 4242
+
+        def wait(self) -> int:
+            return self.returncode
+
     def fake_run(argv, **kwargs):
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
+    # query-file 车道走 _turn_child→Popen;stdin 车道保持 subprocess.run
+    monkeypatch.setattr(bot_mode_dm.subprocess, "Popen", FakeTurnProc)
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setenv("HERMES_DM_TEST_MARKER", "kept")
     monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps({"id": "bot:previous", "name": "previous", "is_bot": True}))
