@@ -46,9 +46,10 @@ _JUDGE_HISTORY_MAX_CHARS = 2400
 # the goal_judge config. API/transport errors do NOT count — those are tracked separately below.
 # Guards against small models that cannot follow the strict JSON contract burning the whole budget.
 DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
-# Consecutive transport failures (401, timeout, DNS) before auto-pause: a broken API key returns
-# 401 every call and must not spend every turn on an unreachable judge.
-DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5
+# Consecutive transport failures (429, timeout, DNS) before auto-pause. Judge providers under
+# sustained rate-limiting (e.g. quota-window 429s) can fail many turns in a row and recover;
+# the budget backstop still bounds a genuinely broken judge (bad key = 401 forever).
+DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 30
 
 # Quality gates: deterministic shell commands that must pass before the judge may declare DONE. A
 # failed gate short-circuits the judge — its output IS the continuation prompt, so the agent works
