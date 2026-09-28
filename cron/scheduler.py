@@ -1138,14 +1138,16 @@ def _consume_interrupted_flag(job_id: str, token: Optional[object] = None) -> bo
 def _inactivity_watchdog_loop(
     *, get_idle_seconds: Callable[[], float], limit_s: float, poll_s: float, stop: threading.Event,
     future_done: Callable[[], bool],
-) -> bool:
-    """Poll idle time until limit (-> True), stop, or the future completes (-> False). Uses
-    ``threading.Event.wait``, not asyncio, so a blocked event loop cannot disable the watchdog.
+) -> "float | bool":
+    """Poll idle time until limit (-> the observed idle seconds), stop, or the future
+    completes (-> False). Uses ``threading.Event.wait``, not asyncio, so a blocked event
+    loop cannot disable the watchdog.
 
     Driven by ``threading.Event.wait`` (a kernel timeout), not asyncio, so a blocked event-loop /
     ``run_job`` thread cannot disable this watchdog the way ``asyncio.sleep`` / ``wait_for`` would (family A
-    of #94285 — the 4118s-idle-on-a-600s-limit cron hang). Returns True when *limit_s* of inactivity was
-    observed.
+    of #94285 — the 4118s-idle-on-a-600s-limit cron hang). Returns the *observed* idle seconds
+    when the limit fired so callers can report that exact value instead of resampling
+    cross-thread; returns False when it did not fire.
     """
     while not stop.wait(poll_s):
         if future_done():
@@ -1155,7 +1157,7 @@ def _inactivity_watchdog_loop(
         except Exception:
             idle = 0.0
         if idle >= limit_s:
-            return True
+            return idle
     return False
 
 
@@ -1870,14 +1872,24 @@ def _open_cron_session_db(job: dict):
     return None
 
 
-def _raise_inactivity_timeout(agent, job_name: str, limit_s: float) -> None:
-    """Log the agent's last activity, hard-interrupt it and raise TimeoutError."""
+def _raise_inactivity_timeout(agent: Any, job_name: str, limit_s: float,
+                              observed_idle_s: "float | None" = None) -> None:
+    """Log the agent's last activity, hard-interrupt it and raise TimeoutError.
+
+    ``observed_idle_s`` is the idle value the watchdog *judged* on; when present it is
+    reported verbatim instead of resampling ``get_activity_summary`` cross-thread — a
+    resample can read 0s (race with the worker thread / recovery moment / a suppressed
+    exception), producing impossible 'idle for 0s (limit 600s)' failure records.
+    """
     _activity = {}
     if hasattr(agent, "get_activity_summary"):
         with contextlib.suppress(Exception):
             _activity = agent.get_activity_summary()
     _last_desc = _activity.get("last_activity_desc", "unknown")
-    _secs_ago = _activity.get("seconds_since_activity", 0)
+    if observed_idle_s is not None:
+        _secs_ago = float(observed_idle_s)
+    else:
+        _secs_ago = _activity.get("seconds_since_activity", 0)
     logger.error(
         "Job '%s' idle for %.0fs (inactivity limit %.0fs) "
         "| last_activity=%s | iteration=%s/%s | tool=%s",
@@ -1941,6 +1953,7 @@ def _run_agent_with_watchdog(
     if worker_state is not None:
         worker_state["future"] = _cron_future
     _inactivity_timeout = False
+    _inactivity_observed_idle: "float | None" = None
     _watch_stop = threading.Event()
 
     def _idle_seconds() -> float:
@@ -1953,13 +1966,15 @@ def _run_agent_with_watchdog(
             return 0.0
 
     def _watch_inactivity() -> None:
-        nonlocal _inactivity_timeout
+        nonlocal _inactivity_timeout, _inactivity_observed_idle
         if _cron_inactivity_limit is None:
             return
-        if _inactivity_watchdog_loop(
+        _fired = _inactivity_watchdog_loop(
             get_idle_seconds=_idle_seconds, limit_s=_cron_inactivity_limit, poll_s=_POLL_INTERVAL,
-            stop=_watch_stop, future_done=_cron_future.done):
+            stop=_watch_stop, future_done=_cron_future.done)
+        if _fired is not False:
             _inactivity_timeout = True
+            _inactivity_observed_idle = _fired if isinstance(_fired, float) else None
 
     _watch_thread = threading.Thread(
         target=_watch_inactivity, name=f"cron-inactivity-{str(job_id)[:8]}", daemon=True)
@@ -1992,7 +2007,8 @@ def _run_agent_with_watchdog(
         _cron_pool.shutdown(wait=False, cancel_futures=True)
 
     if _inactivity_timeout:
-        _raise_inactivity_timeout(agent, job_name, _cron_inactivity_limit)
+        _raise_inactivity_timeout(agent, job_name, _cron_inactivity_limit,
+                                  observed_idle_s=_inactivity_observed_idle)
 
     if not isinstance(result, dict):
         raise RuntimeError(
