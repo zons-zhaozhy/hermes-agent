@@ -2,6 +2,7 @@
 
 import threading
 import time
+from typing import Any
 
 from agent import periodic_scheduler
 from agent.periodic_scheduler import PeriodicScheduler, schedule
@@ -129,7 +130,7 @@ def test_worker_start_failure_keeps_timer(monkeypatch):
     real_thread = threading.Thread
     attempts = {"n": 0}
 
-    def flaky(*args, **kwargs):
+    def flaky(*args: Any, **kwargs: Any) -> Any:
         # Only this scheduler's own callback worker fails, once; a leaked handle on the shared
         # _DEFAULT scheduler must not be the one that consumes the single Boom.
         # Bound methods are fresh objects per access: compare with ==, never `is`.
@@ -137,7 +138,7 @@ def test_worker_start_failure_keeps_timer(monkeypatch):
             attempts["n"] += 1
 
             class Boom:
-                def start(self):
+                def start(self) -> None:
                     raise RuntimeError("no threads")
 
             return Boom()
@@ -149,7 +150,98 @@ def test_worker_start_failure_keeps_timer(monkeypatch):
         assert _wait_until(lambda: bool(fired), timeout=3.0), (
             "worker-start failure silently retired the timer"
         )
+        # 期望: 恰拦截一次——首次失败由 Boom 消化，requeue 后第二次走真线程
         assert attempts["n"] == 1, "the fake never intercepted the callback worker"
+        # 期望: start 失败是暂态，handle 仍被保留（模块不变量⑤：start 失败不退役）
         assert not handle.cancelled
     finally:
         handle.cancel(wait=1.0)
+
+
+def test_cancel_is_not_blocked_by_a_stalled_dispatch(monkeypatch):
+    """A callback worker whose Thread.start() stalls must not wedge cancel():
+    cancel has to acquire the scheduler condition lock first, so holding that
+    lock across start() makes the wait=timeout parameter unreachable."""
+    sched = PeriodicScheduler()
+    real_thread = threading.Thread
+    dispatch_entered = threading.Event()
+    release_dispatch = threading.Event()
+
+    class StalledStart:
+        def start(self) -> None:
+            dispatch_entered.set()
+            release_dispatch.wait(5.0)
+            raise RuntimeError("simulated stalled start")
+
+        def join(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return False
+
+    def flaky(*args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("target") == sched._run_callback:
+            return StalledStart()
+        return real_thread(*args, **kwargs)
+
+    monkeypatch.setattr(periodic_scheduler.threading, "Thread", flaky)
+    handle = sched.schedule(lambda: None, 0.01)
+    try:
+        assert dispatch_entered.wait(2.0), "callback dispatch never entered start()"
+        t0 = time.monotonic()
+        handle.cancel(wait=0.5)
+        elapsed = time.monotonic() - t0
+        # 期望: cancel 界内返回（wait=0.5s 上限+调度余量）；若 _cancel 被 dispatch
+        # 持有的 _cond 挡住则须等满 5s 卡段，elapsed 必然 >5s，红灯即根因复现
+        assert elapsed < 2.0, f"cancel blocked {elapsed:.2f}s behind a stalled dispatch"
+    finally:
+        release_dispatch.set()
+        handle.cancel(wait=1.0)
+
+
+def test_cancel_during_dispatch_gap_skips_body(monkeypatch):
+    """Cancel landing between "runner assigned" and "runner started" must skip
+    the callback body: the handle was already retired by its owner."""
+    sched = PeriodicScheduler()
+    real_thread = threading.Thread
+    body_ran = threading.Event()
+    start_gate = threading.Event()
+
+    class GatedThread:
+        def start(self) -> None:
+            start_gate.wait(5.0)
+
+        def join(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return False
+
+    def flaky(*args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("target") == sched._run_callback:
+            return GatedThread()
+        return real_thread(*args, **kwargs)
+
+    monkeypatch.setattr(periodic_scheduler.threading, "Thread", flaky)
+    handle = sched.schedule(body_ran.set, 0.01)
+    # Wait until dispatch assigned the runner (i.e. we are inside the start gap).
+    assert _wait_until(lambda: handle._runner is not None), "runner never assigned"
+    handle.cancel(wait=0.5)
+    start_gate.set()
+    time.sleep(0.3)
+    # 期望: body 永不执行——cancel 在 start 完成前置 _cancelled，所有者已退役该 handle
+    assert not body_ran.is_set(), "cancelled handle still ran its body once"
+
+
+def test_cancel_before_dispatch_never_runs_body():
+    """Cancel immediately after schedule (runner never assigned) retires the
+    timer without the body ever running or a worker thread ever starting."""
+    sched = PeriodicScheduler()
+    fired: list = []
+    handle = sched.schedule(lambda: fired.append(1), 30.0)
+    handle.cancel(wait=1.0)
+    time.sleep(0.1)
+    # 期望: interval=30s 远大于测试窗，任何 body 执行都是缺陷
+    assert fired == []
+    # 期望: cancel 先于到期，runner 从未被指派
+    assert handle._runner is None

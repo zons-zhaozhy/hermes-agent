@@ -83,11 +83,17 @@ class PeriodicScheduler:
             self._cond.notify()
             runner = handle._runner
         if wait and runner is not None and threading.current_thread() is not runner:
+            # The runner may still be in the pre-start gap (assigned but not yet
+            # started): join() on an unstarted thread raises, so wait for liveness.
+            if not runner.is_alive():
+                return
             runner.join(wait)
 
     def _dispatch(self, handle: ScheduledHandle) -> None:
-        """Start ``handle``'s body on its own worker.  Called with ``_cond`` held
-        so ``cancel`` can never observe a half-set runner."""
+        """Start ``handle``'s body on its own worker.  ``_cond`` is held only to
+        assign ``handle._runner`` atomically; ``runner.start()`` runs OUTSIDE the
+        lock — a stalled start must never block cancel()/schedule(), whose
+        wait=timeout contract is otherwise unreachable."""
         runner = threading.Thread(
             target=self._run_callback,
             args=(handle,),
@@ -98,16 +104,18 @@ class PeriodicScheduler:
         try:
             runner.start()
         except Exception:
-            handle._runner = None
-            logger.warning(
-                "failed to start periodic callback worker %r; retrying in %s s",
-                handle._fn,
-                handle._interval,
-                exc_info=True,
-            )
-            if not handle._cancelled:
-                self._requeue(handle)
-                self._cond.notify()
+            with self._cond:
+                if handle._runner is runner:
+                    handle._runner = None
+                logger.warning(
+                    "failed to start periodic callback worker %r; retrying in %s s",
+                    handle._fn,
+                    handle._interval,
+                    exc_info=True,
+                )
+                if not handle._cancelled:
+                    self._requeue(handle)
+                    self._cond.notify()
 
     def _requeue(self, handle: ScheduledHandle) -> None:
         """Push ``handle``'s next due time (``_cond`` held)."""
@@ -116,7 +124,10 @@ class PeriodicScheduler:
     def _run_callback(self, handle: ScheduledHandle) -> None:
         stop = False
         try:
-            stop = handle._context.run(handle._fn) is False
+            # Cancel may land in the pre-start gap: the owner already retired this
+            # handle, so the body must not run — only the bookkeeping below.
+            if not handle._cancelled:
+                stop = handle._context.run(handle._fn) is False
         except Exception:
             logger.debug("periodic callback %r raised", handle._fn, exc_info=True)
         finally:
@@ -130,6 +141,7 @@ class PeriodicScheduler:
 
     def _run(self) -> None:
         while True:
+            handle = None
             with self._cond:
                 while True:
                     if not self._heap:
@@ -144,8 +156,11 @@ class PeriodicScheduler:
                         self._cond.wait(delay)
                         continue
                     heapq.heappop(self._heap)
-                    self._dispatch(handle)
                     break
+            if handle is not None:
+                # Dispatch outside _cond: start() cost/stall must not extend the
+                # lock hold time seen by schedule()/_cancel().
+                self._dispatch(handle)
 
 
 _DEFAULT = PeriodicScheduler()
