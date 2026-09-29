@@ -49,6 +49,10 @@ class WriteResult:
     # LSP semantic diagnostics, kept separate from ``lint`` (syntax) so the model
     # reads the two as independent signals. None when LSP is off/inapplicable.
     lsp_diagnostics: Optional[str] = None
+    # Old→new unified diff of the write, same channel as PatchResult.diff — the
+    # model pastes it into its reply so every write is auditable in-turn. Empty
+    # for new files (nothing to diff against) and non-text targets.
+    diff: Optional[str] = None
     error: Optional[str] = None
     warning: Optional[str] = None
 

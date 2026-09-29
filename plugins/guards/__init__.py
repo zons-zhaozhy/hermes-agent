@@ -27,6 +27,7 @@ import logging
 
 from plugins.guards import (
     coding_standards,
+    diff_debt,
     duplicate_check,
     four_axis,
     pre_write,
@@ -43,6 +44,7 @@ _SUB_GUARDS = (
     ("duplicate_check", duplicate_check),
     ("source_write", source_write),
     ("coding_standards", coding_standards),
+    ("diff_debt", diff_debt),
 )
 
 

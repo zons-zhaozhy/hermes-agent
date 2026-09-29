@@ -151,6 +151,11 @@ _READ_SENTINEL_PREFIX = "__HERMES_RF_"
 _WRITE_SENTINEL_PREFIX = "__HERMES_WF_"
 _BYTES_SENTINEL_PREFIX = "__HERMES_RB_"
 
+# Cap for the write-result diff (lines). Mirrors the >400-line paste rule:
+# head/tail 40 with a statistics line. Keeps a whole-file rewrite of a huge
+# file from flooding the model context through the new ``diff`` channel.
+_WRITE_DIFF_MAX_LINES = 400
+
 
 def _new_sentinel(prefix: str) -> str:
     """Per-call separator line for a compound shell probe. 128 random bits make a
@@ -1515,7 +1520,34 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return WriteResult(
             bytes_written=len(content_bytes), dirs_created=dirs_created, verified=content_verified,
             _content_sha256=hashlib.sha256(content_bytes).hexdigest(),
+            diff=self._bounded_write_diff(pre_content, content, path),
             lint=lint_result.to_dict() if lint_result else None, lsp_diagnostics=lsp_diagnostics)
+
+    def _bounded_write_diff(self, old_content: Optional[str], new_content: str, path: str) -> Optional[str]:
+        """Unified diff for the write result, capped so a whole-file rewrite of a
+        huge file can't flood the model context (mirrors the >400-line paste rule).
+
+        ``old_content`` is the probe-read pre-edit text; None/'' means new file or
+        non-text target — nothing to diff against, return None.
+
+        Contract:
+          Preconditions: new_content is the written text (post CRLF/BOM fixups).
+          Postconditions: None when there is no old content or no textual delta;
+            otherwise a unified diff, truncated to head/tail 40 hunk-lines with a
+            statistics line when the full diff exceeds the cap.
+        """
+        if not old_content or old_content == new_content:
+            return None
+        full = self._unified_diff(old_content, new_content, path)
+        if not full:
+            return None
+        lines = full.splitlines(keepends=True)
+        if len(lines) <= _WRITE_DIFF_MAX_LINES:
+            return full
+        head, tail = lines[:40], lines[-40:]
+        return (''.join(head)
+                + f"\n[diff truncated: {len(lines)} lines total — head 40 / tail 40 shown]\n"
+                + ''.join(tail))
 
     # --- PATCH (replace mode) -----------------------------------------------
 
