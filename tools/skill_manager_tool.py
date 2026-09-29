@@ -510,7 +510,7 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
     result = {
         "success": True,
         "message": f"Patched {target_label} in skill '{name}' ({match_count} replacement{'s' if match_count > 1 else ''}).",
-        "_change": {"old": _clip(old_string, 200, "…"), "new": _clip(new_string, 200, "…")}}
+        "_change": {"old": _clip(old_string, 2000, "…[truncated]"), "new": _clip(new_string, 2000, "…[truncated]")}}
     result = _attach_org_note(result, name, skill_dir)
     # SKILL.md grows by patches, not by creates: surface findings on the patch that crosses a line
     # (oversized-body, incident-log-shape) — a clean patch attaches nothing and stays quiet.

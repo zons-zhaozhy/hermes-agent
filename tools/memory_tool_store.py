@@ -357,7 +357,7 @@ class MemoryStore:
                     f"Replacement would put memory at {new_total:,}/{limit:,} chars. Shorten the new content, "
                     f"or 'remove' other stale or less important entries to make room (see current_entries "
                     f"below), then retry — all in this turn."))
-            return replaced, "Entry replaced.", {"replaced_entry": entries[idx]}
+            return replaced, "Entry replaced.", {"replaced_entry": entries[idx], "new_entry": new_content}
         return self._mutate(target, _apply)
 
     @staticmethod
