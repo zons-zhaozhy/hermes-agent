@@ -441,7 +441,9 @@ def _session_has_read(src_file: Path) -> bool:
             try:
                 if str(Path(entry).resolve()) == target_norm:
                     return True
-            except (OSError, ValueError):
+            except (OSError, ValueError, TypeError):
+                # TypeError: entry 为 tuple 等非路径类型(记账侧历史脏数据),
+                # 跳过该条目继续比对, 禁让脏条目炸掉整个防线(fail-open)
                 continue
     return False
 
