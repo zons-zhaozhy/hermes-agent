@@ -73,8 +73,11 @@ def _make_tool_defs(*names: str) -> list[dict]:
 def _make_agent(*tool_names: str, gate_enabled: bool = True) -> AIAgent:
     """Real AIAgent with the gate config pinned; relay/dispatch mocked later."""
     with (
-        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs(*tool_names)),
-        patch("run_agent.check_toolset_requirements", return_value={}),
+        # Patch where production reads (post a5bd246865): agent_init resolves tools
+        # via module attribute (``import model_tools``) and builds the client through
+        # agent.process_bootstrap's OpenAI binding — run_agent.* shims are gone upstream.
+        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs(*tool_names)),
+        patch("model_tools.check_toolset_requirements", return_value={}),
         patch(
             "hermes_cli.config.load_config",
             return_value={"read_think_gate": {"enabled": gate_enabled}},
@@ -83,7 +86,7 @@ def _make_agent(*tool_names: str, gate_enabled: bool = True) -> AIAgent:
             "hermes_cli.config.load_config_readonly",
             return_value={"read_think_gate": {"enabled": gate_enabled}},
         ),
-        patch("run_agent.OpenAI"),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
