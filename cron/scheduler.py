@@ -2033,6 +2033,14 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     max_iteration_summary = is_max_iteration_handoff(result)
     if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
         raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
+    # block_escalation 升级终止：插件只在 final_response 追加标记文本，turn 仍
+    # completed=True——按 #17855 同一不变量，被拦截终止的 run 禁标 ok（假绿）。
+    try:
+        from plugins.block_escalation import ESCALATION_MARKER
+    except Exception:  # 插件不可达时用同值字面量兜底探测，禁因 import 失败漏检
+        ESCALATION_MARKER = "[拦截升级]"
+    if ESCALATION_MARKER in final_response_text:
+        raise RuntimeError("agent terminated by block-escalation (拦截升级终止)")
     if max_iteration_summary:
         logger.warning(
             "Job '%s' reached the iteration limit but produced a final fallback response; "

@@ -30,6 +30,11 @@ _WINDOW_SECS = 1800          # 同意图重复被拦的判定时间窗
 _STREAK_LIMIT = 2            # 窗口内第 2 次即升级（用户拍板：连续 2 次同因=停）
 _STATE_CAP = 512             # 库内指纹行数上限（防膨胀，驱逐最旧）
 
+# 升级终止提示前缀。模块级常量供 cron/scheduler.py 探测：含此标记的
+# final_response 说明 agent 被拦截升级终止而非正常完成，scheduler 须按
+# 失败记账（last_status=error），禁假绿（与 issue #17855 同一不变量）。
+ESCALATION_MARKER = "[拦截升级]"
+
 _db_lock = threading.Lock()
 _db_path = None
 _escalated: set = set()      # 本进程已升级指纹（提示单次消费）
@@ -214,7 +219,8 @@ def register(ctx):
 def _on_transform_llm_output(response_text: str = "", **kwargs) -> str:
     """Contract: Preconditions: response_text 为本回合 LLM 输出（核心键名）；
     Postconditions: 存在已升级指纹（说明被拦后仍在尝试或继续输出）时追加
-    用户可见系统提示，否则原样返回。"""
+    带用户可见终止提示（ESCALATION_MARKER 前缀，cron scheduler 据此按
+    失败记账），否则原样返回。"""
     output = response_text or ""
     if not _escalated:
         return output
@@ -222,7 +228,7 @@ def _on_transform_llm_output(response_text: str = "", **kwargs) -> str:
     _escalated.clear()  # 单次提示，避免重复堆叠
     return output + (
 
-        "\n\n[拦截升级] 同一写操作意图已连续 2 次被拦且发生通道切换（跨会话持久计数）。"
+        "\n\n" + ESCALATION_MARKER + " 同一写操作意图已连续 2 次被拦且发生通道切换（跨会话持久计数）。"
         "本轮必须立即停止第 3 次尝试：①逐字重读两次拦截信息原文②按拦截信息指明的合法通道"
         "补齐证据原路重试；若指引不可行，停下向用户呈报拦截原文与已尝试通道清单，等待人工"
         "裁决。禁止再换任何新通道、禁止换会话规避。")
