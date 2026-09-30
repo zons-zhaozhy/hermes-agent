@@ -200,11 +200,11 @@ def _clear_streak(tool_name: str, args: dict) -> None:
 def _on_post_tool_call(tool_name: str = "", status: str = "", error_type: str = "",
                        args: dict | None = None, **kwargs) -> None:
     """Contract: Preconditions: 核心以 status/error_type 复播工具结果；
-    Postconditions: status=blocked 时记录意图指纹；status=success 时同指纹
+    Postconditions: status=blocked 时记录意图指纹；status=ok 时同指纹
     清账（成功落地=streak 作废，防误判残留）；纯观察无返回值。"""
     if status == "blocked":
         _note_blocked(tool_name, args or {})
-    elif status == "success":
+    elif status == "ok":
         _clear_streak(tool_name, args or {})
 
 
