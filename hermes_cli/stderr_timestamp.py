@@ -48,10 +48,63 @@ def _open_log(log_path: Path) -> TextIO:
     return log_path.open("a", encoding="utf-8", buffering=1)
 
 
+# stderr 日志轮转上限（launcher boot 文件，stdlib-only，禁 logging.handlers 依赖：
+# 本模块运行于 source slice，导入面最小化）。默认 50MB × 3 备份，环境变量
+# HERMES_STDERR_LOG_MAX_BYTES 可覆盖（字节；0 = 禁用轮转）。
+_DEFAULT_MAX_BYTES = 50 * 1024 * 1024
+_BACKUP_COUNT = 3
+
+
+def _max_log_bytes() -> int:
+    raw = os.environ.get("HERMES_STDERR_LOG_MAX_BYTES", "").strip()
+    if not raw:
+        return _DEFAULT_MAX_BYTES
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _DEFAULT_MAX_BYTES
+
+
+def _maybe_rotate_log(log_file: TextIO, log_path: Path) -> None:
+    """Size-capped copy-truncate rotation for the stderr log.
+
+    Contract:
+      Preconditions: log_file 为 log_path 的追加写句柄（单写者=本 wrapper 线程）。
+      Postconditions: 文件超限时把当前内容复制为 .1（链式 .2/.3）后原地
+      truncate(0)——写句柄全程存活（O_APPEND 保证后续写落文件尾），无重开
+      失败面；任何轮转失败禁中断日志流（静默放弃当次轮转，下轮再试）。
+    """
+    limit = _max_log_bytes()
+    if limit <= 0:
+        return
+    try:
+        if log_file.tell() < limit:
+            return
+        backup = log_path.with_name(f"{log_path.name}.1")
+        for i in range(_BACKUP_COUNT - 1, 0, -1):
+            src = log_path.with_name(f"{log_path.name}.{i}")
+            dst = log_path.with_name(f"{log_path.name}.{i + 1}")
+            if src.exists():
+                src.replace(dst)
+        # 先链式移旧再复制: 旧 .1→.2 腾位, 当前内容复制为新鲜 .1
+        with open(log_path, "rb") as src, open(backup, "wb") as dst:
+            while True:
+                chunk = src.read(1024 * 1024)
+                if not chunk:
+                    break
+                dst.write(chunk)
+        log_file.flush()
+        log_file.truncate(0)
+    except OSError:
+        # 轮转失败禁断日志流：句柄未动，继续追加写，下次超限再试。
+        return
+
+
 def _copy_stderr_with_timestamps(stderr: BinaryIO, log_path: Path) -> None:
     with _open_log(log_path) as log_file:
         for raw_line in iter(stderr.readline, b""):
             _write_timestamped_line(log_file, raw_line.decode("utf-8", errors="replace"))
+            _maybe_rotate_log(log_file, log_path)
 
 
 def _copy_stdout_with_timestamps(stdout: BinaryIO) -> None:

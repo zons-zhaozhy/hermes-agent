@@ -16,6 +16,57 @@ from gateway.restart import (
     LAUNCHD_LABEL_ENV,
 )
 from hermes_cli import stderr_timestamp
+from hermes_cli.stderr_timestamp import (
+    _BACKUP_COUNT,
+    _maybe_rotate_log,
+    _max_log_bytes,
+)
+
+
+def test_maybe_rotate_log_truncates_and_chains_backups(tmp_path, monkeypatch):
+    # 期望: 超限后当前文件被 truncate 归零, 内容落入 .1, 旧 .1 链式移入 .2, 写句柄存活
+    monkeypatch.setenv("HERMES_STDERR_LOG_MAX_BYTES", "100")
+    log_path = tmp_path / "gateway.error.log"
+    log_file = log_path.open("a", encoding="utf-8")
+    log_file.write("x" * 150)
+    log_file.flush()
+    old_backup = log_path.with_name(log_path.name + ".1")
+    old_backup.write_text("OLD")
+    _maybe_rotate_log(log_file, log_path)
+    # 期望: 主文件已清零(句柄存活可继续写), .1=轮转内容, .2=旧 .1
+    assert log_path.stat().st_size == 0
+    assert log_path.with_name(log_path.name + ".1").read_text() == "x" * 150
+    assert log_path.with_name(log_path.name + ".2").read_text() == "OLD"
+    log_file.write("after-rotate")
+    log_file.close()
+    assert log_path.read_text() == "after-rotate"  # O_APPEND 语义: truncate 后写落文件头
+
+
+def test_maybe_rotate_log_noop_under_limit(tmp_path, monkeypatch):
+    # 期望: 未超限时零动作(无备份生成)
+    monkeypatch.setenv("HERMES_STDERR_LOG_MAX_BYTES", "1000")
+    log_path = tmp_path / "gateway.error.log"
+    log_file = log_path.open("a", encoding="utf-8")
+    log_file.write("small")
+    log_file.flush()
+    _maybe_rotate_log(log_file, log_path)
+    assert not log_path.with_name(log_path.name + ".1").exists()
+    assert log_path.read_text() == "small"
+    log_file.close()
+
+
+def test_maybe_rotate_log_disabled_with_zero(tmp_path, monkeypatch):
+    # 期望: 上限 0 = 禁用轮转, 超限也不动文件
+    monkeypatch.setenv("HERMES_STDERR_LOG_MAX_BYTES", "0")
+    assert _max_log_bytes() == 0
+    log_path = tmp_path / "gateway.error.log"
+    log_file = log_path.open("a", encoding="utf-8")
+    log_file.write("x" * 5000)
+    log_file.flush()
+    _maybe_rotate_log(log_file, log_path)
+    assert log_path.stat().st_size == 5000
+    assert not log_path.with_name(log_path.name + ".1").exists()
+    log_file.close()
 
 
 def _script(tmp_path, name: str, source: str) -> str:
