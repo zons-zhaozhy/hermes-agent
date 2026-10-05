@@ -30,6 +30,31 @@ _WINDOW_SECS = 1800          # 同意图重复被拦的判定时间窗
 _STREAK_LIMIT = 2            # 窗口内第 2 次即升级（用户拍板：连续 2 次同因=停）
 _STATE_CAP = 512             # 库内指纹行数上限（防膨胀，驱逐最旧）
 
+# 只读命令白名单：段首词命中且无落盘重定向时，该段判为只读。
+# 未列出的命令一律按写意图计数（保守方向：漏计升级 < 误伤防线）。
+_READ_CMDS = frozenset({
+    "ls", "stat", "file", "find", "grep", "rg", "ag", "cat", "head", "tail",
+    "wc", "echo", "printf", "date", "pwd", "whoami", "uname", "ps", "pgrep",
+    "lsof", "df", "du", "which", "type", "printenv", "id", "groups",
+    "hostname", "sw_vers", "sysctl", "uptime", "jq", "awk", "sed", "cut",
+    "sort", "uniq", "tr", "column", "diff", "cmp", "comm", "md5", "md5sum",
+    "shasum", "sha1sum", "sha256sum", "base64", "xxd", "strings", "nm",
+    "otool", "exiftool", "sleep", "true", "false", "test", "[", "cd",
+    "export", "set", "unset", "alias", "unalias", "wait", "mdfind", "mdls",
+    "pbpaste", "tree", "history", "vm_stat", "iostat", "netstat",
+})
+_WRAPPERS = frozenset({"sudo", "nohup", "command", "time", "nice", "env", "exec"})
+_GIT_READ_SUBCMDS = frozenset({
+    "status", "log", "diff", "show", "rev-list", "branch", "blame",
+    "shortlog", "describe", "ls-files", "ls-remote", "remote", "tag",
+    "cat-file", "name-only", "reflog", "whatchanged", "grep", "config",
+})
+_SQL_WRITE_VERBS = (
+    "INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "REPLACE",
+    "ATTACH", "DETACH", "VACUUM", "PRAGMA",
+)
+_HARMLESS_SINKS = frozenset({"/dev/null", "/dev/stderr", "/dev/stdout"})
+
 # 升级终止提示前缀。模块级常量供 cron/scheduler.py 探测：含此标记的
 # final_response 说明 agent 被拦截升级终止而非正常完成，scheduler 须按
 # 失败记账（last_status=error），禁假绿（与 issue #17855 同一不变量）。
@@ -82,6 +107,127 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _next_redirect_sink(seg: str, gt: int) -> tuple:
+    """Contract: Preconditions: gt 为 seg 中 '>' 下标；Postconditions: 返回
+    (append, fd_dup, is_procsub, sink, scan_from)——sink 为目标 token，
+    scan_from 为继续扫描起点。"""
+    append = seg[gt + 1:gt + 2] == ">"
+    nxt = gt + (2 if append else 1)
+    is_procsub = seg[gt + 1:gt + 2] == "("
+    j = nxt
+    while j < len(seg) and seg[j] == " ":
+        j += 1
+    sink_end = j
+    while sink_end < len(seg) and seg[sink_end] not in " ;|&\t":
+        sink_end += 1
+    fd_dup = (gt > 0 and seg[gt - 1] == "&") or seg[nxt:nxt + 1] == "&"
+    return append, fd_dup, is_procsub, seg[j:sink_end], max(sink_end, gt + 1)
+
+
+def _redirects_write(seg: str) -> bool:
+    """Contract: Preconditions: seg 为 str；Postconditions: 存在落盘重定向
+    （> file / >> file，丢弃 >/dev/null 族与进程替换 >(）时返回 True。
+    零正则，纯 str 方法。"""
+    i = 0
+    while True:
+        gt = seg.find(">", i)
+        if gt == -1:
+            return False
+        append, fd_dup, is_procsub, sink, i = _next_redirect_sink(seg, gt)
+        if (append or not fd_dup) and not is_procsub \
+                and sink not in _HARMLESS_SINKS:
+            return True
+
+
+def _head_index(words: list) -> int:
+    """Contract: Preconditions: words 非空列表；Postconditions: 返回段首
+    命令词（剥 wrapper 与带路径前缀白名单词后）的下标。"""
+    wi = 0
+    while wi < len(words):
+        w = words[wi]
+        if w in _WRAPPERS:
+            wi += 1
+            continue
+        if "/" in w:
+            base = w.rsplit("/", 1)[-1]
+            if base in _READ_CMDS or base in _WRAPPERS:
+                wi += 1
+                continue
+        return wi
+    return wi
+
+
+def _sql_is_readonly(words: list, wi: int) -> bool:
+    """Contract: Preconditions: words[wi] 为 sqlite3/psql；Postconditions:
+    命令串无 SQL 写动词（含 PRAGMA）时返回 True。"""
+    quoted = " ".join(words[wi:]).upper()
+    return not any(v in quoted for v in _SQL_WRITE_VERBS)
+
+
+def _git_is_readonly(words: list, wi: int) -> bool:
+    """Contract: Preconditions: words[wi] == 'git'；Postconditions: 跳过
+    全局选项（-C 带参数）后，子命令属读集合时返回 True。"""
+    rest = words[wi + 1:]
+    ri = 0
+    while ri < len(rest) and rest[ri].startswith("-"):
+        if rest[ri] == "-C" and ri + 1 < len(rest):
+            ri += 2
+        else:
+            ri += 1
+    sub = rest[ri] if ri < len(rest) else ""
+    return sub in _GIT_READ_SUBCMDS
+
+
+def _segment_is_readonly(seg: str) -> bool:
+    """Contract: Preconditions: seg 为命令段（已 strip）；Postconditions:
+    返回该段是否可判定为只读——无落盘重定向，且段首词在白名单 / git 读
+    子命令 / sqlite3·psql 纯查询。零正则。"""
+    seg = seg.strip()
+    if not seg:
+        return True
+    if _redirects_write(seg):
+        return False
+    words = seg.split()
+    if not words:
+        return True
+    if "curl" in words or "wget" in words:
+        return _fetch_is_readonly(words)
+    wi = _head_index(words)
+    head = words[wi] if wi < len(words) else ""
+    if head == "git":
+        return _git_is_readonly(words, wi)
+    if head in ("sqlite3", "psql"):
+        return _sql_is_readonly(words, wi)
+    return head in _READ_CMDS
+
+
+def _fetch_is_readonly(words: list) -> bool:
+    """Contract: Preconditions: words 含 curl/wget；Postconditions: 所有
+    -o/--output 目标均为 /dev/null（探活形态）时返回 True，否则 False。"""
+    out_targets = []
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if w in ("-o", "--output"):
+            i += 1
+            if i < len(words):
+                out_targets.append(words[i])
+        elif w.startswith("--output="):
+            out_targets.append(w[len("--output="):])
+        i += 1
+    return all(t.strip('\'"') == "/dev/null" for t in out_targets)
+
+
+def _command_is_readonly(command: str) -> bool:
+    """Contract: Preconditions: command 为 str；Postconditions: 命令所有非空
+    段均只读时返回 True（&& || ; | 分隔符拆段）；任一段为写即 False。"""
+    for raw in command.replace("&&", ";").replace("||", ";").split(";"):
+        for pipe_seg in raw.split("|"):
+            if not _segment_is_readonly(pipe_seg):
+                return False
+    return True
+
+
 def _reset_for_test() -> None:
     """测试专用：清空进程内升级标记。"""
     _escalated.clear()
@@ -125,10 +271,17 @@ def _fp_key(fp: tuple) -> str:
 
 def _note_blocked(tool_name: str, args: dict) -> None:
     """Contract: Preconditions: 已发生一次 status=blocked 的调用；
-    Postconditions: 指纹计数持久化入库（窗口过期行重置、超上限驱逐最旧），
-    计数达阈值时置进程内升级标记；任何库异常降级为 ERROR 日志不中断。"""
+    Postconditions: 写意图指纹计数持久化入库（只读命令豁免不计），窗口
+    过期行重置、超上限驱逐最旧，计数达阈值时置进程内升级标记；任何库
+    异常降级为 ERROR 日志不中断。"""
     fp = _intent_fingerprint(tool_name, args)
     if not fp:
+        return
+    if tool_name == "terminal" and _command_is_readonly(
+            str(args.get("command") or "")):
+        logger.info(
+            "block_escalation: 只读命令被拦（指纹=%s），豁免升级计数",
+            _fp_key(fp))
         return
     now = time.time()
     key = _fp_key(fp)
@@ -175,26 +328,43 @@ def _note_blocked(tool_name: str, args: dict) -> None:
             count, sorted(tools))
 
 
+def _overlapping_keys(conn: sqlite3.Connection, fp: tuple) -> list:
+    """Contract: Preconditions: conn 为已建 schema 的连接，fp 为非空指纹；
+    Postconditions: 返回库内与 fp 存在元素交集的指纹键列表。"""
+    sep = "\x1f"
+    keys = []
+    for row in conn.execute(
+            "SELECT fingerprint FROM block_streaks").fetchall():
+        if any(e and e in fp for e in row[0].split(sep)):
+            keys.append(row[0])
+    return keys
+
+
 def _clear_streak(tool_name: str, args: dict) -> None:
     """Contract: Preconditions: 一次非 blocked 状态的工具调用已完成；Postconditions:
-    该调用对应的意图指纹 streak 清零并撤销升级标记（意图已成功落地，惩罚作废）；
-    库异常降级为 ERROR 日志不中断。"""
+    该调用指纹（及库内任一元素与成功路径相同的行为——跨工具形态）的 streak
+    清零并撤销升级标记（意图已成功落地，惩罚作废）；库异常降级为 ERROR 日志
+    不中断。"""
     fp = _intent_fingerprint(tool_name, args)
     if not fp:
         return
-    key = _fp_key(fp)
-    _escalated.discard(fp)
     try:
         with _db_lock:
             conn = _get_conn()
             try:
                 _ensure_schema(conn)
-                conn.execute("DELETE FROM block_streaks WHERE fingerprint = ?", (key,))
+                for key in _overlapping_keys(conn, fp):
+                    conn.execute(
+                        "DELETE FROM block_streaks WHERE fingerprint = ?",
+                        (key,))
                 conn.commit()
             finally:
                 conn.close()
     except Exception as err:
         logger.error("block_escalation: 清账失败（不中断）: %s", err)
+    for stale in [f for f in list(_escalated) if any(
+            e and e in f for e in fp)]:
+        _escalated.discard(stale)
 
 
 def _on_post_tool_call(tool_name: str = "", status: str = "", error_type: str = "",
