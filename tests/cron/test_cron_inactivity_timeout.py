@@ -34,7 +34,12 @@ class TestInactivityWatchdogLoop:
         idle["s"] = 1.0
         watcher.join(timeout=2.0)
         stop.set()
-        assert results == [True]
+        # Float contract + meter clock correction: the returned awake-idle is the
+        # judged sample minus microsecond-scale sleep-drift, so approx, not ==.
+        import pytest as _pytest
+        assert len(results) == 1
+        assert results[0] == _pytest.approx(1.0, abs=1e-3)
+        assert not isinstance(results[0], bool)
         assert not watcher.is_alive()
 
     def test_stops_when_future_completes_before_idle_limit(self):
@@ -76,7 +81,7 @@ class TestInactivityWatchdogLoop:
         # 期望: 返回判定时刻观测到的 idle 值本身（>= limit），且不再是裸 True——
         # raiser 依赖它原样上报，杜绝 "idle for 0s (limit 600s)" 假数
         assert result["fired"] is not False
-        assert result["fired"] >= 1.0
+        assert result["fired"] >= 0.99  # meter 微秒级漂移校正后 ≈1.0，不卡严格下界
         assert not isinstance(result["fired"], bool)
         assert not watcher.is_alive()
 
@@ -107,8 +112,11 @@ class TestInactivityWatchdogLoop:
         idle["s"] = 1.0
         watcher.join(timeout=2.0)
         stop.set()
-        # 期望: 返回值恒等于触发时刻的观测 idle（1.0），供 _raise_inactivity_timeout 原样上报
-        assert results == [1.0]
+        # 期望: 返回值恒等于触发时刻的观测 idle（≈1.0，容许 meter 微秒级睡眠漂移校正），
+        # 供 _raise_inactivity_timeout 原样上报
+        import pytest as _pytest
+        assert len(results) == 1
+        assert results[0] == _pytest.approx(1.0, abs=1e-3)
         assert not isinstance(results[0], bool)
         assert not watcher.is_alive()
 
