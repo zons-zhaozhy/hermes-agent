@@ -435,11 +435,15 @@ def _session_has_read(src_file: Path) -> bool:
         if not history:
             continue
         for entry in history:
-            entry_str = str(entry)
+            # ledger 事实格式: file_tools._record_successful_read 记 (path, offset, limit)
+            # tuple——比对取首元素路径, 禁按 str(entry) 整串比对(格式漂移导致
+            # 真实读记录永不命中, R5a 对已读文件一律误拦 fail-closed)。
+            entry_path = entry[0] if isinstance(entry, tuple) and entry else entry
+            entry_str = str(entry_path)
             if entry_str == target or entry_str == target_norm:
                 return True
             try:
-                if str(Path(entry).resolve()) == target_norm:
+                if str(Path(entry_path).resolve()) == target_norm:
                     return True
             except (OSError, ValueError, TypeError):
                 # TypeError: entry 为 tuple 等非路径类型(记账侧历史脏数据),

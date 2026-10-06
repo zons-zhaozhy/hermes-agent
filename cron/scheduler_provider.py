@@ -347,11 +347,13 @@ def fire_overdue_jobs(
             claimed = provider.claim_fire(job_id)
             if claimed is None:
                 continue
-            threading.Thread(
-                target=provider.fire_claimed, args=(claimed,),
-                kwargs={"adapters": adapters, "loop": loop}, daemon=True,
-                name=f"cron-misfire-{job_id[:12]}",
-            ).start()
+            # 经统一并行池分发(单一事实源: 复用 scheduler_tick 主路径的
+            # _resolve_max_parallel_workers + _get_parallel_pool), 禁裸 Thread 齐射——
+            # 重启积压补跑曾绕过 max_parallel_jobs 上限同秒齐发, 实测触发账户级
+            # 限速(code 1302)。池满时排队等待, 池 worker 数即并发上限。
+            import cron.scheduler as _sched
+            _pool = _sched._get_parallel_pool(_sched._resolve_max_parallel_workers())
+            _pool.submit(provider.fire_claimed, claimed, adapters=adapters, loop=loop)
             fired += 1
         except Exception as exc:
             logger.warning(
