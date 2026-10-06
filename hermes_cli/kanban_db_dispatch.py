@@ -200,6 +200,15 @@ _recent_worker_exits: "dict[int, tuple[int, float]]" = {}
 # here (Windows only) and ``reap_worker_zombies`` polls it. Entry: ``pid -> Popen``.
 _live_worker_procs: "dict[int, subprocess.Popen]" = {}
 
+# POSIX registry of PIDs this process spawned as kanban workers.
+# ``reap_worker_zombies`` waits on THESE pids only — never ``waitpid(-1)``:
+# a global reap steals the exit status of unrelated children (cron no_agent
+# scripts, terminal-tool subprocesses), and CPython's ``Popen._try_wait``
+# then FABRICATES status 0 on the resulting ChildProcessError, turning a
+# failed script into a "completed" run (cron false-green, 2026-10-06
+# job f234e58443b7 15:30 slot). Entry: ``pid -> spawned_at_epoch``.
+_spawned_worker_pids: "dict[int, float]" = {}
+
 
 def _wait_status_from_returncode(returncode: int) -> int:
     """Encode a ``Popen.returncode`` in the wait-status layout the registry stores."""
@@ -279,10 +288,19 @@ def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional
 
 
 def reap_worker_zombies() -> "list[int]":
-    """Reap exited workers without blocking; returns reaped PIDs. POSIX reaps
-    every child via ``waitpid(-1)``; Windows polls the ``Popen`` handles
+    """Reap exited workers without blocking; returns reaped PIDs. POSIX waits
+    on each REGISTERED worker pid only; Windows polls the ``Popen`` handles
     parked by ``_default_spawn`` (the only way to learn a child's exit code
-    there), so the rate-limit sentinel exit is classified on both hosts."""
+    there), so the rate-limit sentinel exit is classified on both hosts.
+
+    Never ``waitpid(-1)`` on POSIX: that reaps EVERY child of this process.
+    When it races a concurrent ``Popen.communicate()`` elsewhere in the
+    gateway (cron scripts, terminal tool), the owner's wait raises
+    ChildProcessError and ``Popen._try_wait`` fabricates status 0 — a failed
+    run is then recorded as "completed" (cron false-green race, observed
+    2026-10-06). Scope is the registry ``_default_spawn`` fills; unregistered
+    children stay reaped-able by their own owners.
+    """
     reaped: "list[int]" = []
     if _kb._IS_WINDOWS:
         for pid, proc in list(_live_worker_procs.items()):
@@ -293,18 +311,19 @@ def reap_worker_zombies() -> "list[int]":
             _live_worker_procs.pop(pid, None)
             reaped.append(pid)
         return reaped
-    try:
-        while True:
-            try:
-                pid, status = os.waitpid(-1, os.WNOHANG)
-            except ChildProcessError:
-                break
-            if pid == 0:
-                break
-            _record_worker_exit(pid, status)
-            reaped.append(pid)
-    except Exception:
-        pass
+    for pid in list(_spawned_worker_pids):
+        try:
+            waited_pid, status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            # Already reaped elsewhere (e.g. a test fixture, or SIGCHLD set to
+            # SIG_IGN on this platform): no status to record, just forget it.
+            _spawned_worker_pids.pop(pid, None)
+            continue
+        if waited_pid == 0:
+            continue  # still running — leave registered for a later tick
+        _record_worker_exit(pid, status)
+        _spawned_worker_pids.pop(pid, None)
+        reaped.append(pid)
     return reaped
 
 
@@ -2969,6 +2988,12 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # the OS-level FD stays open in the child until it exits.
     if _kb._IS_WINDOWS:
         _live_worker_procs[proc.pid] = proc
+    else:
+        # POSIX: register for the scoped reaper (reap_worker_zombies). Without
+        # this, the worker would never be reaped by us and, worse, a global
+        # waitpid(-1) would be needed to find it — stealing unrelated
+        # children's exit statuses (cron false-green race).
+        _spawned_worker_pids[proc.pid] = time.time()
     return proc.pid
 
 
