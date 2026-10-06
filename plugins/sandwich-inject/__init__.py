@@ -121,9 +121,9 @@ def _load_config() -> Optional[dict]:
             cached = _CONFIG_CACHE.get(str(path))
             if cached and cached[0] == mtime:
                 return cached[1]
-        import yaml  # type: ignore
+        from hermes_yaml import safe_load  # core SSOT(ruamel)——gateway 隔离解释器无 PyYAML
 
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data = safe_load(path.read_text(encoding="utf-8"))
         with _CONFIG_LOCK:
             _CONFIG_CACHE[str(path)] = (mtime, data)
         return data
