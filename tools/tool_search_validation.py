@@ -136,6 +136,25 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         return None
 
 
+def _missing_name_error(position: int, raw: Dict[str, Any]) -> str:
+    """Contract: returns the rejection for a ``calls[position]`` entry lacking ``name``.
+
+    Preconditions: ``raw`` is a dict whose ``name`` is empty/missing.
+    Postconditions: message contains the legacy anchor ``requires a 'name'`` (existing
+    callers/tests match on it), diagnoses the nested form when the model put ``name``
+    inside ``arguments`` (dominant real-world form, 2026-10-07 request dumps: 66 bad
+    calls/24h), and echoes the correct shape — echoing the fix unsticks models that
+    otherwise re-send the identical payload (same principle as ``local_batch_error``).
+    """
+    note = ""
+    raw_args = raw.get("arguments")
+    if isinstance(raw_args, dict) and str(raw_args.get("name") or "").strip():
+        note = (" — the 'name' key is nested inside 'arguments': it belongs at the entry "
+                "level, beside 'arguments'")
+    return (f"tool_call calls[{position}] requires a 'name'{note}. Correct shape: "
+            f'"calls":[{{"name":<tool_name>,"arguments":{{...}}}}]')
+
+
 def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """Normalize ``tool_call`` arguments into a ``calls[]`` list of entries.
 
@@ -169,7 +188,7 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
             return [], f"tool_call calls[{position}] must be an object with 'name' and 'arguments'"
         name = str(raw.get("name") or "").strip()
         if not name:
-            return [], f"tool_call calls[{position}] requires a 'name'"
+            return [], _missing_name_error(position, raw)
         if name in BRIDGE_TOOL_NAMES:
             return [], f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
         raw_args = raw.get("arguments")

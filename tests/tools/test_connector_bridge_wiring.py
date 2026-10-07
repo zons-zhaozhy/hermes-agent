@@ -155,6 +155,32 @@ def test_normalize_rejects_malformed_batches(bad, expected_fragment):
     assert expected_fragment in (err or "")
 
 
+def test_missing_name_error_echoes_correct_shape():
+    """1007 实测病灶：模型把 name 键嵌进 arguments 内部反复重发（66 发/24h）。
+    错误消息必须①锚点串保留②指认嵌套病灶③回显正确形态——三查俱全模型才能自纠。"""
+    nested = {"calls": [{"arguments": {"name": "mcp__glm_web_reader__webReader",
+                                       "url": "https://example.com"}}]}
+    entries, err = normalize_tool_call_entries(nested)
+    err_text = err or ""
+    assert entries == []  # 期望: []——缺name条目必须拒绝,拒绝即不产出entries(契约)
+    # 期望: 锚点串保留——既有参数化断言依赖该串,语义不变量
+    assert "requires a 'name'" in err_text  # 期望: True——旧文案锚点串必须存活(向后兼容)
+    # 期望: 指认嵌套病灶——request_dump 实测形态 name 嵌 arguments 内,须点破
+    assert "nested inside 'arguments'" in err_text  # 期望: True——病灶指认短语存在
+    # 期望: 回显正确形态骨架——echo 原则(同 local_batch_error docstring)
+    assert '"calls":[{"name":<tool_name>,"arguments":{...}}]' in err_text  # 期望: True——形态骨架串存在
+
+
+def test_missing_name_error_echoes_correct_shape_plain():
+    """无嵌套形态的缺 name 也要回显正确形态（echo 原则全路径覆盖）。"""
+    plain = {"calls": [{"arguments": {"query": "x"}}]}
+    entries, err = normalize_tool_call_entries(plain)
+    err_text = err or ""
+    assert entries == []  # 期望: []——缺name条目必须拒绝(契约)
+    assert "requires a 'name'" in err_text  # 期望: True——旧文案锚点串必须存活(向后兼容)
+    assert '"calls":[{"name":<tool_name>,"arguments":{...}}]' in err_text  # 期望: True——形态骨架串存在
+
+
 # ---------------------------------------------------------------------------
 # dispatch_tool_search: remote merge
 # ---------------------------------------------------------------------------
