@@ -91,6 +91,10 @@ def on_post_tool_call(**kwargs: Any) -> None:
         return
     if _is_cron_session(kwargs):
         return
+    # 失败/被拦/取消的写未改动文件——无 diff 义务。若记账，被拦的写会
+    # 自我繁殖欠账，与 block_escalation 叠成死亡螺旋（10-06 会话 85 连拦实录）。
+    if str(kwargs.get("status") or "ok") != "ok":
+        return
     args = kwargs.get("args") or {}
     path = str(args.get("path") or args.get("file_path") or args.get("name") or "")
     _DIFF_DEBT.append({"tool": tool_name, "path": path, "ts": time.time()})

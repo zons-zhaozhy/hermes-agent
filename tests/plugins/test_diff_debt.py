@@ -80,12 +80,35 @@ def test_cron_session_exempt() -> None:
 
 
 def test_git_diff_output_counts_as_evidence() -> None:
-    # 期望: 「1 file changed」git diff 输出文本也算证据（terminal 写通道贴 git diff 的形态）
+    # 期望: 「1 file changed」git 输出也当证据——terminal 写通道贴 git diff 的形态
     _fresh_debt()
     diff_debt.on_post_tool_call(tool_name="write_file", args={"path": "/tmp/a.py"}, session_id="s1")
     diff_debt.on_pre_tool_batch(
         assistant_content=" 1 file changed, 2 insertions(+), 1 deletion(-)", session_id="s1")
     assert not diff_debt._DIFF_DEBT
+
+
+def test_failed_write_records_no_debt() -> None:
+    # 期望: status=error 的写（被其他 guard 拦/patch 找不到 match）未改动文件，不产生欠账
+    _fresh_debt()
+    diff_debt.on_post_tool_call(
+        tool_name="patch", args={"path": "/tmp/b.py"}, session_id="s1", status="error")
+    assert not diff_debt._DIFF_DEBT  # 期望: 失败写零欠账
+
+
+def test_cancelled_write_records_no_debt() -> None:
+    # 期望: status=cancelled（超时放弃）同样未改动文件，不记账
+    _fresh_debt()
+    diff_debt.on_post_tool_call(
+        tool_name="write_file", args={"path": "/tmp/a.py"}, session_id="s1", status="cancelled")
+    assert not diff_debt._DIFF_DEBT  # 期望: 取消写零欠账
+
+
+def test_ok_write_records_debt_without_status_kwarg() -> None:
+    # 期望: 缺省 status 按成功处理仍记账——旧派发路径未传该字段，保持兼容
+    _fresh_debt()
+    diff_debt.on_post_tool_call(tool_name="write_file", args={"path": "/tmp/a.py"}, session_id="s1")
+    assert len(diff_debt._DIFF_DEBT) == 1  # 期望: 恰好一笔欠账
 
 
 # ── 层1：WriteResult.diff 回显 ────────────────────────────────────────────
