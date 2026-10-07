@@ -62,7 +62,7 @@ ESCALATION_MARKER = "[拦截升级]"
 
 _db_lock = threading.Lock()
 _db_path = None
-_escalated: set = set()      # 本进程已升级指纹（提示单次消费）
+_escalated: dict[str, set] = {}  # 本进程已升级指纹，键控 session_id（提示单次消费，禁跨会话污染）
 
 
 def _get_db_path() -> Path:
@@ -269,7 +269,7 @@ def _fp_key(fp: tuple) -> str:
     return "\x1f".join(fp)
 
 
-def _note_blocked(tool_name: str, args: dict) -> None:
+def _note_blocked(tool_name: str, args: dict, session_id: str = "") -> None:
     """Contract: Preconditions: 已发生一次 status=blocked 的调用；
     Postconditions: 写意图指纹计数持久化入库（只读命令豁免不计），窗口
     过期行重置、超上限驱逐最旧，计数达阈值时置进程内升级标记；任何库
@@ -322,7 +322,7 @@ def _note_blocked(tool_name: str, args: dict) -> None:
         logger.error("block_escalation: 持久化失败（不中断拦截链）: %s", err)
         return
     if count >= _STREAK_LIMIT:
-        _escalated.add(fp)
+        _escalated.setdefault(session_id, set()).add(fp)
         logger.warning(
             "block_escalation: 同一意图第 %d 次被拦（通道=%s，跨会话持久计数），升级终止",
             count, sorted(tools))
@@ -362,18 +362,20 @@ def _clear_streak(tool_name: str, args: dict) -> None:
                 conn.close()
     except Exception as err:
         logger.error("block_escalation: 清账失败（不中断）: %s", err)
-    for stale in [f for f in list(_escalated) if any(
-            e and e in f for e in fp)]:
-        _escalated.discard(stale)
+    for sid in list(_escalated):
+        _escalated[sid] = {f for f in _escalated[sid] if not any(
+            e and e in f for e in fp)}
+        if not _escalated[sid]:
+            del _escalated[sid]
 
 
 def _on_post_tool_call(tool_name: str = "", status: str = "", error_type: str = "",
-                       args: dict | None = None, **kwargs) -> None:
+                       args: dict | None = None, session_id: str = "", **kwargs) -> None:
     """Contract: Preconditions: 核心以 status/error_type 复播工具结果；
     Postconditions: status=blocked 时记录意图指纹；status=ok 时同指纹
     清账（成功落地=streak 作废，防误判残留）；纯观察无返回值。"""
     if status == "blocked":
-        _note_blocked(tool_name, args or {})
+        _note_blocked(tool_name, args or {}, session_id=session_id)
     elif status == "ok":
         _clear_streak(tool_name, args or {})
 
@@ -392,10 +394,11 @@ def _on_transform_llm_output(response_text: str = "", **kwargs) -> str:
     带用户可见终止提示（ESCALATION_MARKER 前缀，cron scheduler 据此按
     失败记账），否则原样返回。"""
     output = response_text or ""
-    if not _escalated:
+    sid = str(kwargs.get("session_id") or "")
+    if not _escalated.get(sid):
         return output
     logger.warning("block_escalation: 升级指纹仍活跃，追加用户可见终止提示")
-    _escalated.clear()  # 单次提示，避免重复堆叠
+    _escalated.pop(sid, None)  # 单次提示，避免重复堆叠
     return output + (
 
         "\n\n" + ESCALATION_MARKER + " 同一写操作意图已连续 2 次被拦且发生通道切换（跨会话持久计数）。"
