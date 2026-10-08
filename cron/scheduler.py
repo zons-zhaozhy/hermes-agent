@@ -36,7 +36,7 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Union
 # `hermes update`) otherwise fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cron.worker_bootstrap import WORKER_MARKER
+from cron.worker_bootstrap import WORKER_MARKER, finish_worker_boot
 from hermes_constants import get_hermes_home, hermes_home_key
 from hermes_cli.observability.shared_metrics_gateway import note_cron_execution, note_cron_skipped
 from cron.env_settings import cron_env_setting
@@ -215,11 +215,6 @@ def stale_code_yield_labels(recorded_error: str | None) -> tuple[str, str] | Non
     return (match.group(1), match.group(2)) if match else None
 
 
-# Log the yield at most once per episode (reset when the skew changes) to avoid per-interval spam.
-_YIELD_LOG_INTERVAL_SECONDS = 3600.0
-_last_yield_log: dict[str, object] = {}
-
-
 def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
     """``(boot_rev, disk_rev)`` when THIS profile's tick must yield to a fresher gateway, else None.
 
@@ -256,21 +251,6 @@ def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
     except Exception:
         return None
     return skew
-
-
-def _log_tick_yield_once(reason: str) -> None:
-    """Log the yield at error level once per episode (skew signature)."""
-    global _last_yield_log
-    now = time.monotonic()
-    last_reason = _last_yield_log.get("reason")
-    last_at = _last_yield_log.get("at", 0.0)
-    if last_reason != reason or (now - float(last_at)) >= _YIELD_LOG_INTERVAL_SECONDS:
-        logger.error(
-            "Cron tick yielded: this process is running stale code (%s) and a "
-            "fresher gateway owns the runtime lock — jobs will fire from that "
-            "process. Restart this one to reclaim its ticks.",
-            reason)
-    _last_yield_log = {"reason": reason, "at": now}
 
 
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
@@ -534,11 +514,13 @@ from cron.jobs import (
     _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
     clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
     save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
+from cron import store_health
 from cron.execution_identity import enter_cron_execution, exit_cron_execution
 from cron.executions import (
     _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
     get_execution, mark_execution_handoff_pending, mark_execution_running,
-    recover_interrupted_executions, terminalize_dead_owner)
+    recover_interrupted_executions, settle_unstarted_execution, terminalize_dead_owner)
+from cron.scheduler_liveness import ExecutionProgressStamper, _inactivity_watchdog_loop
 
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
@@ -1209,39 +1191,6 @@ def _consume_interrupted_flag(job_id: str, token: Optional[object] = None) -> bo
             _interrupted_job_ids.discard(key)
             hit = True
         return hit
-
-
-def _inactivity_watchdog_loop(
-    *, get_idle_seconds: Callable[[], float], limit_s: float, poll_s: float, stop: threading.Event,
-    future_done: Callable[[], bool], meter: Optional[AwakeIdleMeter] = None,
-) -> "float | bool":
-    """Poll idle time until limit (-> the meter-corrected awake idle seconds it judged on),
-    stop, or the future completes (-> False). Uses ``threading.Event.wait``, not asyncio, so
-    a blocked event loop cannot disable the watchdog.
-
-    Driven by ``threading.Event.wait`` (a kernel timeout), not asyncio, so a blocked event-loop /
-    ``run_job`` thread cannot disable this watchdog the way ``asyncio.sleep`` / ``wait_for`` would (family A
-    of #94285 — the 4118s-idle-on-a-600s-limit cron hang). Returns the *observed* idle seconds
-    when the limit fired so callers can report that exact value instead of resampling
-    cross-thread; returns False when it did not fire.
-    """
-    # A sleeping host freezes the job with it, so time asleep never counts as inactivity.
-    if meter is None:
-        meter = AwakeIdleMeter()
-    while not stop.wait(poll_s):
-        if future_done():
-            return False
-        try:
-            idle = float(get_idle_seconds() or 0.0)
-        except Exception:
-            idle = 0.0
-        awake_idle = meter.measure(idle)
-        if awake_idle >= limit_s:
-            # Return the meter-corrected value the loop judged on, so the raiser
-            # never has to resample cross-thread (the 'idle for 0s (limit 600s)'
-            # impossible-number incidents) and host sleep never inflates the report.
-            return awake_idle
-    return False
 
 
 def _cron_inactivity_seconds() -> float:
@@ -2064,6 +2013,10 @@ def _run_agent_with_watchdog(
 
     _watch_thread = threading.Thread(
         target=_watch_inactivity, name=f"cron-inactivity-{str(job_id)[:8]}", daemon=True)
+    # Ledger progress stamps: the stale-claim sweep measures silence since the last stamp.
+    _progress = ExecutionProgressStamper(
+        str(job.get("execution_id") or ""), job_name, idle_seconds=_idle_seconds,
+        every_seconds=_RUN_CLAIM_HEARTBEAT_SECONDS)
     try:
         if _cron_inactivity_limit is not None:
             # Separate daemon thread so a hung get_activity_summary can't stop the limit firing.
@@ -2085,6 +2038,7 @@ def _run_agent_with_watchdog(
                     break
                 _abort_if_fire_claim_lost()
                 _heartbeat_run_claim_if_due()
+                _progress.tick()
     except Exception:
         _cron_pool.shutdown(wait=False, cancel_futures=True)
         raise
@@ -2117,14 +2071,6 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     max_iteration_summary = is_max_iteration_handoff(result)
     if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
         raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
-    # block_escalation 升级终止：插件只在 final_response 追加标记文本，turn 仍
-    # completed=True——按 #17855 同一不变量，被拦截终止的 run 禁标 ok（假绿）。
-    try:
-        from plugins.block_escalation import ESCALATION_MARKER
-    except Exception:  # 插件不可达时用同值字面量兜底探测，禁因 import 失败漏检
-        ESCALATION_MARKER = "[拦截升级]"
-    if ESCALATION_MARKER in final_response_text:
-        raise RuntimeError("agent terminated by block-escalation (拦截升级终止)")
     if max_iteration_summary:
         logger.warning(
             "Job '%s' reached the iteration limit but produced a final fallback response; "
@@ -4213,7 +4159,7 @@ def _acquire_tick_lock(lock_file):
                 "Cron tick could not acquire tick lock: %s — scheduler will "
                 "attempt fd reclamation and retry with backoff",
                 exc)
-        else:
+        elif exc.errno not in store_health.UNWRITABLE_ERRNOS:  # those degrade the store (tick caller)
             logger.error("Cron tick could not acquire tick lock: %s", exc)
         raise
 
@@ -4309,7 +4255,17 @@ def _sweep_mcp_orphans() -> None:
 def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     """Run one due job via the shared ``run_one_job`` body."""
     # Claim only when the worker actually starts, so a queued lease can't expire first.
-    claimed = claim_job_for_fire(job["id"], return_job=True)
+    try:
+        claimed = claim_job_for_fire(job["id"], return_job=True)
+    except OSError as exc:
+        store_health.note_unwritable(exc, f"skipped job '{job.get('name') or job['id']}'", "claim", [job])
+        settle_unstarted_execution(
+            job["execution_id"], job["id"], f"Cron store unwritable; not started: {exc}")
+        return False
+    except BaseException as exc:  # settle first, then surface the real error
+        settle_unstarted_execution(
+            job["execution_id"], job["id"], f"Fire claim failed: {type(exc).__name__}: {exc}")
+        raise
     if not claimed:
         finish_execution(
             job["execution_id"], success=False, error="Fire claim lost; execution was not started.")
@@ -4375,6 +4331,7 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
     # discard the LAUNCH home's key and leak every secondary profile's claim.
     _claim_home = _get_hermes_home()
     # Record the attempt before dispatch; recovery marks abandoned rows unknown (no retry).
+    execution = None
     try:
         execution = create_execution(
             job_id, source="builtin", scheduled_instant=job.get("_scheduled_instant"))
@@ -4385,8 +4342,12 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         # Release the claim so the next tick retries instead of wedging "already running".
         release_running_job(job_id, home=_claim_home, owner=registration_owner)
         _clear_run_claim_best_effort()
-        logger.exception(
-            "Job '%s' not dispatched: execution creation failed: %s", job_label, execution_err)
+        if execution is not None:  # the receipt was persisted; a later step failed
+            settle_unstarted_execution(execution["id"], job_id, (
+                f"Dispatch preparation failed: {type(execution_err).__name__}: {execution_err}"))
+        logger.exception("Job '%s' not dispatched: %s failed: %s", job_label,
+                         "execution creation" if execution is None else "dispatch preparation",
+                         execution_err)
         return None
 
     def _run_and_release(j=dispatched_job, ctx=_ctx, home=_claim_home):
@@ -4467,6 +4428,7 @@ from cron.scheduler_preflight import (  # noqa: E402
 # tick paths see every name they need.
 if __name__ == "__main__":
     if "--external-worker-file" in sys.argv:
+        finish_worker_boot()  # may relaunch: before the payload is read and the ack published
         import argparse
 
         parser = argparse.ArgumentParser(add_help=False)

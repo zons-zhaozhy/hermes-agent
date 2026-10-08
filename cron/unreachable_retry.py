@@ -23,6 +23,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+from cron.constants import is_recurring
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger("cron.scheduler")
@@ -92,13 +93,9 @@ def _is_provider_quota_rate_limit(message: str) -> bool:
     return any(needle in lowered for needle in _QUOTA_RATE_LIMIT_NEEDLES)
 
 
-def _is_recurring(job: Dict[str, Any]) -> bool:
-    return job.get("schedule", {}).get("kind") in {"cron", "interval"}
-
-
 def _ladder_applies(job: Dict[str, Any]) -> bool:
     """The ladder's applicability gate: recurring, not paused, and enabled in config."""
-    return _is_recurring(job) and job.get("state") != "paused" and retry_enabled()
+    return is_recurring(job) and job.get("state") != "paused" and retry_enabled()
 
 
 def _ladder_instant(job: Dict[str, Any], natural_next: Optional[datetime],
