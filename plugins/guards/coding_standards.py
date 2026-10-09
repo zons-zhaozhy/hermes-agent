@@ -68,7 +68,7 @@ def _plugin_disabled() -> bool:
 # ═══════════════════════════════════════════════════════════════════════
 
 class Violation:
-    __slots__ = ("rule_id", "line", "col", "severity", "message", "snippet")
+    __slots__ = ("col", "line", "message", "rule_id", "severity", "snippet")
 
     def __init__(self, rule_id: str, line: int, col: int,
                  severity: str, message: str, snippet: str = ""):
@@ -83,7 +83,7 @@ class Violation:
         return f"Violation({self.rule_id} L{self.line}: {self.message})"
 
 
-def _snippet(lines: List[str], lineno: int) -> str:
+def _snippet(lines: list[str], lineno: int) -> str:
     if 1 <= lineno <= len(lines):
         return lines[lineno - 1].rstrip()
     return ""
@@ -97,7 +97,7 @@ def _assign_target_names(node: ast.Assign) -> str:
     return ", ".join(names) if names else "?"
 
 
-def _has_logger_call(body: List[ast.stmt], min_level: str = "debug") -> bool:
+def _has_logger_call(body: list[ast.stmt], min_level: str = "debug") -> bool:
     """检查 except body 中是否有 logger 调用。min_level 限定最低级别。"""
     _LEVELS = ("debug", "info", "warning", "error", "critical", "exception")
     min_idx = _LEVELS.index(min_level) if min_level in _LEVELS else 0
@@ -131,7 +131,7 @@ def _exc_desc(node: ast.ExceptHandler) -> str:
 # R001-R005: 吞异常 — except body 只有 pass
 # ═══════════════════════════════════════════════════════════════════════
 
-def _check_except_pass(tree: ast.AST, lines: List[str]) -> List[Violation]:
+def _check_except_pass(tree: ast.AST, lines: list[str]) -> list[Violation]:
     """R001-R005: 所有 except handler 的 body 只含 Pass → 违规。"""
     violations = []
     severity = "error"  # 默认 error，R005 覆盖为 warning
@@ -192,7 +192,7 @@ def _check_except_pass(tree: ast.AST, lines: List[str]) -> List[Violation]:
 # R006: import *
 # ═══════════════════════════════════════════════════════════════════════
 
-def _check_import_star(tree: ast.AST, lines: List[str]) -> List[Violation]:
+def _check_import_star(tree: ast.AST, lines: list[str]) -> list[Violation]:
     """R006: from X import * — 污染命名空间。"""
     violations = []
     for node in ast.walk(tree):
@@ -257,7 +257,7 @@ def _iter_name_value_pairs(tree: ast.AST):
                     yield key.value.lower(), value, node
 
 
-def _check_hardcoded_secret(tree: ast.AST, lines: List[str], skip_tests: bool = True) -> List[Violation]:
+def _check_hardcoded_secret(tree: ast.AST, lines: list[str], skip_tests: bool = True) -> list[Violation]:
     """R007: password="xxx" 直接赋值/kwarg/dict 值字面量。
 
     Contract:
@@ -307,7 +307,7 @@ def _is_silent_return_value(val: ast.expr) -> bool:
     return False
 
 
-def _check_silent_downgrade(tree: ast.AST, lines: List[str]) -> List[Violation]:
+def _check_silent_downgrade(tree: ast.AST, lines: list[str]) -> list[Violation]:
     """R008: 宽异常 (Exception/BaseException/bare) + return 常量值 + 无日志。
 
     收窄：只对宽异常报警，放过 except ValueError: return False 等正常输入校验。
@@ -335,7 +335,7 @@ def _check_silent_downgrade(tree: ast.AST, lines: List[str]) -> List[Violation]:
 # R009: 默认值兜底 — os.environ.get("X", "default")
 # ═══════════════════════════════════════════════════════════════════════
 
-def _check_env_default_fallback(tree: ast.AST, lines: List[str]) -> List[Violation]:
+def _check_env_default_fallback(tree: ast.AST, lines: list[str]) -> list[Violation]:
     """R009: os.environ.get 带硬编码默认值。缺失必须报错引导。"""
     violations = []
     for node in ast.walk(tree):
@@ -390,7 +390,7 @@ def _looks_like_ip_literal(s: str) -> bool:
     return False
 
 
-def _check_hardcoded_ip(tree: ast.AST, lines: List[str]) -> List[Violation]:
+def _check_hardcoded_ip(tree: ast.AST, lines: list[str]) -> list[Violation]:
     """R010: HOST = "192.168.1.1" / connect(host="10.0.0.1") / {"host": "localhost:5432"}。"""
     violations = []
     for _name, value, node in _iter_name_value_pairs(tree):
@@ -414,7 +414,7 @@ _DB_URL_PREFIXES = ("postgresql://", "mysql://", "oracle://", "mongodb://",
                     "postgres://", "sqlite://", "redis://", "amqp://")
 
 
-def _check_hardcoded_db_url(tree: ast.AST, lines: List[str]) -> List[Violation]:
+def _check_hardcoded_db_url(tree: ast.AST, lines: list[str]) -> list[Violation]:
     """R011: DATABASE_URL = "postgresql://user:pass@host/db" — 含 kwarg/dict 形态。"""
     violations = []
     for _name, value, node in _iter_name_value_pairs(tree):
@@ -441,7 +441,7 @@ def _check_hardcoded_db_url(tree: ast.AST, lines: List[str]) -> List[Violation]:
 _DEPLOY_PATH_PREFIXES = ("/opt/", "/var/", "/etc/", "/usr/local/", "/srv/",)
 
 
-def _check_hardcoded_deploy_path(tree: ast.AST, lines: List[str]) -> List[Violation]:
+def _check_hardcoded_deploy_path(tree: ast.AST, lines: list[str]) -> list[Violation]:
     """R012: DEPLOY_DIR = "/opt/ontox/deploy" 等硬编码部署路径 — 含 kwarg/dict 形态。"""
     violations = []
     path_keywords = ("dir", "path", "home", "root", "deploy", "data",
@@ -467,7 +467,7 @@ def _check_hardcoded_deploy_path(tree: ast.AST, lines: List[str]) -> List[Violat
 # R013: 静默吞异常 — 宽异常 + return + 无 logger.warning
 # ═══════════════════════════════════════════════════════════════════════
 
-def _check_silent_return(tree: ast.AST, lines: List[str]) -> List[Violation]:
+def _check_silent_return(tree: ast.AST, lines: list[str]) -> list[Violation]:
     """R013: 宽异常 (Exception/BaseException/bare) + return + 无 logger.warning。
 
     收窄：只对宽异常报警。
@@ -499,7 +499,7 @@ def _check_silent_return(tree: ast.AST, lines: List[str]) -> List[Violation]:
 # R014: 裸 eval()
 # ═══════════════════════════════════════════════════════════════════════
 
-def _check_bare_eval(tree: ast.AST, lines: List[str]) -> List[Violation]:
+def _check_bare_eval(tree: ast.AST, lines: list[str]) -> list[Violation]:
     """R014: 裸 eval() — 安全风险，用 ast.literal_eval 替代。"""
     violations = []
     for node in ast.walk(tree):
@@ -520,7 +520,7 @@ def _check_bare_eval(tree: ast.AST, lines: List[str]) -> List[Violation]:
 # R015: except 块只有 logger.debug/info 无 warning/error
 # ═══════════════════════════════════════════════════════════════════════
 
-def _check_except_low_log_level(tree: ast.AST, lines: List[str]) -> List[Violation]:
+def _check_except_low_log_level(tree: ast.AST, lines: list[str]) -> list[Violation]:
     """R015: except 块中有 logger.debug/info 但**没有** logger.warning/error。
 
     收窄：只在 body 中没有任何 warning/error 级别日志时才报 debug。
@@ -544,7 +544,7 @@ def _check_except_low_log_level(tree: ast.AST, lines: List[str]) -> List[Violati
             violations.append(Violation(
                 rule_id="R015", line=node.lineno, col=node.col_offset,
                 severity="warning",
-                message=f"except 块中只有 logger.debug/info — 生产环境不输出 = 变相静默！改为 logger.warning/error",
+                message="except 块中只有 logger.debug/info — 生产环境不输出 = 变相静默！改为 logger.warning/error",
                 snippet=_snippet(lines, node.lineno),
             ))
     return violations
@@ -560,7 +560,7 @@ _CONFIG_LIKE_NAMES = frozenset({
 })
 
 
-def _check_getattr_default(tree: ast.AST, lines: List[str]) -> List[Violation]:
+def _check_getattr_default(tree: ast.AST, lines: list[str]) -> list[Violation]:
     """R016: getattr(config_like_obj, key, default) — 配置缺失静默降级。
 
     收窄：只对第一个参数是含 config/settings/env 等的变量名才报。
@@ -630,7 +630,7 @@ def _get_call_context_var_name(node: ast.Call) -> str:
     return ""
 
 
-def _check_falsy_or_empty_string(tree: ast.AST, lines: List[str]) -> List[Violation]:
+def _check_falsy_or_empty_string(tree: ast.AST, lines: list[str]) -> list[Violation]:
     """R017: str(val or "") — 0/False 变成空字符串，数据静默丢失。
 
     收窄：只对赋值目标变量名含数值语义关键词时才报。
@@ -664,7 +664,7 @@ def _check_falsy_or_empty_string(tree: ast.AST, lines: List[str]) -> List[Violat
             violations.append(Violation(
                 rule_id="R017", line=node.lineno, col=node.col_offset,
                 severity="warning",
-                message=f"str(val or \"\") — 0/False 会被吞成空字符串！用 str(val) 或 str(val if val is not None else \"\")",
+                message="str(val or \"\") — 0/False 会被吞成空字符串！用 str(val) 或 str(val if val is not None else \"\")",
                 snippet=_snippet(lines, node.lineno),
             ))
     return violations
@@ -674,7 +674,7 @@ def _check_falsy_or_empty_string(tree: ast.AST, lines: List[str]) -> List[Violat
 # R018: config.get("old_key") or config.get("new_key") — 别名兼容禁止
 # ═══════════════════════════════════════════════════════════════════════
 
-def _check_config_alias_compat(tree: ast.AST, lines: List[str]) -> List[Violation]:
+def _check_config_alias_compat(tree: ast.AST, lines: list[str]) -> list[Violation]:
     """R018: config.get("old") or config.get("new") — 别名兼容禁止。
 
     收窄：只对 .get() 调用对象是 dict/数据类（非 msg/row/record 等业务对象）
@@ -722,7 +722,7 @@ _ENTRY_FUNCTION_NAMES = frozenset({
 _ENTRY_FUNCTION_KEYWORDS = ("command", "inner", "handler", "callback", "listener")
 
 
-def _check_sys_exit_in_function(tree: ast.AST, lines: List[str]) -> List[Violation]:
+def _check_sys_exit_in_function(tree: ast.AST, lines: list[str]) -> list[Violation]:
     """R019: 函数内 sys.exit() — 放过入口函数。
 
     main()/cli()/run() 等入口函数中 sys.exit 是正常退出。
@@ -768,7 +768,7 @@ def _check_sys_exit_in_function(tree: ast.AST, lines: List[str]) -> List[Violati
 # R020: 变换异常信息 — except 内 raise 新异常不带 from e（丢 __cause__ 链）
 # ═══════════════════════════════════════════════════════════════════════
 
-def _check_raise_without_cause(tree: ast.AST, lines: List[str]) -> List[Violation]:
+def _check_raise_without_cause(tree: ast.AST, lines: list[str]) -> list[Violation]:
     """R020: except 块内 raise 新异常但不带 from e — 异常堆栈链断裂。
 
     合法形态（放行）：
@@ -782,7 +782,7 @@ def _check_raise_without_cause(tree: ast.AST, lines: List[str]) -> List[Violatio
       - raise NewError(...) from None  # 刻意压制 __context__，堆栈信息丢失
     """
     violations = []
-    parent_map: Dict[int, ast.AST] = {}
+    parent_map: dict[int, ast.AST] = {}
     for parent in ast.walk(tree):
         for child in ast.iter_child_nodes(parent):
             parent_map[id(child)] = parent
@@ -872,14 +872,14 @@ def _is_regex_call(func: ast.expr) -> bool:
     return False
 
 
-def _line_has_regex_ok(lines: List[str], lineno: int) -> bool:
+def _line_has_regex_ok(lines: list[str], lineno: int) -> bool:
     if 1 <= lineno <= len(lines):
         if "# re-ok" in lines[lineno - 1]:
             return True
     return False
 
 
-def _check_regex_usage(tree: ast.AST, lines: List[str]) -> List[Violation]:
+def _check_regex_usage(tree: ast.AST, lines: list[str]) -> list[Violation]:
     """R021: re.sub/re.match/re.compile 等正则使用 — 正则是最后手段。
 
     优先顺序：str.startswith/endswith/split/replace/in、str 方法组合、
@@ -936,7 +936,7 @@ def _is_diag_call(func: ast.expr) -> bool:
     return False
 
 
-def _check_diag_truncation(tree: ast.AST, lines: List[str]) -> List[Violation]:
+def _check_diag_truncation(tree: ast.AST, lines: list[str]) -> list[Violation]:
     """R022: print/logger/raise 消息里出现 [:N] / [-N:] 切片 — 诊断证据被截断。
 
     教训(2026-08-28):dispatch 派发行 issue[:120] 切掉证据尾部,排障 20 分钟
@@ -984,7 +984,7 @@ def _check_diag_truncation(tree: ast.AST, lines: List[str]) -> List[Violation]:
 _LOG_COLLECT_CMDS = ("logs", "journalctl")
 
 
-def _check_log_collect_timestamp(tree: ast.AST, lines: List[str]) -> List[Violation]:
+def _check_log_collect_timestamp(tree: ast.AST, lines: list[str]) -> list[Violation]:
     """R023: docker/kubectl logs、journalctl 采集缺时间戳 — 有而不取。
 
     契约(2026-09-01 用户拍板,普适编程规约): 信息持有的定位维度(时间/位置/主体),
@@ -1045,6 +1045,57 @@ def _check_log_collect_timestamp(tree: ast.AST, lines: List[str]) -> List[Violat
     return violations
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# R024: 测试断言层级 — 测试文件只有状态级断言(L1), 无值级断言(L2)
+# ═══════════════════════════════════════════════════════════════════════
+
+_HTTP_CALL_HINTS = ("urlopen", "urllib", "requests", "curl", "httpx")
+_STATUS_ASSERT_HINTS = ("status_code", "%{http_code}", "http_code", "== 200", "getcode()")
+# L2 值级断言的信号: 解析了响应体并按字段取值/断言非空
+_BODY_ASSERT_HINTS = ("json.loads", ".json()", "json.load", "loads(")
+_EXEMPT_MARKER = "testlv-ok"
+
+
+def _is_test_target(target: str) -> bool:
+    """Contract:
+      Preconditions: target 为写入路径字符串(可为空)
+      Postconditions: True 当且仅当路径属于测试资产(tests/ 目录或 test_/verify_ 文件名前缀)
+    """
+    if not target:
+        return False
+    norm = target.replace(os.sep, "/")
+    return "/tests/" in norm or "/test/" in norm or \
+        os.path.basename(norm).startswith(("test_", "verify_"))
+
+
+def _check_test_assertion_level(tree: ast.AST, lines: list[str], target: str = "") -> list[Violation]:
+    """R024: 测试文件做了 HTTP 调用且断言了状态码, 但全文无响应体值级断言。
+
+    病例(20261009): HashMap 大写键致字段恒 null, 「200+键存在+视觉审查」三层放行。
+    L1(状态码)只是入场券, L2(字段值非空)才是功能交付最小判据——本规则在写入时
+    拦截「仅状态级断言」的测试文件, 豁免=testlv-ok(行内, 须写明为何值级不适用)。
+    """
+    if not _is_test_target(target):
+        return []
+    if any(_EXEMPT_MARKER in ln for ln in lines):
+        return []
+    text = "\n".join(lines)
+    has_http = any(h in text for h in _HTTP_CALL_HINTS)
+    has_status_assert = any(h in text for h in _STATUS_ASSERT_HINTS)
+    has_body_assert = any(h in text for h in _BODY_ASSERT_HINTS)
+    if has_http and has_status_assert and not has_body_assert:
+        return [Violation(
+            rule_id="R024", line=1, col=0, severity="error",
+            message="测试断言层级不足 — 文件含 HTTP 调用与状态码断言, 但无响应体值级断言"
+                    "(json.loads/.json() 后按字段取值非空)。L1 状态码只是入场券, "
+                    "L2 值级断言(关键字段非空+类型+键名形态)是功能交付最小判据"
+                    "(病例: 大写键字段恒 null 被 200 绿灯放行)。"
+                    "值级确不适用(如纯连通性探针)请行首加 # testlv-ok 并写明理由",
+            snippet=lines[0][:80] if lines else "",
+        )]
+    return []
+
+
 _RULES = [
     # ── 吞异常系列（5 条）──
     ("R001-R005", _check_except_pass,             "except handler 只有 pass — 吞异常铁律"),
@@ -1074,10 +1125,12 @@ _RULES = [
     ("R022",      _check_diag_truncation,           "诊断输出截断 — print/logger/raise 消息切片，豁免=trunc-ok"),
     # ── 信息维度系列（1 条）──
     ("R023",      _check_log_collect_timestamp,     "日志采集缺时间戳 — 有而不取，豁免=ts-ok"),
+    # ── 测试断言系列（1 条）──
+    ("R024",      _check_test_assertion_level,      "测试断言层级不足 — 仅状态码无值级断言，豁免=testlv-ok"),
 ]
 
 
-def _run_all_checks(source: str, *, skip_tests: bool = False) -> List[Violation]:
+def _run_all_checks(source: str, *, skip_tests: bool = False, target: str = "") -> list[Violation]:
     """用 AST 解析源码，运行所有规则检查。"""
     try:
         tree = ast.parse(source)
@@ -1090,6 +1143,10 @@ def _run_all_checks(source: str, *, skip_tests: bool = False) -> List[Violation]
         # R007/R010/R011/R014 跳过测试文件（测试中的硬编码/fake key/eval 是测试 fixture）
         if skip_tests and _rule_ids in ("R007", "R010", "R011", "R014"):
             continue
+        if _rule_ids == "R024":
+            # R024 需要写入路径判定测试资产归属
+            all_violations.extend(check_fn(tree, lines, target))
+            continue
         all_violations.extend(check_fn(tree, lines))
     return all_violations
 
@@ -1098,7 +1155,7 @@ def _run_all_checks(source: str, *, skip_tests: bool = False) -> List[Violation]
 # Hook 实现
 # ═══════════════════════════════════════════════════════════════════════
 
-def _check_content(content: str, target: str) -> Optional[Dict[str, Any]]:
+def _check_content(content: str, target: str) -> Optional[dict[str, Any]]:
     """检查写入内容是否违反编码规范。"""
     if not content:
         return None
@@ -1106,7 +1163,7 @@ def _check_content(content: str, target: str) -> Optional[Dict[str, Any]]:
         return None
 
     skip_tests = bool(target and ("tests/" in target.replace(os.sep, "/") or "/tests/" in target.replace(os.sep, "/")))
-    violations = _run_all_checks(content, skip_tests=skip_tests)
+    violations = _run_all_checks(content, skip_tests=skip_tests, target=target)
     if not violations:
         return None
 
@@ -1144,7 +1201,7 @@ def _check_content(content: str, target: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def on_pre_tool_call(**kwargs) -> Optional[Dict[str, Any]]:
+def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
     """拦截写入工具中的编码规范违规。"""
     if _plugin_disabled():
         return None
