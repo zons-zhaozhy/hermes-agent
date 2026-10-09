@@ -298,6 +298,14 @@ def on_pre_llm_call(**kwargs) -> Optional[dict[str, Any]]:
         text = str(kwargs.get("user_message", "") or "")
         if not text.strip():
             return None
+        # 豁免出口必须先于一切判定/去重/cap：用户明示豁免若排在「消息须先被
+        # 判为重大决策」之后，一条纯豁免指令本身不是决策陈述，判定 false 即
+        # 提前 return → waived 永不写入，armed 冻结无解（2026-10-09 实录：
+        # 用户连发两次门禁公布口令仍被拦）。公布口令零依赖先行；已 armed 的
+        # 会话再补一次 LLM 判定，使非字面措辞也不被 hash 去重与决策门挡住。
+        if _has_waive_phrase(text) or (st.get("armed") and _user_declared_waive(text)):
+            st["waived"] = True
+            return None
         # cron 等无人值守平台禁 armed：正门（delegate_task）可能不在工具集、
         # 豁免出口（用户明示）无人在场——armed 即无解死锁（2026-09-24 日学习
         # job 4162e5ea 全工具冻结整轮失败实录）。降级为仅注入提醒：有
@@ -378,6 +386,11 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
             return None
         tool_name = str(kwargs.get("tool_name", ""))
         if tool_name in {"delegate_task", "delegate"}:
+            # 派发时刻即解除武装：正门已走，不再依赖 post_tool_call 的回灌——
+            # 后台委派完成于本回合之后，status/session 任一环节失配都会让
+            # reviewed 永不写入 = armed 无解（2026-10-09 实录）。
+            if _goal_has_review_marker(_extract_delegate_goals(kwargs.get("args"))):
+                st["reviewed"] = True
             return None  # 正门：反方审查委派本身放行
         return {
             "action": "block",

@@ -63,6 +63,8 @@ def plugin(monkeypatch):
     get_session_state("cli-test-1", mod._NAMESPACE).clear()
     get_session_state("cli-test-2", mod._NAMESPACE).clear()
     get_session_state("cli-test-3", mod._NAMESPACE).clear()
+    for sid in ("cli-test-6", "cli-test-7", "cli-test-8", "cli-test-9"):
+        get_session_state(sid, mod._NAMESPACE).clear()
 
 
 class TestCronNoDeadlock:
@@ -220,3 +222,92 @@ class TestJudgeCallBudget:
         mod._user_waived("这个方案不用再过审了")
         assert len(seen) == 3, f"judge 调用点数量变了: {seen}"  # 期望: 三处 judge 调用点全触发
         assert all("timeout" not in kw for kw in seen), seen  # 期望: 均不带 timeout 实参（配置面唯一）
+
+
+class TestExitReachability:
+    """出口可达性：豁免出口与正门出口都不得被「决策判定」这一前置门挡住。
+
+    背景（2026-10-09 实录）：用户连发两次门禁自公布口令「豁免反方审查」仍被
+    冻结。根因是豁免判定被排在「消息须先被判为重大决策」之后——一条纯豁免
+    指令本身不是决策陈述，判定返回 false 即提前 return，waived 永不写入。
+
+    本类用例刻意**不打桩** `_is_major_decision`/`_judge_user_side` 为 True，
+    用生产真形状（非决策消息）钉死出口可达性；既有用例因 fixture 把
+    `_is_major_decision` 桩成 True 而恒绿，正是假绿灯所在。
+    """
+
+    def test_waive_phrase_disarms_even_when_message_is_not_a_decision(self, plugin, monkeypatch):
+        sid = "cli-test-6"
+        monkeypatch.setattr(plugin, "_is_major_decision", lambda text: False)
+        monkeypatch.setattr(plugin, "_judge_user_side", lambda message: {"decision": False})
+        plugin.on_pre_llm_call(
+            session_id=sid, task_id="t8", user_message="豁免反方审查", platform="cli",
+        )
+        from plugins._shared_state import get_session_state
+
+        st = get_session_state(sid, plugin._NAMESPACE)
+        # 期望: 单一豁免指令（非决策陈述）字面命中口令即解除冻结，
+        # 可达性不依赖「它自己先被判成重大决策」这一无关前提
+        assert st.get("waived") is True
+        st.clear()
+
+    def test_armed_session_can_be_waived_by_phrase(self, plugin, monkeypatch):
+        sid = "cli-test-7"
+        from plugins._shared_state import get_session_state
+
+        plugin.on_pre_llm_call(
+            session_id=sid, task_id="t9", user_message="决定上生产部署方案A", platform="cli",
+        )
+        assert get_session_state(sid, plugin._NAMESPACE).get("armed") is True
+        monkeypatch.setattr(plugin, "_is_major_decision", lambda text: False)
+        monkeypatch.setattr(plugin, "_judge_user_side", lambda message: {"decision": False})
+        plugin.on_pre_llm_call(
+            session_id=sid, task_id="t10", user_message="豁免反方审查", platform="cli",
+        )
+        st = get_session_state(sid, plugin._NAMESPACE)
+        # 期望: 已 armed 的会话被口令解除武装（这是用户唯一的自救出口）
+        assert st.get("waived") is True
+        directive = plugin.on_pre_tool_call(
+            session_id=sid, tool_name="terminal", args={"command": "date"},
+        )
+        assert directive is None
+        st.clear()
+
+    def test_dispatch_of_review_delegation_disarms_immediately(self, plugin):
+        sid = "cli-test-8"
+        from plugins._shared_state import get_session_state
+
+        plugin.on_pre_llm_call(
+            session_id=sid, task_id="t11", user_message="决定上生产部署方案A", platform="cli",
+        )
+        directive = plugin.on_pre_tool_call(
+            session_id=sid, tool_name="delegate_task",
+            args={"tasks": [{"goal": "反方审查：找漏洞/挑毛病/批判上述方案"}]},
+        )
+        assert directive is None  # 正门本身放行
+        # 期望: 派发即解除武装——不依赖 post_tool_call 的回灌（后台委派完成于
+        # 本回合之后，status/session 任一环节失配即让 reviewed 永不写入）
+        assert get_session_state(sid, plugin._NAMESPACE).get("reviewed") is True
+        assert plugin.on_pre_tool_call(
+            session_id=sid, tool_name="terminal", args={"command": "date"},
+        ) is None
+        get_session_state(sid, plugin._NAMESPACE).clear()
+
+    def test_unrelated_dispatch_does_not_disarm(self, plugin):
+        sid = "cli-test-9"
+        from plugins._shared_state import get_session_state
+
+        plugin.on_pre_llm_call(
+            session_id=sid, task_id="t12", user_message="决定上生产部署方案A", platform="cli",
+        )
+        plugin.on_pre_tool_call(
+            session_id=sid, tool_name="delegate_task",
+            args={"tasks": [{"goal": "帮我查一下这家公司的公开资料"}]},
+        )
+        # 期望: 跑腿类委派不免检——armed 仍在，非审查工具继续冻结
+        assert get_session_state(sid, plugin._NAMESPACE).get("reviewed") is None
+        directive = plugin.on_pre_tool_call(
+            session_id=sid, tool_name="terminal", args={"command": "date"},
+        )
+        assert directive is not None and directive.get("action") == "block"
+        get_session_state(sid, plugin._NAMESPACE).clear()
