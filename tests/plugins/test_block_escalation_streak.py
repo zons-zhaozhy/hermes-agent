@@ -24,7 +24,7 @@ import plugins.block_escalation as be
 
 def _setup(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(be, "_db_path", tmp_path / "be.db")
-    monkeypatch.setattr(be, "_escalated", set())
+    monkeypatch.setattr(be, "_escalated", {})  # 形状须与插件契约一致：dict[str, set]（键控 session_id）
     conn = sqlite3.connect(str(tmp_path / "be.db"))
     try:
         be._ensure_schema(conn)
@@ -100,8 +100,8 @@ def test_escalated_flag_cleared_on_cross_tool_success(tmp_path, monkeypatch):
         "command": "cat > /tmp/x/a.md << 'EOF'\n1\nEOF"})
     be._note_blocked("terminal", {
         "command": "echo hi > /tmp/x/a.md"})
-    # 期望: 同意图第 2 次被拦 → 升级标记置位
-    assert any("/tmp/x/a.md" in fp for fp in be._escalated)
+    # 期望: 同意图第 2 次被拦 → 升级标记置位（dict 按 session 键控，默认 session 键）
+    assert any("/tmp/x/a.md" in fp for fps in be._escalated.values() for fp in fps)
     be._on_post_tool_call(tool_name="write_file", status="ok", args={
         "path": "/tmp/x/a.md", "content": "done"})
     # 期望: 成功落地撤销升级标记（跨工具同样生效）
