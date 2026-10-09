@@ -110,6 +110,58 @@ class TestCronNoDeadlock:
         assert directive is not None and directive.get("action") == "block"
 
 
+class TestJudgeOutageNoDeadlock:
+    """判定通道挂掉（本地判定模型超时/无兜底）时不得死锁。
+
+    背景（2026-10-09 实录）：auxiliary.devil_advocate_delegate 指向本地
+    127.0.0.1:11434 且无 fallback_chain，四次委派全部 20s 超时 →
+    llm_judge_bool 返回 None → _delegate_is_review=False → reviewed 永不
+    写入 → armed 冻结全部非 delegate 工具；同源配置的 devil_advocate_waive
+    一并超时，用户豁免出口同样失效 = 双出口死锁。
+    """
+
+    def test_marker_delegate_disarms_when_judge_fails(self, plugin, monkeypatch):
+        sid = "cli-test-4"
+        # 判定通道故障：judge 返回 None（超时 fail-open 的真实形状）
+        monkeypatch.setattr(plugin, "_delegate_is_review", lambda goals: None)
+        plugin.on_pre_llm_call(
+            session_id=sid, task_id="t6", user_message="决定上生产部署方案A",
+            platform="cli",
+        )
+        plugin.on_post_tool_call(
+            session_id=sid, tool_name="delegate_task", status="ok",
+            args={"goal": "反方审查该方案，只找漏洞"},
+        )
+        from plugins._shared_state import get_session_state
+
+        st = get_session_state(sid, plugin._NAMESPACE)
+        # 期望: 门禁公布的审查语义标记（_BLOCK_MSG_TEMPLATE 明示）足以解锁——
+        # 判定通道挂掉不等于死锁
+        assert st.get("reviewed") is True
+        st.clear()
+
+    def test_waive_phrase_disarms_when_judge_fails(self, plugin, monkeypatch):
+        sid = "cli-test-5"
+        monkeypatch.setattr(plugin, "_is_major_decision", lambda text: True)
+        monkeypatch.setattr(plugin, "_user_waived", lambda text: None)
+        plugin.on_pre_llm_call(
+            session_id=sid, task_id="t7", user_message="豁免反方审查",
+            platform="cli",
+        )
+        from plugins._shared_state import get_session_state
+
+        st = get_session_state(sid, plugin._NAMESPACE)
+        # 期望: 门禁公布给用户的口令（"说'豁免反方审查'即可"）字面命中即豁免，
+        # 不依赖可能挂掉的判定通道
+        assert st.get("waived") is True
+        assert not st.get("armed")
+        directive = plugin.on_pre_tool_call(
+            session_id=sid, tool_name="terminal", args={"command": "date"},
+        )
+        assert directive is None
+        st.clear()
+
+
 class TestDelegateGateUnchanged:
     """正门语义回归：delegate_task 始终放行；成功反方审查解除 armed。"""
 

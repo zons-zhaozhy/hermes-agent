@@ -27,7 +27,7 @@ import hashlib
 import logging
 import os
 import sys
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from plugins._llm_judge import llm_judge_bool
 from plugins._shared_state import get_session_state
@@ -40,7 +40,7 @@ from importlib import import_module as _import_module
 _YINYANG_LOOKUP_FAILED = False
 
 
-def _judge_user_side(message: str) -> Optional[Dict[str, Optional[bool]]]:
+def _judge_user_side(message: str) -> Optional[dict[str, Optional[bool]]]:
     # 运行时插件模块名 = hermes_plugins.<slug>（连字符转下划线，
     # 见 hermes_cli/plugins.py _directory_module_name）；依次尝试两个命名空间。
     # 查询失败缓存到进程生命期：yinyang 未启用时 import 必然失败且不会中途启用，
@@ -183,13 +183,92 @@ def _delegate_is_review(goals_text: str) -> bool:
     ) is True
 
 
+# 门禁自身对外公布的语义标记（见 _BLOCK_MSG_TEMPLATE：「goal 须含'反方审查/
+# 挑漏洞/批判'语义」）。这是门禁规定给委派方的契约用语，属机器可判文本；
+# 人话语义判定仍走 LLM judge（_delegate_is_review）——两道并行，标记命中即
+# 判定成立，使解锁不依赖可能超时的判定通道（2026-10-09 双出口死锁实录）。
+_REVIEW_MARKERS = (
+    "反方审查", "唱反调", "挑漏洞", "只找漏洞", "批判",
+    "Devil's Advocate", "devil's advocate",
+)
+
+# 门禁公布给用户的豁免口令（见 _BLOCK_MSG_TEMPLATE：「说'豁免反方审查'即可」）。
+# 字面命中即豁免，同样不依赖判定通道。
+_WAIVE_PHRASES = ("豁免反方审查", "豁免审查", "跳过反方审查", "免除反方审查")
+
+
+def _goal_has_review_marker(goals_text: str) -> bool:
+    """goal 是否携带门禁公布的审查语义标记（零 LLM 依赖）。
+
+    Contract:
+      Preconditions: goals_text 为 str（可为空）
+      Postconditions: 命中任一公布标记 → True；空串或未命中 → False
+    """
+    if not goals_text:
+        return False
+    return any(marker in goals_text for marker in _REVIEW_MARKERS)
+
+
+def _has_waive_phrase(text: str) -> bool:
+    """用户消息是否含门禁公布的口令（去空白后字面匹配，零 LLM 依赖）。
+
+    Contract:
+      Preconditions: text 为 str（可为空）
+      Postconditions: 命中任一公布口令 → True；空串或未命中 → False
+    """
+    compact = "".join(text.split())
+    if not compact:
+        return False
+    return any(phrase in compact for phrase in _WAIVE_PHRASES)
+
+
+def _delegate_declared_review(goals_text: str) -> bool:
+    """委派是否属反方审查：公布标记优先（零延迟零依赖），否则 LLM judge。
+
+    Contract:
+      Preconditions: goals_text 为 str
+      Postconditions: 返回 True/False；judge 返回 None（通道故障）记 warning
+        并视为 False——但标记路径已先行覆盖门禁公布的委派形态，故通道
+        故障不再导致锁死。
+    """
+    if _goal_has_review_marker(goals_text):
+        return True
+    verdict = _delegate_is_review(goals_text)
+    if verdict is None:
+        logger.warning(
+            "devil-advocate-audit: 审查委派判定通道故障（fail-open），"
+            "仅有公布标记的委派可解锁；本次 goal 未含公布标记"
+        )
+    return verdict is True
+
+
+def _user_declared_waive(text: str) -> bool:
+    """用户是否明示豁免：公布口令优先（零依赖），否则 LLM judge。
+
+    Contract:
+      Preconditions: text 为 str
+      Postconditions: 返回 True/False；judge 通道故障（None）记 warning 并
+        视为 False，但公布口令路径已先行覆盖门禁指引用户使用的措辞。
+    """
+    if _has_waive_phrase(text):
+        return True
+    verdict = _user_waived(text)
+    if verdict is None:
+        logger.warning(
+            "devil-advocate-audit: 豁免判定通道故障（fail-open）；"
+            "用户可用门禁公布口令「豁免反方审查」字面解锁"
+        )
+    return verdict is True
+
+
 def on_post_tool_call(**kwargs) -> None:
-    """delegate_task 委派语义判定确属反方审查且成功 → 本会话静默。
+    """delegate_task 委派确属反方审查且成功 → 本会话静默。
 
     Contract:
       Postconditions: 仅当 tool_name 属于 delegate 集合、status=ok（框架
-      observer 词表的唯一成功态）、goal 经 LLM 语义判定为反方审查类时写 reviewed 标记；judge 失败
-      (fail-open) 不写标记。
+      observer 词表的唯一成功态）、goal 命中门禁公布标记或经 LLM 判定为
+      反方审查类时写 reviewed 标记；判定通道故障且未含标记时不写（但门禁
+      已在 block 文案中明示标记用语，故仍有可达出口）。
     """
     if str(kwargs.get("tool_name", "")) not in {"delegate_task", "delegate"}:
         return
@@ -201,11 +280,12 @@ def on_post_tool_call(**kwargs) -> None:
     if not sid:
         return
     goals = _extract_delegate_goals(kwargs.get("args"))
-    if goals and _delegate_is_review(goals):
+    if goals and _delegate_declared_review(goals):
         get_session_state(sid, _NAMESPACE)["reviewed"] = True
+        logger.info("devil-advocate-audit: 反方审查委派已识别，本会话解除武装")
 
 
-def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
+def on_pre_llm_call(**kwargs) -> Optional[dict[str, Any]]:
     """语义判定重大决策 + 未见反方审查 → 注入红牌。fail-open。"""
     try:
         if _plugin_disabled():
@@ -229,7 +309,7 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
             # cap 满：决策判定停摆，但 armed 会话仍须保留豁免出口——
             # 否则冻结无解（用户说豁免词也到不了判定）。仅 armed 态探测，
             # waived/reviewed 置位后本分支不再触发，成本有界。
-            if st.get("armed") and _user_waived(text):
+            if st.get("armed") and _user_declared_waive(text):
                 st["waived"] = True
             return None
         h = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
@@ -249,7 +329,7 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
         st["count"] = _count(sid) + 1
         # 用户明示豁免 → 记 waived 并解除武装。豁免判定不设 cap——
         # cap 只限"决策判定"；豁免是用户主动出口，被 cap 挡=armed 死锁无解。
-        if _user_waived(text):
+        if _user_declared_waive(text):
             st["waived"] = True
             return None
         if unattended:
@@ -279,7 +359,7 @@ def _user_waived(text: str) -> bool:
     ) is True
 
 
-def on_pre_tool_call(**kwargs) -> Optional[Dict[str, Any]]:
+def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
     """armed（重大决策未审）时对非 delegate 工具发 block 强制先过反方审查。
 
     Contract:
