@@ -63,7 +63,14 @@ logger = logging.getLogger(__name__)
 _NAMESPACE = "devil_advocate_audit"
 
 _MAX_JUDGE_CALLS = 30
-# judge 预算交由 auxiliary.<task>.timeout 统一治理（config.yaml），插件不再自带秒数。
+# 插件内 judge 调用一律显式传此秒数：llm_judge_bool 的 timeout 形参默认 20.0 且原样
+# 传给 call_llm，auxiliary.<task>.timeout（config.yaml）在这条路径不生效。三个 judge
+# 调用点都落在框架有界钩子内（hermes_cli/plugins_dispatch.py 的
+# _HOOK_TIMEOUT_BOUNDED_HOOKS，预算 _HOOK_CALLBACK_TIMEOUT_SECS=30s，超时即 abandon、
+# 非 fail-closed 钩子直接 skip）——judge 默认 20s 再加回退主模型的耗时远超预算，
+# 钩子被丢弃后状态永不写入。5s × 最多三次尝试（主 + fallback_chain + 主模型回退）
+# ≈ 15s，压在预算一半以内。
+_JUDGE_TIMEOUT_SECS = 5.0
 
 _JUDGE_SYSTEM = (
     "你是决策审查哨兵。判断下面这条会话消息是否构成'重大方案定稿或决策承诺'——"
@@ -142,6 +149,7 @@ def _is_major_decision(text: str) -> Optional[bool]:
         task="devil_advocate_audit",
         system=_JUDGE_SYSTEM,
         text=text,
+        timeout=_JUDGE_TIMEOUT_SECS,
     )
 
 
@@ -167,12 +175,12 @@ def _extract_delegate_goals(args: Any) -> str:
     return "\n".join(t for t in texts if t)
 
 
-def _delegate_is_review(goals_text: str) -> bool:
-    """LLM 语义判定委派 goal 是否属反方审查类。fail-open 返回 False。
+def _delegate_is_review(goals_text: str) -> Optional[bool]:
+    """LLM 语义判定委派 goal 是否属反方审查类。
 
     Contract:
       Preconditions: goals_text is non-empty str
-      Postconditions: 返回 True/False；绝不 raise
+      Postconditions: 返回 True/False/None（None=判定通道故障/超时）；绝不 raise
     """
     assert goals_text, "goals_text must be non-empty"
     return llm_judge_bool(
@@ -180,7 +188,8 @@ def _delegate_is_review(goals_text: str) -> bool:
         system=_DELEGATE_JUDGE_SYSTEM,
         text=goals_text,
         true_key="review",
-    ) is True
+        timeout=_JUDGE_TIMEOUT_SECS,
+    )
 
 
 # 门禁自身对外公布的语义标记（见 _BLOCK_MSG_TEMPLATE：「goal 须含'反方审查/
@@ -343,12 +352,12 @@ def on_pre_llm_call(**kwargs) -> Optional[dict[str, Any]]:
         return None
 
 
-def _user_waived(text: str) -> bool:
-    """LLM 语义判定用户是否明示豁免反方审查。fail-open 返回 False。
+def _user_waived(text: str) -> Optional[bool]:
+    """LLM 语义判定用户是否明示豁免反方审查。
 
     Contract:
       Preconditions: text is non-empty str
-      Postconditions: 返回 True/False；绝不 raise
+      Postconditions: 返回 True/False/None（None=判定通道故障/超时）；绝不 raise
     """
     assert text, "text must be non-empty"
     return llm_judge_bool(
@@ -356,7 +365,8 @@ def _user_waived(text: str) -> bool:
         system=_WAIVE_JUDGE_SYSTEM,
         text=text,
         true_key="waive",
-    ) is True
+        timeout=_JUDGE_TIMEOUT_SECS,
+    )
 
 
 def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:

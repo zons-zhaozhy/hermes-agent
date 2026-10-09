@@ -194,3 +194,35 @@ class TestDelegateGateUnchanged:
             session_id=sid, tool_name="terminal", args={"command": "date"},
         )
         assert directive is None
+
+
+class TestJudgeCallBudget:
+    """judge 调用必须显式带窗口，并落在框架有界钩子预算内。
+
+    背景：三处 judge 调用点分属 post_tool_call / pre_llm_call，两者都在
+    hermes_cli/plugins_dispatch.py 的 _HOOK_TIMEOUT_BOUNDED_HOOKS 内，预算
+    _HOOK_CALLBACK_TIMEOUT_SECS=30s，超时即 abandon（非 fail-closed 钩子直接
+    skip）。llm_judge_bool 的 timeout 形参默认 20.0 且原样传给 call_llm，
+    auxiliary.<task>.timeout（config.yaml）在这条路径不生效；judge 默认 20s
+    加回退主模型的耗时远超预算 → 钩子被丢弃 → 状态永不写入 = 审查门死锁。
+    """
+
+    def test_every_judge_call_passes_bounded_timeout(self, monkeypatch):
+        mod = _load_plugin()  # 不复用 plugin fixture：它把被测函数本身 stub 掉了
+        from hermes_cli.plugins_dispatch import _HOOK_CALLBACK_TIMEOUT_SECS
+
+        seen: list[float | None] = []
+
+        def _recorder(task: str, **kwargs) -> None:
+            seen.append(kwargs.get("timeout"))
+
+        monkeypatch.setattr(mod, "llm_judge_bool", _recorder)
+        mod._is_major_decision("决定上生产部署方案A")
+        mod._delegate_is_review("帮我查一下这家公司的资料")
+        mod._user_waived("这个方案不用再过审了")
+        # 期望: 三处 judge 调用全部显式传 timeout；最坏三次尝试（主 + fallback_chain
+        # + 主模型回退）累计 ≤ 钩子预算一半，留半量余量
+        assert len(seen) == 3, f"judge 调用点数量变了: {seen}"
+        assert all(
+            t is not None and 0 < t <= _HOOK_CALLBACK_TIMEOUT_SECS / 2 for t in seen
+        ), seen
