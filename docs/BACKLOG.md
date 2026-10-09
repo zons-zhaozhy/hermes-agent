@@ -4,6 +4,13 @@
 
 ## 待办
 
+### 0. [cron] 429 硬限识别短路（skipped-quota）
+- 优先级：高（429 五小时上限窗口第 6 次复发：2026-10-09 16:45–20:05 共 69 笔 failed 横扫 6 job，10-08 档首次提出仍未实现）
+- 问题：配额窗口内调度器每 5–15 分钟照常重派每个 job，进程引导期首次模型调用即 `RuntimeError: HTTP 429: 已达到 5 小时的使用上限。您的限额将在 <时刻> 重置` 直死——agent 层退避无机会执行（失败在 agent 循环外），executions.db 被污染 70 笔/日失败信号。
+- 方案：`cron/scheduler.py` 派发前查该 job 最近 failed 错误：含「已达到 5 小时的使用上限」且带未来重置时刻 → 本轮记 `skipped-quota` 不派发（复用 note_cron_skipped 观测），重置时刻过后自动恢复派发。错误消息内重置时刻已可解析，无需外部状态。
+- 验收：注入含重置时刻的 429 failed 记录 → 下轮该 job skipped 不新增 failed；重置时刻过后首轮回派正常；executions.db 配额窗口内 failed 笔数从 ~70 → 0。
+- 阻塞：scheduler.py 属核心文件（上游同步纪律），动手前需评估上游冲突面；且 gateway 在线不可重启，须挑无人窗口。
+
 ### 1. [Lark] SDK logger 桥接 gateway 根 logger
 - 优先级：中（观测面缺陷，已造成哨兵一次误报）
 - 问题：lark-oapi SDK 内部 logger 未接入 gateway 根 logger 配置，其 INFO 级输出被 stdout 块缓冲吞掉，keepalive 断开/重连期间零日志——19:20 飞书「入站死亡」误报的根源之一（另一根源=判活依赖日志解析而非控制面 status）。
