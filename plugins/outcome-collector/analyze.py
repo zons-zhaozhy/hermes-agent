@@ -53,7 +53,7 @@ def _ts() -> str:
 
 # ── Analysis queries ──────────────────────────────────────────────────
 
-def analyze_tool_error_rates(conn: sqlite3.Connection, days: int) -> List[Dict]:
+def analyze_tool_error_rates(conn: sqlite3.Connection, days: int) -> list[dict]:
     """Find tools with >30% error rate (min 5 calls).
 
     Caliber: status='rejected' rows are in-tool guard refusals (validation /
@@ -113,7 +113,7 @@ def analyze_tool_error_rates(conn: sqlite3.Connection, days: int) -> List[Dict]:
     return findings
 
 
-def analyze_error_patterns(conn: sqlite3.Connection, days: int) -> List[Dict]:
+def analyze_error_patterns(conn: sqlite3.Connection, days: int) -> list[dict]:
     """Top error messages per tool (min 3 occurrences)."""
     rows = conn.execute(
         """
@@ -145,7 +145,7 @@ def analyze_error_patterns(conn: sqlite3.Connection, days: int) -> List[Dict]:
     return findings
 
 
-def analyze_session_failure_clusters(conn: sqlite3.Connection, days: int) -> List[Dict]:
+def analyze_session_failure_clusters(conn: sqlite3.Connection, days: int) -> list[dict]:
     """Sessions with high error density (potential stuck/debugging loops)."""
     rows = conn.execute(
         """
@@ -178,7 +178,7 @@ def analyze_session_failure_clusters(conn: sqlite3.Connection, days: int) -> Lis
     return findings
 
 
-def analyze_tool_usage_breakdown(conn: sqlite3.Connection, days: int) -> Dict:
+def analyze_tool_usage_breakdown(conn: sqlite3.Connection, days: int) -> dict:
     """Overall tool usage statistics."""
     rows = conn.execute(
         """
@@ -210,7 +210,7 @@ def analyze_tool_usage_breakdown(conn: sqlite3.Connection, days: int) -> Dict:
     }
 
 
-def analyze_temporal_trend(conn: sqlite3.Connection, days: int) -> Dict:
+def analyze_temporal_trend(conn: sqlite3.Connection, days: int) -> dict:
     """Daily error rate trend — improving or degrading?"""
     rows = conn.execute(
         """
@@ -254,7 +254,7 @@ def analyze_temporal_trend(conn: sqlite3.Connection, days: int) -> Dict:
     }
 
 
-def analyze_turn_outcomes(conn: sqlite3.Connection, days: int) -> Dict:
+def analyze_turn_outcomes(conn: sqlite3.Connection, days: int) -> dict:
     """Layer 1 analysis: aggregate turn-level outcomes (success/failure/partial)."""
     rows = conn.execute(
         """
@@ -269,8 +269,8 @@ def analyze_turn_outcomes(conn: sqlite3.Connection, days: int) -> Dict:
         (f"-{days} days",),
     ).fetchall()
 
-    by_outcome: Dict[str, int] = {}
-    by_pattern: Dict[str, int] = {}
+    by_outcome: dict[str, int] = {}
+    by_pattern: dict[str, int] = {}
     for r in rows:
         outcome = r["outcome"] or "unknown"
         by_outcome[outcome] = by_outcome.get(outcome, 0) + r["count"]
@@ -298,7 +298,7 @@ def analyze_turn_outcomes(conn: sqlite3.Connection, days: int) -> Dict:
 # ── Cross-turn pattern detection (Tier 2) ──────────────────────────────
 
 
-def analyze_cross_turn_patterns(conn: sqlite3.Connection, days: int) -> List[Dict]:
+def analyze_cross_turn_patterns(conn: sqlite3.Connection, days: int) -> list[dict]:
     """Tier 2: detect cross-turn retry loops and death loops within sessions.
 
     These are the highest-signal patterns — they indicate the agent is stuck
@@ -323,10 +323,10 @@ def analyze_cross_turn_patterns(conn: sqlite3.Connection, days: int) -> List[Dic
         (f"-{days} days",),
     ).fetchall()
 
-    findings: List[Dict] = []
+    findings: list[dict] = []
 
     # Group by session → turn → calls
-    sessions: Dict[str, Dict[str, List[Dict]]] = {}
+    sessions: dict[str, dict[str, list[dict]]] = {}
     for r in rows:
         sid = r["session_id"]
         tid = r["turn_id"] or "_unknown"
@@ -342,7 +342,7 @@ def analyze_cross_turn_patterns(conn: sqlite3.Connection, days: int) -> List[Dic
         turn_ids = sorted(turns.keys())
 
         # --- Cross-turn retry: same tool errors in ≥2 distinct turns ---
-        error_tool_turns: Dict[str, List[str]] = {}  # tool_name → [turn_ids where it errored]
+        error_tool_turns: dict[str, list[str]] = {}  # tool_name → [turn_ids where it errored]
         for tid in turn_ids:
             errored_tools = {
                 c["tool"] for c in turns[tid]
@@ -371,7 +371,7 @@ def analyze_cross_turn_patterns(conn: sqlite3.Connection, days: int) -> List[Dic
         # Fingerprint = tuple of (tool, status) pairs in call order.
         # We also detect cyclic rotations: [A,B,C,A,B,C] is a death loop
         # even if each turn's fingerprint differs slightly.
-        fingerprints: List[tuple] = []
+        fingerprints: list[tuple] = []
         for tid in turn_ids:
             fp = tuple((c["tool"], c["status"]) for c in turns[tid])
             fingerprints.append(fp)
@@ -408,9 +408,9 @@ def analyze_cross_turn_patterns(conn: sqlite3.Connection, days: int) -> List[Dic
 
 
 def _detect_cyclic_death_loop(
-    findings: List[Dict],
+    findings: list[dict],
     sid: str,
-    fingerprints: List[tuple],
+    fingerprints: list[tuple],
 ) -> None:
     """Detect cyclic repetition in tool-call fingerprints.
 
@@ -450,7 +450,7 @@ def _detect_cyclic_death_loop(
 
 # ── Main ──────────────────────────────────────────────────────────────
 
-def analyze_behavior_rewrites(conn: sqlite3.Connection, days: int) -> Dict[str, Any]:
+def analyze_behavior_rewrites(conn: sqlite3.Connection, days: int) -> dict[str, Any]:
     """统计近 N 天 discipline 插件机械改写/拦截次数（R6 改写 + 各规则 block）。
 
     R6 曾 30 天 4500+ 次改写而密度反升（regression 2026-09-24 实测 ratio=1.058）——
@@ -459,21 +459,27 @@ def analyze_behavior_rewrites(conn: sqlite3.Connection, days: int) -> Dict[str, 
 
     Contract:
       Preconditions: conn 连接到含 violations 表的库（无表则返回空 dict 键集）
-      Postconditions: 返回 {\"R<N>_last<days>d\": count, ...}；无 violations 表返回 {}
+      Postconditions: 返回 {"R<N>_<outcome>_last<days>d": count, ...}（旧库无
+        outcome 列时回退 {"R<N>_last<days>d": count}）；无 violations 表返回 {}
     """
     try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(violations)")}
+        has_outcome = "outcome" in cols
         rows = conn.execute(
-            "SELECT rule, COUNT(*) FROM violations "
-            "WHERE timestamp >= datetime('now', ?) GROUP BY rule",
+            "SELECT rule, outcome, COUNT(*) FROM violations "
+            "WHERE timestamp >= datetime('now', ?) GROUP BY rule, outcome",
             (f"-{days} days",),
         ).fetchall()
     except sqlite3.OperationalError:
         return {}
     suffix = f"_last{days}d"
-    return {f"{rule}{suffix}": count for rule, count in rows}
+    if has_outcome:
+        # 口径分列：rewrite/hint=机械救回的习惯度量 / block=真拦截的违规信号
+        return {f"{rule}_{outcome}{suffix}": count for rule, outcome, count in rows}
+    return {f"{rule}{suffix}": count for rule, _o, count in rows}
 
 
-def run_analysis(db_path: Path, days: int = 7) -> Dict[str, Any]:
+def run_analysis(db_path: Path, days: int = 7) -> dict[str, Any]:
     """Run full analysis and return structured findings."""
     if not db_path.exists():
         return {"error": f"Database not found: {db_path}", "findings": []}
@@ -521,7 +527,7 @@ def run_analysis(db_path: Path, days: int = 7) -> Dict[str, Any]:
         conn.close()
 
 
-def format_as_text(report: Dict) -> str:
+def format_as_text(report: dict) -> str:
     """Human-readable text format for terminal/cron output."""
     lines = []
     lines.append(f"=== Outcome Analysis Report ({report['generated_at']}) ===")
@@ -599,7 +605,7 @@ def get_findings_path() -> Path:
     return get_hermes_home() / "outcomes" / "findings.md"
 
 
-def write_findings_file(report: Dict) -> int:
+def write_findings_file(report: dict) -> int:
     """Write analysis findings to ~/.hermes/outcomes/findings.md.
 
     This is a dedicated channel — does NOT pollute MEMORY.md (which has a

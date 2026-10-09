@@ -31,6 +31,7 @@ Contract:
 import json
 import logging
 import shlex
+import sqlite3
 from typing import Optional
 
 from plugins._shared_state import get_session_state
@@ -58,7 +59,7 @@ def _db_path():
     return Path(home) / "outcomes.db"
 
 
-def _ensure_violations_table(conn):
+def _ensure_violations_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS violations ("
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -66,31 +67,44 @@ def _ensure_violations_table(conn):
         " command TEXT NOT NULL,"
         " level TEXT,"
         " session_id TEXT,"
-        " timestamp TEXT NOT NULL)"
+        " timestamp TEXT NOT NULL,"
+        " outcome TEXT NOT NULL DEFAULT 'block')"
     )
+    # 幂等迁移：旧库补 outcome 列（block=真拦截 / rewrite=机械改写救回 / hint=提醒放行）。
+    # 回填按执法路径确定性推断：R6 全路径唯一出口是 modify、R5 组合式唯一出口是 HINT
+    # 放行，其余规则只走 block——2026-10-09 实测 R6 309/309、R5-L1 全量符合。
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(violations)")}
+    if "outcome" not in cols:
+        conn.execute("ALTER TABLE violations ADD COLUMN outcome TEXT NOT NULL DEFAULT 'block'")
+        conn.execute("UPDATE violations SET outcome='rewrite' WHERE rule='R6'")
+        conn.execute("UPDATE violations SET outcome='hint' WHERE rule='R5' AND level='L1'")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_viol_rule_ts ON violations(rule, timestamp)"
     )
 
 
-def _record_violation(rule, command, level, session_id):
-    """写入前科档。Contract: 失败静默(库不可用不阻断拦截), 返回是否成功。"""
-    import sqlite3
+def _record_violation(rule: str, command: str, level: str, session_id: Optional[str],
+                      outcome: str = "block") -> bool:
+    """写入前科档。Contract: 失败静默(库不可用不阻断拦截), 返回是否成功。
+    outcome: block=真拦截 / rewrite=机械改写救回 / hint=提醒放行（审计口径分列）。"""
     import datetime
     try:
         conn = sqlite3.connect(_db_path(), timeout=5)
         try:
             _ensure_violations_table(conn)
             conn.execute(
-                "INSERT INTO violations (rule, command, level, session_id, timestamp) "
-                "VALUES (?,?,?,?,?)",
+                "INSERT INTO violations (rule, command, level, session_id, timestamp, outcome) "
+                "VALUES (?,?,?,?,?,?)",
                 (rule, command[:500], level, session_id,
-                 datetime.datetime.now().isoformat(timespec="seconds")),
+                 datetime.datetime.now().isoformat(timespec="seconds"), outcome),
             )
             conn.commit()
             return True
         finally:
-            conn.close()
+            try:
+                conn.close()
+            except Exception:  # noqa: D5 — close 失败不掩盖 INSERT 结果
+                logger.warning("no-guessing: violations 连接关闭失败", exc_info=True)
     except Exception as e:  # noqa: D5 — 档案失败不阻断拦截主流程
         logger.warning("no-guessing: violations 记档失败 %s", e)
         return False
@@ -477,7 +491,7 @@ def _on_pre_tool_call(**kwargs):
         is_background=bool(args.get("background")))
     if msg == "HINT":
         # 组合式轮询退化：记录违规但只注入提醒，不阻断（回退治理 2026-09-26）
-        _record_violation("R5", command, "L1", sid)
+        _record_violation("R5", command, "L1", sid, outcome="hint")
         return {"action": "allow", "context": _SLEEP_COMBO_HINT}
     if msg:
         return _block_with_escalation("R5", command, msg, sid)
@@ -485,8 +499,8 @@ def _on_pre_tool_call(**kwargs):
     # 规则6：诊断命令 2>/dev/null 吞错 → 机械改写 2>&1（不 block，直接修命令）
     rewritten = _rewrite_swallowed_stderr(command)
     if rewritten:
-        # 记档保留习惯度量（level 仅信息性——已自动改写，不再 escalation）
-        _record_violation("R6", command, "L1", sid)
+        # 记档保留习惯度量（outcome=rewrite：已自动改写救回，非真拦截）
+        _record_violation("R6", command, "L1", sid, outcome="rewrite")
         return {"action": "modify", "args": {"command": rewritten}}
 
     # 规则7：脚本间接执行封堵——0829 实锤绕过：write_file 写 .sh 藏

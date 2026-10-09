@@ -128,22 +128,28 @@ def _fetch_status_rows(db: Path, days: int) -> list[tuple[str, str, str, str]]:
 
 
 def _rule_hits(db: Path, days: int) -> dict[str, int]:
-    """L3 纪律命中账：violations 按 rule 计数。
+    """L3 纪律命中账：violations 按 rule×outcome 计数（block/rewrite/hint 分列）。
 
     Contract:
       Preconditions: db 可能不存在或缺 violations 表。
-      Postconditions: 返回 {rule: count}；缺失/查询失败返回 {} 并告警。
+      Postconditions: 返回 {"R<N>:<outcome>": count}（旧库无 outcome 列回退
+        {"R<N>": count}）；缺失/查询失败返回 {} 并告警。
     """
     if not db.exists():
         return {}
     since = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
     try:
         with closing(sqlite3.connect(str(db), timeout=5)) as conn:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(violations)")}
+            has_outcome = "outcome" in cols
             rows = conn.execute(
-                "SELECT rule, COUNT(*) FROM violations WHERE timestamp >= ? GROUP BY rule",
+                "SELECT rule, outcome, COUNT(*) FROM violations "
+                "WHERE timestamp >= ? GROUP BY rule, outcome",
                 (since,),
             ).fetchall()
-        return {str(r[0]): int(r[1]) for r in rows}
+        if has_outcome:
+            return {f"{r[0]}:{r[1]}": int(r[2]) for r in rows}
+        return {str(r[0]): int(r[2]) for r in rows}
     except sqlite3.Error as exc:
         logger.warning("frontier: 读取 violations 失败（库/表可能未建）: %s", exc)
         return {}
@@ -214,7 +220,9 @@ def compute_frontier(db: Path, guards_dir: Path, discipline_dir: Path, tests_dir
     total_blocks = sum(s["blocks"] for s in stats.values())
     total_effective = sum(s["effective"] for s in stats.values())
     zero_red = sorted(name for name, has in red.items() if not has)
-    zero_hit_rules = [r for r in declared if rule_hits.get(r, 0) == 0]
+    # rule_hits 键已带 outcome 后缀（R6:rewrite）——零命中判定按裸规则码前缀聚合
+    hit_codes = {k.split(":", 1)[0] for k in rule_hits}
+    zero_hit_rules = [r for r in declared if r not in hit_codes]
     red_ratio = (sum(1 for v in red.values() if v) / len(red)) if red else 1.0
     eff_ratio = (total_effective / total_blocks) if total_blocks else 1.0
     return {

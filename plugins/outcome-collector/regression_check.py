@@ -66,7 +66,7 @@ def _default_dates_path() -> Path:
     return Path(home) / "outcomes" / "discipline_dates.json"
 
 
-def load_discipline_dates(path: Path) -> Dict[str, str]:
+def load_discipline_dates(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
     try:
@@ -77,7 +77,7 @@ def load_discipline_dates(path: Path) -> Dict[str, str]:
 
 
 def _daily_counts(conn: sqlite3.Connection, table: str, ts_col: str,
-                  extra_where: str = "", params: tuple = ()) -> Dict[str, int]:
+                  extra_where: str = "", params: tuple = ()) -> dict[str, int]:
     """date(YYYY-MM-DD) → row count for the given table/filters."""
     sql = (
         f"SELECT date({ts_col}) AS d, COUNT(*) AS n FROM {table} "
@@ -86,7 +86,7 @@ def _daily_counts(conn: sqlite3.Connection, table: str, ts_col: str,
     return {r[0]: r[1] for r in conn.execute(sql, params).fetchall() if r[0]}
 
 
-def _window_stats(daily: Dict[str, int], start: str, end: str) -> Optional[Dict[str, float]]:
+def _window_stats(daily: dict[str, int], start: str, end: str) -> Optional[dict[str, float]]:
     """Average daily count over [start, end] inclusive. None if window empty."""
     vals = [daily[d] for d in _dates_between(start, end) if d in daily]
     if not vals:
@@ -94,7 +94,7 @@ def _window_stats(daily: Dict[str, int], start: str, end: str) -> Optional[Dict[
     return {"days": len(vals), "total": sum(vals), "avg": sum(vals) / len(vals)}
 
 
-def _dates_between(start: str, end: str) -> List[str]:
+def _dates_between(start: str, end: str) -> list[str]:
     from datetime import date, timedelta
     s = date.fromisoformat(start)
     e = date.fromisoformat(end)
@@ -106,7 +106,7 @@ def _dates_between(start: str, end: str) -> List[str]:
 
 
 def check_rule(conn: sqlite3.Connection, rule: str, effective: str,
-               today: str) -> Optional[Dict[str, Any]]:
+               today: str) -> Optional[dict[str, Any]]:
     """Compare violation density before/after the discipline's effective date.
 
     Contract:
@@ -114,8 +114,16 @@ def check_rule(conn: sqlite3.Connection, rule: str, effective: str,
       Postconditions: returns dict with verdict in
         {effective, regressed, inconclusive, pending} or None (no data).
     """
+    # 口径：回归密度只计 outcome='block'（真拦截）。rewrite/hint 是机械救回的
+    # 习惯度量，混入会把「被救回次数」当「违规次数」（2026-10-09 R5 ratio=5.176
+    # 即基线真 block 对比验收期大头 hint 的口径错位）。旧库无 outcome 列时回退
+    # 全量计数（迁移由 no_guessing._ensure_violations_table 幂等完成）。
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(violations)")}
+    has_outcome = "outcome" in cols
     viol = _daily_counts(
-        conn, "violations", "timestamp", " AND rule = ?", (rule,)
+        conn, "violations", "timestamp",
+        " AND rule = ?" + (" AND outcome='block'" if has_outcome else ""),
+        (rule,),
     )
     calls = _daily_counts(conn, "tool_outcomes", "timestamp")
     # 0违规也是有效数据(纪律完全生效),仅无工具调用总量时才无法计算密度
@@ -182,10 +190,10 @@ def check_rule(conn: sqlite3.Connection, rule: str, effective: str,
     }
 
 
-def run_regression_check(db_path: Path, dates_path: Path) -> Dict[str, Any]:
+def run_regression_check(db_path: Path, dates_path: Path) -> dict[str, Any]:
     dates = load_discipline_dates(dates_path)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
     if not db_path.exists():
         return {"error": f"db not found: {db_path}"}
     conn = sqlite3.connect(str(db_path))
@@ -209,7 +217,7 @@ def run_regression_check(db_path: Path, dates_path: Path) -> Dict[str, Any]:
     return report
 
 
-def format_as_text(report: Dict[str, Any]) -> str:
+def format_as_text(report: dict[str, Any]) -> str:
     lines = [f"=== Discipline Regression Check ({report['generated_at']}) ===", ""]
     verdict_cn = {"effective": "生效✅", "regressed": "回退❌", "inconclusive": "不显著",
                   "pending": "窗口未满"}
@@ -234,7 +242,7 @@ def format_as_text(report: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def write_report_file(report: Dict[str, Any]) -> Path:
+def write_report_file(report: dict[str, Any]) -> Path:
     home = Path(os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes"))
     out_dir = home / "skill_suggestions"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -259,7 +267,7 @@ def _dispositions_path() -> Path:
     return Path(home) / "outcomes" / "dispositions.json"
 
 
-def load_dispositions(path: Path) -> Dict[str, Any]:
+def load_dispositions(path: Path) -> dict[str, Any]:
     """已处置规则登记。损坏/缺失返回空 dict（告警不阻断——处置记录缺失不等于回退不存在）。
 
     Contract:
@@ -276,7 +284,7 @@ def load_dispositions(path: Path) -> Dict[str, Any]:
         return {}
 
 
-def write_alerts_file(report: Dict[str, Any]) -> Path:
+def write_alerts_file(report: dict[str, Any]) -> Path:
     """Layer 4: 把未处置的 regressed 判定写成 alerts 文件（消费端=注入链）。
 
     恒写文件（含空 alerts）——消费端零探键。已处置规则不进 alerts。
