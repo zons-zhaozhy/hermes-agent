@@ -21,6 +21,7 @@ import json
 import logging
 import sqlite3
 import types
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -172,11 +173,13 @@ def test_rewrite_history_in_findings(tmp_path, monkeypatch):
     try:
         conn.execute("CREATE TABLE violations (rule TEXT, command TEXT, level TEXT,"
                      " session_id TEXT, timestamp TEXT)")
-        for i in range(14):
+        # 造数必须相对「当下」：硬编码日期会随日历滑出 days=7 窗口，把测试变成日期炸弹
+        recent = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%dT10:00:00")
+        for _ in range(14):
             conn.execute(
                 "INSERT INTO violations(rule, command, level, session_id, timestamp)"
                 " VALUES ('R6','x','L1','s',:ts)",
-                {"ts": f"2026-09-{20 + i // 2:02d}T10:00:00"})
+                {"ts": recent})
         conn.execute("CREATE TABLE tool_outcomes (id INTEGER PRIMARY KEY AUTOINCREMENT,"
                      " session_id TEXT, turn_id TEXT,"
                      " tool_call_id TEXT, tool_name TEXT, status TEXT,"

@@ -141,18 +141,18 @@ def _ensure_schema_once() -> None:
 # ── In-memory buffer ──────────────────────────────────────────────────
 
 # session_id → list of outcome dicts
-_buffers: Dict[str, List[Dict[str, Any]]] = {}
+_buffers: dict[str, list[dict[str, Any]]] = {}
 _buffer_lock = threading.Lock()
 
 
-def _get_buffer(sid: str) -> List[Dict[str, Any]]:
+def _get_buffer(sid: str) -> list[dict[str, Any]]:
     with _buffer_lock:
         return _buffers.setdefault(sid, [])
 
 
 # ── Diagnostic arg extraction ─────────────────────────────────────────
 
-def _extract_diagnostic_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+def _extract_diagnostic_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Extract only the diagnostic-relevant args for each tool type.
 
     Captures enough to answer 'what was attempted?' without storing
@@ -161,7 +161,7 @@ def _extract_diagnostic_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, 
     if tool_name in _NO_ARG_TOOLS:
         return {}
 
-    summary: Dict[str, Any] = {}
+    summary: dict[str, Any] = {}
 
     if tool_name in ("patch", "write_file", "read_file"):
         path = args.get("path", "")
@@ -271,7 +271,7 @@ def _flush_buffer(sid: str) -> None:
         logger.warning("outcome-collector: flush failed: %s", exc)
 
 
-def _write_outcome(record: Dict[str, Any]) -> None:
+def _write_outcome(record: dict[str, Any]) -> None:
     """Buffer a single outcome, flushing if threshold reached."""
     sid = record.get("session_id", "")
     if not sid:
@@ -304,7 +304,7 @@ def _update_session_summary(sid: str) -> None:
 
                 total = len(rows)
                 errors = sum(1 for r in rows if r["status"] == "error")
-                breakdown: Dict[str, int] = {}
+                breakdown: dict[str, int] = {}
                 for r in rows:
                     name = r["tool_name"]
                     breakdown[name] = breakdown.get(name, 0) + 1
@@ -355,11 +355,11 @@ def _update_session_summary(sid: str) -> None:
 
 # Turn-level outcome tracking
 # session_id → list of {turn_id, tool_calls: [...], outcome: str|None}
-_turn_outcomes: Dict[str, List[Dict[str, Any]]] = {}
+_turn_outcomes: dict[str, list[dict[str, Any]]] = {}
 
 
 def _classify_tool_sequence(
-    tool_calls: List[Dict[str, Any]],
+    tool_calls: list[dict[str, Any]],
 ) -> tuple[str, Optional[str]]:
     """Classify a turn's tool-call sequence into an outcome.
 
@@ -423,7 +423,7 @@ def _classify_tool_sequence(
     return "partial", "low_error_minor"
 
 
-def _persist_turn_outcome(sid: str, turn_data: Dict[str, Any]) -> None:
+def _persist_turn_outcome(sid: str, turn_data: dict[str, Any]) -> None:
     """Write a turn-level outcome as a special marker row in tool_outcomes."""
     _ensure_schema_once()
     try:
@@ -550,11 +550,46 @@ def _regression_alerts_context() -> Optional[str]:
         return None
 
 
+def _frontier_alerts_context() -> Optional[str]:
+    """Layer 5: 自改进前沿回退警讯（frontier_alerts.json → 首turn注入）。
+
+    前沿＝验证能力（红证覆盖率/有效拦截率），它决定自改进的可达上限；
+    回退无处置＝系统在悄悄变弱而不自知。处置=补红证 或 登记接受，二选一。
+
+    Contract:
+      Preconditions: 无（警讯文件可能不存在——前沿度量未跑过属正常）
+      Postconditions: 有未处置回退时返回处置指引文本；否则 None；永不 raise
+    """
+    try:
+        from hermes_constants import get_hermes_home
+
+        home = get_hermes_home()
+        alerts_path = home / "outcomes" / "frontier_alerts.json"
+        if not alerts_path.exists():
+            return None
+        data = json.loads(alerts_path.read_text(encoding="utf-8"))
+        alerts = data.get("alerts") if isinstance(data, dict) else None
+        if not alerts:
+            return None
+        lines = [f"  - {item}" for item in alerts[:5]]
+        return (
+            "[RSI 前沿回退未处置] 验证能力指标下降（前沿＝验证能力,决定自改进可达上限），"
+            "必须补验证或登记接受,禁止只调阈值:\n"
+            + "\n".join(lines)
+            + "\n  处置=给「无红证的规则件」补一条失效即变红的测试,或登记接受:写入 "
+            + str(home / "outcomes" / "dispositions.json")
+            + '（键形如 "frontier:红证覆盖率"）即消警。'
+        )
+    except Exception as exc:
+        logger.warning("outcome-collector: frontier alerts injection failed: %s", exc)
+        return None
+
+
 # Track which sessions have already received the findings injection
 _injected_sessions: set[str] = set()
 
 
-def on_pre_llm_call(**kwargs) -> Optional[Dict[str, str]]:
+def on_pre_llm_call(**kwargs) -> Optional[dict[str, str]]:
     """Layer 1: classify previous turn's tool sequence.
     Layer 3: inject findings context on first turn of each session.
 
@@ -601,6 +636,9 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, str]]:
         alerts_ctx = _regression_alerts_context()
         if alerts_ctx:
             parts.append(alerts_ctx)
+        frontier_ctx = _frontier_alerts_context()
+        if frontier_ctx:
+            parts.append(frontier_ctx)
         if parts:
             return {"context": "\n".join(parts)}
 
@@ -655,7 +693,7 @@ def on_post_tool_call(**kwargs) -> None:
         _register_discipline_effective_date(args)
 
 
-def _parse_discipline_tags(text: str) -> Dict[str, str]:
+def _parse_discipline_tags(text: str) -> dict[str, str]:
     """从纪律条目文本解析 {规则号: 生效日}。纯 str 方法,无正则。
 
     约定格式: "§R6 v3(0907):..." —— § 分段,段内 R<数字> 开头,首个括号内 MMDD。
@@ -665,7 +703,7 @@ def _parse_discipline_tags(text: str) -> Dict[str, str]:
       Postconditions: 命中约定格式返回非空 dict;日期非法(如0931)该段跳过;
                       MMDD 晚于今天属上一年
     """
-    found: Dict[str, str] = {}
+    found: dict[str, str] = {}
     now = datetime.now(timezone.utc)
     for part in text.split("§"):
         part = part.strip()
@@ -698,7 +736,7 @@ def _parse_discipline_tags(text: str) -> Dict[str, str]:
     return found
 
 
-def _register_discipline_effective_date(args: Dict[str, Any]) -> None:
+def _register_discipline_effective_date(args: dict[str, Any]) -> None:
     """memory 写入成功后,把条目里的 R<n>+MMDD 登记进 discipline_dates.json.
 
     Contract:
@@ -710,7 +748,7 @@ def _register_discipline_effective_date(args: Dict[str, Any]) -> None:
     """
     import json as _json
 
-    texts: List[str] = []
+    texts: list[str] = []
     content = args.get("content") or args.get("new_text") or ""
     if isinstance(content, str) and content:
         texts.append(content)
@@ -720,7 +758,7 @@ def _register_discipline_effective_date(args: Dict[str, Any]) -> None:
             if isinstance(c, str) and c:
                 texts.append(c)
 
-    found: Dict[str, str] = {}
+    found: dict[str, str] = {}
     for text in texts:
         found.update(_parse_discipline_tags(text))
     if not found:
@@ -729,7 +767,7 @@ def _register_discipline_effective_date(args: Dict[str, Any]) -> None:
     dates_path = _get_db_path().parent / "outcomes" / "discipline_dates.json"
     dates_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        existing: Dict[str, str] = {}
+        existing: dict[str, str] = {}
         if dates_path.exists():
             loaded = _json.loads(dates_path.read_text(encoding="utf-8"))
             assert isinstance(loaded, dict), "corrupt dates file"
