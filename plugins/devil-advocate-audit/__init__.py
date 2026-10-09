@@ -63,14 +63,6 @@ logger = logging.getLogger(__name__)
 _NAMESPACE = "devil_advocate_audit"
 
 _MAX_JUDGE_CALLS = 30
-# 插件内 judge 调用一律显式传此秒数：llm_judge_bool 的 timeout 形参默认 20.0 且原样
-# 传给 call_llm，auxiliary.<task>.timeout（config.yaml）在这条路径不生效。三个 judge
-# 调用点都落在框架有界钩子内（hermes_cli/plugins_dispatch.py 的
-# _HOOK_TIMEOUT_BOUNDED_HOOKS，预算 _HOOK_CALLBACK_TIMEOUT_SECS=30s，超时即 abandon、
-# 非 fail-closed 钩子直接 skip）——judge 默认 20s 再加回退主模型的耗时远超预算，
-# 钩子被丢弃后状态永不写入。5s × 最多三次尝试（主 + fallback_chain + 主模型回退）
-# ≈ 15s，压在预算一半以内。
-_JUDGE_TIMEOUT_SECS = 5.0
 
 _JUDGE_SYSTEM = (
     "你是决策审查哨兵。判断下面这条会话消息是否构成'重大方案定稿或决策承诺'——"
@@ -149,7 +141,6 @@ def _is_major_decision(text: str) -> Optional[bool]:
         task="devil_advocate_audit",
         system=_JUDGE_SYSTEM,
         text=text,
-        timeout=_JUDGE_TIMEOUT_SECS,
     )
 
 
@@ -188,7 +179,6 @@ def _delegate_is_review(goals_text: str) -> Optional[bool]:
         system=_DELEGATE_JUDGE_SYSTEM,
         text=goals_text,
         true_key="review",
-        timeout=_JUDGE_TIMEOUT_SECS,
     )
 
 
@@ -365,7 +355,6 @@ def _user_waived(text: str) -> Optional[bool]:
         system=_WAIVE_JUDGE_SYSTEM,
         text=text,
         true_key="waive",
-        timeout=_JUDGE_TIMEOUT_SECS,
     )
 
 

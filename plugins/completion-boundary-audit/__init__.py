@@ -98,7 +98,7 @@ def _plugin_disabled() -> bool:
     }
 
 
-def _state(sid: str) -> Dict[str, Any]:
+def _state(sid: str) -> dict[str, Any]:
     return get_session_state(sid or "_global", _NAMESPACE)
 
 
@@ -135,7 +135,7 @@ def needs_boundary_audit(text: str) -> Optional[bool]:
     )
 
 
-def _resolve_verdict(text: str) -> Dict[str, Optional[bool]]:
+def _resolve_verdict(text: str) -> dict[str, Optional[bool]]:
     """合并 judge 判 done_claim/has_boundary 两键；异常/缺键 → 全 None。
 
     Contract:
@@ -233,7 +233,7 @@ def register(ctx) -> None:
                            exc_info=True)
         return None  # 透传
 
-    def inject_reminder(**kwargs) -> Optional[Dict[str, Any]]:
+    def inject_reminder(**kwargs) -> Optional[dict[str, Any]]:
         """上一轮被标记 → 注入红牌给 agent。
 
         红牌分三档：旧路径（未披露→补披露）；消项（披露未消→逐项消）；

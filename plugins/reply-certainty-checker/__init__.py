@@ -49,10 +49,10 @@ REPLY_SIDE_SYSTEM = (
 REPLY_SIDE_KEYS = ["uncertain", "needs_audit", "done_claim", "has_boundary"]
 
 # 进程级结果缓存：同一段回复（sha1 前 16 位）只判一次，certainty/boundary 共享。
-_REPLY_SIDE_CACHE: Dict[str, Dict[str, Optional[bool]]] = {}
+_REPLY_SIDE_CACHE: dict[str, dict[str, Optional[bool]]] = {}
 
 
-def judge_reply_side(text: str) -> Dict[str, Optional[bool]]:
+def judge_reply_side(text: str) -> dict[str, Optional[bool]]:
     """一次调用同时判 uncertain/needs_audit 两维度；异常 → 全 None。
 
     同一回复文本进程内只发起一次真实调用（缓存命中直接返回），供
@@ -105,7 +105,7 @@ def _has_unverified_hedge(text: str) -> Optional[bool]:
     return result.get("uncertain")
 
 
-def _state(sid: str) -> Dict[str, Any]:
+def _state(sid: str) -> dict[str, Any]:
     return get_session_state(sid, _NAMESPACE)
 
 
@@ -141,7 +141,7 @@ def register(ctx):
             logger.warning("reply-certainty-checker failed: %s", exc)
             return None
 
-    def inject_reminder(**kwargs) -> Optional[Dict[str, Any]]:
+    def inject_reminder(**kwargs) -> Optional[dict[str, Any]]:
         """上一轮被标记 → 注入'先确认事实再断言'守则给 agent。
 
         Contract:

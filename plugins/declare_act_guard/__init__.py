@@ -110,7 +110,7 @@ def _judge_violation(text: str) -> Optional[bool]:
     )
 
 
-def _build_injection() -> Dict[str, str]:
+def _build_injection() -> dict[str, str]:
     """构造注入 SOP 文本。
 
     Contract:
@@ -130,7 +130,7 @@ def _build_injection() -> Dict[str, str]:
     }
 
 
-def _on_pre_llm_call(**kwargs: Any) -> Optional[Dict[str, Any]]:
+def _on_pre_llm_call(**kwargs: Any) -> Optional[dict[str, Any]]:
     """pre_llm_call 主回调：审上一条 assistant，违规注入 SOP。
 
     Contract:

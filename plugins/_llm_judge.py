@@ -14,7 +14,8 @@
 能力探测按 task 进程内缓存：实证不支持的后端不再重复尝试（不浪费一次调用/判定）。
 
 Contract:
-  Preconditions: system/text 为非空 str；timeout>0；max_tokens>0
+  Preconditions: system/text 为非空 str；timeout 为 None（= 取 auxiliary.<task>.timeout）
+                 或 >0；max_tokens>0
   Postconditions: llm_judge_bool/llm_judge_multi 返回与既有版本一致的类型；
                   llm_decision_typed 额外给出概率与置信度分档；
                   任何失败 → 判定为 None（fail-open）并记日志，绝不 raise
@@ -35,6 +36,12 @@ HIGH_CONFIDENCE = 0.90
 MEDIUM_CONFIDENCE = 0.60
 TOP_LOGPROBS = 20
 """logprobs 通道请求的候选宽度（越大越能看见词表泄漏的规模）。"""
+
+# 钩子内 judge 预算的唯一治理面是 auxiliary.<task>.timeout（config.yaml）——本模块
+# 三个公开入口的 timeout 默认一律 None（= 交给配置面解析），插件源码禁写死秒数
+# （tests/plugins/test_judge_timeout_governance.py 保护该契约）。注意 pre_llm_call /
+# post_tool_call / transform_llm_output 都在框架有界钩子内（hermes_cli/plugins_dispatch.py
+# 预算 30s，超时即 abandon 且调用路径先白等满预算），故这类任务应在 config 里显式配到 ≤10s。
 
 
 def confidence_tier(probability: Optional[float]) -> str:
@@ -102,7 +109,7 @@ def _normalize_label_token(token: str) -> str:
     return "".join(char for char in decomposed if char.isalnum()).lower()
 
 
-def _label_variants(true_key: str) -> Dict[str, str]:
+def _label_variants(true_key: str) -> dict[str, str]:
     """构造标签 token 空间：归一化 token → 标签名。
 
     除 true/false 外声明模型在 yes/no 语境下的常见等价写法（yes/no/1/0/真/假/是/否），
@@ -114,7 +121,7 @@ def _label_variants(true_key: str) -> Dict[str, str]:
     """
     true_words = (true_key, "true", "yes", "1", "真", "是")
     false_words = ("false", "no", "0", "假", "否")
-    variants: Dict[str, str] = {}
+    variants: dict[str, str] = {}
     for word in true_words:
         _add_variants(variants, word, "true")
     for word in false_words:
@@ -122,7 +129,7 @@ def _label_variants(true_key: str) -> Dict[str, str]:
     return variants
 
 
-def _add_variants(variants: Dict[str, str], word: str, label: str) -> None:
+def _add_variants(variants: dict[str, str], word: str, label: str) -> None:
     """把一个标签词及其大小写变体写入 token 空间（已存在则保持先写入者）。
 
     Contract:
@@ -136,7 +143,7 @@ def _add_variants(variants: Dict[str, str], word: str, label: str) -> None:
             variants[key] = label
 
 
-def _readout_from_logprobs(choice: Any, variant_map: Dict[str, str]) -> Optional[Tuple[str, float, float]]:
+def _readout_from_logprobs(choice: Any, variant_map: dict[str, str]) -> Optional[tuple[str, float, float]]:
     """从 SDK choice 的 logprobs 读出首位置标签分布。
 
     Contract:
@@ -152,7 +159,7 @@ def _readout_from_logprobs(choice: Any, variant_map: Dict[str, str]) -> Optional
     if not candidates:
         return None
 
-    label_mass: Dict[str, float] = {"true": 0.0, "false": 0.0}
+    label_mass: dict[str, float] = {"true": 0.0, "false": 0.0}
     other_mass = 0.0
     for candidate in candidates:
         token = getattr(candidate, "token", "") or ""
@@ -178,8 +185,8 @@ def _exp_mass(logprob: float) -> float:
 
 
 def _normalize_readout(
-    label_mass: Dict[str, float], other_mass: float
-) -> Optional[Tuple[str, float, float]]:
+    label_mass: dict[str, float], other_mass: float
+) -> Optional[tuple[str, float, float]]:
     """在声明标签上归一化（约束 softmax），并算出非标签质量占比。
 
     Contract:
@@ -196,7 +203,7 @@ def _normalize_readout(
 
 
 # ── 能力探测缓存（按 task）：实证不支持 logprobs 的后端不再重复尝试 ────────────
-_SUPPORT_CACHE: Dict[str, bool] = {}
+_SUPPORT_CACHE: dict[str, bool] = {}
 
 
 def reset_capability_cache() -> None:
@@ -231,7 +238,7 @@ def _record_capability(task: str, supported: bool, model: str = "") -> None:
         logger.info("llm_judge(%s): logprobs 通道探测结果 supported=%s model=%s", key, supported, model)
 
 
-def _parse_bool_keys(content: str, keys: List[str]) -> Dict[str, Optional[bool]]:
+def _parse_bool_keys(content: str, keys: list[str]) -> dict[str, Optional[bool]]:
     """从 judge 回复文本中逐键解析 true/false；缺失键 → None。
 
     Contract:
@@ -239,7 +246,7 @@ def _parse_bool_keys(content: str, keys: List[str]) -> Dict[str, Optional[bool]]
         Postconditions: 返回 {key: True/False/None}，绝不 raise
     """
     compact = content.replace(" ", "").lower()
-    out: Dict[str, Optional[bool]] = {}
+    out: dict[str, Optional[bool]] = {}
     for k in keys:
         if f'"{k}":true' in compact:
             out[k] = True
@@ -272,7 +279,7 @@ def _readout_prompt(system: str) -> str:
 
 
 def _text_verdict(task: str, system: str, text: str, true_key: str,
-                  timeout: float, max_tokens: int) -> TypedDecision:
+                  timeout: Optional[float], max_tokens: int) -> TypedDecision:
     """文本解析通道（provider 不返回 logprobs 时的回退路径）。
 
     Contract:
@@ -304,7 +311,7 @@ def _text_verdict(task: str, system: str, text: str, true_key: str,
 
 
 def _logprob_verdict(task: str, system: str, text: str, true_key: str,
-                     timeout: float) -> Optional[TypedDecision]:
+                     timeout: Optional[float]) -> Optional[TypedDecision]:
     """logprobs 单 token 读出通道。
 
     extra_body 三项均为实测必需（2026-09-23 本机 qwen3.5:4b-mlx 实测）：
@@ -349,7 +356,7 @@ def _logprob_verdict(task: str, system: str, text: str, true_key: str,
 
 
 def llm_decision_typed(task: str, system: str, text: str,
-                       true_key: str = "decision", timeout: float = 20.0,
+                       true_key: str = "decision", timeout: Optional[float] = None,
                        max_tokens: int = 32, use_logprobs: bool = True,
                        low_confidence_pass: bool = False) -> TypedDecision:
     """执行一次判定，优先走 logprobs 单 token 读出，不可用则回退文本解析。
@@ -372,7 +379,7 @@ def llm_decision_typed(task: str, system: str, text: str,
 
 
 def _try_logprobs(task: str, system: str, text: str, true_key: str,
-                  timeout: float, use_logprobs: bool) -> Optional[TypedDecision]:
+                  timeout: Optional[float], use_logprobs: bool) -> Optional[TypedDecision]:
     """尝试 logprobs 通道；不支持则记录能力并返回 None。
 
     Contract:
@@ -421,7 +428,7 @@ def _apply_low_confidence_policy(decision: TypedDecision, enabled: bool) -> Type
 
 
 def llm_judge_bool(task: str, system: str, text: str,
-                   timeout: float = 20.0, max_tokens: int = 32,
+                   timeout: Optional[float] = None, max_tokens: int = 32,
                    true_key: str = "decision") -> Optional[bool]:
     """让辅助 LLM 按判定语义回答 {"<true_key>": true/false}（文本通道）。
 
@@ -440,10 +447,10 @@ def llm_judge_bool(task: str, system: str, text: str,
 
 
 def llm_judge_multi(task: str, system: str, text: str,
-                    keys: List[str], timeout: float = 20.0,
+                    keys: list[str], timeout: Optional[float] = None,
                     max_tokens: int = 64,
-                    extra_body: Optional[Dict[str, Any]] = None,
-                    ) -> Dict[str, Optional[bool]]:
+                    extra_body: Optional[dict[str, Any]] = None,
+                    ) -> dict[str, Optional[bool]]:
     """一次辅助 LLM 调用同时判定多个语义维度，返回 {key: True/False/None}。
 
     治串行浪费：多个插件同一时机、同一文本各自调 llm_judge_bool 时，
@@ -466,7 +473,7 @@ def llm_judge_multi(task: str, system: str, text: str,
     """
     assert system and text, "system and text must be non-empty"
     assert keys and len(set(keys)) == len(keys), "keys must be non-empty unique"
-    fail: Dict[str, Optional[bool]] = {k: None for k in keys}
+    fail: dict[str, Optional[bool]] = {k: None for k in keys}
     try:
         from agent.auxiliary_client import call_llm
         eb = dict(extra_body) if extra_body else {}

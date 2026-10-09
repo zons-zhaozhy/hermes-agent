@@ -53,10 +53,10 @@ USER_SIDE_KEYS = ["challenge", "decision"]
 
 # 进程级结果缓存：同一消息（sha1 前 16 位）只判一次，yinyang/devil 共享。
 # 插件均在同一进程内运行；缓存无淘汰（每会话 judge 硬上限 30 条兜底）。
-_USER_SIDE_CACHE: Dict[str, Dict[str, Optional[bool]]] = {}
+_USER_SIDE_CACHE: dict[str, dict[str, Optional[bool]]] = {}
 
 
-def judge_user_side(message: str) -> Dict[str, Optional[bool]]:
+def judge_user_side(message: str) -> dict[str, Optional[bool]]:
     """一次调用同时判定 challenge/decision 两维度；异常 → 全 None。
 
     同一消息进程内只发起一次真实调用（缓存命中直接返回），供
@@ -164,11 +164,11 @@ def _record_face_slap(message: str, sid: str) -> None:
         logger.warning("yinyang face_slap record failed (fail-open): %s", e)
 
 
-def _state(sid: str) -> Dict[str, Any]:
+def _state(sid: str) -> dict[str, Any]:
     return get_session_state(sid, _NAMESPACE)
 
 
-def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
+def on_pre_llm_call(**kwargs) -> Optional[dict[str, Any]]:
     """语义判定质疑 + 未达上限 → 注入复述守则。fail-open。"""
     try:
         if _plugin_disabled():
