@@ -1,6 +1,6 @@
 name: guards
-version: "2.3.0"
-description: L2写入质量护栏套件(收拢8插件)——必败工具黑名单/四轴副防线/先读后写/查重(v3.1：阻断须内容级证据——同名符号，或「同目录词干+同名符号」佐证；纯主题词/纯词干仅提示放行；rg 检索显式传搜索根+stdin=DEVNULL，工具故障明示「符号级比对未生效」降级提示，不谎报零重复；支持行内豁免标记 dupcheck-ok)/terminal直写拦截/AST编码规范+写前预检/diff欠账闸门/OntoX写前查病例库(路径配置键 guards.casebook_gate.ontox_root 与 casebook_dir)。分层见skill:hermes-plugin-development的guard-system-layering reference。
+version: "2.4.0"
+description: L2写入质量护栏套件(收拢8插件)——必败工具黑名单/四轴副防线/先读后写/查重(v4：四通道统一射程——write_file/patch/execute_code/terminal 一律判「新建 .py」，execute_code 走 AST 字面量写形态识别（含 with open as f 变量绑定）、terminal 走写算子+heredoc；阻断须内容级证据——同名符号，或「同目录词干+同名符号」佐证；内容非字面量时降级提示明示「符号级比对未生效」不静默；rg 检索显式传搜索根+stdin=DEVNULL；支持行内豁免标记 dupcheck-ok)/terminal直写拦截/AST编码规范+写前预检/diff欠账闸门/OntoX写前查病例库(路径配置键 guards.casebook_gate.ontox_root 与 casebook_dir)。分层见skill:hermes-plugin-development的guard-system-layering reference。
 author: stan
 hooks:
   - pre_tool_call

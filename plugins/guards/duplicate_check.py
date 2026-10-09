@@ -1,5 +1,14 @@
 """
-duplicate-check — write_file 前置查重拦截插件 v3.0。
+duplicate-check — 新建 .py 前置查重拦截插件 v4.0。
+
+v4.0 射程补全（旧版 `if tool_name != "write_file": return None` 使 execute_code /
+terminal 通道可绕开查重——守卫射程漏洞，非能力边界）:
+- 四通道统一射程：write_file / patch / execute_code / terminal 一律判「新建 .py」。
+  execute_code 用 AST 静态识别字面量写形态（open(...,"w") / Path().write_text /
+  write_file(path, content) / 链式 open().write），terminal 识别写算子（> >> tee cp mv）
+  与 heredoc 正文；同目录既有守卫（pre_write / casebook_gate）早已按 _WRITE_TOOLS 多通道。
+- 内容不可解析（写调用存在但内容非字面量）→ 提示档明示「符号级比对未生效」，不猜不静默；
+  路径非字面量（变量/拼接/动态生成）无法解析 → 不猜（猜错会误拦），射程边界如实标注。
 
 v3.0 根因修复（旧版把「文件名主题词」当等价证据 → 系统性误报；且反馈不可执行）:
 - 判定升级为符号级证据：从新文件内容提取将要定义的 def/class 名，与全库同名符号
@@ -12,7 +21,7 @@ v3.0 根因修复（旧版把「文件名主题词」当等价证据 → 系统�
   策略1 新文件与同目录既有文件共享 ≥4 字符文件名词干 **且** 存在同名 def/class
   策略2 新文件声明的 def/class 名与既有文件同名
 提示档（放行 + 留痕）:
-  仅文件名主题词命中 / 仅同目录词干命中（无同名符号佐证）——名字档不足以阻断
+  仅文件名主题词命中 / 仅同目录词干命中（无同名符号佐证）/ 内容非字面量（比对未生效）
 
 环境变量:
   HERMES_DUPCHECK_DISABLE=1    完全禁用（不推荐：关闭全部查重）
@@ -23,10 +32,11 @@ v3.0 根因修复（旧版把「文件名主题词」当等价证据 → 系统�
   stdin 并阻塞至超时（实测 0.01s → 超 6s）；工具故障不谎报零命中，
   判定降级为提示档并明示「符号级比对未生效」
 """
+import ast
 import fnmatch
 import logging
-import subprocess
 import os
+import subprocess
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -87,31 +97,270 @@ def _should_skip(path: str) -> bool:
 # ═══════════════════════════════════════════
 
 
-def _is_new_python_file(tool_name: str, args: Any, cwd: str) -> Optional[str]:
-    """如果此次 write_file 会新建 Python 文件，返回路径。否则 None。"""
-    if tool_name != "write_file":
-        return None
-    path = ""
-    if isinstance(args, dict):
-        path = args.get("path", "")
+def _normalize_new_py(path: str, cwd: str) -> str:
+    """把候选路径规范化为「项目内 + 尚不存在 + 非免检」的 .py 相对路径；否则 ""。
+
+    Contract:
+      Postconditions: 返回项目内相对 .py 路径；非 .py / 已存在 / 免检 / 项目外 → ""
+      Invariants: 已存在文件属「修改」不属「新建」，不进查重射程；
+                  项目外临时脚本（/tmp、~/.hermes、系统目录）一律不参与——
+                  git ls-files 看不到它们，任何「匹配」都只能是误报
+    """
     if not path or not path.endswith(".py"):
-        return None
-    full = os.path.join(cwd, path) if not os.path.isabs(path) else path
-    if os.path.exists(full):
-        return None
-    if _should_skip(path):
-        return None
-    # 项目外的临时脚本（/tmp、~/.hermes、系统目录）不参与项目查重——
-    # git ls-files 搜不到它们，任何"匹配"都只能是误报。
+        return ""
+    full = path if os.path.isabs(path) else os.path.join(cwd, path)
     try:
         real_cwd = os.path.realpath(cwd)
         real_full = os.path.realpath(full)
-        if not real_full.startswith(real_cwd + os.sep) and real_full != real_cwd:
-            return None
     except OSError as e:
         logger.warning("realpath 解析失败(%s): %s", path, e)
+        return ""
+    if os.path.exists(real_full) or not real_full.startswith(real_cwd + os.sep):
+        return ""
+    rel = os.path.relpath(real_full, real_cwd)
+    if _should_skip(rel):
+        return ""
+    return rel
+
+
+# ── 写通道目标解析（跨通道统一射程）────────────────────────────────
+
+
+def _literal_str(node: Any) -> Optional[str]:
+    """AST 节点取字面量字符串；非字符串字面量返回 None。
+
+    Contract:
+      Postconditions: ast.Constant 且值为 str → 返回该串；否则 None
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _target_from_open(node: ast.Call) -> Optional[tuple[str, str]]:
+    """识别 open("x.py", "w"/"a"/"x") 形态（路径必须字面量）。"""
+    fn = node.func
+    if not (isinstance(fn, ast.Name) and fn.id == "open" and node.args):
         return None
-    return path
+    path = _literal_str(node.args[0])
+    mode = _literal_str(node.args[1]) if len(node.args) > 1 else ""
+    if path is None or not mode or not any(f in mode for f in ("w", "a", "x")):
+        return None
+    return path, ""
+
+
+def _owner_literal_path(node: ast.Call) -> Optional[str]:
+    """取方法调用宿主的第一实参字面量（Path("x.py") / open("x.py", "w")）。"""
+    owner = node.func.value if isinstance(node.func, ast.Attribute) else None
+    if isinstance(owner, ast.Call) and owner.args:
+        return _literal_str(owner.args[0])
+    return None
+
+
+def _target_from_writetext(node: ast.Call) -> Optional[tuple[str, str]]:
+    """识别 Path("x.py").write_text("...") / write_bytes 形态。"""
+    fn = node.func
+    if not (isinstance(fn, ast.Attribute) and fn.attr in ("write_text", "write_bytes")):
+        return None
+    path = _owner_literal_path(node)
+    if path is None:
+        return None
+    content = _literal_str(node.args[0]) if node.args else ""
+    return path, content or ""
+
+
+def _target_from_writefile(node: ast.Call) -> Optional[tuple[str, str]]:
+    """识别 write_file("x.py", "...")（hermes_tools 写通道）。"""
+    fn = node.func
+    if not (isinstance(fn, ast.Name) and fn.id == "write_file" and node.args):
+        return None
+    path = _literal_str(node.args[0])
+    if path is None:
+        return None
+    content = _literal_str(node.args[1]) if len(node.args) > 1 else ""
+    return path, content or ""
+
+
+def _with_open_bindings(node: ast.AST) -> dict[str, str]:
+    """从 `with open("x.py","w") as f` 收集 变量→路径 绑定。"""
+    bound: dict[str, str] = {}
+    if not isinstance(node, ast.With):
+        return bound
+    for item in node.items:
+        if not isinstance(item.context_expr, ast.Call):
+            continue
+        opened = _target_from_open(item.context_expr)
+        if opened is None or not isinstance(item.optional_vars, ast.Name):
+            continue
+        bound[item.optional_vars.id] = opened[0]
+    return bound
+
+
+def _assign_open_bindings(node: ast.AST) -> dict[str, str]:
+    """从 `f = open("x.py","w")` 赋值收集 变量→路径 绑定。"""
+    if not (isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)):
+        return {}
+    opened = _target_from_open(node.value)
+    if opened is None:
+        return {}
+    return {t.id: opened[0] for t in node.targets if isinstance(t, ast.Name)}
+
+
+def _open_path_bindings(tree: ast.AST) -> dict[str, str]:
+    """收集 open 写模式的变量→字面量路径绑定（with / 赋值两形态）。
+
+    Contract:
+      Postconditions: 返回 {变量名: 字面量路径}；无绑定 → {}
+      Invariants: 只收集写模式 open 且路径为字面量的绑定——动态路径不进表
+    """
+    bound: dict[str, str] = {}
+    for node in ast.walk(tree):
+        bound.update(_with_open_bindings(node))
+        bound.update(_assign_open_bindings(node))
+    return bound
+
+
+def _target_from_write_method(node: ast.Call, bound: dict[str, str]) -> Optional[tuple[str, str]]:
+    """识别 f.write("...") 形态（f 来自 open 链式或变量绑定）。"""
+    fn = node.func
+    if not (isinstance(fn, ast.Attribute) and fn.attr == "write" and node.args):
+        return None
+    owner = fn.value
+    path: Optional[str] = None
+    if isinstance(owner, ast.Name):
+        path = bound.get(owner.id)
+    elif isinstance(owner, ast.Call):
+        opened = _target_from_open(owner)
+        path = opened[0] if opened is not None else None
+    if path is None:
+        return None
+    content = _literal_str(node.args[0]) if node.args else ""
+    return path, content or ""
+
+
+def _py_write_call_target(node: ast.Call, bound: dict[str, str]) -> Optional[tuple[str, str]]:
+    """从单个 ast.Call 识别写目标；非写形态或路径非字面量返回 None。
+
+    Contract:
+      Postconditions: 返回 (路径字面量, 内容字面量或 "")；无法识别 → None
+      Invariants: 只认四种高置信写法（open / write_text / write_file / write 方法），
+                  动态路径一律不猜——猜错会误拦
+    """
+    for handler in (_target_from_open, _target_from_writetext, _target_from_writefile):
+        found = handler(node)
+        if found is not None:
+            return found
+    return _target_from_write_method(node, bound)
+
+
+def _execute_code_py_targets(code: str) -> list[tuple[str, str]]:
+    """从 execute_code 源码静态提取字面量 .py 写目标。
+
+    Contract:
+      Preconditions: code 为待执行 Python 源码
+      Postconditions: 返回 [(路径, 内容或 "")]；语法错误 / 无字面量目标 → []
+      Invariants: 内容不可解析（路径字面量但内容非字面量）时内容段为 ""——调用方降级提示
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        logger.warning("execute_code 源码解析失败，跳过查重: %s", e)
+        return []
+    bound = _open_path_bindings(tree)
+    found: list[tuple[str, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            target = _py_write_call_target(node, bound)
+            if target is not None and target[0].endswith(".py"):
+                found.append(target)
+    return found
+
+
+def _heredoc_body(cmd: str) -> str:
+    """取 shell heredoc 正文（<<'EOF' … EOF / <<EOF … EOF）；无则空串。
+
+    Contract:
+      Postconditions: 返回定界符之间的正文（不含定界行）；无 heredoc / 未闭合 → ""
+    """
+    idx = cmd.find("<<")
+    if idx < 0:
+        return ""
+    rest = cmd[idx + 2:].lstrip()
+    if not rest:
+        return ""
+    if rest[0] in ("'", '"'):
+        quote = rest[0]
+        close = rest.find(quote, 1)
+        if close < 0:
+            return ""
+        marker, after = rest[1:close], close + 1
+    else:
+        end = 0
+        while end < len(rest) and (rest[end].isalnum() or rest[end] in "_-"):
+            end += 1
+        marker, after = rest[:end], end
+    if not marker:
+        return ""
+    body: list[str] = []
+    for line in rest[after:].split("\n")[1:]:
+        if line.strip() == marker:
+            break
+        body.append(line)
+    return "\n".join(body)
+
+
+_TERMINAL_WRITE_OPS = (">", ">>", "tee", "cp", "mv")
+
+
+def _terminal_py_targets(cmd: str) -> list[tuple[str, str]]:
+    """从 terminal 写命令提取字面量 .py 目标（内容取 heredoc 正文）。
+
+    Contract:
+      Postconditions: 返回 [(目标, heredoc 正文或 "")]；仅写算子后的 .py token
+      Invariants: 只认 > >> tee cp mv 的直接目标；其余形态不猜
+    """
+    body = _heredoc_body(cmd)
+    found: list[tuple[str, str]] = []
+    for tokens in (seg.split() for seg in cmd.replace(";", "\n").split("\n")):
+        for i, tok in enumerate(tokens):
+            target = ""
+            if tok in _TERMINAL_WRITE_OPS and len(tokens) > i + 1:
+                is_copy = tok in ("cp", "mv") and len(tokens) > i + 2
+                target = tokens[i + 2] if is_copy else tokens[i + 1]
+            elif tok.startswith(">>") and len(tok) > 2:
+                target = tok[2:]
+            elif tok.startswith(">") and len(tok) > 1:
+                target = tok[1:]
+            if target.strip("'\"").endswith(".py"):
+                found.append((target.strip("'\""), body))
+    return found
+
+
+def _resolve_new_py_targets(tool_name: str, args: Any, cwd: str) -> list[tuple[str, str]]:
+    """跨通道解析本次调用可能新建的项目内 .py 目标。
+
+    Contract:
+      Preconditions: cwd 为项目根；args 为工具入参
+      Postconditions: 返回 [(项目内相对路径, 内容或 "")]；无可判定目标 → []
+      Invariants: 与 write_file 同判据（只判新建，不判修改）；
+                  内容不可解析时内容段为 ""，由调用方降级为提示档——不静默
+    """
+    if not isinstance(args, dict):
+        return []
+    candidates: list[tuple[str, str]] = []
+    if tool_name in ("write_file", "patch"):
+        candidates.append((str(args.get("path") or ""),
+                           _content_of(args) or str(args.get("new_string") or "")))
+    elif tool_name == "execute_code":
+        candidates.extend(_execute_code_py_targets(str(args.get("code") or "")))
+    elif tool_name == "terminal":
+        candidates.extend(_terminal_py_targets(str(args.get("command") or "")))
+    resolved: list[tuple[str, str]] = []
+    for path, content in candidates:
+        rel = _normalize_new_py(path, cwd)
+        if rel:
+            resolved.append((rel, content))
+    return resolved
 
 
 def _extract_functional_keywords(path: str) -> list[str]:
@@ -501,7 +750,7 @@ def _render(path: str, verdict: str, evidence: list[str], next_steps: list[str])
     """
     if verdict == "block":
         lines = ["", "=" * 60,
-                 " 查重拦截 — 疑似重复实现 (guards.duplicate_check v3)",
+                 " 查重拦截 — 疑似重复实现 (guards.duplicate_check v4)",
                  f"   新建文件: {path}",
                  "   判定: 存在符号级/词干级重复证据",
                  "   证据:"]
@@ -511,7 +760,7 @@ def _render(path: str, verdict: str, evidence: list[str], next_steps: list[str])
         lines.append("=" * 60)
         return "\n".join(lines)
 
-    lines = [f"[dupcheck] 放行 {path}：无符号级重复证据"]
+    lines = [f"[dupcheck] 放行 {path}（提示档，不阻断）"]
     lines.extend(f"  {e}" for e in evidence[:5])
     lines.append("  如确为重复实现请人工复核；本条仅提示，不阻断写入。")
     return "\n".join(lines)
@@ -560,24 +809,31 @@ def _on_pre_tool_call(
     cwd: str = "",
     **_: Any,
 ) -> Optional[dict[str, str]]:
-    """pre_tool_call hook — 新建 Python 文件前查重（v3：符号级证据 + 分档反馈）。"""
+    """pre_tool_call hook — 新建 Python 文件前查重（v4：四通道统一射程）。"""
     if _disabled():
         return None
     if not cwd:
         cwd = os.getcwd()
 
-    path = _is_new_python_file(tool_name, args, cwd)
-    if path is None or not _extract_functional_keywords(path):
-        return None
-
-    start = time.time()
-    verdict, evidence, next_steps = _judge(path, _content_of(args), cwd)
-    elapsed_ms = int((time.time() - start) * 1000)
-    if elapsed_ms > 500:
-        logger.warning("查重耗时 %sms (verdict=%s)", elapsed_ms, verdict)
-    if verdict == "pass":
-        return None
-    return _emit(path, verdict, evidence, next_steps)
+    for rel, content in _resolve_new_py_targets(tool_name, args, cwd):
+        if not _extract_functional_keywords(rel):
+            continue
+        if not content:
+            _emit(rel, "advisory",
+                  [f"{tool_name} 将新建 {rel}，但写入内容非字面量 → 符号级比对未生效，"
+                   "请人工确认无等价实现"], [])
+            continue
+        start = time.time()
+        verdict, evidence, next_steps = _judge(rel, content, cwd)
+        elapsed_ms = int((time.time() - start) * 1000)
+        if elapsed_ms > 500:
+            logger.warning("查重耗时 %sms (verdict=%s)", elapsed_ms, verdict)
+        if verdict == "pass":
+            continue
+        blocked = _emit(rel, verdict, evidence, next_steps)
+        if blocked is not None:
+            return blocked
+    return None
 
 
 def register(ctx: Any) -> None:

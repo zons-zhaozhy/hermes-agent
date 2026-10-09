@@ -119,3 +119,64 @@ def test_tool_failure_is_reported_not_silent(tmp_path: Path, caplog: Any) -> Non
             cwd=str(repo))
     assert result is None            # 期望: 基础设施故障不拦人（fail-open）
     assert "检索降级" in caplog.text  # 期望: 降级可见，不静默谎报「零重复」
+
+
+# ── v4 射程：execute_code / terminal 通道 ─────────────────────────────
+
+
+def test_execute_code_with_open_blocks(tmp_path: Path) -> None:
+    """execute_code 通道：with open(...) as f + f.write 字面量 → 同名符号阻断。"""
+    repo = _make_repo(tmp_path)
+    code = ('with open("pkg/zzeta.py", "w") as f:\n'
+            '    f.write("class ConnectorSpec:\\n    pass\\n")\n')
+    m = _load_guard()
+    result = m._on_pre_tool_call(tool_name="execute_code", args={"code": code}, cwd=str(repo))
+    assert result is not None            # 期望: execute_code 不再能绕过查重
+    assert result["action"] == "block"   # 期望: 同名符号=内容级硬证据
+    assert "同名符号" in result["message"]  # 期望: 反馈给出符号级证据
+
+
+def test_execute_code_write_text_blocks(tmp_path: Path) -> None:
+    """execute_code 通道：Path().write_text 字面量 → 同名符号阻断。"""
+    repo = _make_repo(tmp_path)
+    code = ('from pathlib import Path\n'
+            'Path("pkg/zzbeta.py").write_text("class ConnectorSpec:\\n    pass\\n")\n')
+    m = _load_guard()
+    result = m._on_pre_tool_call(tool_name="execute_code", args={"code": code}, cwd=str(repo))
+    assert result is not None            # 期望: write_text 属被识别写形态
+    assert result["action"] == "block"   # 期望: 同名符号阻断
+
+
+def test_terminal_heredoc_blocks(tmp_path: Path) -> None:
+    """terminal 通道：heredoc 写 .py 且正文含同名符号 → 阻断。"""
+    repo = _make_repo(tmp_path)
+    cmd = ("cat > pkg/zzgamma.py <<'EOF'\n"
+           "class ConnectorSpec:\n"
+           "    pass\n"
+           "EOF\n")
+    m = _load_guard()
+    result = m._on_pre_tool_call(tool_name="terminal", args={"command": cmd}, cwd=str(repo))
+    assert result is not None            # 期望: terminal 直写不再能绕过查重
+    assert result["action"] == "block"   # 期望: heredoc 正文可解析 → 内容级判定
+
+
+def test_execute_code_dynamic_path_not_judged(tmp_path: Path) -> None:
+    """execute_code 通道：路径非字面量 → 不猜（不误拦）。"""
+    repo = _make_repo(tmp_path)
+    code = 'name = "zzdelta"\nopen("pkg/" + name + ".py", "w").write("x = 1\\n")\n'
+    m = _load_guard()
+    result = m._on_pre_tool_call(tool_name="execute_code", args={"code": code}, cwd=str(repo))
+    assert result is None  # 期望: 动态路径无法解析 → 不猜不拦（射程边界如实标注）
+
+
+def test_execute_code_unknown_content_is_advisory(tmp_path: Path, caplog: Any) -> None:
+    """execute_code 通道：路径字面量但内容非字面量 → 提示档明示比对未生效。"""
+    repo = _make_repo(tmp_path)
+    code = ('data = build_payload()\n'
+            'with open("pkg/zzepsilon.py", "w") as f:\n'
+            '    f.write(data)\n')
+    m = _load_guard()
+    with caplog.at_level("INFO", logger="dupcheck_under_test"):
+        result = m._on_pre_tool_call(tool_name="execute_code", args={"code": code}, cwd=str(repo))
+    assert result is None                        # 期望: 提示档不阻断写入
+    assert "符号级比对未生效" in caplog.text        # 期望: 内容不可解析时降级可见，不静默
