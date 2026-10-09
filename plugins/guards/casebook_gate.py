@@ -44,6 +44,34 @@ _TERMINAL_WRITE_PATTERNS = (
 )
 
 
+def _config_paths() -> tuple[str, str]:
+    """从 config.yaml guards.casebook_gate 段读路径（对齐 read_think_gate 的 config 模式）。
+
+    Contract:
+      Postconditions: config 不可读/无该段 → ("", "") 并记 warning（fail-open 语义，
+        env-at-import 值与测试 monkeypatch 值优先级更高，见 _paths）。
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        sec = ((load_config_readonly() or {}).get("guards") or {}).get("casebook_gate") or {}
+        return str(sec.get("ontox_root", "")), str(sec.get("casebook_dir", ""))
+    except Exception:
+        logger.warning("casebook_gate: config read failed → fall back to env", exc_info=True)
+        return "", ""
+
+
+def _paths() -> tuple[str, str]:
+    """路径解析：模块属性（env-at-import 或测试 monkeypatch）优先 → config fallback。
+
+    Contract:
+      Postconditions: 恒返回二元组，空串=未配置（各消费点 fail-open）。
+    """
+    if _ONTOX_ROOT or _CASEBOOK_DIR:
+        return _ONTOX_ROOT, _CASEBOOK_DIR
+    return _config_paths()
+
+
 def _plugin_disabled() -> bool:
     """Contract: Postconditions: CASEBOOK_GATE_DISABLE∈{1,true,yes,on} → True。"""
     return os.environ.get("CASEBOOK_GATE_DISABLE", "").lower() in {
@@ -58,13 +86,16 @@ def _is_ontox_target(path: str) -> bool:
       Postconditions: 相对路径按 OntoX 根解析后判定; 绝对路径直接前缀判定;
         OntoX 根未配置时返回 False（fail-open）。
     """
-    if not path or not _ONTOX_ROOT:
+    if not path:
+        return False
+    ontox_root, _cb = _paths()
+    if not ontox_root:
         return False
     p = Path(path)
     if not p.is_absolute():
-        p = Path(_ONTOX_ROOT) / p
+        p = Path(ontox_root) / p
     try:
-        p.resolve().relative_to(Path(_ONTOX_ROOT).resolve())
+        p.resolve().relative_to(Path(ontox_root).resolve())
         return True
     except ValueError:
         return False
@@ -92,7 +123,8 @@ def _extract_first_ontox_path(code: str) -> str:
 
 def _casebook_exists() -> bool:
     """Contract: Postconditions: 库目录未配置或不存在 → False（调用方 fail-open）。"""
-    return bool(_CASEBOOK_DIR) and os.path.isdir(_CASEBOOK_DIR)
+    _root, cb_dir = _paths()
+    return bool(cb_dir) and os.path.isdir(cb_dir)
 
 
 def _get_state(sid: str) -> dict[str, Any]:
@@ -245,7 +277,8 @@ def _block_message(target: str) -> dict[str, Any]:
       Postconditions: 返回 {"action": "block", "message": ...} 且消息含
         INDEX 路径与三种解锁方式。
     """
-    index_path = os.path.join(_CASEBOOK_DIR, "INDEX.md")
+    _root, cb_dir = _paths()
+    index_path = os.path.join(cb_dir, "INDEX.md")
     return {
         "action": "block",
         "message": (
@@ -253,7 +286,7 @@ def _block_message(target: str) -> dict[str, Any]:
             f"  目标: {target}\n"
             f"  修复（三选一，做一次即解锁本会话）:\n"
             f"    1. read_file('{index_path}') 扫一眼病例索引\n"
-            f"    2. search_files(path='{_CASEBOOK_DIR}', pattern='<缺陷类别关键词>') 查同类病例\n"
+            f"    2. search_files(path='{cb_dir}', pattern='<缺陷类别关键词>') 查同类病例\n"
             f"    3. 确认本次改动与任何既有病例无关（新缺陷类别）后直接重试——拦截一次即放行\n"
             f"  病例族谱速查: 静默系/漂移系/链路系（详见 INDEX.md）"
         ),

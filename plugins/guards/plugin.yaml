@@ -1,6 +1,6 @@
 name: guards
 version: "2.1.0"
-description: L2写入质量护栏套件(收拢7插件)——必败工具黑名单/四轴副防线/先读后写/查重/terminal直写拦截/AST编码规范+写前预检/diff欠账闸门。分层见skill:hermes-plugin-development的guard-system-layering reference。
+description: L2写入质量护栏套件(收拢8插件)——必败工具黑名单/四轴副防线/先读后写/查重/terminal直写拦截/AST编码规范+写前预检/diff欠账闸门/OntoX写前查病例库(路径配置键 guards.casebook_gate.ontox_root 与 casebook_dir)。分层见skill:hermes-plugin-development的guard-system-layering reference。
 author: stan
 hooks:
   - pre_tool_call

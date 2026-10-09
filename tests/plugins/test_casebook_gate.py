@@ -116,3 +116,27 @@ def test_disabled_env_short_circuits(
         tool_name="patch", args={"path": f"{ontox}/a.py"}, session_id="s1"
     )
     assert v is None  # 期望: 显式关闭开关→一切放行（逃生门）
+
+
+def test_config_fallback_when_module_attrs_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 期望: env-at-import 为空时路径从 config.yaml 读——「默认死护栏」缺陷的回归测试
+    ontox = tmp_path / "ontox"
+    cb = ontox / "education" / "casebook"
+    cb.mkdir(parents=True)
+    (cb / "INDEX.md").write_text("# 病例索引\n", encoding="utf-8")
+    monkeypatch.setattr(casebook_gate, "_ONTOX_ROOT", "")
+    monkeypatch.setattr(casebook_gate, "_CASEBOOK_DIR", "")
+    monkeypatch.setattr(
+        casebook_gate,
+        "_config_paths",
+        lambda: (str(ontox), str(cb)),
+    )
+    _clear_probes()
+    v = casebook_gate.on_pre_tool_call(
+        tool_name="patch", args={"path": f"{ontox}/apps/x.py"}, session_id="s1"
+    )
+    assert v is not None  # 期望: config 提供路径→护栏激活拦截（非死护栏）
+    assert v["action"] == "block"  # 期望: 拦截动作字面量=block（规则语义）
+    assert str(cb) in v["message"]  # 期望: 修复指引来自 config 路径
