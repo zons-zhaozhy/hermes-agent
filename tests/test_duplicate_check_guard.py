@@ -52,13 +52,20 @@ def test_topic_keyword_only_is_advisory(tmp_path: Path) -> None:
     assert result is None  # 期望: 主题词命中不等于等价实现，放行
 
 
-def test_same_dir_stem_collision_blocks(tmp_path: Path) -> None:
-    """同目录文件名词干共享 → 阻断（策略1）。"""
+def test_same_dir_stem_only_is_advisory(tmp_path: Path) -> None:
+    """同目录文件名词干共享但无同名符号 → 提示档放行（名字档不足以阻断）。"""
     repo = _make_repo(tmp_path)
     result = _hook(repo, "pkg/connector_broker.py", "class BrandNewWorker:\n    pass\n")
-    assert result is not None  # 期望: 同目录共享词干是硬证据，阻断
-    assert "文件名共享词干" in result["message"]  # 期望: 反馈指明命中词干
+    assert result is None  # 期望: 仅名字档命中 → 放行（阻断须符号级佐证）
 
+
+def test_same_dir_stem_with_symbol_collision_blocks(tmp_path: Path) -> None:
+    """同目录词干共享 + 同名符号佐证 → 阻断，且消息含词干与符号证据。"""
+    repo = _make_repo(tmp_path)
+    result = _hook(repo, "pkg/connector_broker.py", "class ConnectorSpec:\n    pass\n")
+    assert result is not None  # 期望: 词干+同名符号=内容级硬证据，阻断
+    assert "文件名共享词干" in result["message"]  # 期望: 反馈指明名字档命中
+    assert "同名符号" in result["message"]        # 期望: 反馈指明符号级佐证
 
 def test_same_top_level_symbol_blocks(tmp_path: Path) -> None:
     """新文件声明已有同名顶层符号 → 阻断，且消息含证据与下一步。"""
@@ -94,3 +101,21 @@ def test_framework_method_names_ignored(tmp_path: Path) -> None:
                "        return []\n")
     result = _hook(repo, "pkg/zzdelta.py", content)
     assert result is None  # 期望: 人人同名的方法名不是重复信号
+
+
+def test_tool_failure_is_reported_not_silent(tmp_path: Path, caplog: Any) -> None:
+    """检索工具故障（rg 缺失/超时）→ 提示档放行且明示降级，不谎报零重复。"""
+    repo = _make_repo(tmp_path)
+
+    def _fake_rg_lines(pattern: str, cwd: str) -> Optional[list[str]]:
+        return None  # 期望: 模拟 rg 不可用（与「零命中」严格区分）
+
+    m = _load_guard()
+    m._rg_lines = _fake_rg_lines  # type: ignore[method-assign]  # 期望: 注入 rg 故障
+    with caplog.at_level("INFO", logger="dupcheck_under_test"):
+        result = m._on_pre_tool_call(
+            tool_name="write_file",
+            args={"path": "pkg/zzomega.py", "content": "class BrandNewOmega:\n    pass\n"},
+            cwd=str(repo))
+    assert result is None            # 期望: 基础设施故障不拦人（fail-open）
+    assert "检索降级" in caplog.text  # 期望: 降级可见，不静默谎报「零重复」
