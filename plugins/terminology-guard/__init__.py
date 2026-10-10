@@ -23,7 +23,9 @@ logger = logging.getLogger(__name__)
 
 _NAMESPACE = "terminology_guard"
 _MAX_JUDGE_CALLS = 40
-_INJECT_BUDGET = 400
+# 每轮注入预算：中文 ~0.65 token/字符，2000 字符 ≈ 1.3k token/轮；pre_llm_call
+# 注入只进当轮请求不进历史，60+ 条术语可全覆盖（YAML 顺序=注入优先级）
+_INJECT_BUDGET = 2000
 
 # ASCII 别名走整词比对；_ 与 . 保留在词内，代码标识符（ontox_protocols 等）不被拆词误伤
 _SPLIT_CHARS = ",;:()[]{}<>\"'`|=+*&^%$#@!?~\n\t/\\-"
@@ -69,10 +71,13 @@ def _load_glossary() -> list[dict[str, Any]]:
             import yaml
 
             raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            # aliases 为空列表合法（纯规范名锚定，无禁用变体）；只拦结构残缺
             entries = [
                 e
                 for e in (raw.get("terms") or [])
-                if isinstance(e, dict) and e.get("canonical") and e.get("aliases")
+                if isinstance(e, dict)
+                and e.get("canonical")
+                and isinstance(e.get("aliases"), list)
             ]
         _GLOSSARY_CACHE.update(mtime=mtime, entries=entries)
         return entries
@@ -139,11 +144,12 @@ def _judge_naming_drift(text: str) -> Optional[bool]:
 
 
 def _format_entry(entry: dict[str, Any]) -> str:
-    """单条术语 → 注入行。Contract: Postconditions: 返回非空 str。"""
+    """单条术语 → 注入行（note 是给人看的编辑注记，不进注入省预算）。
+
+    Contract: Postconditions: 返回非空 str。
+    """
     aliases = "/".join(str(a) for a in entry.get("aliases") or [])
-    note = str(entry.get("note") or "").strip()
-    piece = f"- {entry['canonical']}（禁用：{aliases}）"
-    return f"{piece} —— {note}" if note else piece
+    return f"- {entry['canonical']}（禁用：{aliases}）"
 
 
 def _budgeted_terms(entries: list[dict[str, Any]]) -> list[str]:

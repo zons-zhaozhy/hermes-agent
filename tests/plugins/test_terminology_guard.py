@@ -103,15 +103,21 @@ def test_build_injection_empty() -> None:
 
 def test_build_injection_budget() -> None:
     mod = _load_plugin()
-    entries = [
-        {"canonical": f"术语{i}", "aliases": [f"旧写法{i}"]} for i in range(50)
+    # 150 条 × ~20 字符/行 = 3000 > 预算 2000 → 必截断；50 条装得下 → 不截断
+    many = [
+        {"canonical": f"术语{i}", "aliases": [f"旧写法{i}"]} for i in range(150)
     ]
-    out = mod.build_injection(entries, [], False)
+    out = mod.build_injection(many, [], False)
     assert out is not None and out.startswith(mod._INJECT_HEAD)  # 期望: 有表头
     count = out.count("- 术语")
-    assert count < 50  # 期望: 每行约 15+ 字符，400 预算装不下 50 行 → 截断生效
+    assert count < 150  # 期望: 150 条超预算 → 截断生效
     head_part = out.split("\n你上一条")[0]
     assert len(head_part) <= mod._INJECT_BUDGET + 60  # 期望: 表头+术语行 ≤ 预算+首行容差
+    few = [
+        {"canonical": f"词{i}", "aliases": [f"旧{i}"]} for i in range(50)
+    ]
+    out2 = mod.build_injection(few, [], False)
+    assert out2.count("- 词") == 50  # 期望: 50 条 × ~12 字符 = 600 < 2000 → 全量注入零截断
 
 
 def test_build_injection_drift_lines() -> None:
