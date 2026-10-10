@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 
 from plugins.guards import (
+    batch_write,
     casebook_gate,
     coding_standards,
     diff_debt,
@@ -47,6 +48,7 @@ _SUB_GUARDS = (
     ("coding_standards", coding_standards),
     ("diff_debt", diff_debt),
     ("casebook_gate", casebook_gate),
+    ("batch_write", batch_write),
 )
 
 
