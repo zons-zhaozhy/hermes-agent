@@ -551,6 +551,7 @@ def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home):
         assert kbd.check_respawn_guard(conn, spawn_failed_id) == "blocker_auth"
 
 
+@pytest.mark.platforms("linux")
 def test_infrastructure_spawn_refusal_never_charges_the_card(
     kanban_home, monkeypatch, all_assignees_spawnable,
 ):
@@ -559,7 +560,13 @@ def test_infrastructure_spawn_refusal_never_charges_the_card(
     real dispatcher accounting, ``consecutive_failures`` stays put, the breaker
     never parks the card as a bare ``blocked``, the run is tagged
     ``infrastructure`` and the guard spaces the retries. A control spawn
-    failure on the same card still counts."""
+    failure on the same card still counts.
+
+    ``platforms("linux")``: the spawn boundary short-circuits to ``in_process``
+    off Linux (``restart_safe_gateway_child_argv``'s ``_IS_LINUX`` gate), so the
+    refusal path this test pins cannot occur on macOS/Windows — it stays red
+    there forever without the marker.
+    """
     from tools import process_registry
 
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
