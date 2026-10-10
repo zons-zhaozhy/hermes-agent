@@ -172,7 +172,8 @@ def test_rewrite_history_in_findings(tmp_path, monkeypatch):
     conn = sqlite3.connect(str(db))
     try:
         conn.execute("CREATE TABLE violations (rule TEXT, command TEXT, level TEXT,"
-                     " session_id TEXT, timestamp TEXT)")
+                     " session_id TEXT, timestamp TEXT,"
+                     " outcome TEXT NOT NULL DEFAULT 'rewrite')")
         # 造数必须相对「当下」：硬编码日期会随日历滑出 days=7 窗口，把测试变成日期炸弹
         recent = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%dT10:00:00")
         for _ in range(14):
@@ -191,7 +192,7 @@ def test_rewrite_history_in_findings(tmp_path, monkeypatch):
     analyze = _load("analyze_under_test", "analyze.py")
     report = analyze.run_analysis(db, days=7)
     section = report.get("behavior_rewrites", {})
-    assert section.get("R6_last7d") == 14  # 期望: 插入14条R6→统计数=14
+    assert section.get("R6_rewrite_last7d") == 14  # 期望: 插入14条R6改写→统计数=14
 
 
 def test_watchdog_covers_audit_freshness():

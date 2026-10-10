@@ -15,7 +15,7 @@ import json
 import sqlite3
 import types
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -40,7 +40,7 @@ def fr() -> types.ModuleType:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _seed_db(db: Path, rows: list[tuple[str, str, str, str]]) -> Path:
@@ -77,16 +77,18 @@ def _local_now() -> str:
 
 
 def _seed_violations(db: Path, rows: list[tuple[str, int]]) -> Path:
-    """建 violations 表并写入 (rule, 次数)——L3 纪律账。
+    """建 violations 表（契约 schema，含 outcome 列）并写入 (rule, 次数)。
 
     Contract:
       Preconditions: rows 为 (规则码, 次数) 列表。
-      Postconditions: 库内恰好含 sum(次数) 行，时间戳=当前本地时刻（落在窗口内）。
+      Postconditions: 库内恰好含 sum(次数) 行，时间戳=当前本地时刻（落在窗口内）；
+        outcome 恒为 'block'（与生产者 no_guessing 的默认口径一致）。
     """
     with closing(sqlite3.connect(str(db))) as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS violations (id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            " rule TEXT, command TEXT, level TEXT, session_id TEXT, timestamp TEXT)"
+            " rule TEXT, command TEXT, level TEXT, session_id TEXT, timestamp TEXT,"
+            " outcome TEXT NOT NULL DEFAULT 'block')"
         )
         for rule, times in rows:
             for _ in range(times):
@@ -171,8 +173,24 @@ def test_rule_ledger_counts_hits_and_flags_zero(fr, world):
     _seed_violations(world["db"], [("R6", 3)])
     report = fr.compute_frontier(world["db"], world["guards"], world["discipline"],
                                  world["tests"], days=30)
-    assert report["rule_hits"] == {"R6": 3}  # 期望: 规则账按 rule 分组计数,别的规则码不进账
+    assert report["rule_hits"] == {"R6:block": 3}  # 期望: 规则账按 rule×outcome 分列,别的规则码不进账
     assert report["summary"]["zero_hit_rules"] == ["R013", "R022"]  # 期望: 声明了却零命中的编号被点名
+
+
+def test_rule_ledger_missing_outcome_column_raises(fr, world, tmp_path):
+    """violations 表缺 outcome 列=契约违约，必须响亮报错而非静默空账。"""
+    db = tmp_path / "legacy.db"
+    with closing(sqlite3.connect(str(db))) as conn:
+        conn.execute(
+            "CREATE TABLE violations (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " rule TEXT, command TEXT, level TEXT, session_id TEXT, timestamp TEXT)")
+        conn.execute(
+            "INSERT INTO violations(rule, command, level, session_id, timestamp)"
+            " VALUES ('R6','x','L1','s','2026-01-01T00:00:00')")
+        conn.commit()
+    with pytest.raises(RuntimeError, match="契约 schema"):
+        fr.compute_frontier(db, world["guards"], world["discipline"],
+                            world["tests"], days=30)  # 期望: 缺列 raise 不吞
 
 
 def test_declared_rule_ids_unique_sorted(fr, world):

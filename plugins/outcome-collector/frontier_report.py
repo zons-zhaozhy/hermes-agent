@@ -23,7 +23,7 @@ import logging
 import sqlite3
 import sys
 from contextlib import closing
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -111,7 +111,7 @@ def _fetch_status_rows(db: Path, days: int) -> list[tuple[str, str, str, str]]:
     """
     if not db.exists():
         return []
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
     try:
         with closing(sqlite3.connect(str(db), timeout=5)) as conn:
             rows = conn.execute(
@@ -131,28 +131,29 @@ def _rule_hits(db: Path, days: int) -> dict[str, int]:
     """L3 纪律命中账：violations 按 rule×outcome 计数（block/rewrite/hint 分列）。
 
     Contract:
-      Preconditions: db 可能不存在或缺 violations 表。
-      Postconditions: 返回 {"R<N>:<outcome>": count}（旧库无 outcome 列回退
-        {"R<N>": count}）；缺失/查询失败返回 {} 并告警。
+      Preconditions: violations 表 schema 由 plugins/discipline/no_guessing
+        的 _ensure_violations_table 定义，必含 outcome 列。
+      Postconditions: 返回 {"R<N>:<outcome>": count}；库不存在或表未建
+        =零数据合法态返回 {}；表存在但缺 outcome 列=契约违约，raise
+        RuntimeError（错误原文不遮盖）。
     """
     if not db.exists():
         return {}
     since = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
     try:
         with closing(sqlite3.connect(str(db), timeout=5)) as conn:
-            cols = {row[1] for row in conn.execute("PRAGMA table_info(violations)")}
-            has_outcome = "outcome" in cols
             rows = conn.execute(
                 "SELECT rule, outcome, COUNT(*) FROM violations "
                 "WHERE timestamp >= ? GROUP BY rule, outcome",
                 (since,),
             ).fetchall()
-        if has_outcome:
-            return {f"{r[0]}:{r[1]}": int(r[2]) for r in rows}
-        return {str(r[0]): int(r[2]) for r in rows}
-    except sqlite3.Error as exc:
-        logger.warning("frontier: 读取 violations 失败（库/表可能未建）: %s", exc)
-        return {}
+        return {f"{r[0]}:{r[1]}": int(r[2]) for r in rows}
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc):
+            return {}
+        raise RuntimeError(
+            f"frontier: violations 表违反契约 schema（期望含 outcome 列）: {exc}"
+        ) from exc
 
 
 def _declared_rule_ids(plugin_dirs: list[Path]) -> list[str]:
@@ -226,7 +227,7 @@ def compute_frontier(db: Path, guards_dir: Path, discipline_dir: Path, tests_dir
     red_ratio = (sum(1 for v in red.values() if v) / len(red)) if red else 1.0
     eff_ratio = (total_effective / total_blocks) if total_blocks else 1.0
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "window_days": days,
         "gates": stats,
         "rule_hits": rule_hits,

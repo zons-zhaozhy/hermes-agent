@@ -24,6 +24,7 @@ from typing import Any, Mapping, Optional
 
 from plugins._llm_judge import llm_judge_json, llm_judge_multi
 from plugins._shared_state import get_session_state
+from hermes_yaml import safe_dump, safe_load
 
 logger = logging.getLogger(__name__)
 
@@ -88,9 +89,7 @@ def _load_glossary() -> list[dict[str, Any]]:
             return _GLOSSARY_CACHE["entries"]
         entries: list[dict[str, Any]] = []
         if path.exists():
-            import yaml
-
-            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            raw = safe_load(path.read_text(encoding="utf-8")) or {}
             # aliases 为空列表合法（纯规范名锚定，无禁用变体）；只拦结构残缺
             entries = [
                 e
@@ -314,8 +313,6 @@ def _load_consolidated_raw() -> dict[str, Any]:
     Contract:
       Postconditions: 返回 dict 含 terms/candidates 键
     """
-    import yaml
-
     path = _consolidated_path()
     if not path.exists():
         path.write_text(
@@ -327,15 +324,13 @@ def _load_consolidated_raw() -> dict[str, Any]:
             "candidates: {}\n",
             encoding="utf-8",
         )
-    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return safe_load(path.read_text(encoding="utf-8")) or {}
 
 
 def _save_consolidated_raw(raw: dict[str, Any]) -> None:
     """固化词典整体落盘。Contract: Postconditions: 文件与 raw 一致；异常上抛。"""
-    import yaml
-
     _consolidated_path().write_text(
-        yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8"
+        safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8"
     )
 
 

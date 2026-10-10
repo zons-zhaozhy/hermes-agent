@@ -31,7 +31,7 @@ import os
 import sqlite3
 import sys
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -48,7 +48,7 @@ def _get_conn(db_path: Path) -> sqlite3.Connection:
 
 
 def _ts() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 # ── Analysis queries ──────────────────────────────────────────────────
@@ -458,25 +458,27 @@ def analyze_behavior_rewrites(conn: sqlite3.Connection, days: int) -> dict[str, 
     本段把改写/拦截频度变成 findings.md 可见统计。
 
     Contract:
-      Preconditions: conn 连接到含 violations 表的库（无表则返回空 dict 键集）
-      Postconditions: 返回 {"R<N>_<outcome>_last<days>d": count, ...}（旧库无
-        outcome 列时回退 {"R<N>_last<days>d": count}）；无 violations 表返回 {}
+      Preconditions: violations 表 schema 由 plugins/discipline/no_guessing
+        的 _ensure_violations_table 定义，必含 outcome 列（表未建=零数据
+        合法态，返回 {}）。
+      Postconditions: 返回 {"R<N>_<outcome>_last<days>d": count}；
+        表存在但缺 outcome 列=契约违约，raise RuntimeError（原文不遮盖）。
     """
+    suffix = f"_last{days}d"
     try:
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(violations)")}
-        has_outcome = "outcome" in cols
         rows = conn.execute(
             "SELECT rule, outcome, COUNT(*) FROM violations "
             "WHERE timestamp >= datetime('now', ?) GROUP BY rule, outcome",
             (f"-{days} days",),
         ).fetchall()
-    except sqlite3.OperationalError:
-        return {}
-    suffix = f"_last{days}d"
-    if has_outcome:
-        # 口径分列：rewrite/hint=机械救回的习惯度量 / block=真拦截的违规信号
-        return {f"{rule}_{outcome}{suffix}": count for rule, outcome, count in rows}
-    return {f"{rule}{suffix}": count for rule, _o, count in rows}
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc):
+            return {}
+        raise RuntimeError(
+            f"analyze: violations 表违反契约 schema（期望含 outcome 列）: {exc}"
+        ) from exc
+    # 口径分列：rewrite/hint=机械救回的习惯度量 / block=真拦截的违规信号
+    return {f"{rule}_{outcome}{suffix}": count for rule, outcome, count in rows}
 
 
 def run_analysis(db_path: Path, days: int = 7) -> dict[str, Any]:
