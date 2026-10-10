@@ -493,10 +493,22 @@ def detect_project_facts(root: Path) -> ProjectFacts:
 
 
 def _workspace_roots(cwd: Optional[str | Path]) -> tuple[Optional[Path], Optional[Path]]:
-    """(git_root, workspace_root) for *cwd*; workspace root is git root else marker root."""
+    """(git_root, workspace_root) for *cwd*; workspace root is git root else marker root.
+
+    The workspace root keeps the caller's spelling: ``resolve()`` physicalizes macOS
+    ``/var`` → ``/private/var`` symlinks, so a resolved root no longer equals the path the
+    caller (a test, a session pin key) compares against. Only the exact-root case is
+    re-expressed; a cwd deeper in the tree keeps the resolved git root.
+    """
     resolved = _resolve_cwd(cwd)
     git_root = _git_root(resolved)
-    return git_root, git_root or _marker_root(resolved)
+    if git_root is None:
+        return None, _marker_root(resolved)
+    root: Optional[Path] = git_root
+    raw = resolved if cwd is None else Path(str(cwd)).expanduser()
+    if raw.is_absolute() and raw.resolve() == git_root:
+        root = raw
+    return git_root, root
 
 
 def project_facts_for(cwd: Optional[str | Path] = None) -> Optional[dict[str, Any]]:
