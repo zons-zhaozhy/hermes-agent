@@ -8,7 +8,11 @@
     docs/standards/ENTERPRISE_GRADE_STANDARD.md）。
   L2 finish 检查（pre_verify）
     回复声称「企业级/可交付/验收完成」而项目无 QUALITY_SCORECARD.md
-    计分卡时，注入补办提示（同会话一次；连续空口声明下轮升级）。
+    计分卡时，注入续跑提示（同会话一次）。
+    触发前提（core 侧既定）：本轮有文件改动且 attempt < agent.max_verify_nudges；
+    因此本轮无落盘改动时不应答——claims 只在本插件扫描范围内生效。
+    扫描范围：仅 cwd 向上能探到 apps/ 或 docs/standards/ 的应用工程
+    （避免非应用仓库每次提及「企业级」都误拦）。
 
   设计约束：fail-open（插件异常不阻断会话）；subagent/batch 平台排除；
   纲领路径按项目解析（多仓适用），不存在时只注入纪律不注入路径。
@@ -105,6 +109,46 @@ def _find_scorecard(cwd: Optional[str]) -> Optional[Path]:
         return None
 
 
+def _is_app_project(cwd: Optional[str]) -> bool:
+    """cwd 向上 4 层内是否出现 apps/ 或 docs/standards/（纲领应用工程信号）。
+
+    Contract:
+      Preconditions: cwd 为合法目录路径或 None
+      Postconditions: 命中返回 True；None/异常返回 False；永不抛异常
+    """
+    if not cwd:
+        return False
+    try:
+        p = Path(cwd).resolve()
+        for _ in range(4):
+            if (p / "apps").is_dir() or (p / "docs" / "standards").is_dir():
+                return True
+            if p.parent == p:
+                break
+            p = p.parent
+        return False
+    except Exception as exc:
+        logger.warning("enterprise-quality-gate 应用工程判定失败: %s", exc, exc_info=True)
+        return False
+
+
+def _resolve_cwd(kwargs: Mapping[str, Any]) -> str:
+    """pre_verify 载荷无 cwd 字段——取 changed_paths 首项的所在目录，缺省 os.getcwd()。
+
+    Contract:
+      Postconditions: 返回存在的目录路径字符串；始终有值（兜底 os.getcwd()）
+    """
+    paths = kwargs.get("changed_paths") or []
+    if isinstance(paths, (list, tuple)) and paths:
+        first = str(paths[0] or "")
+        if first:
+            cand = Path(first)
+            base = cand if cand.is_dir() else cand.parent
+            if base.is_dir():
+                return str(base)
+    return os.getcwd()
+
+
 def _quality_section(session_info: Mapping[str, Any]) -> str:
     """渲染稳定段纪律框架（subagent/batch 无对表需求，返回空被 core 跳过）。
 
@@ -132,25 +176,29 @@ def register(ctx: Any) -> None:
         if _plugin_disabled():
             return None
         try:
-            reply = str(kwargs.get("response_text") or "")
+            reply = str(kwargs.get("final_response") or "")
             if not any(k in reply for k in _CLAIM_KEYWORDS):
                 return None
-            cwd = kwargs.get("cwd") or os.getcwd()
+            cwd = _resolve_cwd(kwargs)
+            if not _is_app_project(cwd):
+                return None
             scorecard = _find_scorecard(cwd)
             if scorecard is not None:
                 return None
-            # 同会话只提示一次（状态键跨轮持久）
+            # 同会话只提示一次（状态键跨轮持久）；参数序=session_id 在前
             sid = kwargs.get("session_id") or ""
-            st = _shared_state.get_session_state(_NAMESPACE, sid)
+            st = _shared_state.get_session_state(sid, _NAMESPACE)
             if st.get("reminded"):
                 return None
             st["reminded"] = True
+            # 返回体须为 pre_verify 续跑契约（get_pre_verify_continue_message 只认 action/message）
             return {
-                "context": (
+                "action": "continue",
+                "message": (
                     "[enterprise-quality-gate] 本轮声明含企业级质量口径，但项目内未找到 "
                     "QUALITY_SCORECARD.md 计分卡。按纲领贯彻挂点：先建计分卡"
-                    "（四层 23 维对表+差距清单，模板见纲领文件第五节），再声明质量结论。"
-                )
+                    "（四层对表+差距清单，模板见纲领文件第五节），再声明质量结论。"
+                ),
             }
         except Exception as exc:  # fail-open
             logger.warning("enterprise-quality-gate check failed: %s", exc, exc_info=True)

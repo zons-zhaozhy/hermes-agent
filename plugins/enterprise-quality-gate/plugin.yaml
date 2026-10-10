@@ -3,6 +3,5 @@ version: 1.0.0
 description: "企业级质量纲领强制贯彻：L1 system prompt 稳定段（四层23维对表纪律，新会话必见）+ L2 finish 时计分卡核对（声称企业级/可交付/验收完成而项目无 QUALITY_SCORECARD.md 即拦）。纲领唯一事实源=docs/standards/ENTERPRISE_GRADE_STANDARD.md。零核心改动。"
 author: stan
 kind: standalone
-hooks:
-  - pre_llm_call
+provides_hooks:
   - pre_verify
