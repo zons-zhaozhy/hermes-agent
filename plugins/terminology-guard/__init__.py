@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from plugins._llm_judge import llm_judge_json, llm_judge_multi
 from plugins._shared_state import get_session_state
@@ -45,10 +45,14 @@ _INJECT_HEAD_COMPACT = (
     "【术语一致性·轻锚】沿用历史锚定块的规范写法（全量别名映射见本会话首块）："
 )
 
-_TENSE_RULE = (
-    "时态纪律：状态描述与事实一致——已完成用「已/完成」，进行中用「正在」，"
-    "计划中用「将/计划」；同一任务的状态表述前后一致，禁在未新证据时翻转。"
-)
+# 规范层：system prompt 稳定段（session 级冻结，压缩不灭失）。规范管「怎么写」
+# 的态度要求；每轮注入只管「哪些词」的数据。与注入层同源双层。
+_CONSISTENCY_RULE = """\
+[用词一致性纪律]
+同一概念全程用同一写法：首次确立的称谓（含中英文选择、缩写、大小写）沿用到底，
+禁同义词互换、禁同物异称；引代码标识符/文件路径/原文引用除外。
+时态与事实一致：已完成用「已/完成」，进行中用「正在」，计划中用「将/计划」；
+同一任务的状态表述前后一致，未获新证据禁翻转。"""
 
 _JUDGE_SYSTEM = (
     "你是术语一致性审查员。判定下面这段 AI 回复是否存在'同一概念混用不同"
@@ -213,7 +217,7 @@ def build_injection(
     ledger_text = _ledger_line(ledger or [])
     if ledger_text:
         lines.append(ledger_text)
-    lines.append(_TENSE_RULE)
+    # 时态纪律已上移 system prompt 规范段（_CONSISTENCY_RULE），注入层不再重复
     return "\n".join(lines)
 
 
@@ -457,6 +461,21 @@ def _ledger_line(ledger: list[str]) -> Optional[str]:
     return head + "、".join(kept)
 
 
+# 子代理/批处理无术语锚定消费面（无用户可见长会话），规范段跳过
+_EXCLUDED_PLATFORMS = {"subagent", "batch"}
+
+
+def _consistency_section(session_info: Mapping[str, Any]) -> str:
+    """渲染用词一致性规范段（subagent/batch 无术语需求，返回空被 core 跳过）。
+
+    Contract:
+      Postconditions: 主会话返回 _CONSISTENCY_RULE 原文；排除平台返回 ""
+    """
+    if str(session_info.get("platform") or "") in _EXCLUDED_PLATFORMS:
+        return ""
+    return _CONSISTENCY_RULE
+
+
 def register(ctx: Any) -> None:
     """注册 transform_llm_output（检测+记账）与 pre_llm_call（每轮注入）。
 
@@ -514,3 +533,5 @@ def register(ctx: Any) -> None:
 
     ctx.register_hook("transform_llm_output", check_reply)
     ctx.register_hook("pre_llm_call", inject_terminology)
+    ctx.register_system_prompt_section("terminology_consistency", _consistency_section)
+    logger.info("terminology-guard: 注入层 + 规范层（system prompt 稳定段）双注册")

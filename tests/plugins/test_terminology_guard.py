@@ -47,9 +47,13 @@ class _FakeCtx:
 
     def __init__(self) -> None:
         self.hooks: dict[str, Any] = {}
+        self.prompt_sections: dict[str, Any] = {}
 
     def register_hook(self, name: str, fn: Any) -> None:
         self.hooks[name] = fn
+
+    def register_system_prompt_section(self, section_id: str, fn: Any) -> None:
+        self.prompt_sections[section_id] = fn
 
 
 def _mk(mod: Any, judge_result: Any, sid: str = "s1") -> tuple[Any, str]:
@@ -176,10 +180,11 @@ def test_ledger_lock_and_inject(monkeypatch: Any) -> None:
     # 期望: 首次抽取的词锁进账本（顺序保持，无重复）
     assert st.get("ledger") == ["评分卡", "准入阈值"]  # 期望: judge_json 返回词全入账
     injected = ctx.hooks["pre_llm_call"](session_id="sL")
-    assert injected is not None  # 期望: 账本非空 + 时态规则行 → 注入必非 None
+    assert injected is not None  # 期望: 账本非空 → 注入必非 None
     assert "评分卡" in injected["context"]  # 期望: 账本词进注入
     assert "已确立用词" in injected["context"]  # 期望: 账本行表头在
-    assert "时态纪律" in injected["context"]  # 期望: 时态规则行恒注入
+    # 时态纪律在 system prompt 规范段（_CONSISTENCY_RULE），注入层不重复
+    assert "时态纪律" not in injected["context"]  # 期望: 规范已上移，注入零重复
 
 
 def test_ledger_cap(monkeypatch: Any) -> None:
@@ -310,6 +315,19 @@ def test_injection_compact_and_full_forms() -> None:
     assert corrective is not None and "同义0" in corrective  # 期望: 纠偏轮含别名
     # 首轮全量形态不变（默认参数向后兼容）
     assert "同义0" in (full or "")  # 期望: 全量含 alias→canonical 映射
+
+
+# ── 7. 规范层（system prompt 稳定段）──────────────────────────────────────
+
+def test_consistency_section_registered_and_scoped() -> None:
+    mod = _load_plugin()
+    # 主会话：规范段返回规则原文（含同义词/时态双纪律）
+    main_text = mod._consistency_section({"platform": "cli"})
+    assert "同一写法" in main_text and "时态" in main_text  # 期望: 双纪律齐备
+    assert len(main_text) < 300  # 期望: 规范段简短（<300 字符）
+    # 排除平台：subagent/batch 返回空（core 跳过空段）
+    for plat in ("subagent", "batch"):
+        assert mod._consistency_section({"platform": plat}) == ""  # 期望: 排除平台空段
 
 
 # ── 4. fail-open ───────────────────────────────────────────────────────────
