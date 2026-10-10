@@ -4,12 +4,38 @@ from __future__ import annotations
 import builtins
 from functools import lru_cache, wraps
 import io
+import logging
 import os
 from pathlib import Path
 import shutil
 import sqlite3
 import sys
 import threading
+
+logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1)
+def _psutil_probe_frames() -> tuple[str, ...]:
+    """Filename markers identifying the product's foreign-fd-table enumeration.
+
+    Two call shapes reach a guarded metadata stat while inspecting OTHER processes'
+    open files: psutil validating candidate paths (``_psosx.open_files`` ->
+    ``_common.isfile_strict``), and the product holder scan resolving an enumerated
+    fd path (``hermes_state_holders.foreign_state_db_holders`` realpath). Both are
+    read-only inspection of foreign fd tables, not test I/O against the real home —
+    a host process holding a deleted home file would otherwise fail the scan closed.
+    """
+    markers: list[str] = []
+    try:
+        import psutil._common as c
+        import psutil._psosx as m
+        markers += [c.__file__, m.__file__]
+    except ImportError as exc:
+        logger.warning("psutil internals unavailable for the fd-scan exemption: %s", exc)
+    import hermes_state_holders
+    markers.append(hermes_state_holders.__file__)
+    return tuple(os.fspath(Path(f).resolve()) for f in markers)
 
 _INTERPRETER_PREFIXES = tuple({
     Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
@@ -24,12 +50,46 @@ _INTERPRETER_PREFIXES = tuple({
     # checkout's own .venv is not Hermes state; without this every run from a default install
     # trips on its first traceback.
     Path(__file__).resolve().parent.parent,
+} | {
+    # The PM test environment (pm.testenv) is an isolated venv generation under
+    # ``<home>/installs/<key>/test-environment/gen-*/venv``. Product code probing "does this
+    # venv sit inside a checkout" stats ``venv.parent / hermes_cli / main.py``
+    # (hermes_cli.update_owning_install.owning_install_root) — a metadata probe of the test
+    # environment's own layout, not Hermes state. CI composes no such home layout, so only
+    # developer machines hit it.
+    Path(sys.prefix).resolve().parent,
 })
 # The same prefixes as plain strings for the check() fast path. PurePath comparison folds case on
 # Windows; ``os.path.normcase`` (identity on POSIX) reproduces that for string compares. Prefixes
 # resolve once at import, as before: they are fixed for the process lifetime.
 _normcase = os.path.normcase
 _INTERPRETER_PREFIX_STRS = tuple(_normcase(os.fspath(p)) for p in _INTERPRETER_PREFIXES)
+
+
+def _caller_is_foreign_probe() -> bool:
+    """True when the guarded metadata call is a read-only FOREIGN probe, not test I/O.
+
+    Two shapes: psutil's fd-table enumeration (``_psosx``/``_common`` frames, or the
+    product holder scan consuming it), and stdlib ``shutil.which``'s candidate
+    executable check (``_access_check``, called only from ``which``) — a PATH lookup
+    against a directory that merely EXISTS under the real home, never a read of
+    user state.
+
+    Walks frames via ``sys._getframe`` (code object filename/name only): this runs on
+    EVERY guarded metadata call, and ``inspect.stack()`` re-resolves line numbers and
+    module objects per frame, which profiled as seconds of pure overhead per suite.
+    """
+    markers = _psutil_probe_frames()
+    shutil_file = os.fspath(Path(shutil.__file__).resolve())
+    frame = sys._getframe(1)  # skip _caller_is_foreign_probe itself
+    while frame is not None:
+        filename = frame.f_code.co_filename
+        if markers and filename in markers:
+            return True
+        if filename == shutil_file and frame.f_code.co_name in ("_access_check", "which"):
+            return True
+        frame = frame.f_back
+    return False
 
 
 def _within(path: str, prefix: str) -> bool:
@@ -100,10 +160,24 @@ class HomeIOGuard:
             for prefix in _INTERPRETER_PREFIX_STRS:
                 if _within(absolute, prefix) or (metadata and _contains(absolute, prefix)):
                     return
+            # PM's tool store and install generations (<root>/tools, <root>/installs) are
+            # reinstallable payloads, not user state: an executable parity test reads the rg
+            # binary its developer shell put on PATH. Reads only — writes stay refused below,
+            # and user-state directories are never under these subtrees.
+            if not destructive and any(
+                _within(absolute, os.path.join(root, part))
+                for root in roots for part in ("tools", "installs")
+            ):
+                return
             # Check the lexical path first: resolving must not probe a protected
             # tree merely to decide that the original path was forbidden.
             for root in roots:
                 if _within(absolute, root):
+                    if metadata and _caller_is_foreign_probe():
+                        # A read-only FOREIGN probe (psutil fd scan / shutil.which PATH
+                        # lookup) touching a path that merely exists under the real
+                        # home — not test I/O against user state.
+                        return
                     self.refuse(value)
             if resolved is None:
                 resolved = _normcase(os.path.realpath(absolute))
@@ -113,6 +187,15 @@ class HomeIOGuard:
             for prefix in _INTERPRETER_PREFIX_STRS:
                 if _within(resolved, prefix):
                     return
+            # Same payload exemption on the resolved side: a fixture symlink into the PM tool
+            # store reads the payload binary, not user state. And unlink/chmod of such a
+            # symlink touches only the link itself (which lives outside the home) — the
+            # payload under <root>/tools is never the target of the operation.
+            if any(
+                _within(resolved, os.path.join(root, part))
+                for root in roots for part in ("tools", "installs")
+            ) and (not destructive or os.path.islink(os.fsdecode(value))):
+                return
             for root in roots:
                 if _within(resolved, root):
                     self.refuse(value)

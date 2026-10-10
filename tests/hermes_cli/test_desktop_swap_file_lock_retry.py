@@ -42,9 +42,14 @@ def test_swap_retries_transient_permission_error_then_promotes(tmp_path, monkeyp
     desktop_dir, staging, live_exe, slept = _staged_over_live(tmp_path, monkeypatch)
     real_rename = os.rename
     locked = {"n": 0}
+    # The promotion renames the unpacked ROOT (release/<mac-arm64|win-unpacked|linux-unpacked>),
+    # not the executable itself: on darwin exe.parent is …/Contents/MacOS, so derive the root
+    # the same way the product does instead of assuming a flat win layout.
+    live_root = main_desktop._desktop_unpacked_root(live_exe, desktop_dir / 'release')
+    staged_root = staging / live_root.name
 
-    def scanner_locked_rename(src, dst):
-        if Path(dst) == live_exe.parent and locked["n"] < 2:
+    def scanner_locked_rename(src: str, dst: str) -> None:
+        if Path(dst) == live_root and locked["n"] < 2:
             locked["n"] += 1
             raise PermissionError(32, "being used by another process")
         return real_rename(src, dst)

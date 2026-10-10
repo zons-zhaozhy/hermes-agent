@@ -27,6 +27,19 @@ def _large_wal_db(tmp_path):
 def test_doctor_checkpoint_runs_only_on_the_exclusive_repair_guard(tmp_path, monkeypatch):
     db = _large_wal_db(tmp_path)
 
+    # The holder scan enumerates every process on a real host; long-lived Hermes processes
+    # holding ~/.hermes files make the guarded realpath in that scan fail closed here. The
+    # test targets the checkpoint path, so constrain the enumeration to nothing foreign.
+    import hermes_state_holders
+    from collections.abc import Iterator
+
+    class _SelfOnly:
+        @staticmethod
+        def process_iter(attrs: list[str] | None = None) -> Iterator[object]:
+            return iter([])
+
+    monkeypatch.setattr(hermes_state_holders, "psutil", _SelfOnly(), raising=False)
+
     bare_connects: list[str] = []
     real_connect = sqlite3.connect
 

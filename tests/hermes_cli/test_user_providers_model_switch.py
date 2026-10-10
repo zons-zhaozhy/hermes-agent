@@ -79,6 +79,10 @@ def test_list_authenticated_providers_enumerates_dict_format_models(monkeypatch)
     """
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    # A running local Ollama on this host would answer the native /api/tags probe and replace
+    # the configured dict-format models with live ones; pin the probe for determinism.
+    monkeypatch.setattr(
+        "hermes_cli.models_local.fetch_ollama_local_models", lambda *_a, **_k: None)
 
     user_providers = {
         "local-ollama": {
@@ -563,6 +567,10 @@ def test_section3_probes_no_key_endpoint_with_singular_default_model(monkeypatch
     """
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    # Pin the native Ollama probe: this test asserts the generic /v1/models probe ran, and a
+    # running local Ollama would answer /api/tags first and hide the fake generic fetch.
+    monkeypatch.setattr(
+        "hermes_cli.models_local.fetch_ollama_local_models", lambda *_a, **_k: None)
 
     probed = {}
 

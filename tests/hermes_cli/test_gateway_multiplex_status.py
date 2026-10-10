@@ -38,6 +38,11 @@ def _fake_multiplexer(monkeypatch, tmp_path, *, multiplex: bool, pid_file: bool 
     }))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "beta"))
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
+    # list_profiles()->build_alias_map() scans the wrapper dir for alias wrappers; without this
+    # patch it reads the host machine's real ~/.local/bin (a dev box has the launcher there,
+    # CI does not) and the real-home IO guard refuses it.
+    from hermes_cli import profiles as profiles_mod
+    monkeypatch.setattr(profiles_mod, "_get_wrapper_dir", lambda: tmp_path / "bin")
     monkeypatch.setattr(
         status, "_read_process_cmdline", lambda pid: "python -m hermes_cli.main gateway run --replace"
     )

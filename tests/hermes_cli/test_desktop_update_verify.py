@@ -1,6 +1,9 @@
 """Receipt validation uses packaged output, not just a source stamp."""
 import json
 import struct
+import sys
+from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 
@@ -9,9 +12,17 @@ from tests.hermes_cli.test_source_build import copy_freshness_scripts, stamp_pro
 
 
 @pytest.fixture
-def bundle(tmp_path, monkeypatch):
+def bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path, Path]:
     desktop = tmp_path / 'apps/desktop'
-    resources = desktop / 'release/fixture/resources'
+    # _packaged_resources_dir: darwin resolves …/Contents/MacOS/Hermes → …/Contents/Resources;
+    # other platforms resolve exe.parent/resources. Lay the fixture out so both derive to
+    # the SAME resources dir, or verify reports a missing bundle on macOS.
+    if sys.platform == 'darwin':
+        resources = desktop / 'release/Hermes.app/Contents/Resources'
+        exe = desktop / 'release/Hermes.app/Contents/MacOS/Hermes'
+    else:
+        resources = desktop / 'release/fixture/resources'
+        exe = desktop / 'release/fixture/Hermes.exe'
     dist = resources / 'app.asar.unpacked/dist'
     (dist / 'assets').mkdir(parents=True)
     (dist / 'index.html').write_text('<script type="module" src="./assets/index.js"></script>', encoding='utf-8')
@@ -24,11 +35,11 @@ def bundle(tmp_path, monkeypatch):
     archive = resources / 'app.asar'
     archive.write_bytes(struct.pack('<4I', 4, 8 + len(padded), 4 + len(padded), len(header)) + padded + package)
     (tmp_path / '.gitignore').write_text('apps/desktop/release/\n', encoding='utf-8')
-    monkeypatch.setattr(verify, '_desktop_packaged_executable', lambda _: resources.parent / 'Hermes.exe')
+    monkeypatch.setattr(verify, '_desktop_packaged_executable', lambda _: exe)
     monkeypatch.setattr(verify, '_desktop_exe_integrity_error', lambda _: None)
     # Host-independent artifact contract; executable lookup itself is covered natively.
     from hermes_cli import main_desktop
-    monkeypatch.setattr(main_desktop, '_desktop_packaged_executable', lambda _: resources.parent / 'Hermes.exe')
+    monkeypatch.setattr(main_desktop, '_desktop_packaged_executable', lambda _: exe)
     copy_freshness_scripts(tmp_path)
     stamp_product(tmp_path, "desktop", dist)
     use_host_node_as_pm_node(monkeypatch)
@@ -67,14 +78,21 @@ def test_default_root_is_the_imported_checkout_not_cwd(tmp_path, monkeypatch):
     assert verify.checkout_root() != tmp_path
 
 
-def _app_only_under(root):
+def _app_only_under(root: Path) -> 'Callable[[Path], Path | None]':
     """A packaged-app lookup that finds an app under *root* and nowhere else."""
-    from pathlib import Path
+    import sys
 
     desktop = (root / 'apps' / 'desktop').resolve()
 
-    def lookup(candidate):
-        return desktop / 'release/fixture/Hermes.exe' if Path(candidate).resolve() == desktop else None
+    # Match the bundle fixture's platform layout: darwin stands the executable in a
+    # .app bundle (resources derive from …/Contents/MacOS), elsewhere flat beside resources/.
+    if sys.platform == 'darwin':
+        exe = desktop / 'release/Hermes.app/Contents/MacOS/Hermes'
+    else:
+        exe = desktop / 'release/fixture/Hermes.exe'
+
+    def lookup(candidate: Path) -> Path | None:
+        return exe if Path(candidate).resolve() == desktop else None
 
     return lookup
 

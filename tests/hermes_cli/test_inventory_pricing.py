@@ -109,6 +109,9 @@ def test_apply_pricing_omits_sale_when_original_not_cheaper(monkeypatch):
 
 def test_model_options_cold_pricing_fetch_runs_off_the_request_path(monkeypatch):
     """A cold pricing endpoint must not delay the first picker payload."""
+    # Zero-network registry: a cold models.dev fetch is not what this test measures, and a
+    # slow network would otherwise eat the 2s cold-picker budget before pricing runs.
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     fetch_started = Event()
     release_fetch = Event()
 

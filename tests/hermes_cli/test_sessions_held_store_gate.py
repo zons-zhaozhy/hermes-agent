@@ -7,9 +7,12 @@ production entry point ``cmd_sessions`` with a REAL second process holding the s
 """
 
 import argparse
+import os
 import subprocess
 import sys
 from argparse import Namespace
+from pathlib import Path
+from typing import Any, Iterator
 
 import pytest
 
@@ -42,12 +45,32 @@ def state_db(monkeypatch, tmp_path):
 
 
 @pytest.fixture
-def foreign_holder(state_db):
+def foreign_holder(state_db: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[subprocess.Popen]:
     proc = subprocess.Popen(
         [sys.executable, "-c", _HOLDER, str(state_db)],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
     )
-    assert proc.stdout.readline().strip() == "ready"
+    assert proc.stdout.readline().strip() == "ready"  # 期望: _HOLDER 打开 db 后先打印 ready 再等 stdin
+    # A developer machine runs long-lived hermes processes that hold files under the real
+    # home; the holder scan's realpath over THOSE files is refused by the home-io guard, so
+    # the scan reports failure and prune stays refused even after this holder exits. CI has
+    # no such neighbours. Keep the real psutil enumeration but never let it collect another
+    # process's open files: only this fixture's holder gets its descriptors read, which is
+    # exactly the population under test.
+    import psutil
+
+    real_iter = psutil.process_iter
+
+    def _filtered_iter(attrs: Any = None) -> Iterator[Any]:
+        for process in real_iter(["pid"]):  # pid-only: open_files is fetched on demand below
+            if process.info["pid"] == proc.pid:
+                holder_info = psutil.Process(proc.pid).as_dict(["pid", "open_files"])
+                process.info = holder_info
+            else:
+                process.info = {**process.info, "open_files": ()}
+            yield process
+
+    monkeypatch.setattr(psutil, "process_iter", _filtered_iter)
     try:
         yield proc
     finally:

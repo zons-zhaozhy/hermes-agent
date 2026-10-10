@@ -443,6 +443,26 @@ class TestConfiguredDeleteNeverApplied:
         try:
             marker, sqlite_pid = holder.stdout.readline().strip().split(":", 1)
             assert marker == "held"  # child-reported: Popen.pid is the venv launcher on Windows
+            # The holder scan enumerates every process on a real host; long-lived Hermes
+            # processes holding ~/.hermes files make the guarded realpath fail closed and
+            # replace the per-PID verdict with "cannot prove". Enumerate only the holder
+            # child so the real connection is still discovered by the real matching logic.
+            import psutil
+
+            real_iter = psutil.process_iter
+
+            def _holder_only(attrs=None):
+                # pid-only enumeration: fetching open_files for every process touches
+                # real-home files other Hermes processes hold (guarded I/O refuses, the
+                # scan fails closed) — only this fixture's holder child gets its fds read.
+                for process in real_iter(["pid"]):
+                    if process.info["pid"] == int(sqlite_pid):
+                        process.info = psutil.Process(int(sqlite_pid)).as_dict(["pid", "open_files"])
+                    else:
+                        process.info = {**process.info, "open_files": ()}
+                    yield process
+
+            monkeypatch.setattr(psutil, "process_iter", _holder_only)
             doctor_platform._report_database_journal_modes(tmp_path, (3, 51, 3))
         finally:
             holder.stdin.write("\n")

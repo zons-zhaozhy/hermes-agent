@@ -22,32 +22,45 @@ import pytest
 def _run_hermes(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
     """Run hermes CLI as a subprocess from repo root.
 
-    The child runs with all git remote URLs rewritten to an unreachable
-    local path (GIT_CONFIG_* env overrides). These tests assert the
-    lazy-crypto / no-self-lock invariants of the dispatch path, NOT update
-    connectivity — but ``hermes update --check`` really does ``git fetch``
-    against github.com when run bare. Under remote throttling that fetch
-    can exceed the subprocess timeout and TimeoutExpired the test (exactly
-    what happened on CI during the 2026-08-17 GitHub incident: both update
-    tests red on main for hours with no code change). Rewriting the URLs
-    makes the fetch fail instantly and deterministically; the update path
-    still exercises its full parser/dispatch/fetch code and exits 1, which
-    the assertions already accept.
+    The child runs with every git remote URL rewritten to an unreachable local
+    path (GIT_CONFIG_* env overrides). These tests assert the lazy-crypto /
+    no-self-lock invariants of the dispatch path, NOT update connectivity — but
+    ``hermes update --check`` really does ``git fetch`` against github.com when
+    run bare. Under remote throttling that fetch can exceed the subprocess
+    timeout and TimeoutExpired the test (exactly what happened on CI during the
+    2026-08-17 GitHub incident: both update tests red on main for hours with no
+    code change). Rewriting the URLs makes the fetch fail instantly and
+    deterministically; the update path still exercises its full
+    parser/dispatch/fetch code and exits 1, which the assertions already accept.
+
+    insteadOf matching is prefix-based and the LONGEST matching prefix wins, so
+    a developer-global ``url.ssh://git@ssh.github.com:443/.insteadOf=git@github.com:``
+    beats the short ``git@`` key. Each remote's full URL is therefore injected as
+    its own (longest possible) prefix alongside the scheme-level fallbacks.
     """
     repo_root = Path(__file__).parent.parent.parent
+    remotes = subprocess.run(
+        ["git", "-C", str(repo_root), "remote"], capture_output=True, text=True, check=True,
+    ).stdout.split()
     env = dict(os.environ)
-    env.update(
-        {
-            "GIT_CONFIG_COUNT": "2",
-            # Rewrite every https:// and ssh remote to a nonexistent local
-            # path so any fetch fails in milliseconds without touching the
-            # network. insteadOf matching is prefix-based.
-            "GIT_CONFIG_KEY_0": "url.file:///nonexistent-hermes-test-remote/.insteadOf",
-            "GIT_CONFIG_VALUE_0": "https://",
-            "GIT_CONFIG_KEY_1": "url.file:///nonexistent-hermes-test-remote/.insteadOf",
-            "GIT_CONFIG_VALUE_1": "git@",
-        }
-    )
+    rewrite = {
+        "https://": "url.file:///nonexistent-hermes-test-remote/.insteadOf",
+        "git@": "url.file:///nonexistent-hermes-test-remote/.insteadOf",
+        "ssh://": "url.file:///nonexistent-hermes-test-remote/.insteadOf",
+    }
+    for name in remotes:
+        # The RAW stored URL: `git remote get-url` applies insteadOf rewrites, and a
+        # rewritten prefix can never match the stored original the fetch expands.
+        url = subprocess.run(
+            ["git", "-C", str(repo_root), "config", "--get", f"remote.{name}.url"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        if url:
+            rewrite[url] = "url.file:///nonexistent-hermes-test-remote/.insteadOf"
+    env["GIT_CONFIG_COUNT"] = str(len(rewrite))
+    for index, (prefix, key) in enumerate(rewrite.items()):
+        env[f"GIT_CONFIG_KEY_{index}"] = key
+        env[f"GIT_CONFIG_VALUE_{index}"] = prefix
     return subprocess.run(
         [sys.executable, "-m", "hermes_cli.main"] + args,
         capture_output=True,

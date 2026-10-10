@@ -242,6 +242,27 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
         return run(command, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, 'run', guarded_run)
+
+    # On macOS the updater's fetch runs under update_custody._run_owner_watched (a Popen
+    # watchdog), never subprocess.run, so the refusal above must also be planted at the
+    # custody seam — the same pattern the transport tests below use. Both seams are
+    # covered: custody.run(argv, **kwargs) and _run_owner_watched(argv, kwargs_dict);
+    # ``inherit_lock`` is custody-only and is stripped before forwarding.
+    from hermes_cli import update_custody
+
+    def guarded_custody_run(command, *args, **kwargs):
+        command = list(map(str, command))
+        if args and isinstance(args[0], dict):  # _run_owner_watched passes (argv, kwargs_dict)
+            kwargs.update(args[0])
+            args = ()
+        if 'fetch' in command and t.wanted in command and server == 'fetch-refused':
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 128, stdout='', stderr='fixture: raw SHA wants disabled')
+        kwargs.pop('inherit_lock', None)
+        return guarded_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(update_custody, 'run', guarded_custody_run)
+    monkeypatch.setattr(update_custody, '_run_owner_watched', guarded_custody_run)
     if server == 'fetch-refused':
         with pytest.raises(SystemExit) as error:
             cli_main.cmd_update(t.args)

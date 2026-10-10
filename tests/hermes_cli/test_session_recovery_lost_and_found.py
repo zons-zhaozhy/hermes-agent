@@ -235,7 +235,10 @@ def test_unreadable_schema_without_cli_names_the_sqlite3_requirement(
     message = str(excinfo.value)
     assert "sessions" in message and "messages" in message
     assert "sqlite3" in message
-    assert ".recover" in message
+    # Two refusal branches: the guidance naming `.recover`, or — when the host's only
+    # sqlite3 is a WAL-reset-vulnerable build (< 3.51.3) — the version-specific safety
+    # refusal. Both are an actionable "install a proper sqlite3" message.
+    assert ".recover" in message or "not safe to use" in message
     assert not output.exists()
 
 

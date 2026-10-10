@@ -12220,7 +12220,7 @@
      "role": "user"
     }
    ],
-   "model": "glm-5.2",
+   "model": "glm-5.3",
    "reasoning_effort": "high",
    "timeout": 1800.0,
    "tools": [
@@ -12244,11 +12244,11 @@
     }
    ]
   },
-  "model": "glm-5.2",
+  "model": "glm-5.3",
   "off": {
    "extra_body": {
     "thinking": {
-     "type": "disabled"
+     "type": "enabled"
     }
    },
    "messages": [
@@ -12284,7 +12284,8 @@
      "role": "user"
     }
    ],
-   "model": "glm-5.2",
+   "model": "glm-5.3",
+   "reasoning_effort": "low",
    "timeout": 1800.0,
    "tools": [
     {
@@ -12341,7 +12342,7 @@
      "role": "user"
     }
    ],
-   "model": "glm-5.2",
+   "model": "glm-5.3",
    "timeout": 1800.0,
    "tools": [
     {

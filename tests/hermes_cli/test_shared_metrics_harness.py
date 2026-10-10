@@ -112,10 +112,12 @@ def test_foreground_terminal_commands_count_by_kind_and_outcome(direct_runtime, 
     from tools.terminal_tool import terminal_tool
 
     monkeypatch.setenv("TERMINAL_ENV", "local")
+    # POSIX exit codes: GNU ls reports 2 for a missing path but BSD/macOS ls reports 1, while
+    # rm reports 1 on both — use rm for a cross-platform deterministic nonzero file_ops row.
     results = [json.loads(terminal_tool(command, task_id="harness", timeout=timeout)) for command, timeout in (
-        ("ls /definitely/not/here", 30), ("echo ok", 30), ("sh -c 'exit 124'", 30), ("sleep 5", 1),
+        ("rm /definitely/not/here", 30), ("echo ok", 30), ("sh -c 'exit 124'", 30), ("sleep 5", 1),
     )]
-    assert [r["exit_code"] for r in results] == [2, 0, 124, 124]
+    assert [r["exit_code"] for r in results] == [1, 0, 124, 124]
     terminal_tool("true", task_id="harness", _host_local=True)  # Hermes' own control plane: never counted
     rows = _rows(tmp_path, contract.TERMINAL_OUTCOME_METRIC, "backend", "command_kind", "outcome")
     assert rows == sorted([

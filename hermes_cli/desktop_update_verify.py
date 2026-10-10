@@ -1,5 +1,6 @@
 """Read-only verification at the Windows Desktop handoff receipt boundary."""
 import json
+import sys
 from pathlib import Path, PurePosixPath
 import re
 import struct
@@ -11,6 +12,14 @@ from hermes_cli.main_desktop import (
     _desktop_exe_integrity_error,
     _desktop_packaged_executable,
 )
+
+
+def _verify_resources_dir(executable: Path) -> Path:
+    """Resources dir for the same executable `_packaged_resources_dir` resolves:
+    darwin ``…/Contents/MacOS/Hermes`` → ``…/Contents/Resources``; elsewhere
+    ``exe.parent/resources``. Deriving here (from the already-resolved executable)
+    keeps verify on one seam even when callers patch the executable lookup."""
+    return executable.parent.parent / "Resources" if sys.platform == "darwin" else executable.parent / "resources"
 
 
 def _verify_packaged_entry(resources: Path) -> None:
@@ -109,7 +118,7 @@ def verify_windows_desktop_update(project_root: Path | None = None) -> None:
     error = _desktop_exe_integrity_error(executable)
     if error:
         raise RuntimeError(f"The updated Desktop executable is invalid: {error}")
-    _verify_packaged_entry(executable.parent / "resources")
+    _verify_packaged_entry(_verify_resources_dir(executable))
     if _desktop_build_needed(desktop, project_root, source_mode=False):
         raise RuntimeError("The updated Desktop build is stale, unstamped, or incomplete")
 

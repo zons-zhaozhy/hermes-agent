@@ -23,6 +23,9 @@ def _snapshot(used: float) -> AccountUsageSnapshot:
 
 def test_picker_reads_cached_usage_and_refreshes_without_waiting(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-123")
+    # Zero-network registry: a cold models.dev fetch would eat the 5s no-wait budget on a
+    # slow network before the usage assertion runs.
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     release, called = threading.Event(), threading.Event()
     answers = iter([_snapshot(92.0)])
 

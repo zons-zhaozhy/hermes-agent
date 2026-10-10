@@ -93,11 +93,21 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(hermes_main.subprocess, "run", run_side_effect)
     # The update's git (the commit point's target resolve, the move itself) goes through the custody
     # runner; off Windows it calls subprocess.run, on Windows a job-bound Popen the fake above
-    # would miss. Fake the runner itself so the seam holds on every OS.
+    # would miss. Fake the runner itself so the seam holds on every OS. On macOS the fetch leg
+    # runs under update_custody._run_owner_watched (a Popen watchdog) instead of custody.run,
+    # so the fake must sit on BOTH seams — same pattern as test_update_target_identity.
     from hermes_cli import update_custody
 
-    monkeypatch.setattr(update_custody, "run",
-                        lambda argv, *, inherit_lock=False, **kw: run_side_effect(list(argv), **kw))
+    def _custody_fake(command, *args, **kwargs):
+        command = list(map(str, command))
+        if args and isinstance(args[0], dict):  # _run_owner_watched passes (argv, kwargs_dict)
+            kwargs.update(args[0])
+            args = ()
+        kwargs.pop("inherit_lock", None)
+        return run_side_effect(command, **kwargs)
+
+    monkeypatch.setattr(update_custody, "run", _custody_fake)
+    monkeypatch.setattr(update_custody, "_run_owner_watched", _custody_fake)
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(update_cmd, "_prepare_updated_checkout", lambda *a, **k: None)
     (tmp_path / ".git").mkdir()
