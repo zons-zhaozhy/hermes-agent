@@ -35,6 +35,13 @@ _CONFIG_TYPES = frozenset(_CONFIG_SCHEMA_TYPES)
 _PROBE_TIMEOUT = 30
 _PROBE_SENTINEL = "HERMES_VALIDATE_JSON:"
 
+# Manifest field aliases, mirroring the parser (plugins_manifest.PluginManifest.from_dict).
+# A manifest the loader normalizes must not be reported as "undeclared" here.
+_DECLARED_ALIASES: dict[str, tuple[str, ...]] = {
+    "provides_hooks": ("hooks",),
+}
+_MISSING = object()
+
 
 @dataclass
 class ValidationReport:
@@ -377,7 +384,23 @@ def _run_capability_probe(
 
 
 def _declared_list(manifest: dict, key: str) -> list[str]:
-    raw = manifest.get(key) or []
+    """Declared string list for *key*, honoring the parser's manifest aliases.
+
+    Contract:
+      Preconditions: manifest 为已解析的 plugin.yaml dict；key 为规范字段名
+      Postconditions: 返回字符串列表；字段缺失或非列表返回 []；永不抛异常
+    """
+    raw = manifest.get(key, _MISSING)
+    if raw is _MISSING:
+        # Parser parity: plugins_manifest normalizes legacy aliases. Reading the raw key only
+        # makes validate disagree with the loader — a manifest the loader accepts would report
+        # its registrations as "undeclared".
+        for alias in _DECLARED_ALIASES.get(key, ()):
+            raw = manifest.get(alias, _MISSING)
+            if raw is not _MISSING:
+                break
+    if raw is _MISSING or raw is None:
+        return []
     if not isinstance(raw, list):
         return []
     return [str(item) for item in raw if isinstance(item, str)]

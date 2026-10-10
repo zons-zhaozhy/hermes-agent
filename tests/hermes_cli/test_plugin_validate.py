@@ -165,6 +165,24 @@ class TestCapabilityProbe:
         assert not report.ok
         assert any("pre_tool_call" in f for f in report.failures)
 
+    def test_hooks_alias_counts_as_declared_hook(self, tmp_path):
+        """``hooks:`` 是解析器认可的 provides_hooks 别名——validate 必须同样接受。"""
+        manifest = dict(BASE_MANIFEST, hooks=["pre_verify"])
+        init = "def register(ctx):\n    ctx.register_hook('pre_verify', lambda **kw: None)\n"
+        d = _make_plugin(tmp_path, manifest=manifest, init_py=init)
+        report = validate_plugin_dir(d)
+        assert report.ok  # 期望: 别名声明满足声明对账（修复前报 undeclared hooks → 失败）
+        assert not any("undeclared hooks" in f for f in report.failures)  # 期望: 无未声明失败项
+
+    def test_undeclared_hook_still_fails_when_alias_lists_another(self, tmp_path):
+        """别名回退不得掩盖真未声明：声明 pre_commit 却注册 pre_verify 仍须失败。"""
+        manifest = dict(BASE_MANIFEST, hooks=["pre_commit"])
+        init = "def register(ctx):\n    ctx.register_hook('pre_verify', lambda **kw: None)\n"
+        d = _make_plugin(tmp_path, manifest=manifest, init_py=init)
+        report = validate_plugin_dir(d)
+        assert not report.ok  # 期望: 注册的 pre_verify 不在声明内 → 失败
+        assert any("pre_verify" in f for f in report.failures)  # 期望: 失败项点名 pre_verify
+
     def test_crashing_register_is_contained(self, tmp_path):
         init = "def register(ctx):\n    raise RuntimeError('boom')\n"
         d = _make_plugin(tmp_path, manifest=dict(BASE_MANIFEST), init_py=init)
