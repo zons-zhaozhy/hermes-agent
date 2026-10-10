@@ -1,13 +1,19 @@
 """terminology-guard — 术语一致性守护（治 LLM 用词漂移）。
 
-三层机制，全部零核心改动：
-  L0 单一事实源：~/.hermes/terminology.yaml（canonical 规范名 + 禁用别名 +
-     语体注记）。治理一个术语 = 加一行数据，不改代码。
-  L1 每轮锚定：pre_llm_call 每轮注入紧凑术语表（字符预算封顶）——注入在
-     上下文压缩后依然存在，补上"早期用词被压缩打掉"的根因。
-  L3 双通道收口：transform_llm_output 对回复做确定性别名字面量检测
-     （机器消费的确定性文本表，str 方法匹配合规）+ judge 判开放集称谓混用；
-     命中不改用户可见文本，下一轮注入针对性纠正提醒。
+理论基础与三层结构（对齐记忆科学 standard model of memory consolidation,
+McGaugh 2000; 词汇锚定见 Hoey, Lexical Priming, 2005; 晋升判定见 W-TinyLFU
+admission control, Einziger et al. 2017）:
+
+  策展层 curated lexicon（~/.hermes/terminology.yaml）
+    人工维护的规范名+禁用别名 SSOT。每次注入全部锚定（预算内）。
+  情景层 session working lexicon（会话内）
+    每轮回复抽取关键用词，首见即锁——把开放集问题在会话内转化为封闭集。
+  语义层 consolidated lexicon（~/.hermes/terminology_consolidated.yaml）
+    跨会话 admission：词出现于 ≥3 个不同会话（持久化计数，进程重启不丢）
+    即固化为全局锚定词；last_seen 超期标 stale 不再注入（老化衰减）。
+
+  每轮注入（pre_llm_call）三层合并锚定 + 时态纪律；transform_llm_output
+  做确定性别名检测 + judge 开放集判定，命中不改用户可见文本，下轮注入纠正。
 """
 
 from __future__ import annotations
@@ -211,7 +217,7 @@ def _collect_reply(response_text: str, sid: str, st: dict[str, Any]) -> None:
         if _judge_naming_drift(response_text):
             st["open_drift"] = True
             logger.info("terminology-guard: 开放集称谓漂移已标记（下轮注入纠正）")
-        _update_ledger(response_text, st)
+        _update_ledger(response_text, sid, st)
 
 
 _LEDGER_SYSTEM = (
@@ -225,14 +231,16 @@ _LEDGER_CAP = 24
 _LEDGER_BUDGET = 300
 
 
-def _update_ledger(response_text: str, st: dict[str, Any]) -> None:
-    """抽取本轮关键用词 → 并入会话账本（首见即锁，上限截断）。
+def _update_ledger(response_text: str, sid: str, st: dict[str, Any]) -> None:
+    """抽取本轮关键用词 → 并入会话账本（首见即锁，上限截断）→ 毕业检查。
 
     L2 会话用词账本：开放集漂移的根治件——会话内首次用词即成为契约，
     每轮注入「已确立用词」，把开放集问题在会话内转化为封闭集。
+    跨会话固化（consolidation）：词出现于 ≥3 个不同会话 → 固化入
+    terminology_consolidated.yaml，新会话开局即有锚，不再从零。
 
     Contract:
-      Preconditions: response_text 为 str；st 为会话状态 dict
+      Preconditions: response_text 为 str；sid 为会话 id；st 为会话状态 dict
       Postconditions: st["ledger"] 为 list[str] 且长度 ≤ _LEDGER_CAP；绝不 raise
     """
     if len(response_text) < 40:
@@ -251,6 +259,167 @@ def _update_ledger(response_text: str, st: dict[str, Any]) -> None:
         if term not in ledger:
             ledger.append(term)
     st["ledger"] = ledger[:_LEDGER_CAP]
+    _consolidate(fresh, sid)
+
+
+# ── 语义层：跨会话固化（admission control, W-TinyLFU 同构）────────────────
+# 固化词典 terminology_consolidated.yaml 与策展层同格式；admission 计数持久化
+# 在同一文件的 candidates 段（词 → {sessions: [sid], last_seen: 日期}），
+# 进程重启不丢；候选 last_seen 超 30 天视为陈旧，不再参与晋升（老化衰减）。
+_CONSOLIDATED_FILE = "terminology_consolidated.yaml"
+_CONSOLIDATE_THRESHOLD_SESSIONS = 3
+_CONSOLIDATED_MAX = 100
+_CONSOLIDATED_BUDGET = 400
+_CANDIDATE_STALE_DAYS = 30
+
+
+def _consolidated_path() -> Any:
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / _CONSOLIDATED_FILE
+
+
+def _load_consolidated_raw() -> dict[str, Any]:
+    """读固化词典 raw（terms=已固化词, candidates=admission 计数）；文件不
+    存在则建骨架。IO/解析异常向上抛，由调用方 fail-open。
+
+    Contract:
+      Postconditions: 返回 dict 含 terms/candidates 键
+    """
+    import yaml
+
+    path = _consolidated_path()
+    if not path.exists():
+        path.write_text(
+            "# 固化词典（terminology-guard 语义层，自动维护）\n"
+            "# 词出现于 ≥3 个不同会话（admission）即固化，全局锚定；\n"
+            "# candidates 段为 admission 计数（sessions/last_seen）；\n"
+            "# 可直接编辑 terms 删词；删文件=重置全部固化状态。\n"
+            "terms: []\n"
+            "candidates: {}\n",
+            encoding="utf-8",
+        )
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def _save_consolidated_raw(raw: dict[str, Any]) -> None:
+    """固化词典整体落盘。Contract: Postconditions: 文件与 raw 一致；异常上抛。"""
+    import yaml
+
+    _consolidated_path().write_text(
+        yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8"
+    )
+
+
+def _is_stale(last_seen: str, today: str) -> bool:
+    """候选老化判定：last_seen 距 today 超 _CANDIDATE_STALE_DAYS 天。
+
+    Contract:
+      Preconditions: 两参均为 YYYY-MM-DD
+      Postconditions: 超期返回 True；解析失败按未老化（保守，不丢计数）
+    """
+    from datetime import date
+
+    try:
+        delta = date.fromisoformat(today) - date.fromisoformat(last_seen)
+    except ValueError:
+        return False
+    return abs(delta.days) > _CANDIDATE_STALE_DAYS
+
+
+def _consolidate(fresh: list[str], sid: str) -> None:
+    """admission 记账：词 → 会话集合累积（持久化）；达标词晋升固化。
+
+    对应记忆巩固（consolidation）：情景痕迹（会话内用词）经跨会话重复激活
+    固化为语义知识（全局锚定词）。计数持久化在 candidates 段，进程重启不丢。
+
+    Contract:
+      Preconditions: fresh 为本轮抽取词列表；sid 为会话 id
+      Postconditions: 计数/固化词典落盘（terms ≤_CONSOLIDATED_MAX）；stale
+                      候选跳过晋升；任何异常仅记日志，绝不 raise
+    """
+    if not sid:
+        return
+    try:
+        import time as _time
+
+        raw = _load_consolidated_raw()
+        today = _time.strftime("%Y-%m-%d")
+        terms = [e for e in (raw.get("terms") or []) if isinstance(e, dict)]
+        candidates: dict[str, Any] = raw.get("candidates") or {}
+        known = {e.get("canonical") for e in terms}
+        promoted: list[str] = []
+        for term in fresh:
+            if term in known:
+                continue
+            rec = candidates.get(term) or {}
+            last_seen = str(rec.get("last_seen") or "")
+            if last_seen and _is_stale(last_seen, today):
+                continue
+            sessions = [s for s in (rec.get("sessions") or []) if s != sid]
+            sessions.append(sid)
+            rec["sessions"] = sessions
+            rec["last_seen"] = today
+            candidates[term] = rec
+            if len(set(sessions)) >= _CONSOLIDATE_THRESHOLD_SESSIONS:
+                promoted.append(term)
+        for term in promoted:
+            if len(terms) < _CONSOLIDATED_MAX:
+                terms.append({
+                    "canonical": term,
+                    "aliases": [],
+                    "note": f"固化（{today}）——出现于 {len(candidates[term]['sessions'])} 个会话",
+                })
+                logger.info("terminology-guard: 用词固化入语义层: %s", term)
+            candidates.pop(term, None)
+        raw["terms"] = terms
+        raw["candidates"] = candidates
+        _save_consolidated_raw(raw)
+    except Exception as exc:
+        logger.warning(
+            "terminology-guard: 固化词典写入失败（fail-open）: %s", exc, exc_info=True
+        )
+
+
+def _load_consolidated() -> list[str]:
+    """读固化词典词表（canonical）；失败 fail-open 按空表。
+
+    Contract:
+      Postconditions: 返回 list[str]（≤_CONSOLIDATED_MAX）；绝不 raise
+    """
+    try:
+        raw = _load_consolidated_raw()
+        return [
+            str(e["canonical"])
+            for e in (raw.get("terms") or [])
+            if isinstance(e, dict) and e.get("canonical")
+        ][:_CONSOLIDATED_MAX]
+    except Exception as exc:
+        logger.warning(
+            "terminology-guard: 固化词典读取失败（fail-open）: %s", exc, exc_info=True
+        )
+        return []
+
+
+def _consolidated_line(terms: list[str]) -> Optional[str]:
+    """固化词典 → 注入行（400 字符预算；空表 → None）。
+
+    Contract:
+      Postconditions: 返回 None 或非空 str；总长受 _CONSOLIDATED_BUDGET 约束
+    """
+    if not terms:
+        return None
+    head = "跨会话固化词（多会话验证的全局规范写法，禁同义改写）："
+    used = len(head)
+    kept: list[str] = []
+    for term in terms:
+        if used + len(term) + 3 > _CONSOLIDATED_BUDGET:
+            break
+        kept.append(term)
+        used += len(term) + 3
+    if not kept:
+        return None
+    return head + "、".join(kept)
 
 
 def _ledger_line(ledger: list[str]) -> Optional[str]:
@@ -314,6 +483,11 @@ def register(ctx: Any) -> None:
             open_drift = bool(st.pop("open_drift", False))
             ledger = st.get("ledger") or []
             text = build_injection(_load_glossary(), drifts, open_drift, ledger)
+            consolidated_text = _consolidated_line(_load_consolidated())
+            if consolidated_text and text:
+                text = text + "\n" + consolidated_text
+            elif consolidated_text:
+                text = consolidated_text
             return {"context": text} if text else None
         except Exception as exc:  # fail-open
             logger.warning("terminology-guard inject failed: %s", exc, exc_info=True)

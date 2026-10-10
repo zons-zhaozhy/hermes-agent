@@ -189,7 +189,7 @@ def test_ledger_cap(monkeypatch: Any) -> None:
         lambda task, system, text, keys, **kw: {"key_terms": [f"词{i}" for i in range(40)]},
     )
     st = mod._state("sCap")
-    mod._update_ledger("这是一段足够长的回复，用于触发账本抽取路径的长度门槛检验。" * 2, st)
+    mod._update_ledger("这是一段足够长的回复，用于触发账本抽取路径的长度门槛检验。" * 2, "sCap", st)
     # 期望: 40 词入账被截到 _LEDGER_CAP=24
     assert len(st.get("ledger") or []) == mod._LEDGER_CAP
 
@@ -202,9 +202,90 @@ def test_ledger_short_reply_skipped() -> None:
         raise AssertionError("短回复不应触发账本抽取调用")
 
     mod.llm_judge_json = no_call
-    mod._update_ledger("太短", st)
+    mod._update_ledger("太短", "sShort", st)
     # 期望: <40 字符早退，零 judge 调用，账本不建
     assert "ledger" not in st
+
+
+# ── 5. 语义层固化（跨会话 admission，持久化）──────────────────────────────
+
+def _fake_home(monkeypatch: Any, tmp_path: Any) -> Any:
+    mod_dir = tmp_path / "hermes_home"
+    mod_dir.mkdir()
+    import types as _t
+    fake_constants = _t.ModuleType("hermes_constants")
+    fake_constants.get_hermes_home = lambda: mod_dir  # type: ignore[attr-defined]
+    monkeypatch.setitem(__import__("sys").modules, "hermes_constants", fake_constants)
+    return mod_dir
+
+
+def test_consolidate_three_sessions_persistent(monkeypatch: Any, tmp_path: Any) -> None:
+    mod = _load_plugin()
+    home = _fake_home(monkeypatch, tmp_path)
+    # 模拟进程重启：sessA/sessB 各自独立重载模块（内存态清零），计数只能来自文件
+    for sid in ("sessA", "sessB"):
+        mod2 = _load_plugin()
+        mod2._consolidate(["评分卡"], sid)
+    mod._consolidate(["评分卡"], "sessC")
+    import yaml as _yaml
+    raw = _yaml.safe_load((home / "terminology_consolidated.yaml").read_text(encoding="utf-8"))
+    terms = raw.get("terms") or []
+    # 期望: 第 3 会话触发固化（admission 计数跨"重启"持久），词入 terms
+    assert [e["canonical"] for e in terms] == ["评分卡"]  # 期望: 3 会话达标即固化
+    assert "固化" in terms[0]["note"]  # 期望: note 标注固化
+    # 期望: 固化后候选计数清出 candidates 段
+    assert "评分卡" not in (raw.get("candidates") or {})  # 期望: 晋升即出列
+    # 第 4 会话再来同词 → 不重复追加
+    mod._consolidate(["评分卡"], "sessD")
+    raw2 = _yaml.safe_load((home / "terminology_consolidated.yaml").read_text(encoding="utf-8"))
+    # 期望: terms 仍 1 条（已固化词去重）
+    assert len(raw2.get("terms") or []) == 1  # 期望: known 集合去重
+
+
+def test_consolidate_two_sessions_keeps_candidates(monkeypatch: Any, tmp_path: Any) -> None:
+    mod = _load_plugin()
+    home = _fake_home(monkeypatch, tmp_path)
+    mod._consolidate(["临时词"], "sessA")
+    mod._consolidate(["临时词"], "sessB")
+    import yaml as _yaml
+    raw = _yaml.safe_load((home / "terminology_consolidated.yaml").read_text(encoding="utf-8"))
+    # 期望: 2 会话未达标 → terms 空，但 candidates 持久化计数在（重启不丢）
+    assert (raw.get("terms") or []) == []  # 期望: 2 < 3 阈值
+    assert "临时词" in (raw.get("candidates") or {})  # 期望: admission 计数已落盘
+    # 期望: 同会话重复出现不重复计会话
+    mod._consolidate(["临时词"], "sessA")
+    raw2 = _yaml.safe_load((home / "terminology_consolidated.yaml").read_text(encoding="utf-8"))
+    assert len(raw2["candidates"]["临时词"]["sessions"]) == 2  # 期望: 去重后仍 2
+
+
+def test_consolidate_stale_candidate_skipped(monkeypatch: Any, tmp_path: Any) -> None:
+    mod = _load_plugin()
+    home = _fake_home(monkeypatch, tmp_path)
+    mod._consolidate(["旧词"], "s1")
+    import yaml as _yaml
+    # 手工把 last_seen 改成 40 天前 → 老化命中，跳过晋升
+    path = home / "terminology_consolidated.yaml"
+    raw = _yaml.safe_load(path.read_text(encoding="utf-8"))
+    from datetime import date, timedelta
+    raw["candidates"]["旧词"]["last_seen"] = str(date.today() - timedelta(days=40))
+    path.write_text(_yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
+    mod2 = _load_plugin()
+    mod2._consolidate(["旧词"], "s2")
+    mod2._consolidate(["旧词"], "s3")
+    raw2 = _yaml.safe_load(path.read_text(encoding="utf-8"))
+    # 期望: stale 候选不晋升（terms 空）
+    assert (raw2.get("terms") or []) == []  # 期望: 老化候选禁入 terms
+
+
+def test_consolidated_line_budget() -> None:
+    mod = _load_plugin()
+    words = [f"超长术语测试条目{i:03d}" for i in range(60)]
+    # 期望: head≈26 + 每词条目 11+3 字符 × 60 ≈ 766 > 400 预算 → 必截断
+    line = mod._consolidated_line(words)
+    assert line is not None and "跨会话固化词" in line  # 期望: 预算截断非丢弃
+    # 期望: 400 预算容纳 ≈(400-26)/14 ≈ 26 条 < 60 → 截断生效
+    assert line.count("条目") < 60  # 期望: 未全量装入即截断
+    assert len(line) <= 400  # 期望: 行长受预算封顶
 
 
 # ── 4. fail-open ───────────────────────────────────────────────────────────
