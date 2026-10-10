@@ -106,6 +106,49 @@ def test_terminal_write_to_ontox_blocked(env: tuple[Path, Path]) -> None:
     assert v["action"] == "block"  # 期望: 拦截动作字面量=block（规则语义）
 
 
+def test_readonly_sql_select_not_blocked(env: tuple[Path, Path]) -> None:
+    """负例：只读 sqlite SELECT（含 > 比较符/变量赋值/裸词）零打扰。
+
+    2026-10-10 实锤误报根修回归测试：旧判据 " > " 子串把 SQL 的
+    WHERE ts > '...' 比较符当重定向，叠加裸词拼根恒真 → 只读查询被拦 2 次。
+    """
+    _clear_probes()
+    v = casebook_gate.on_pre_tool_call(
+        tool_name="terminal",
+        args={"command": 'DB=~/.hermes/outcomes.db; sqlite3 "$DB" '
+                         "\"select rule, count(*) from violations "
+                         "where timestamp > '2026-10-09T21:00' group by rule\""},
+        session_id="s1",
+    )
+    assert v is None  # 期望: 只读 SELECT 无重定向文件目标→非写命令→放行（非写零打扰不变量）
+
+
+def test_terminal_true_redirect_outside_not_blocked(
+    env: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """真重定向但目标在 OntoX 根外（临时目录）→ 写目标非 OntoX → 零打扰。"""
+    _clear_probes()
+    v = casebook_gate.on_pre_tool_call(
+        tool_name="terminal",
+        args={"command": f"grep ERROR /tmp/x.log > {tmp_path}/out.txt"},
+        session_id="s1",
+    )
+    assert v is None  # 期望: 重定向目标不在 ontox 根内→_target_from_terminal 返回空→放行
+
+
+def test_terminal_redirect_ontox_relative_blocked(env: tuple[Path, Path]) -> None:
+    """真重定向到 OntoX 相对路径（路径形态含 /）→ 仍受门禁（防漏报）。"""
+    ontox, _cb = env
+    _clear_probes()
+    v = casebook_gate.on_pre_tool_call(
+        tool_name="terminal",
+        args={"command": f"echo data > {ontox}/apps/aml/out.txt"},
+        session_id="s1",
+    )
+    assert v is not None  # 期望: 重定向目标落在 ontox 根内→真写→拦截（漏报面不扩大）
+    assert v["action"] == "block"  # 期望: 拦截动作字面量=block（规则语义）
+
+
 def test_disabled_env_short_circuits(
     env: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:

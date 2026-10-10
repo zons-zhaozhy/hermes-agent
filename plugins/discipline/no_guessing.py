@@ -60,6 +60,12 @@ def _db_path():
 
 
 def _ensure_violations_table(conn: sqlite3.Connection) -> None:
+    """Contract: Postconditions: 表/列/索引就绪；首次建列后回填已 commit（幂等）。
+
+    历史缺陷（2026-10-10 实证）：迁移曾在无 commit 的只读路径上执行——
+    ALTER(DDL) 隐式提交持久化而回填 UPDATE(DML) 被 close 回滚，「列存在」
+    幂等判据随之短路，回填永久丢失。现回填随列新建一次性执行并显式 commit。
+    """
     conn.execute(
         "CREATE TABLE IF NOT EXISTS violations ("
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -70,14 +76,19 @@ def _ensure_violations_table(conn: sqlite3.Connection) -> None:
         " timestamp TEXT NOT NULL,"
         " outcome TEXT NOT NULL DEFAULT 'block')"
     )
-    # 幂等迁移：旧库补 outcome 列（block=真拦截 / rewrite=机械改写救回 / hint=提醒放行）。
-    # 回填按执法路径确定性推断：R6 全路径唯一出口是 modify、R5 组合式唯一出口是 HINT
-    # 放行，其余规则只走 block——2026-10-09 实测 R6 309/309、R5-L1 全量符合。
+    # 回填按执法路径确定性推断：R6 全路径唯一出口是 modify（2026-09-20 起）、
+    # R5 组合式唯一出口是 HINT 放行（2026-09-26 起），其余只走 block。
     cols = {row[1] for row in conn.execute("PRAGMA table_info(violations)")}
     if "outcome" not in cols:
         conn.execute("ALTER TABLE violations ADD COLUMN outcome TEXT NOT NULL DEFAULT 'block'")
-        conn.execute("UPDATE violations SET outcome='rewrite' WHERE rule='R6'")
-        conn.execute("UPDATE violations SET outcome='hint' WHERE rule='R5' AND level='L1'")
+        conn.execute(
+            "UPDATE violations SET outcome='rewrite' WHERE rule='R6' "
+            "AND timestamp >= '2026-09-20'")
+        conn.execute(
+            "UPDATE violations SET outcome='hint' WHERE rule='R5' AND level='L1' "
+            "AND timestamp >= '2026-09-26' "
+            "AND (command LIKE '%;%' OR command LIKE '%&&%')")
+        conn.commit()
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_viol_rule_ts ON violations(rule, timestamp)"
     )

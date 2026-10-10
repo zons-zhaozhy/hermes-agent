@@ -39,8 +39,8 @@ _CASEBOOK_DIR = os.path.expanduser(os.environ.get("CASEBOOK_DIR", ""))
 _WRITE_TOOLS = frozenset({"write_file", "patch", "execute_code"})
 
 # terminal 写文件的高置信模式（对齐 read_think_gate/gate.py 的模式表，取子集）
-_TERMINAL_WRITE_PATTERNS = (
-    "sed -i", " >> ", " > ", "tee /", "tee ~", "cp ", "mv ", "rsync ", "dd of=",
+_TERMINAL_WRITE_CMD_PREFIXES = (
+    "sed -i", "tee /", "tee ~", "cp ", "mv ", "rsync ", "dd of=",
 )
 
 
@@ -84,9 +84,11 @@ def _is_ontox_target(path: str) -> bool:
 
     Contract:
       Postconditions: 相对路径按 OntoX 根解析后判定; 绝对路径直接前缀判定;
-        OntoX 根未配置时返回 False（fail-open）。
+        OntoX 根未配置时返回 False（fail-open）;
+        无斜杠裸词（echo/cp/变量引用/命令名）不是路径形态 → False
+        （2026-10-10 误报根修：裸词拼根恒真导致只读 SELECT 被误拦）。
     """
-    if not path:
+    if not path or "/" not in path:
         return False
     ontox_root, _cb = _paths()
     if not ontox_root:
@@ -101,9 +103,41 @@ def _is_ontox_target(path: str) -> bool:
         return False
 
 
+def _redirect_targets(cmd: str) -> list[str]:
+    """提取 > / >> 重定向的目标 token 列表。
+
+    Contract: Postconditions: 只返回 > / >> 之后紧邻的 token（可能为空表）;
+      2>&1 合并流不是文件目标（跳过）; 引号不闭合无法 token 化时返回空表。
+    """
+    targets: list[str] = []
+    try:
+        import shlex
+
+        tokens = shlex.split(cmd, posix=True)
+    except ValueError:
+        return targets
+    for i, tok in enumerate(tokens):
+        if tok in (">", ">>") and i + 1 < len(tokens):
+            nxt = tokens[i + 1]
+            if not nxt.startswith("&"):  # 2>&1 形态非文件目标
+                targets.append(nxt)
+    return targets
+
+
 def _terminal_writes_file(cmd: str) -> bool:
-    """Contract: Postconditions: 命中任一高置信写模式 → True。"""
-    return any(pat in cmd for pat in _TERMINAL_WRITE_PATTERNS)
+    """Contract: Postconditions: 命中写命令前缀或存在重定向文件目标 → True。
+
+    判据收紧史（2026-10-10 误报根修）：旧表含 " > " 字面子串——SQL 的
+    WHERE ts > 'x' 比较符与其同形，叠加对无斜杠裸词拼根恒真的路径判定，
+    导致只读 sqlite SELECT 被误拦（当日亲历 2 次）。重定向改为 token 化
+    判定（> / >> 的下一 token 才是目标文件），命令前缀族保留子串语义。
+    """
+    if any(
+        cmd.startswith(p) or f"; {p}" in cmd or f"&& {p}" in cmd
+        for p in _TERMINAL_WRITE_CMD_PREFIXES
+    ):
+        return True
+    return bool(_redirect_targets(cmd))
 
 
 def _extract_first_ontox_path(code: str) -> str:
