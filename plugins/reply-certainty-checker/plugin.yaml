@@ -9,3 +9,4 @@ description: |
 author: hermes-agent (enforcement plugin)
 hooks:
   - transform_llm_output
+  - pre_llm_call

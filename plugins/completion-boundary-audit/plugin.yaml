@@ -15,3 +15,4 @@ description: |
 author: stan
 hooks:
   - transform_llm_output
+  - pre_llm_call
