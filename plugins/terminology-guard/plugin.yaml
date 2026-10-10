@@ -1,0 +1,8 @@
+name: terminology-guard
+version: "1.0.0"
+description: "术语一致性守护：SSOT 术语表（~/.hermes/terminology.yaml）每轮锚定注入 + 回复侧别名确定性检测 + judge 开放集称谓漂移判定，命中下轮注入纠正。治理一个术语=改一行 YAML。零核心改动。"
+author: stan
+kind: standalone
+hooks:
+  - pre_llm_call
+  - transform_llm_output
