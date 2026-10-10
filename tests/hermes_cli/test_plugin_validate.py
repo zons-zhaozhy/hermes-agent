@@ -65,9 +65,9 @@ def test_portable_validation_fails_orphan_and_reports_availability(tmp_path: Pat
     )
     report = validate_plugin_dir(declared)
     assert any(
-        name == "server availability: worker" and ok and detail in {"missing_app", "unsupported_os"}
+        name == "server availability: worker" and ok and detail.startswith(("missing_app", "unsupported_os"))
         for name, ok, detail in report.checks
-    )
+    )  # 期望: detail 由 state 起首（实现按 state + 可选 ", version/path" 拼接）
 
 
 BASE_MANIFEST = {
