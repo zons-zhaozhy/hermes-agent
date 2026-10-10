@@ -600,11 +600,22 @@ def _alibaba_identity_part(agent: Any) -> list[str]:
 def _workspace_pin_key() -> str:
     """The directory the workspace probe inspects, which is also the prompt's ``Current working
     directory``: a build with no cwd bound (launch dir) and a later one binding that same dir
-    (TUI ``/compress``) are one workspace, not two."""
+    (TUI ``/compress``) are one workspace, not two.  Canonicalized through ``resolve()`` so a
+    symlinked spelling (macOS ``/var`` vs ``/private/var``) and the launch dir's physical
+    ``os.getcwd()`` land on the same key."""
     try:
-        return str(resolve_context_cwd() or resolve_agent_cwd())
+        raw = str(resolve_context_cwd() or resolve_agent_cwd())
     except OSError:  # deleted cwd
         return ""
+    return _canon_path(raw)
+
+
+def _canon_path(raw: str) -> str:
+    """Physical spelling of *raw* for equality checks across symlinked spellings."""
+    try:
+        return str(Path(raw).resolve())
+    except OSError:
+        return raw
 
 
 def _persisted_workspace_block(prompt: str, key: str) -> Optional[str]:
@@ -652,7 +663,7 @@ def _seed_workspace_pin(agent: Any, key: str) -> None:
     if not prompt:
         return
     stored_cwd = runtime_host_value(prompt, "Current working directory")
-    if stored_cwd and stored_cwd != key:
+    if stored_cwd and _canon_path(stored_cwd) != _canon_path(key):
         return
     block = _persisted_workspace_block(prompt, key)
     # Only a real snapshot is adopted: a prompt without one (built on a surface without the
