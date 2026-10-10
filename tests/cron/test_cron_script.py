@@ -146,6 +146,36 @@ class TestRunJobScript:
         assert "alert before" in output
         assert "\ufffd" in output
 
+    def test_script_run_emits_rc_observability_log(self, cron_env, caplog):
+        """Every script run must log its exit code, duration, and output sizes.
+
+        The 2026-10-06 15:30 false-green (script printed an alert, exited 1, yet the
+        execution ledger recorded completed) left no rc trace at all — the成败 branches
+        logged nothing, so post-mortem forensics hit a wall. This pins the observability
+        invariant: rc lands in the log record on both success and failure paths.
+        """
+        import logging as _logging
+
+        from cron.scheduler_script import _run_job_script
+
+        ok_script = cron_env / "scripts" / "ok.py"
+        ok_script.write_text('print("fine")\n')
+        bad_script = cron_env / "scripts" / "bad.py"
+        bad_script.write_text('import sys\nprint("alert body")\nsys.exit(1)\n')
+
+        with caplog.at_level(_logging.INFO, logger="cron.scheduler"):
+            success_ok, _ = _run_job_script(str(ok_script))
+            success_bad, _ = _run_job_script(str(bad_script))
+
+        # 期望: 成败判定不受观测日志影响（行为不变量）
+        assert success_ok is True
+        assert success_bad is False
+        rc_lines = [r for r in caplog.records if "rc=" in r.getMessage()]
+        # 期望: 两次运行各留一条 rc 记录，失败路径必含 rc=1
+        assert len(rc_lines) == 2
+        assert any("rc=1" in r.getMessage() for r in rc_lines)
+        assert any("rc=0" in r.getMessage() for r in rc_lines)
+
     def test_script_relative_path(self, cron_env):
         from cron.scheduler_script import _run_job_script
 

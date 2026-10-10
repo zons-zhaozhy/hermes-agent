@@ -448,6 +448,7 @@ def _run_job_script(
     if path is None:
         return False, err
     script_timeout = _get_script_timeout()
+    started = time.monotonic()
     try:
         argv, env_overlay, err = _script_argv(path, interpreter)
         if argv is None:
@@ -530,9 +531,22 @@ def _run_job_script(
                 parts.append(f"stderr:\n{stderr}")
             if stdout:
                 parts.append(f"stdout:\n{stdout}")
+            logger.info(
+                "script rc=%d duration=%.1fs stdout_bytes=%d stderr_bytes=%d path=%s",
+                proc.returncode, time.monotonic() - started,
+                len(stdout), len(stderr), path.name,
+            )
             return False, "\n".join(parts)
+        logger.info(
+            "script rc=0 duration=%.1fs stdout_bytes=%d stderr_bytes=%d path=%s",
+            time.monotonic() - started, len(stdout), len(stderr), path.name,
+        )
         return True, stdout
     except Exception as exc:
+        logger.warning(
+            "script rc=? duration=%.1fs failed=%s", time.monotonic() - started, exc,
+            exc_info=True,
+        )
         return False, f"Script execution failed: {exc}"
 
 
