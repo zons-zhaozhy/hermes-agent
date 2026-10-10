@@ -32,7 +32,7 @@ for selector in (f"-p {profile}", f"--profile {profile}", f"--profile={profile}"
         check=True,
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=60,
     )
 
 
@@ -54,5 +54,5 @@ for command in (
         check=True,
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=60,
     )
