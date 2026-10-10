@@ -29,8 +29,9 @@ logger = logging.getLogger(__name__)
 
 _NAMESPACE = "terminology_guard"
 _MAX_JUDGE_CALLS = 40
-# 每轮注入预算：中文 ~0.65 token/字符，2000 字符 ≈ 1.3k token/轮；pre_llm_call
-# 注入只进当轮请求不进历史，60+ 条术语可全覆盖（YAML 顺序=注入优先级）
+# 每轮注入预算：中文 ~0.65 token/字符，2000 字符 ≈ 1.3k token/轮；注入经
+# api_content sidecar 持久化进该轮 user 消息随历史回放（见 turn_context.py
+# _stamp_api_content_sidecar），故稳态轮用轻锚（compact）防线性累积
 _INJECT_BUDGET = 2000
 
 # ASCII 别名走整词比对；_ 与 . 保留在词内，代码标识符（ontox_protocols 等）不被拆词误伤
@@ -40,6 +41,9 @@ _SPLIT_CHARS = ",;:()[]{}<>\"'`|=+*&^%$#@!?~\n\t/\\-"
 _GLOSSARY_CACHE: dict[str, Any] = {"mtime": None, "entries": []}
 
 _INJECT_HEAD = "【术语一致性】本会话术语唯一规范写法（禁用所列变体，含同义词/旧写法/混称）："
+_INJECT_HEAD_COMPACT = (
+    "【术语一致性·轻锚】沿用历史锚定块的规范写法（全量别名映射见本会话首块）："
+)
 
 _TENSE_RULE = (
     "时态纪律：状态描述与事实一致——已完成用「已/完成」，进行中用「正在」，"
@@ -181,16 +185,26 @@ def build_injection(
     drifts: list[tuple[str, str]],
     open_drift: bool,
     ledger: Optional[list[str]] = None,
+    compact: bool = False,
 ) -> Optional[str]:
-    """组装注入文本：术语表（预算内）+ 漂移纠正行 + 会话账本行 + 时态纪律行。
+    """组装注入文本：术语表（预算内） + 漂移纠正行 + 会话账本行 + 时态纪律行。
+
+    compact=True 为轻锚形态：仅规范词表（无别名映射）——注入块随历史回放
+    （api_content sidecar），稳态轮历史里已有全量 alias→canonical 映射，无
+    需重复；存在漂移纠偏需求时由调用方传 compact=False 回升全量。
 
     Contract:
       Preconditions: entries/drifts 为上序产物；open_drift 为 bool；ledger 为账本
-      Postconditions: 四者皆空 → None；否则返回非空 str
+      Postconditions: 四者皆空 → None；否则返回非空 str；compact 形态总长
+                      不超全量形态的 1/2（轻锚必须真轻）
     """
     if not entries and not drifts and not open_drift and not ledger:
         return None
-    lines = [_INJECT_HEAD] + _budgeted_terms(entries)
+    if compact and entries and not drifts:
+        body = "、".join(e["canonical"] for e in entries)
+        lines = [_INJECT_HEAD_COMPACT + body]
+    else:
+        lines = [_INJECT_HEAD] + _budgeted_terms(entries)
     if drifts:
         detail = "；".join(f"「{a}」→ 用「{c}」" for a, c in drifts[:5])
         lines.append(f"你上一条回复称谓漂移：{detail}。本轮起统一用规范写法。")
@@ -482,7 +496,12 @@ def register(ctx: Any) -> None:
             drifts = st.pop("pending_drifts", []) or []
             open_drift = bool(st.pop("open_drift", False))
             ledger = st.get("ledger") or []
-            text = build_injection(_load_glossary(), drifts, open_drift, ledger)
+            # 阶梯注入：首轮全量（教别名→规范映射），稳态轻锚（历史已含全量
+            # 块，仅重锚规范词表）；检测到漂移时回升全量纠偏
+            compact = not (kwargs.get("is_first_turn") or drifts or open_drift)
+            text = build_injection(
+                _load_glossary(), drifts, open_drift, ledger, compact=compact
+            )
             consolidated_text = _consolidated_line(_load_consolidated())
             if consolidated_text and text:
                 text = text + "\n" + consolidated_text

@@ -288,6 +288,30 @@ def test_consolidated_line_budget() -> None:
     assert len(line) <= 400  # 期望: 行长受预算封顶
 
 
+# ── 6. 阶梯注入（轻锚/全量）───────────────────────────────────────────────
+
+def test_injection_compact_and_full_forms() -> None:
+    mod = _load_plugin()
+    entries = [
+        {"canonical": f"规范词{i}", "aliases": [f"同义{i}", f"旧写法{i}"]}
+        for i in range(20)
+    ]
+    full = mod.build_injection(entries, [], False, [])
+    compact = mod.build_injection(entries, [], False, [], compact=True)
+    # 期望: 轻锚仍在（非 None）且含规范词
+    assert compact is not None and "规范词0" in compact  # 期望: 轻锚=规范词表
+    # 期望: 轻锚不含别名映射（历史块已有）
+    assert "同义0" not in compact  # 期望: 轻锚无 alias
+    # 期望: 轻锚不超全量 1/2（真轻）
+    assert len(compact) * 2 <= len(full)  # 期望: 轻锚≤全量一半
+    # 漂移纠偏轮：compact=True 也必须回升全量（含别名映射指出改什么）
+    drifts = [("同义0", "规范词0")]
+    corrective = mod.build_injection(entries, drifts, False, [], compact=True)
+    assert corrective is not None and "同义0" in corrective  # 期望: 纠偏轮含别名
+    # 首轮全量形态不变（默认参数向后兼容）
+    assert "同义0" in (full or "")  # 期望: 全量含 alias→canonical 映射
+
+
 # ── 4. fail-open ───────────────────────────────────────────────────────────
 
 def test_fail_open_judge_crash(monkeypatch: Any) -> None:
