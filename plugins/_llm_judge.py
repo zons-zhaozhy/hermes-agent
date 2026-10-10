@@ -23,6 +23,7 @@ Contract:
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import unicodedata
@@ -494,3 +495,55 @@ def llm_judge_multi(task: str, system: str, text: str,
     except Exception as e:
         logger.warning("llm_judge_multi(%s) failed: %s", task, e, exc_info=True)
         return fail
+
+
+def llm_judge_json(task: str, system: str, text: str, keys: list[str],
+                   timeout: Optional[float] = None,
+                   max_tokens: int = 512) -> dict[str, Any]:
+    """一次 aux 调用返回结构化 JSON 判定（字符串列表值），供需要词表/枚举类
+    输出的判定件使用（如会话用词账本抽取）。
+
+    与 llm_judge_multi 同纪律：reasoning_effort=none（关思考）、temperature=0、
+    timeout 默认 None 走 auxiliary.<task>.timeout 配置面（禁调用方硬编码秒数）。
+
+    Contract:
+        Preconditions: system/text 非空 str；keys 非空且各键名唯一；
+                       system 已写明「只回答一个 JSON 对象，含全部键，值为字符串数组」
+        Postconditions: 返回 {key: list[str]}（解析失败/调用异常 → 全部键空列表，
+                        绝不 raise）
+    """
+    assert system and text, "system and text must be non-empty"
+    assert keys and len(set(keys)) == len(keys), "keys must be non-empty unique"
+    empty: dict[str, Any] = {k: [] for k in keys}
+    try:
+        from agent.auxiliary_client import call_llm
+        resp = call_llm(
+            task=task,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": text[:4000]},
+            ],
+            max_tokens=max_tokens,
+            temperature=0.0,
+            timeout=timeout,
+            extra_body={"reasoning_effort": "none"},
+        )
+        content = resp.choices[0].message.content or ""
+        # 容忍 markdown 代码围栏与前后噪声，取首个平衡的 JSON 对象
+        start = content.find("{")
+        parsed: Any = None
+        if start >= 0:
+            try:
+                parsed = json.loads(content[start:content.rfind("}") + 1])
+            except json.JSONDecodeError:
+                logger.info("llm_judge_json(%s): non-JSON reply ignored", task)
+        if not isinstance(parsed, dict):
+            return empty
+        out: dict[str, Any] = {}
+        for k in keys:
+            v = parsed.get(k)
+            out[k] = [str(x).strip() for x in v if str(x).strip()] if isinstance(v, list) else []
+        return out
+    except Exception as e:
+        logger.warning("llm_judge_json(%s) failed: %s", task, e, exc_info=True)
+        return empty

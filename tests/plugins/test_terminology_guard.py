@@ -155,6 +155,58 @@ def test_open_drift_loop(monkeypatch: Any) -> None:
     assert injected is not None and "统一用词" in injected["context"]  # 期望: judge=true → 泛化纠正注入
 
 
+# ── 3.5 会话用词账本（L2 开放集根治件）────────────────────────────────────
+
+def test_ledger_lock_and_inject(monkeypatch: Any) -> None:
+    mod = _load_plugin()
+    ctx = _FakeCtx()
+    mod.register(ctx)
+    monkeypatch.setattr(mod, "_load_glossary", list)
+    monkeypatch.setattr(
+        mod, "llm_judge_multi",
+        lambda task, system, text, keys, **kw: {k: False for k in keys},
+    )
+    monkeypatch.setattr(
+        mod, "llm_judge_json",
+        lambda task, system, text, keys, **kw: {"key_terms": ["评分卡", "准入阈值"]},
+    )
+    long_reply = "本次评审采用评分卡口径，准入阈值按最新监管指引调整，全部结论已复核落库。" * 2
+    ctx.hooks["transform_llm_output"](long_reply, session_id="sL")
+    st = mod._state("sL")
+    # 期望: 首次抽取的词锁进账本（顺序保持，无重复）
+    assert st.get("ledger") == ["评分卡", "准入阈值"]  # 期望: judge_json 返回词全入账
+    injected = ctx.hooks["pre_llm_call"](session_id="sL")
+    assert injected is not None  # 期望: 账本非空 + 时态规则行 → 注入必非 None
+    assert "评分卡" in injected["context"]  # 期望: 账本词进注入
+    assert "已确立用词" in injected["context"]  # 期望: 账本行表头在
+    assert "时态纪律" in injected["context"]  # 期望: 时态规则行恒注入
+
+
+def test_ledger_cap(monkeypatch: Any) -> None:
+    mod = _load_plugin()
+    monkeypatch.setattr(
+        mod, "llm_judge_json",
+        lambda task, system, text, keys, **kw: {"key_terms": [f"词{i}" for i in range(40)]},
+    )
+    st = mod._state("sCap")
+    mod._update_ledger("这是一段足够长的回复，用于触发账本抽取路径的长度门槛检验。" * 2, st)
+    # 期望: 40 词入账被截到 _LEDGER_CAP=24
+    assert len(st.get("ledger") or []) == mod._LEDGER_CAP
+
+
+def test_ledger_short_reply_skipped() -> None:
+    mod = _load_plugin()
+    st = mod._state("sShort")
+
+    def no_call(task: str, system: str, text: str, keys: Any, **kw: Any) -> Any:
+        raise AssertionError("短回复不应触发账本抽取调用")
+
+    mod.llm_judge_json = no_call
+    mod._update_ledger("太短", st)
+    # 期望: <40 字符早退，零 judge 调用，账本不建
+    assert "ledger" not in st
+
+
 # ── 4. fail-open ───────────────────────────────────────────────────────────
 
 def test_fail_open_judge_crash(monkeypatch: Any) -> None:

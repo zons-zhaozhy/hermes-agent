@@ -16,7 +16,7 @@ import logging
 import os
 from typing import Any, Optional
 
-from plugins._llm_judge import llm_judge_multi
+from plugins._llm_judge import llm_judge_json, llm_judge_multi
 from plugins._shared_state import get_session_state
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,11 @@ _SPLIT_CHARS = ",;:()[]{}<>\"'`|=+*&^%$#@!?~\n\t/\\-"
 _GLOSSARY_CACHE: dict[str, Any] = {"mtime": None, "entries": []}
 
 _INJECT_HEAD = "【术语一致性】本会话术语唯一规范写法（禁用所列变体，含同义词/旧写法/混称）："
+
+_TENSE_RULE = (
+    "时态纪律：状态描述与事实一致——已完成用「已/完成」，进行中用「正在」，"
+    "计划中用「将/计划」；同一任务的状态表述前后一致，禁在未新证据时翻转。"
+)
 
 _JUDGE_SYSTEM = (
     "你是术语一致性审查员。判定下面这段 AI 回复是否存在'同一概念混用不同"
@@ -169,14 +174,15 @@ def build_injection(
     entries: list[dict[str, Any]],
     drifts: list[tuple[str, str]],
     open_drift: bool,
+    ledger: Optional[list[str]] = None,
 ) -> Optional[str]:
-    """组装注入文本：术语表（预算内）+ 漂移纠正行。
+    """组装注入文本：术语表（预算内）+ 漂移纠正行 + 会话账本行 + 时态纪律行。
 
     Contract:
-      Preconditions: entries/drifts 为上序产物；open_drift 为 bool
-      Postconditions: 三者皆空 → None；否则返回非空 str
+      Preconditions: entries/drifts 为上序产物；open_drift 为 bool；ledger 为账本
+      Postconditions: 四者皆空 → None；否则返回非空 str
     """
-    if not entries and not drifts and not open_drift:
+    if not entries and not drifts and not open_drift and not ledger:
         return None
     lines = [_INJECT_HEAD] + _budgeted_terms(entries)
     if drifts:
@@ -184,11 +190,18 @@ def build_injection(
         lines.append(f"你上一条回复称谓漂移：{detail}。本轮起统一用规范写法。")
     elif open_drift:
         lines.append("你上一条回复存在同一概念混用不同称谓/词形。本轮统一用词，同一概念前后同一写法。")
+    ledger_text = _ledger_line(ledger or [])
+    if ledger_text:
+        lines.append(ledger_text)
+    lines.append(_TENSE_RULE)
     return "\n".join(lines)
 
 
 def _collect_reply(response_text: str, sid: str, st: dict[str, Any]) -> None:
-    """别名检测 + judge 判定 → 写会话状态。Contract: Postconditions: 绝不 raise。"""
+    """别名检测 + judge 判定 + 会话用词账本记账 → 写会话状态。
+
+    Contract: Postconditions: 绝不 raise。
+    """
     drifts = detect_alias_drift(response_text, _load_glossary())
     if drifts:
         st["pending_drifts"] = drifts
@@ -198,6 +211,67 @@ def _collect_reply(response_text: str, sid: str, st: dict[str, Any]) -> None:
         if _judge_naming_drift(response_text):
             st["open_drift"] = True
             logger.info("terminology-guard: 开放集称谓漂移已标记（下轮注入纠正）")
+        _update_ledger(response_text, st)
+
+
+_LEDGER_SYSTEM = (
+    "你是会话用词审查员。从下面这段 AI 回复中抽取'本会话确立的关键用词'——"
+    "领域术语、组件名、操作名、指标名等会贯穿后续对话的名词。忽略：代词、"
+    "通用词（问题/系统/数据/文件）、代码标识符、只出现一次的临时引用。"
+    "只回答一个 JSON 对象，含全部键，值为字符串数组："
+    '{"key_terms": ["术语1", "术语2"]}'
+)
+_LEDGER_CAP = 24
+_LEDGER_BUDGET = 300
+
+
+def _update_ledger(response_text: str, st: dict[str, Any]) -> None:
+    """抽取本轮关键用词 → 并入会话账本（首见即锁，上限截断）。
+
+    L2 会话用词账本：开放集漂移的根治件——会话内首次用词即成为契约，
+    每轮注入「已确立用词」，把开放集问题在会话内转化为封闭集。
+
+    Contract:
+      Preconditions: response_text 为 str；st 为会话状态 dict
+      Postconditions: st["ledger"] 为 list[str] 且长度 ≤ _LEDGER_CAP；绝不 raise
+    """
+    if len(response_text) < 40:
+        return
+    result = llm_judge_json(
+        task="terminology_ledger",
+        system=_LEDGER_SYSTEM,
+        text=response_text,
+        keys=["key_terms"],
+    )
+    fresh = result.get("key_terms") or []
+    if not fresh:
+        return
+    ledger: list[str] = list(st.get("ledger") or [])
+    for term in fresh:
+        if term not in ledger:
+            ledger.append(term)
+    st["ledger"] = ledger[:_LEDGER_CAP]
+
+
+def _ledger_line(ledger: list[str]) -> Optional[str]:
+    """账本 → 注入行（300 字符预算；空账本 → None）。
+
+    Contract:
+      Postconditions: 返回 None 或非空 str；行长 ≤ _LEDGER_BUDGET + 表头
+    """
+    if not ledger:
+        return None
+    head = "本会话已确立用词（首次使用即锁，后文同一概念一律沿用该写法，禁同义改写）："
+    used = len(head)
+    kept: list[str] = []
+    for term in ledger:
+        if used + len(term) + 3 > _LEDGER_BUDGET + len(head):
+            break
+        kept.append(term)
+        used += len(term) + 3
+    if not kept:
+        return None
+    return head + "、".join(kept)
 
 
 def register(ctx: Any) -> None:
@@ -238,7 +312,8 @@ def register(ctx: Any) -> None:
             st = _state(sid)
             drifts = st.pop("pending_drifts", []) or []
             open_drift = bool(st.pop("open_drift", False))
-            text = build_injection(_load_glossary(), drifts, open_drift)
+            ledger = st.get("ledger") or []
+            text = build_injection(_load_glossary(), drifts, open_drift, ledger)
             return {"context": text} if text else None
         except Exception as exc:  # fail-open
             logger.warning("terminology-guard inject failed: %s", exc, exc_info=True)
