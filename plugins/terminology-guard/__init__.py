@@ -42,7 +42,7 @@ _GLOSSARY_CACHE: dict[str, Any] = {"mtime": None, "entries": []}
 
 _INJECT_HEAD = "【术语一致性】本会话术语唯一规范写法（禁用所列变体，含同义词/旧写法/混称）："
 _INJECT_HEAD_COMPACT = (
-    "【术语一致性·轻锚】沿用历史锚定块的规范写法（全量别名映射见本会话首块）："
+    "【术语一致性】沿用本会话统一的规范写法（变体写法一律改用下列规范词）："
 )
 
 # 规范层：system prompt 稳定段（session 级冻结，压缩不灭失）。规范管「怎么写」
@@ -51,6 +51,7 @@ _CONSISTENCY_RULE = """\
 [用词一致性纪律]
 同一概念全程用同一写法：首次确立的称谓（含中英文选择、缩写、大小写）沿用到底，
 禁同义词互换、禁同物异称；引代码标识符/文件路径/原文引用除外。
+若上下文另有术语表/锚定块，其规范写法优先于首次确立称谓。
 时态与事实一致：已完成用「已/完成」，进行中用「正在」，计划中用「将/计划」；
 同一任务的状态表述前后一致，未获新证据禁翻转。"""
 
@@ -270,6 +271,15 @@ def _update_ledger(response_text: str, sid: str, st: dict[str, Any]) -> None:
         keys=["key_terms"],
     )
     fresh = result.get("key_terms") or []
+    if not fresh:
+        return
+    # 账本只锁开放集新词：术语表已覆盖的词（规范词与别名）不入账——否则
+    # 「名单筛查（禁用：名单扫描）」与「已确立用词：名单扫描」会在同一
+    # 注入块内自相矛盾。固化（_consolidate）消费同一 fresh，一并净化
+    covered = {e["canonical"] for e in _load_glossary()}
+    for e in _load_glossary():
+        covered.update(str(a) for a in e.get("aliases") or [])
+    fresh = [t for t in fresh if t not in covered]
     if not fresh:
         return
     ledger: list[str] = list(st.get("ledger") or [])

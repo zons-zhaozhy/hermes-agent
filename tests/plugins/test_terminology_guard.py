@@ -321,13 +321,39 @@ def test_injection_compact_and_full_forms() -> None:
 
 def test_consistency_section_registered_and_scoped() -> None:
     mod = _load_plugin()
-    # 主会话：规范段返回规则原文（含同义词/时态双纪律）
+    # 主会话：规范段返回规则原文（含同义词/时态双纪律+优先级条款）
     main_text = mod._consistency_section({"platform": "cli"})
     assert "同一写法" in main_text and "时态" in main_text  # 期望: 双纪律齐备
-    assert len(main_text) < 300  # 期望: 规范段简短（<300 字符）
+    assert "优先于首次确立" in main_text  # 期望: 术语表优先级条款在
+    assert len(main_text) < 320  # 期望: 规范段简短（<320 字符）
     # 排除平台：subagent/batch 返回空（core 跳过空段）
     for plat in ("subagent", "batch"):
         assert mod._consistency_section({"platform": plat}) == ""  # 期望: 排除平台空段
+
+
+def test_ledger_excludes_glossary_covered_terms(monkeypatch: Any) -> None:
+    mod = _load_plugin()
+    ctx, sid = _mk(mod, judge_result=False)
+    # 术语表桩：含规范词「名单筛查」与别名「名单扫描」（测试不依赖真实
+    # ~/.hermes/terminology.yaml，隔离用户环境）
+    monkeypatch.setattr(
+        mod, "_load_glossary",
+        lambda: [{"canonical": "名单筛查", "aliases": ["名单扫描"]}],
+    )
+    # 账本抽取走 llm_judge_json 通道（不是 _mk 桩的 multi）
+    def fake_json(task: str, system: str, text: str, keys: Any, **kw: Any) -> Any:
+        if task == "terminology_ledger":
+            return {"key_terms": ["名单筛查", "名单扫描", "评分卡"]}
+        return {"naming_drift": False}
+    mod.llm_judge_json = fake_json
+    ctx.hooks["transform_llm_output"](
+        "这是一段足够长的回复，专门用于越过账本抽取的四十字符最小长度阈值，"
+        "从而真实触发术语抽取与 covered 过滤逻辑的执行路径验证。",
+        session_id=sid,
+    )
+    st = mod._state(sid)
+    # 期望: 术语表规范词（名单筛查）与别名（名单扫描）被过滤，仅开放集词入账
+    assert st.get("ledger") == ["评分卡"]  # 期望: covered 过滤生效
 
 
 # ── 4. fail-open ───────────────────────────────────────────────────────────
