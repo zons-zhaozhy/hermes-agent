@@ -445,7 +445,7 @@ def _turn_child(argv: list[str], env: Optional[dict[str, str]]) -> subprocess.Co
     out_buf: bytearray = bytearray()
     err_buf: bytearray = bytearray()
 
-    def _drain(stream: "io.BufferedReader", buf: bytearray) -> None:
+    def _drain(stream: io.BufferedReader, buf: bytearray) -> None:
         try:
             while True:
                 chunk = stream.read1(65536)
@@ -521,12 +521,12 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
     return proc.returncode
 
 
-def _live_intent_file(dm_file: "str | os.PathLike") -> str:
+def _live_intent_file(dm_file: str | os.PathLike) -> str:
     """The pinned live-delivery intent beside a DM file (the cache sweep globs ``*.live.json``)."""
     return f"{os.fspath(dm_file)}.live.json"
 
 
-def _dm_delivery_id(dm_file: "str | os.PathLike") -> str:
+def _dm_delivery_id(dm_file: str | os.PathLike) -> str:
     """One delivery id per DM file: the dispatch ack, the live-owner intent and every retry
     of the runner derive it the same way, so the sender can correlate all of them."""
     return hashlib.sha256(str(Path(dm_file).resolve()).encode()).hexdigest()
@@ -567,7 +567,7 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
     return record
 
 
-def _wait_live_dm(home: str, delivery_id: str, *, dm_file: "str | os.PathLike | None" = None) -> int:
+def _wait_live_dm(home: str, delivery_id: str, *, dm_file: str | os.PathLike | None = None) -> int:
     from tools.bot_failure_reasons import RUNTIME_OFFLINE
     from tools.bot_live_delivery import await_delivery, cancel_queued_delivery, owner_holds_delivery
 
