@@ -31,7 +31,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 from plugins._shared_state import get_session_state
@@ -71,7 +71,7 @@ def _persist_path() -> Path:
     return get_hermes_home() / "dao_recurring_error_guard.json"
 
 
-def _load_persist() -> Dict[str, Dict[str, int]]:
+def _load_persist() -> dict[str, dict[str, int]]:
     """读取跨会话累计计数（fail-open：损坏/缺失 → 空 dict）。
 
     持久格式：{fingerprint: {"n": 累计次数, "ts": 最后出现时间戳}}。
@@ -87,7 +87,7 @@ def _load_persist() -> Dict[str, Dict[str, int]]:
         if not isinstance(data, dict):
             return {}
         now = time.time()
-        out: Dict[str, Dict[str, int]] = {}
+        out: dict[str, dict[str, int]] = {}
         for k, v in data.items():
             if isinstance(v, dict) and isinstance(v.get("n"), int):
                 if now - float(v.get("ts", 0)) <= _PERSIST_WINDOW:
@@ -99,7 +99,7 @@ def _load_persist() -> Dict[str, Dict[str, int]]:
         return {}
 
 
-def _save_persist(counts: Dict[str, Dict[str, int]]) -> None:
+def _save_persist(counts: dict[str, dict[str, int]]) -> None:
     """原子写跨会话计数（tmp+rename；失败仅记日志不影响主流程）。"""
     try:
         p = _persist_path()
@@ -131,7 +131,7 @@ def _bump_persist_count(key: str) -> None:
             fcntl.flock(lockf.fileno(), fcntl.LOCK_EX)
             try:
                 # 锁内读（含窗口衰减）
-                data: Dict[str, Dict[str, int]] = {}
+                data: dict[str, dict[str, int]] = {}
                 if p.exists():
                     raw = json.loads(p.read_text(encoding="utf-8"))
                     if isinstance(raw, dict):
@@ -167,7 +167,13 @@ _REMINDER = (
     "（14天跨会话累计 {total} 次），且尚未见沉淀动作。\n"
     "  铁律：同一问题出现第二次，第三次必须成规则——写脚本/skill/配置修复类，"
     "禁止再逐个手工处理。\n"
-    "  现在停下来回答：这个错误的共性根因是什么？写成什么规则？"
+    "  固化模板（经验记忆条目五字段，缺一即丢适用范围——丢范围的规则会被无条件复用）：\n"
+    "  1. 适用条件：什么环境/什么前提下本条生效（如「仅 dbchat venv 下」「仅 PG 分层 schema 库」）\n"
+    "  2. 症状：错误原文关键行（含文件:行号）——本指纹首例：{sample}\n"
+    "  3. 根因：一句话根因（禁只写现象复述）\n"
+    "  4. 修复：已验证的修复动作\n"
+    "  5. 验证命令：可重跑的自证命令（修复有效性锚点，重跑必须同结果）\n"
+    "  现在停下来回答：这个错误的共性根因是什么？按五字段写成什么规则？\n"
     "若本次调用已在沉淀，忽略本条。"
 )
 
@@ -193,7 +199,7 @@ def classify_error(text: str) -> Optional[str]:
     return None
 
 
-def _counts(sid: str) -> Dict[str, int]:
+def _counts(sid: str) -> dict[str, int]:
     return dict(get_session_state(sid, _NAMESPACE).get("counts", {}))
 
 
@@ -232,11 +238,14 @@ def on_post_tool_call(**kwargs) -> None:
     counts = st.get("counts", {})
     counts[key] = counts.get(key, 0) + 1
     st["counts"] = counts
+    # 首例原文留档：固化模板第 2 字段（症状）需要错误原文关键行，不只归一化类别
+    samples = st.setdefault("samples", {})
+    samples.setdefault(key, err_text.strip().splitlines()[0][:200] if err_text.strip() else "")
     # 跨会话累计：flock 锁内读改写，多进程 gateway 并发安全
     _bump_persist_count(key)
 
 
-def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
+def on_pre_llm_call(**kwargs) -> Optional[dict[str, Any]]:
     """达到阈值且未见沉淀 → 注入道生法提醒（含跨会话累计）。"""
     if _plugin_disabled():
         return None
@@ -249,8 +258,9 @@ def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
     key, n = sorted(over.items(), key=lambda kv: -kv[1])[0]
     tool, cls = key.split("×", 1)
     total = _load_persist().get(key, {}).get("n", n)
+    sample = str(get_session_state(sid, _NAMESPACE).get("samples", {}).get(key, ""))
     return {"context": _REMINDER.format(tool=tool, cls=cls, n=n,
-                                        total=total)}
+                                        total=total, sample=sample)}
 
 
 def register(ctx) -> None:
