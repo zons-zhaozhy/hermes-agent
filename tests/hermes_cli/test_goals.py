@@ -847,6 +847,8 @@ class TestJudgeHistoryDigest:
         assert "fix the login bug" in user_msg
         assert "[tools: read_file, terminal]" in user_msg
         assert "now run the tests" in user_msg
+        # 期望: 采信序声明随 digest 注入（工具记录为主证据、自述为次）
+        assert "Evidence precedence" in user_msg
 
     def test_no_history_keeps_prompt_unchanged(self, hermes_home):
         from unittest.mock import patch

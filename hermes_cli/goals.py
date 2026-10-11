@@ -1079,7 +1079,11 @@ def _render_history_digest(recent_history: Optional[list[dict[str, Any]]]) -> st
     digest = "\n".join(entries)
     return (
         "Recent conversation (oldest→newest; the final response below is judged in this "
-        f"context):\n{digest}\n\n"
+        "context):\n"
+        "Evidence precedence: the tool activity recorded above is the primary evidence; "
+        "the agent's self-report is secondary — when the two disagree, trust the tool "
+        "record and judge accordingly.\n"
+        f"{digest}\n\n"
     )
 
 
