@@ -68,6 +68,7 @@ def _run_hermes(args: list[str], timeout: int = 30) -> subprocess.CompletedProce
         cwd=str(repo_root),
         env=env,
         timeout=timeout,
+        check=False,
     )
 
 
@@ -220,6 +221,7 @@ sys.exit(0)
                 text=True,
                 cwd=str(repo_root),
                 timeout=60,
+                check=False,
             )
             assert result.returncode == 0, (
                 f"Decisive main()-level probe failed:\n"
