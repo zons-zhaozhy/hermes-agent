@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import os
 import re  # re-ok: shell命令扫描器,正则即本体实现 # noqa: scanner plugin
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +213,54 @@ _RE_INPLACE_EDIT = re.compile(
     re.IGNORECASE,
 )
 
+# shell 求值标志：其后的引号段会被 shell 当命令执行（bash -c "..." / find -exec）
+_EXEC_EVAL_FLAGS = frozenset({"-c", "-exec", "-execdir", "eval", "--command", "-command"})
+
+def _executable_text(command: str) -> str:
+    """取出命令中「会被 shell 执行」的文本，供 in-place 模式匹配使用。
+
+    引号外文本原样保留；引号段仅当其前一个 token 是 shell 求值标志（-c/-exec/eval）
+    时保留，其余引号段（提交信息、grep 模式等数据）丢弃。否则
+    `git commit -m "... sed -i ..." -- x.py` 会把消息文本当成真的 sed 命令，
+    并把 in-place 目标错误归属到命令行里另一处的源码路径（实测误拦）。
+
+    Contract:
+      Preconditions: command 为 str。
+      Postconditions: 返回 str；保留片段与原文逐字一致；不抛异常。
+      Invariants: 只用 str 方法（无正则）；只改引号段的取舍，不改其余字符。
+    """
+    out: list[str] = []
+    quote = ""
+    token = ""
+    prev = ""
+    keep = False
+    for ch in command:
+        if quote:
+            if ch == quote:
+                quote = ""
+                continue
+            if keep:
+                out.append(ch)
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            keep = prev in _EXEC_EVAL_FLAGS
+            continue
+        if ch in " \t\n":
+            if token:
+                prev = token
+                token = ""
+            out.append(" ")
+            continue
+        if ch in "&|;":
+            prev = ""
+            token = ""
+            out.append(" ")
+            continue
+        token += ch
+        out.append(ch)
+    return "".join(out)
+
 def _extract_inplace_target(command: str) -> Optional[str]:
     """Extract target file from an in-place edit command.
 
@@ -374,7 +422,7 @@ def _is_escape_hatch(command: str) -> bool:
 
 # ── Combined detection ───────────────────────────────────────────────────
 
-def _detect_source_write(command: str) -> Tuple[bool, str]:
+def _detect_source_write(command: str) -> tuple[bool, str]:
     """Detect terminal command writing to a source file.
 
     Returns (blocked: bool, reason: str).
@@ -401,7 +449,7 @@ def _detect_source_write(command: str) -> Tuple[bool, str]:
         # tee without explicit target but writing to source
         for ext in _SOURCE_EXTENSIONS:
             if ext in command.lower() and not _is_safe_path(command):
-                return True, f"tee 写入源码文件"
+                return True, "tee 写入源码文件"
 
     # Generic > redirect (echo, printf, etc.)
     target = _extract_redirect_target(command)
@@ -409,14 +457,16 @@ def _detect_source_write(command: str) -> Tuple[bool, str]:
         return True, f"shell 重定向写入源码文件 ({target})"
 
     # Layer 3: In-place edit (sed -i, perl -pi)
-    if _RE_INPLACE_EDIT.search(command):  # re-ok: shell命令扫描器本体
+    # 只在「会被 shell 执行」的文本上匹配：引号外部分 + shell 求值标志（-c/-exec/eval）
+    # 后的引号段。否则提交信息/grep 模式里出现该字样即拦住整条无关命令。
+    if _RE_INPLACE_EDIT.search(_executable_text(command)):  # re-ok: shell命令扫描器本体
         target = _extract_inplace_target(command)
         if target and _is_source_file(target) and not _is_safe_path(target):
             return True, f"in-place 编辑源码文件 ({target})"
         # If can't extract target but pattern matches, block conservatively
         # UNLESS the command is clearly non-source (e.g., sed -i on /tmp)
         if not any(_is_safe_path(t) for t in command.split()):
-            return True, f"in-place 编辑 (无法提取目标文件，保守拦截)"
+            return True, "in-place 编辑 (无法提取目标文件，保守拦截)"
 
     return False, ""
 
@@ -433,7 +483,7 @@ _BLOCK_MESSAGE = (
 )
 
 
-def on_pre_tool_call(**kwargs) -> Optional[Dict[str, Any]]:
+def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
     """pre_tool_call hook: block terminal commands that write source files.
 
     Contract:
