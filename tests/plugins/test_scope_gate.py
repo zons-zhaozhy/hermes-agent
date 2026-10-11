@@ -181,3 +181,53 @@ def test_execute_code_channel_blocked(repo, monkeypatch):
         session_id="s-test",
     )
     assert verdict is not None and verdict["action"] == "block"  # 期望: execute_code 字面量写新目录树被拦
+
+
+def test_terminal_mkdir_new_tree_blocked(repo, monkeypatch):
+    """terminal 用 mkdir 建新目录树 → block（同射程）。"""
+    _authorize(monkeypatch, False)
+    _user_says("考虑架构")
+    verdict = scope_gate._on_pre_tool_call(
+        tool_name="terminal",
+        args={"command": "mkdir -p apps/newapp/app"},
+        session_id="s-test",
+    )
+    assert verdict is not None and verdict["action"] == "block"  # 期望: mkdir 建新目录树被拦
+
+
+def test_terminal_chained_mkdir_blocked(repo, monkeypatch):
+    """命令链中的 mkdir 同样被拦（逐段解析）。"""
+    _authorize(monkeypatch, False)
+    _user_says("考虑架构")
+    verdict = scope_gate._on_pre_tool_call(
+        tool_name="terminal",
+        args={"command": "cd /tmp && sudo mkdir -p apps/chain"},
+        session_id="s-test",
+    )
+    assert verdict is not None and verdict["action"] == "block"  # 期望: sudo 前缀与 && 链后仍识别
+
+
+def test_terminal_touch_in_existing_dir_allowed(repo, monkeypatch):
+    """touch 落在已有目录 → 放行。"""
+    (repo / "apps" / "existing").mkdir(parents=True)
+    _authorize(monkeypatch, False)
+    _user_says("看看")
+    verdict = scope_gate._on_pre_tool_call(
+        tool_name="terminal",
+        args={"command": "touch apps/existing/new.txt"},
+        session_id="s-test",
+    )
+    assert verdict is None  # 期望: 父目录已存在=非新目录树
+
+
+def test_terminal_mkdir_temp_allowed(repo, monkeypatch):
+    """mkdir 到临时目录 → 放行（前缀豁免）。"""
+    _authorize(monkeypatch, False)
+    _user_says("看看")
+    real_tmp = os.path.realpath("/tmp")
+    verdict = scope_gate._on_pre_tool_call(
+        tool_name="terminal",
+        args={"command": f"mkdir -p {real_tmp}/newtree/app"},
+        session_id="s-test",
+    )
+    assert verdict is None  # 期望: /tmp 前缀豁免

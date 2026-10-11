@@ -29,9 +29,10 @@
   - 无用户原话（cron/子代理会话）
   - 授权判定失败或不可用（None）→ 放行并 WARNING（纪律增强层 fail-open 优于误死锁）
 
-terminal 通道不在本模块射程：terminal 直写源码已由更上游的
-guards.source_write 拦截（sed -i / cat > / python -c）。本模块覆盖
-write_file / patch / execute_code（后者复用 duplicate_check 的字面量写形态）。
+射程：write_file / patch / execute_code（复用 duplicate_check 的字面量写形态）
++ terminal 的显式建目录命令（mkdir / touch / install -d）。terminal 直写源码
+由更上游的 guards.source_write 覆盖（open(...,'w') / 重定向 / sed -i）；
+cp -r、tar 解包、git checkout 等间接建树形态不在射程（未量化）。
 
 环境变量:
   HERMES_SCOPE_GATE_DISABLE=1    完全禁用
@@ -150,6 +151,54 @@ def _tree_depth(rel_root: str) -> int:
     return len([seg for seg in rel_root.split(os.sep) if seg])
 
 
+# 命令前缀词：跳过它们后才是真正的命令名（sudo mkdir -p x 须识别为 mkdir）
+_CMD_PREFIXES = frozenset({"sudo", "command", "env", "nohup", "time"})
+
+# 会建出目录/文件的显式命令；install 仅在带 -d/--directory 时算建目录
+_DIR_CREATING = frozenset({"mkdir", "touch", "install"})
+
+def _split_shell_segments(command: str) -> list[str]:
+    """把一条终端命令按命令分隔符切成段。
+
+    Contract:
+      Preconditions: command 为 str。
+      Postconditions: 返回非空段列表；无分隔符时返回单段。
+      Invariants: 只用 str 方法（无正则）。
+    """
+    normalized = command
+    for sep in ("&&", "||", ";", "|", "\n"):
+        normalized = normalized.replace(sep, "\n")
+    return [seg for seg in normalized.split("\n") if seg.strip()]
+
+def _terminal_targets(command: str) -> list[str]:
+    """提取终端命令里会被新建的目录/文件目标（覆盖 mkdir/touch/install -d）。
+
+    Contract:
+      Preconditions: command 为 str。
+      Postconditions: 返回候选目标的绝对路径列表（目录类命令的目标追加占位子段
+        "/_"，使其在 _new_dir_root 里按目录而非文件处理）；无匹配命令 → []。
+      Invariants: 只看每段的首个 token（跳过 sudo/env 等前缀词），不解析变量展开；
+        动态路径（含 $）不进表。
+    """
+    targets: list[str] = []
+    for segment in _split_shell_segments(command):
+        tokens = [tok for tok in segment.strip().split() if tok]
+        while tokens and os.path.basename(tokens[0]) in _CMD_PREFIXES:
+            tokens = tokens[1:]
+        if not tokens:
+            continue
+        head = os.path.basename(tokens[0])
+        if head not in _DIR_CREATING:
+            continue
+        if head == "install" and "-d" not in tokens and "--directory" not in tokens:
+            continue
+        args = [tok for tok in tokens[1:] if not tok.startswith("-") and "$" not in tok]
+        as_dir = head in ("mkdir", "install")
+        for arg in args:
+            expanded = os.path.abspath(os.path.expanduser(arg))
+            targets.append(os.path.join(expanded, "_") if as_dir else expanded)
+    return targets
+
 def _candidate_targets(tool_name: str, args: Any) -> list[str]:
     """解析本次调用可能新建的目标路径（跨通道统一射程）。
 
@@ -157,13 +206,16 @@ def _candidate_targets(tool_name: str, args: Any) -> list[str]:
       Preconditions: args 为 dict 或任意类型。
       Postconditions: 返回候选项的绝对路径列表；无可判定目标 → []。
       Invariants: write_file/patch 取 args.path；execute_code 复用
-        duplicate_check 的字面量写形态识别（覆盖 .py 目标）；动态路径不进表。
+        duplicate_check 的字面量写形态识别；terminal 取显式建目录命令的目标；
+        动态路径不进表。
     """
     if not isinstance(args, dict):
         return []
     if tool_name in ("write_file", "patch"):
         path = str(args.get("path") or "").strip()
         return [os.path.abspath(os.path.expanduser(path))] if path else []
+    if tool_name == "terminal":
+        return _terminal_targets(str(args.get("command") or ""))
     if tool_name == "execute_code":
         code = str(args.get("code") or "")
         return [os.path.abspath(os.path.expanduser(raw)) for raw, _ in _execute_code_py_targets(code)]
