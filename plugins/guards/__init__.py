@@ -11,6 +11,7 @@ duplicate-check / source_code_write_guard / coding-standards-guard)收拢为
   duplicate_check 新建文件前置查重
   source_write    terminal 绕过 patch 直写源码拦截(sed -i/cat >/python -c)
   coding_standards AST 编码规范事前拦截(R001~R022) + preflight.py 写前预检
+  scope_gate      新增产物授权闸门(仓库内新开目录树须当轮用户原话授权)
 
 分层依据与裁定规则见 docs/guard-system-architecture.md。
 
@@ -33,6 +34,7 @@ from plugins.guards import (
     duplicate_check,
     four_axis,
     pre_write,
+    scope_gate,
     source_write,
     tool_blacklist,
 )
@@ -49,6 +51,7 @@ _SUB_GUARDS = (
     ("diff_debt", diff_debt),
     ("casebook_gate", casebook_gate),
     ("batch_write", batch_write),
+    ("scope_gate", scope_gate),
 )
 
 
