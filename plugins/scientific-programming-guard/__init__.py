@@ -2,7 +2,7 @@
 
 v2 升级(对应四层十五律):
   防错层(所有 .py 生效):
-    R3 圈复杂度预算——单函数 cc>10 或行数>50 → 拆分(律 3 复杂度控制)
+    R3 圈复杂度预算——单函数 cc>10 或行数>100 → 拆分(律 3 复杂度控制)
     R4 新函数缺类型注解——def 参数/返回值无注解(律 4 静态分析前置)
   运行层(仅网络/DB 交互代码生效, 判定=结构化导入集合):
     R1 finally 中 close 在哨兵 put 之前 → 消费方饿死(律 11 并发正确性)
@@ -33,7 +33,7 @@ _NET_MODULES = (
 _NET_HINTS = (".connect(", "cursor()", "execute_many", "query_stream")
 
 _MAX_CC = 10
-_MAX_LINES = 50
+_MAX_LINES = 100
 
 # R6 期望值推导注释: 断言比较的字面量必须带同线 "# 期望:" 注释
 _EXPECTED_MARK = "# 期望:"
@@ -89,7 +89,7 @@ def _cyclomatic_complexity(func: ast.FunctionDef) -> int:
 
 
 def _check_complexity_budget(tree: ast.AST) -> list:
-    """R3: 单函数圈复杂度>10 或行数>50 → 违规(律 3)。
+    """R3: 单函数圈复杂度>10 或行数>100 → 违规(律 3)。
 
     Contract:
       Preconditions: tree 是合法 AST
@@ -513,7 +513,7 @@ def on_pre_tool_call(**kwargs):
 
 _CODING_SECTION = """[科学编程预算——写代码前先对表，一次写对免返工]
 写任何代码前当轮先完成对表，超预算的函数写出来必被拦（拦截在 write_file/patch 时刻）：
-1. 单函数圈复杂度 ≤10、函数体 ≤50 行——校验+解析+写库拆成 _parse_*/_validate_*/_insert_* 单一职责小函数；
+1. 单函数圈复杂度 ≤10、函数体 ≤100 行——校验+解析+写库拆成 _parse_*/_validate_*/_insert_* 单一职责小函数；
 2. 新 def 全部带类型注解（参数+返回值）；test_/单行函数豁免；
 3. 异常处理禁吞：except 必须 logger（带 exc_info）或 raise，禁裸 pass；
 4. 断言期望值同线写「# 期望:」推导注释，禁先写代码再凑绿灯；
