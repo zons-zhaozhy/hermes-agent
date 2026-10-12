@@ -245,33 +245,86 @@ def _sort_skills(skills: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
 
 
-def skills_list(category: str | None = None, task_id: str | None = None) -> str:
-    """Tier 1 listing: name + description (+ category) only; ``task_id`` is handler parity."""
+def _matches_query(skill: dict[str, Any], terms: list[str]) -> bool:
+    """True when every whitespace-separated *term* appears in the skill's searchable text.
+
+    Searchable text = name + description + category + declared trigger words. Most descriptions in
+    this library already carry a ``触发:…`` prefix, so situation words land on the right skill. Terms
+    are ANDed and matched case-insensitively as substrings — no regex, no index on disk.
+    """
+    haystack = " ".join(
+        str(skill.get(key) or "") for key in ("name", "description", "category", "trigger")
+    ).lower()
+    return all(term in haystack for term in terms)
+
+
+def _apply_query(skills: list[dict[str, Any]], query: str | None) -> tuple[list[dict[str, Any]], str | None]:
+    """Narrow *skills* by situation words.
+
+    Returns ``(skills, note)`` where *note* is a loud hint when the query matched nothing — an empty
+    list must never be mistaken for an empty library.
+    """
+    if not query or not query.strip():
+        return skills, None
+    terms = [term for term in query.lower().split() if term]
+    matched = [skill for skill in skills if _matches_query(skill, terms)]
+    if matched:
+        return matched, None
+    return matched, f"No skill matches query {query!r}; call skills_list without query to list every skill."
+
+
+def _plugin_skills() -> list[dict[str, Any]]:
+    """Plugin-provided skills usable on this platform (empty when plugin discovery is down)."""
+    try:
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        discover_plugins()
+    except Exception as exc:
+        logger.warning("Plugin discovery failed; plugin skills are missing from this listing: %s",
+                       exc, exc_info=True)
+        return []
+    collected: list[dict[str, Any]] = []
+    for plugin_skill in get_plugin_manager().list_plugin_skill_metadata():
+        frontmatter = plugin_skill.pop("frontmatter", {})
+        if not skill_matches_platform(frontmatter) or _is_skill_disabled(plugin_skill["name"]):
+            continue
+        collected.append(plugin_skill)
+    return collected
+
+
+def _listing_payload(skills: list[dict[str, Any]], query: str | None, note: str | None) -> dict[str, Any]:
+    """Response body for ``skills_list``: sorted skills, categories, count, and the query echo."""
+    ordered = _sort_skills(skills)
+    payload: dict[str, Any] = {
+        "success": True, "skills": ordered,
+        "categories": sorted({s.get("category") for s in ordered if s.get("category")}),
+        "count": len(ordered),
+        "hint": "Use skill_view(name) to see full content, tags, and linked files"}
+    if query and query.strip():
+        payload["query"] = query
+    if note:
+        payload["message"] = note
+    return payload
+
+
+def skills_list(category: str | None = None, query: str | None = None, task_id: str | None = None) -> str:
+    """Tier 1 listing: name + description (+ category) only; ``task_id`` is handler parity.
+
+    ``query`` narrows by situation words (every whitespace-separated term must appear in a skill's
+    name, description, category or declared trigger words) so a large library stays reachable without
+    a second, drift-prone index on disk.
+    """
     try:
         _skills_dir().mkdir(parents=True, exist_ok=True)
-        all_skills = _find_all_skills()
-        try:
-            from hermes_cli.plugins import discover_plugins, get_plugin_manager
-            discover_plugins()
-            for plugin_skill in get_plugin_manager().list_plugin_skill_metadata():
-                frontmatter = plugin_skill.pop("frontmatter", {})
-                if not skill_matches_platform(frontmatter) or _is_skill_disabled(plugin_skill["name"]):
-                    continue
-                all_skills.append(plugin_skill)
-        except Exception:
-            logger.debug("Plugin skill listing failed", exc_info=True)
+        all_skills = [*_find_all_skills(), *_plugin_skills()]
         if not all_skills:
             return _json({"success": True, "skills": [], "categories": [],
                           "message": "No skills found in skills/ directory."})
         if category:
             all_skills = [s for s in all_skills if s.get("category") == category]
-        all_skills = _sort_skills(all_skills)
-        categories = sorted({s.get("category") for s in all_skills if s.get("category")})
-        return _json({
-            "success": True, "skills": all_skills, "categories": categories,
-            "count": len(all_skills),
-            "hint": "Use skill_view(name) to see full content, tags, and linked files"})
+        all_skills, note = _apply_query(all_skills, query)
+        return _json(_listing_payload(all_skills, query, note))
     except Exception as e:
+        logger.warning("skills_list failed: %s", e, exc_info=True)
         return tool_error(str(e), success=False)
 
 
@@ -663,7 +716,13 @@ SKILLS_LIST_SCHEMA = {
             "category": {
                 "type": "string",
                 "description": "Optional category filter to narrow results",
-            }
+            },
+            "query": {
+                "type": "string",
+                "description": ("Optional situation words to find a skill by what you are trying to do, e.g. "
+                                "'翻页丢状态' or '对账 迁移'. Every whitespace-separated term must appear in a "
+                                "skill's name, description, category or trigger words; omit it to list everything."),
+            },
         },
         "required": [],
     },
@@ -690,7 +749,8 @@ SKILL_VIEW_SCHEMA = {
 
 registry.register(
     name="skills_list", toolset="skills", schema=SKILLS_LIST_SCHEMA,
-    handler=lambda args, **kw: skills_list(category=args.get("category"), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: skills_list(category=args.get("category"), query=args.get("query"),
+                                           task_id=kw.get("task_id")),
     check_fn=check_skills_requirements, emoji="📚")
 
 

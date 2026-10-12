@@ -327,6 +327,49 @@ class TestSkillsList:
 # ---------------------------------------------------------------------------
 
 
+class TestSkillsListQuery:
+    """Situation-word search is the router entry that replaces a static on-disk index: it must stay
+    live (rebuilt per call from frontmatter) and loud (a miss must not look like an empty library)."""
+
+    def _skill(self, root: Path, name: str, description: str) -> None:
+        skill_dir = root / name
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {description}\n---\n\n# {name}\n\nBody.\n", encoding="utf-8")
+
+    def _listing(self, tmp_path, **kwargs):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), \
+                patch("tools.skills_tool._plugin_skills", return_value=[]):
+            return json.loads(skills_list(**kwargs))
+
+    def test_query_narrows_by_situation_words(self, tmp_path):
+        self._skill(tmp_path, "alpha", "触发:对账 迁移。逐项核账。")
+        self._skill(tmp_path, "beta", "触发:前端视觉审查。")
+        result = self._listing(tmp_path, query="对账")
+        assert result["count"] == 1  # 期望: 只命中有该词的技能
+        assert result["skills"][0]["name"] == "alpha"
+        assert result["query"] == "对账"  # 期望: 响应回显检索词
+
+    def test_query_terms_are_anded(self, tmp_path):
+        self._skill(tmp_path, "alpha", "触发:对账 迁移。")
+        self._skill(tmp_path, "beta", "触发:对账 报表。")
+        result = self._listing(tmp_path, query="对账 迁移")
+        assert [s["name"] for s in result["skills"]] == ["alpha"]  # 期望: 两词都要命中
+
+    def test_query_miss_is_loud_not_an_empty_library(self, tmp_path):
+        self._skill(tmp_path, "alpha", "触发:对账。")
+        result = self._listing(tmp_path, query="绝不存在的处境词")
+        assert result["count"] == 0  # 期望: 零命中返回空列表
+        assert "No skill matches" in result["message"]  # 期望: 明确是检索未命中,不是技能库为空
+
+    def test_omitting_query_lists_everything(self, tmp_path):
+        self._skill(tmp_path, "alpha", "触发:对账。")
+        self._skill(tmp_path, "beta", "触发:视觉审查。")
+        result = self._listing(tmp_path)
+        assert result["count"] == 2  # 期望: 不传 query 时行为与改动前一致
+        assert "query" not in result
+
+
 class TestSkillView:
     def test_view_resolves_by_dir_name_and_frontmatter_name(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
