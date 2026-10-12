@@ -110,6 +110,65 @@ def _load_config() -> dict[str, Any]:
     return _read_config_section("curator", "backup", label="curator backup", log=logger)
 
 
+def _unusable_exclude_reason(entry: str) -> str:
+    """Why *entry* can never match a snapshot member — empty string when it can.
+
+    Entries match by literal skills-relative path prefix (``_matches_exclude_prefix``) and are never
+    read as globs, so a pattern-flavoured entry, an absolute path or a parent-relative path matches
+    nothing and would silently leave the runtime dirs in every snapshot — the exact failure this
+    setting exists to prevent. Validation runs on the raw entry: stripping a leading ``/`` first
+    would turn a rejected absolute path into a plausible-looking relative one.
+    """
+    if any(char in entry for char in "*?["):
+        return "glob patterns are not supported; use a literal skills-relative path"
+    if entry.startswith("/"):
+        return "absolute paths are not supported; use a skills-relative path"
+    if entry.startswith("~"):
+        return "home-relative paths are not supported; use a skills-relative path"
+    parts = entry.split("/")
+    if ".." in parts:
+        return "parent-relative paths are not supported; use a skills-relative path"
+    if not entry.strip("/"):
+        return "empty path"
+    if any(part == "" for part in parts[:-1]):
+        return "contains an empty path segment; use a single-slash skills-relative path"
+    return ""
+
+
+def _exclude_raw_entries(raw: Any) -> list[Any]:
+    """``curator.backup.exclude`` raw config value → candidate entries (never ``None``).
+
+    One comma/newline separated string is tolerated because the CLI hands it in that way; anything
+    that is neither string nor sequence is reported instead of being coerced into one.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        chunks = raw.replace(",", "\n").split("\n")
+        return [chunk for chunk in chunks if chunk.strip()]
+    if not isinstance(raw, (list, tuple)):
+        logger.warning("curator.backup.exclude must be a list of skills-relative paths; ignoring %r", raw)
+        return []
+    return list(raw)
+
+
+def _exclude_entry_to_prefix(item: Any) -> str:
+    """One exclude entry → skills-relative prefix, or ``""`` when it can never match.
+
+    Each rejection is logged with its reason here, so the caller stays a plain aggregation loop and
+    no entry is ever dropped silently.
+    """
+    if not isinstance(item, str) or not item.strip():
+        logger.warning("curator.backup.exclude entry %r is not a path; ignoring it", item)
+        return ""
+    stripped = item.strip()
+    reason = _unusable_exclude_reason(stripped)
+    if reason:
+        logger.warning("curator.backup.exclude entry %r is unusable (%s); ignoring it", item, reason)
+        return ""
+    return stripped.strip("/")
+
+
 def _exclude_prefixes() -> tuple[str, ...]:
     """``curator.backup.exclude``: skills-relative paths that must never enter a snapshot.
 
@@ -118,22 +177,13 @@ def _exclude_prefixes() -> tuple[str, ...]:
     relative to the skills root (``"ontox-ops/state"``) so an unrelated skill holding a same-named
     directory stays out of scope. Unusable entries are dropped with a warning, never guessed at.
     """
-    raw = _load_config().get("exclude", [])
-    if raw is None:
-        return ()
-    if isinstance(raw, str):  # tolerate one comma/newline separated string handed in from the CLI
-        raw = [chunk for chunk in re.split(r"[,\n]", raw) if chunk.strip()]
-    if not isinstance(raw, (list, tuple)):
-        logger.warning("curator.backup.exclude must be a list of skills-relative paths; ignoring %r", raw)
-        return ()
     prefixes: list[str] = []
-    for item in raw:
-        if not isinstance(item, str) or not item.strip():
-            logger.warning("curator.backup.exclude entry %r is not a path; ignoring it", item)
-            continue
-        cleaned = item.strip().strip("/")
-        if cleaned and cleaned not in prefixes:
-            prefixes.append(cleaned)
+    for item in _exclude_raw_entries(_load_config().get("exclude", [])):
+        prefix = _exclude_entry_to_prefix(item)
+        if prefix and prefix not in prefixes:
+            prefixes.append(prefix)
+    if prefixes:
+        logger.debug("curator.backup.exclude active prefixes: %s", ", ".join(prefixes))
     return tuple(prefixes)
 
 
@@ -376,19 +426,42 @@ def _remove_entry(entry: Path) -> None:
         entry.unlink()
 
 
-def _restore_excluded_subtrees(staged: Path, skills: Path) -> list[str]:
-    """Move excluded entries (nested ``.git``/``.hub``/...) from *staged* back under *skills* after a successful extract.
-    Snapshots never contain these, so the staged copy of the live tree is the only source. ``.git`` may be a dir or a file
-    (submodule / worktree ``gitdir:`` pointer) — both are moved. Best-effort and conditional: an entry is carried only when
-    its parent skill dir was restored and nothing sits at the target. If the target snapshot predates the skill, the entry
-    is dropped with the staging dir rather than left orphaned; the safety snapshot excludes these paths too, so not undoable.
-    Returns entries whose move failed, so their only surviving copies stay staged for recovery."""
+def _rel_name(rel: Path, name: str) -> str:
+    """Staging-relative path of *name* directly under *rel* (``rel`` is ``.`` at the staging root)."""
+    return name if rel == Path(".") else f"{rel}/{name}"
+
+
+def _is_carried_over(rel_path: str, name: str, prefixes: tuple[str, ...]) -> bool:
+    """True when the entry at staging-relative *rel_path* (basename *name*) must be carried back.
+
+    The hardcoded exclusions match a basename at any depth (``alpha/venv``, ``alpha/.git``), while
+    ``curator.backup.exclude`` prefixes are matched against the skills-relative path because that is
+    how the snapshot filter reads them. Both kinds are absent from the snapshot, so the staged live
+    tree holds the only copy and dropping it with the staging dir loses it silently.
+    """
     from tools.skill_ledger import TRANSIENT_DIRS
 
+    if name in _EXCLUDE_TOP_LEVEL or name in TRANSIENT_DIRS:
+        return True
+    return _matches_exclude_prefix(rel_path, prefixes)
+
+
+def _restore_excluded_subtrees(staged: Path, skills: Path, prefixes: tuple[str, ...]) -> list[str]:
+    """Move snapshot-excluded entries from *staged* back under *skills* after a successful extract.
+
+    Snapshots never contain these paths (``_EXCLUDE_TOP_LEVEL``, ``TRANSIENT_DIRS``, and every
+    ``curator.backup.exclude`` prefix), so the staged copy of the live tree is the only source.
+    ``.git`` may be a dir or a file (submodule / worktree ``gitdir:`` pointer) — both are moved.
+    Best-effort and conditional: an entry is carried only when its parent skill dir was restored and
+    nothing sits at the target. If the target snapshot predates the skill, the entry is dropped with
+    the staging dir rather than left orphaned. Returns entries whose move failed, so their only
+    surviving copies stay staged for recovery.
+    """
     failed: list[str] = []
     for dirpath, dirnames, filenames in os.walk(staged):
-        carried = [Path(dirpath) / n for n in filenames if n in _EXCLUDE_TOP_LEVEL]
-        carried += [Path(dirpath) / n for n in dirnames if n in _EXCLUDE_TOP_LEVEL or n in TRANSIENT_DIRS]
+        base, rel = Path(dirpath), Path(dirpath).relative_to(staged)
+        carried = [base / n for n in filenames if _is_carried_over(_rel_name(rel, n), n, prefixes)]
+        carried += [base / n for n in dirnames if _is_carried_over(_rel_name(rel, n), n, prefixes)]
         for src in carried:
             dest = skills / src.relative_to(staged)
             if dest.parent.is_dir() and not dest.exists():
@@ -396,8 +469,8 @@ def _restore_excluded_subtrees(staged: Path, skills: Path) -> list[str]:
                     shutil.move(str(src), str(dest))
                 except OSError as e:
                     failed.append(str(src.relative_to(staged)))
-                    logger.debug("Could not restore excluded entry %s: %s", src, e)
-        dirnames[:] = [d for d in dirnames if d not in _EXCLUDE_TOP_LEVEL and d not in TRANSIENT_DIRS]
+                    logger.warning("Could not restore excluded entry %s: %s", src, e)
+        dirnames[:] = [d for d in dirnames if not _is_carried_over(_rel_name(rel, d), d, prefixes)]
     return failed
 
 
@@ -513,7 +586,7 @@ def rollback(backup_id: Optional[str] = None) -> tuple[bool, str, Optional[Path]
 
     # Snapshots never contain excluded subtrees (nested ``.git``, ``.hub``, ...), so carry them over from the staged live tree
     # (top-level ``.git`` is never staged). Then staging is done; the undo handle is the safety snapshot.
-    unrestored = _restore_excluded_subtrees(staged, skills)
+    unrestored = _restore_excluded_subtrees(staged, skills, _exclude_prefixes())
     if unrestored:
         return _retain_staging(staged, unrestored, "snapshot extracted but excluded entries were not carried over")
     shutil.rmtree(staged, ignore_errors=True)

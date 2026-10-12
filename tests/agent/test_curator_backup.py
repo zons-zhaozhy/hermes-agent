@@ -653,3 +653,56 @@ def test_rollback_preserves_nested_git_file_pointer(backup_env):
     assert "v1" in (skills / "alpha" / "SKILL.md").read_text(encoding="utf-8")
     assert git_ptr.is_file()
     assert git_ptr.read_text(encoding="utf-8").startswith("gitdir:")
+
+
+def test_rollback_carries_configured_exclude_dir_over(backup_env, monkeypatch):
+    """A directory excluded through curator.backup.exclude is absent from the snapshot, so the
+    staged live tree holds its only copy: rollback must carry it back instead of dropping it."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+
+    _write_skill(skills, "alpha", body="v1")
+    runtime = skills / "alpha" / "state"
+    runtime.mkdir()
+    (runtime / "audit.jsonl").write_text('{"event":1}\n', encoding="utf-8")
+    monkeypatch.setattr(cb, "_exclude_prefixes", lambda: ("alpha/state",))
+
+    snap_dir = cb.snapshot_skills(reason="snap-v1")
+    assert snap_dir is not None
+    with tarfile.open(snap_dir / "skills.tar.gz", "r:gz") as tf:
+        assert "alpha/state/audit.jsonl" not in tf.getnames()  # 期望: 配置排除项不进快照
+
+    _write_skill(skills, "alpha", body="v2")
+    (runtime / "audit.jsonl").write_text('{"event":1}\n{"event":2}\n', encoding="utf-8")
+
+    ok, msg, _ = cb.rollback(backup_id=snap_dir.name)
+    assert ok, f"rollback failed: {msg}"
+    assert "v1" in (skills / "alpha" / "SKILL.md").read_text(encoding="utf-8")
+    # 期望: 被排除的运行态目录整目录存活,且内容是从未进快照的实时版本(2 行)
+    assert (skills / "alpha" / "state" / "audit.jsonl").read_text(encoding="utf-8").count("event") == 2
+    staging = list((skills / ".curator_backups").glob(".rollback-*"))
+    assert staging == [], f"staging dir left behind: {staging}"
+
+
+def test_exclude_prefixes_rejects_unusable_entries_with_warning(backup_env, monkeypatch, caplog):
+    """Matching is a literal path prefix, so glob/absolute/parent-relative entries can never match
+    anything: they must be rejected loudly instead of accepted and silently never firing."""
+    import logging
+
+    cb = backup_env["cb"]
+
+    monkeypatch.setattr(
+        cb,
+        "_load_config",
+        lambda: {"exclude": ["ontox-ops/*", "ontox-ops/state", "/abs/path", "../up", "ontox-ops//state"]},
+    )
+    with caplog.at_level(logging.WARNING, logger="agent.curator_backup"):
+        prefixes = cb._exclude_prefixes()
+
+    assert prefixes == ("ontox-ops/state",)  # 期望: 只有合法前缀存活
+    warned = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warned) == 4, warned  # 期望: 四条非法项各一条告警
+    assert any("glob patterns" in m for m in warned)
+    assert any("absolute paths" in m for m in warned)
+    assert any("parent-relative" in m for m in warned)
+    assert any("empty path segment" in m for m in warned)
