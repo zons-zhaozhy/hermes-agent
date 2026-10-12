@@ -143,7 +143,12 @@ curator:
   backup:
     enabled: true
     keep: 2
+    exclude:            # skills-relative paths never written into a snapshot
+      - my-skill/build
+      - my-skill/.venv
 ```
+
+`curator.backup.exclude` takes paths relative to `~/.hermes/skills/` and matches them as a path prefix, so it only affects the named subtree — an unrelated skill holding a same-named directory is untouched. It is for a skill directory that doubles as a runtime workspace (build output, virtualenv, code index, logs): without it every snapshot carries that weight and `keep` multiplies it. Entries that are not usable paths are dropped with a warning rather than guessed at.
 
 Set `curator.backup.enabled: false` to disable automatic snapshotting. The manual `hermes curator backup` command still works when backups are disabled only if you set `enabled: true` first — the flag gates both paths symmetrically so there's no way to accidentally skip the pre-run snapshot on mutating runs.
 

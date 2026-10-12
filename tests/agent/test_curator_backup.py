@@ -82,6 +82,42 @@ def test_snapshot_prunes_to_keep_count(backup_env, monkeypatch):
     assert remaining == ids[2:], f"expected newest 3, got {remaining}"
 
 
+def test_snapshot_omits_configured_exclude_paths(backup_env, monkeypatch):
+    """curator.backup.exclude keeps a skill's runtime dirs out of every snapshot."""
+    cb = backup_env["cb"]
+    skill = _write_skill(backup_env["skills"], "demo")
+    runtime = skill / "state"
+    runtime.mkdir()
+    (runtime / "cron.log").write_text("noise", encoding="utf-8")
+    monkeypatch.setattr(cb, "_load_config", lambda: {"enabled": True, "keep": 2, "exclude": ["demo/state"]})
+
+    snap = cb.snapshot_skills(reason="exclude")
+    assert snap is not None
+    with tarfile.open(snap / "skills.tar.gz") as tf:
+        names = tf.getnames()
+    assert "demo/SKILL.md" in names, names
+    assert not [n for n in names if n.startswith("demo/state")], names
+
+
+def test_exclude_prefix_spares_same_named_dir_in_another_skill(backup_env, monkeypatch):
+    """Entries are skills-relative path prefixes, not bare directory names: another
+    skill's identically named directory is still snapshotted."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    for name in ("demo", "other"):
+        d = _write_skill(skills, name)
+        (d / "state").mkdir()
+        (d / "state" / "keep.txt").write_text("content", encoding="utf-8")
+    monkeypatch.setattr(cb, "_load_config", lambda: {"enabled": True, "keep": 2, "exclude": ["demo/state"]})
+
+    snap = cb.snapshot_skills(reason="prefix")
+    assert snap is not None
+    with tarfile.open(snap / "skills.tar.gz") as tf:
+        names = tf.getnames()
+    assert not [n for n in names if n.startswith("demo/state")], names
+    assert "other/state/keep.txt" in names, names
+
+
 # ---------------------------------------------------------------------------
 # list_backups / _resolve_backup
 # ---------------------------------------------------------------------------

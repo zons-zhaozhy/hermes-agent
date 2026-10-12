@@ -1518,6 +1518,11 @@ DEFAULT_CONFIG = {
         "backup": {
             "enabled": True,
             "keep": 2,  # retain last N regular snapshots
+            # Skills-relative paths that must never enter a snapshot (e.g. "ontox-ops/state"):
+            # build output, virtualenvs, code indexes, logs. Keeps a skill directory that doubles
+            # as a runtime workspace from inflating every snapshot, which `keep` then multiplies.
+            # Matched as a path prefix, never a glob.
+            "exclude": [],
         },
     },
     # Honcho memory plugin (plugin catalog) — ~/.honcho/config.json is the source of truth (apiKey,

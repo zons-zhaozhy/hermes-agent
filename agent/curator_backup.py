@@ -110,6 +110,41 @@ def _load_config() -> dict[str, Any]:
     return _read_config_section("curator", "backup", label="curator backup", log=logger)
 
 
+def _exclude_prefixes() -> tuple[str, ...]:
+    """``curator.backup.exclude``: skills-relative paths that must never enter a snapshot.
+
+    A skill directory that doubles as a runtime workspace (build output, virtualenv, code index,
+    logs) otherwise lands in every snapshot and ``keep`` multiplies that cost. Entries are paths
+    relative to the skills root (``"ontox-ops/state"``) so an unrelated skill holding a same-named
+    directory stays out of scope. Unusable entries are dropped with a warning, never guessed at.
+    """
+    raw = _load_config().get("exclude", [])
+    if raw is None:
+        return ()
+    if isinstance(raw, str):  # tolerate one comma/newline separated string handed in from the CLI
+        raw = [chunk for chunk in re.split(r"[,\n]", raw) if chunk.strip()]
+    if not isinstance(raw, (list, tuple)):
+        logger.warning("curator.backup.exclude must be a list of skills-relative paths; ignoring %r", raw)
+        return ()
+    prefixes: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            logger.warning("curator.backup.exclude entry %r is not a path; ignoring it", item)
+            continue
+        cleaned = item.strip().strip("/")
+        if cleaned and cleaned not in prefixes:
+            prefixes.append(cleaned)
+    return tuple(prefixes)
+
+
+def _matches_exclude_prefix(name: str, prefixes: tuple[str, ...]) -> bool:
+    """True when a snapshot member path IS a configured prefix or lives under it."""
+    if not prefixes:
+        return False
+    path = name.strip("/")
+    return any(path == prefix or path.startswith(f"{prefix}/") for prefix in prefixes)
+
+
 def is_enabled() -> bool:
     """Default ON — the whole point of the backup is safety by default."""
     return bool(_load_config().get("enabled", True))
@@ -171,13 +206,21 @@ def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[set[str]] =
         return None
 
     archive = dest / _ARCHIVE_NAME
+    exclude_prefixes = _exclude_prefixes()
+
+    def _keep_member(ti: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
+        """Snapshot filter: drop hardcoded exclusions and configured-away runtime paths."""
+        if _excluded_member(ti) or _matches_exclude_prefix(ti.name, exclude_prefixes):
+            return None
+        return ti
+
     try:
         with tarfile.open(archive, "w:gz", compresslevel=6) as tf:
             for entry in sorted(skills.iterdir()):
-                if entry.name not in _EXCLUDE_TOP_LEVEL:
-                    # arcname relative to skills/ so extraction drops back in cleanly; the filter excludes nested paths too.
-                    tf.add(str(entry), arcname=entry.name, recursive=True,
-                           filter=lambda ti: None if _excluded_member(ti) else ti)
+                if entry.name in _EXCLUDE_TOP_LEVEL:
+                    continue
+                # arcname relative to skills/ so extraction drops back in cleanly; the filter excludes nested paths too.
+                tf.add(str(entry), arcname=entry.name, recursive=True, filter=_keep_member)
         # Cron capture is additive and never fails the snapshot; the manifest records whether it happened so rollback can say "no cron data".
         _write_manifest(dest, reason, archive, _count_skill_files(skills), _backup_cron_jobs_into(dest))
     except (OSError, tarfile.TarError) as e:
