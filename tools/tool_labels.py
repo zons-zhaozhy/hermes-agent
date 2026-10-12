@@ -106,9 +106,11 @@ def _local_tool_label(name: str, arguments: Any) -> ToolLabel:
                      emoji=_registry_emoji(name), name=name, preview=_arg_preview(name, arguments))
 
 
-def _unnamed_label(arguments: Any) -> ToolLabel:
-    return ToolLabel(kind="tool", app="Unnamed call", action="", emoji=DEFAULT_TOOL_EMOJI,
-                     name="", preview=_arg_preview("", arguments))
+def _malformed_calls_label(count: int) -> ToolLabel:
+    unit = "call" if count == 1 else "calls"
+    return ToolLabel(kind="tool", app="Invalid tool call",
+                     action=f"{count} {unit} rejected (missing tool name)",
+                     emoji=DEFAULT_TOOL_EMOJI, name="", preview="")
 
 
 def label_for_tool_name(name: str, arguments: Any = None) -> Optional[ToolLabel]:
@@ -152,9 +154,15 @@ def labels_for_call(function_name: str, function_args: Any) -> list[ToolLabel]:
     entries = args.get("calls")
     entries = entries if isinstance(entries, list) else [args]
     labels = []
+    unnamed = 0
     for entry in entries:
         entry = entry if isinstance(entry, dict) else {}
         arguments = entry.get("arguments")
         label = label_for_tool_name(entry.get("name"), arguments)
-        labels.append(label if label is not None else _unnamed_label(arguments))
+        if label is not None:
+            labels.append(label)
+        else:
+            unnamed += 1
+    if unnamed:
+        labels.append(_malformed_calls_label(unnamed))
     return labels
