@@ -1512,17 +1512,12 @@ DEFAULT_CONFIG = {
         # TTL purge of skills/.archive/: 0 = never; > 0 lets the explicit `hermes curator purge`
         # delete older archived skills (never automatic; logged in the ledger).
         "archive_ttl_days": 0,
-        # Before a consolidation pass (the only one that rewrites skill content in place), snapshot
-        # ~/.hermes/skills/ to ~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz (`hermes curator
-        # rollback`). The prune-only pass just moves directories into .archive/ and takes none.
+        # Snapshot the skills tree to .curator_backups/<utc-iso>/skills.tar.gz before a consolidation
+        # pass (the only pass that rewrites skill content); the prune-only pass moves dirs into .archive/.
         "backup": {
             "enabled": True,
             "keep": 2,  # retain last N regular snapshots
-            # Skills-relative paths that must never enter a snapshot (e.g. "ontox-ops/state"):
-            # build output, virtualenvs, code indexes, logs. Keeps a skill directory that doubles
-            # as a runtime workspace from inflating every snapshot, which `keep` then multiplies.
-            # Matched as a path prefix, never a glob.
-            "exclude": [],
+            "exclude": [],  # skills-relative paths never written into a snapshot; docs: curator.md
         },
     },
     # Honcho memory plugin (plugin catalog) — ~/.honcho/config.json is the source of truth (apiKey,

@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import hashlib
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ _PREFIX_TEMPLATE = (
 )
 
 # 会话态:session_id → {"version": str, "calls": int}
-_session_state: Dict[str, Dict[str, Any]] = {}
+_session_state: dict[str, dict[str, Any]] = {}
 
 # 缺失告警去重(进程级):规则源丢失曾静默整整一天无人察觉——按 cwd 各喊一次,
 # 既响亮又不刷屏。无规则文件的普通仓库会各喊一条,属预期代价。
@@ -83,14 +83,19 @@ def _find_rules_file() -> Optional[Path]:
 
 def _digest(text: str) -> str:
     """规则原文 → 注入摘要:头部优先,去空行,硬截断到 _MAX_DIGEST_CHARS。"""
-    lines = [ln.rstrip() for ln in text.splitlines()]
+    lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
     kept: list[str] = []
     size = 0
-    for ln in lines:
-        if not ln.strip():
-            continue
-        # 硬上限属功能性体量控制(LLM 输入预算),全文仍在规则文件中可查
+    for index, ln in enumerate(lines):
+        # 硬上限属功能性体量控制(LLM 输入预算),全文仍在规则文件中可查。
+        # 但截断=尾部规则这轮不进上下文,是两态状态,静默即违反 A3——故告警并给出丢失行数。
         if size + len(ln) + 1 > _MAX_DIGEST_CHARS:
+            logger.warning(
+                "rule-reinjection: 规则摘要超上限 %d 字符,尾部 %d 行本轮未注入"
+                "(压缩规则文件或提高 _MAX_DIGEST_CHARS)",
+                _MAX_DIGEST_CHARS,
+                len(lines) - index,
+            )
             kept.append("…(截断,全文见规则文件)")
             break
         kept.append(ln)
@@ -98,7 +103,7 @@ def _digest(text: str) -> str:
     return "\n".join(kept)
 
 
-def _on_pre_llm_call(**kwargs) -> Dict[str, Any]:
+def _on_pre_llm_call(**kwargs) -> dict[str, Any]:
     """重读规则文件,按「首注+版本变更+周期补注」节奏注入权威版摘要。"""
     rules_path = _find_rules_file()
     if rules_path is None:

@@ -58,3 +58,29 @@ def test_probe_returns_none_when_no_rules_anywhere(
     monkeypatch.chdir(outside)
     monkeypatch.setattr(rr, "__file__", str(fake_mod), raising=False)
     assert _find_rules_file() is None
+
+
+def test_digest_keeps_every_line_when_under_cap() -> None:
+    """上限内:去空行后逐行保留,无截断标记,末行必须在位。"""
+    import plugins.discipline.rule_reinjection as rr
+
+    digest = rr._digest("# 标题\n\n## 第一节\n- 规则一\n## 末节\n- 最后一条规则\n")
+    assert "…(截断,全文见规则文件)" not in digest  # 期望: 文字量在上限内,不触发截断分支
+    assert digest.splitlines()[0] == "# 标题"  # 期望: 首行原样保留(头部优先)
+    assert digest.splitlines()[-1] == "- 最后一条规则"  # 期望: 末行在位,尾部未被丢弃
+
+
+def test_digest_warns_loudly_when_truncating(caplog: pytest.LogCaptureFixture) -> None:
+    """超上限:必须响亮告警并报出本轮未注入的行数——静默丢尾违反 A3。"""
+    import logging
+
+    import plugins.discipline.rule_reinjection as rr
+
+    # 期望: 首行长度=上限-1,+1 换行后恰好用满上限,故第二行起触发截断,丢失 2 行
+    filler = "x" * (rr._MAX_DIGEST_CHARS - 1)
+    with caplog.at_level(logging.WARNING, logger="plugins.discipline.rule_reinjection"):
+        digest = rr._digest(f"{filler}\n尾部规则一\n尾部规则二\n")
+    assert digest.endswith("…(截断,全文见规则文件)")  # 期望: 超限时追加截断标记
+    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert warnings, "超限必须告警,不得静默截断"  # 期望: 至少一条 WARNING 记录
+    assert "尾部 2 行" in warnings[0].getMessage()  # 期望: 告警给出丢失行数=2
