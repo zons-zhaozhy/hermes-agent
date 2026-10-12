@@ -206,6 +206,29 @@ def test_iter_skill_index_files_keeps_support_named_categories(tmp_path):
     assert is_excluded_skill_path(scripts_skill / "SKILL.md") is False
 
 
+def test_iter_skill_index_files_prunes_runtime_artifact_dirs(tmp_path):
+    """``state``/``data`` are reserved runtime-artifact names: a SKILL.md inside them
+    is not an active skill, and the walk must not descend (they may be symlinked
+    multi-thousand-file runtime roots outside the skills tree)."""
+    skill = tmp_path / "ops" / "runner"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: runner\n---\n", encoding="utf-8")
+
+    state_pkg = skill / "state" / "nested-package"
+    state_pkg.mkdir(parents=True)
+    (state_pkg / "SKILL.md").write_text("---\nname: nested-state\n---\n", encoding="utf-8")
+
+    data_pkg = tmp_path / "data" / "vendored-package"
+    data_pkg.mkdir(parents=True)
+    (data_pkg / "SKILL.md").write_text("---\nname: vendored\n---\n", encoding="utf-8")
+
+    found = list(iter_skill_index_files(tmp_path, "SKILL.md"))
+
+    assert found == [skill / "SKILL.md"]
+    assert is_excluded_skill_path(state_pkg / "SKILL.md") is True
+    assert is_excluded_skill_path(data_pkg / "SKILL.md") is True
+
+
 def test_skill_support_path_uses_explicit_discovery_root_not_cwd(tmp_path, monkeypatch):
     discovery_root = tmp_path / "site-packages" / "skills"
     umbrella = discovery_root / "category" / "umbrella"

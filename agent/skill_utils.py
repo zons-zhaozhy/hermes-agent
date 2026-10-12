@@ -20,10 +20,16 @@ logger = logging.getLogger(__name__)
 
 PLATFORM_MAP = {"macos": "darwin", "linux": "linux", "windows": "win32"}
 
+# Reserved directory names, pruned unconditionally at any depth (a category named
+# "venv" is pruned the same way). ``state``/``data`` are skill runtime artifacts
+# (cron logs, business records); they may be symlinked out of the skills tree, and
+# the scanners walk with followlinks=True, so naming them here is what keeps the
+# walk from descending into multi-thousand-file runtime trees.
 EXCLUDED_SKILL_DIRS = frozenset((
     ".git", ".github", ".hub", ".archive", ".curator_backups", ".locks",
     ".venv", "venv", "node_modules", "site-packages", "__pycache__",
     ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    "state", "data",
 ))
 
 # Progressive-disclosure support dirs inside a skill package: loaded explicitly
