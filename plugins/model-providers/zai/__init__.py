@@ -83,9 +83,10 @@ class ZaiProfile(ProviderProfile):
                 # GLM-5.3 rejects thinking.type=disabled outright; send the
                 # official migration shape and let the effort knob above
                 # select the cheapest tier (low).
-                extra_body["thinking"] = {"type": "enabled"}
-            else:
-                extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
+                enabled = True
+            # Preserved Thinking: with thinking on, the standard endpoint drops replayed prior-turn
+            # reasoning_content unless clear_thinking is false (docs.z.ai/guides/capabilities/thinking-mode).
+            extra_body["thinking"] = {"type": "enabled", "clear_thinking": False} if enabled else {"type": "disabled"}
         if is_5_2:
             effort = _glm_native_reasoning_effort(reasoning_config, model=model)
             if effort is not None:
