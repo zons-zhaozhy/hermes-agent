@@ -20,6 +20,16 @@ logger = logging.getLogger(__name__)
 _EMFILE_BACKOFF_MAX_SECONDS = 15 * 60
 DEFAULT_MISFIRE_GRACE_MINUTES = 10
 
+# Per-job stagger for misfire catch-up batches: first API call of the Nth job in a
+# recovery batch waits (N-1)*step seconds. The parallel pool (296ba5a93c) caps how
+# many catch-up jobs RUN at once, but each starts its first LLM request the moment
+# a worker picks it up — a post-outage recovery batch (2026-10-13 06:18, 6 jobs in
+# ~55s) still hit the account-level rate limit (code 1302). Staggering inside the
+# worker keeps the pool semantics unchanged: the sleep occupies one worker, so the
+# effective concurrency cap still holds; only the first-request density is spread.
+_MISFIRE_STAGGER_STEP_SECONDS = 30.0
+_MISFIRE_STAGGER_MAX_SECONDS = 300.0
+
 
 # Cap for the exponential tick backoff applied while consecutive ticks fail with fd exhaustion
 # (EMFILE/ENFILE, #87644). Base is the tick interval (60s by default); each consecutive EMFILE failure
@@ -376,7 +386,19 @@ def fire_overdue_jobs(
             # 限速(code 1302)。池满时排队等待, 池 worker 数即并发上限。
             import cron.scheduler as _sched
             _pool = _sched._get_parallel_pool(_sched._resolve_max_parallel_workers())
-            _pool.submit(provider.fire_claimed, claimed, adapters=adapters, loop=loop)
+            # 批次内错峰: 池只约束同时运行数, 不约束首请求密度——灾后恢复批次
+            # 各作业几乎同刻发首个 LLM 请求仍会打穿账户限速(10-13 06:18 实测
+            # 6 作业/55s 触发 1302)。worker 内递进延迟, sleep 占用一个 worker
+            # 故有效并发上限不变, 只摊薄首请求密度; 300s 封顶防大批次拖尾。
+            _delay = min((fired % 10) * _MISFIRE_STAGGER_STEP_SECONDS,
+                         _MISFIRE_STAGGER_MAX_SECONDS)
+
+            def _staggered_fire(claim: dict, delay: float) -> None:
+                if delay > 0:
+                    time.sleep(delay)
+                provider.fire_claimed(claim, adapters=adapters, loop=loop)
+
+            _pool.submit(_staggered_fire, claimed, _delay)
             fired += 1
         except Exception as exc:
             logger.warning(
