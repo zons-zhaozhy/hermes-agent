@@ -123,6 +123,12 @@ JUDGE_SYSTEM_PROMPT = (
     "DONE — the goal is fully satisfied:\n"
     "- The response explicitly confirms the goal was completed, OR\n"
     "- The response clearly shows the final deliverable was produced.\n"
+    "- An open-ended goal (no single enumerable deliverable — e.g. \"make X "
+    "world-class\", \"keep improving X\") is NOT done merely because one round "
+    "of work finished with a positive self-report. For such goals DONE "
+    "requires the goal text, contract or subgoals to name a completion "
+    "criterion AND the response to show that criterion is met, or the user's "
+    "explicit acceptance.\n"
     "DONE requires the deliverable to actually exist. If the response only "
     "explains why the goal cannot be reached, the verdict is BLOCKED, not "
     "DONE.\n\n"
@@ -186,6 +192,15 @@ JUDGE_DELEGATIONS_BLOCK_TEMPLATE = (
 JUDGE_BACKGROUND_BLOCK_TEMPLATE = (
     "Background processes the agent currently has running (it may be waiting "
     "on one of these):\n{background_lines}\n\n"
+)
+
+JUDGE_FAILED_EXITS_BLOCK_TEMPLATE = (
+    "Background processes that exited with a NON-ZERO exit code recently "
+    "(the agent's response may not have accounted for these):\n{failed_lines}\n"
+    "If any failure above belongs to the goal's own work and the response "
+    "claims completion, prefer CONTINUE so the agent addresses it. A process "
+    "deliberately stopped or replaced (e.g. an old dev server killed for a "
+    "newer one) is not a blocker.\n\n"
 )
 
 JUDGE_USER_PROMPT_TEMPLATE = (
@@ -1120,6 +1135,7 @@ def judge_goal(
     contract: Optional[GoalContract] = None,
     active_delegations: int = 0,
     recent_history: Optional[list[dict[str, Any]]] = None,
+    failed_processes: Optional[list[dict[str, Any]]] = None,
 ) -> tuple[str, str, bool, Optional[dict[str, Any]], bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
@@ -1153,6 +1169,7 @@ def judge_goal(
         response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
         history_digest=_render_history_digest(recent_history),
         background_block=_render_background_block(background_processes)
+        + _render_failed_exits_block(failed_processes)
         + (
             JUDGE_DELEGATIONS_BLOCK_TEMPLATE.format(count=active_delegations)
             if active_delegations > 0
@@ -1308,6 +1325,79 @@ def gather_background_processes(
             == str(owner_task_id)
         ]
     return running
+
+
+def gather_failed_exits(
+    *,
+    owner_task_id: Optional[str] = None,
+    max_age_seconds: float = 1800.0,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    """Fail-safe snapshot of this session's recently EXITED NON-ZERO registry sessions.
+
+    The judge prompt only ever listed RUNNING processes, so a failure exit (e.g. exit -15)
+    could coexist with a DONE verdict — its notification arrives after the judge has ruled.
+    Entries missing ``exited_at`` are kept (registry snapshot order), otherwise only exits
+    inside ``max_age_seconds`` are reported; newest first, capped at ``limit``.
+
+    Contract:
+        Preconditions: process_registry.list_sessions returns dicts with status/exit_code keys.
+        Postconditions: returns only status=="exited" and exit_code not in (None, 0); [] on any
+            registry error (loop degrades to the pre-feature prompt).
+    """
+    try:
+        from tools.process_registry import process_registry
+
+        sessions = process_registry.list_sessions() or []
+    except Exception as exc:
+        logger.debug("gather_failed_exits failed: %s", exc)
+        return []
+    now = time.time()
+    failed: list[tuple[float, dict[str, Any]]] = []
+    for s in sessions:
+        if not isinstance(s, dict) or s.get("status") != "exited":
+            continue
+        if s.get("exit_code") in (None, 0):
+            continue
+        if owner_task_id and str(s.get("owner_task_id") or s.get("task_id") or "") != str(owner_task_id):
+            continue
+        exited_at = s.get("exited_at")
+        if isinstance(exited_at, (int, float)) and exited_at > 0 and (now - exited_at) > max_age_seconds:
+            continue
+        failed.append((exited_at if isinstance(exited_at, (int, float)) else 0.0, s))
+    failed.sort(key=lambda pair: pair[0], reverse=True)
+    return [s for _, s in failed[:limit]]
+
+
+def _render_failed_exits_block(
+    failed_processes: Optional[list[dict[str, Any]]],
+) -> str:
+    """Render exited NON-ZERO registry sessions for the judge prompt. Empty string when
+    none, so the prompt stays byte-identical to the pre-feature no-failure case."""
+    lines: list[str] = []
+    for p in failed_processes or []:
+        if not isinstance(p, dict) or p.get("exit_code") in (None, 0):
+            continue
+        cmd = _truncate(str(p.get("command") or "").replace("\n", " ").strip(), 120)
+        tail = _truncate(
+            str(p.get("output_preview") or "").replace("\n", " ").strip(), 120
+        )
+        line = f"- exit code {p.get('exit_code')}"
+        if p.get("pid"):
+            line += f" (pid {p['pid']}"
+            if p.get("session_id"):
+                line += f" / session {p['session_id']}"
+            line += ")"
+        elif p.get("session_id"):
+            line += f" (session {p['session_id']})"
+        if cmd:
+            line += f": {cmd}"
+        if tail:
+            line += f" | last output: {tail}"
+        lines.append(line)
+    if not lines:
+        return ""
+    return JUDGE_FAILED_EXITS_BLOCK_TEMPLATE.format(failed_lines="\n".join(lines))
 
 
 def draft_contract(
@@ -1866,6 +1956,7 @@ class GoalManager:
         background_processes: Optional[list[dict[str, Any]]] = None,
         active_delegations: int = 0,
         recent_history: Optional[list[dict[str, Any]]] = None,
+        failed_exits: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         """Run gates + judge and update state. Return a decision dict (``status``, ``should_continue``,
         ``continuation_prompt``, ``verdict``, ``reason``, ``message``). Both real user prompts and our
@@ -1909,6 +2000,7 @@ class GoalManager:
             last_response,
             subgoals=state.subgoals or None,
             background_processes=background_processes,
+            failed_processes=failed_exits,
             contract=state.contract if state.has_contract() else None,
             active_delegations=active_delegations,
             recent_history=recent_history,

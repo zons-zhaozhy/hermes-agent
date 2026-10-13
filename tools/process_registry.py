@@ -2432,8 +2432,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(s.started_at)),
                 "uptime_seconds": int(time.time() - s.started_at),
                 "status": "exited" if s.exited else "running",
+                "exited_at": s.exited_at,
                 "output_preview": s.output_buffer[-200:] if s.output_buffer else "",
             }
+            # Failed-exit metadata for the goal-loop judge: a non-zero exit must reach the
+            # verdict even though the process is no longer in the RUNNING snapshot.
+            if s.exited and s.exit_code is not None:
+                entry["exit_code"] = s.exit_code
             # Flag processes surfaced only because they share the gateway session (not the current task) —
             # these are the long-lived background processes a user may have forgotten about (#29177).
             if task_id and session_key and s.owner_task_id != task_id and s.session_key == session_key:

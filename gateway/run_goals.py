@@ -286,12 +286,15 @@ class GatewayGoalsMixin:
         if mgr is None or not mgr.is_active():
             return
 
-        _bg_procs, _active_deleg = None, 0
+        _bg_procs, _active_deleg, _failed_exits = None, 0, None
         with suppress(Exception):
             from hermes_cli.goals import count_active_delegations, gather_background_processes as _gather_bg
+            from hermes_cli.goals import gather_failed_exits as _gather_failed
             # Only THIS session's processes (gateway turns register under turn_ctx.session_id):
             # subagents' pollers must not park the parent's goal.
-            _bg_procs = _gather_bg(owner_task_id=getattr(session_entry, "session_id", None) or None)
+            _owner = getattr(session_entry, "session_id", None) or None
+            _bg_procs = _gather_bg(owner_task_id=_owner)
+            _failed_exits = _gather_failed(owner_task_id=_owner)
             _active_deleg = count_active_delegations(getattr(session_entry, "session_id", None))
 
         # Same transcript manual compression reads (load_transcript): lets the judge see the
@@ -307,6 +310,7 @@ class GatewayGoalsMixin:
             lambda: mgr.evaluate_after_turn(
                 final_response or "", user_initiated=True, background_processes=_bg_procs,
                 active_delegations=_active_deleg, recent_history=_recent_history,
+                failed_exits=_failed_exits,
             ),
         )
         msg = decision.get("message") or ""

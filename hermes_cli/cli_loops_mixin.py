@@ -734,15 +734,22 @@ class CLILoopsMixin:
             return
         _active_deleg = 0
         try:
-            from hermes_cli.goals import count_active_delegations, gather_background_processes as _gather_bg
+            from hermes_cli.goals import (
+                count_active_delegations,
+                gather_background_processes as _gather_bg,
+                gather_failed_exits as _gather_failed,
+            )
             # Only THIS session's processes: subagents' pollers must not park the parent's goal.
-            _bg_procs = _gather_bg(owner_task_id=getattr(self, "session_id", None) or None)
+            _owner = getattr(self, "session_id", None) or None
+            _bg_procs = _gather_bg(owner_task_id=_owner)
+            _failed_exits = _gather_failed(owner_task_id=_owner)
             _active_deleg = count_active_delegations(getattr(self.agent, "session_id", None))
         except Exception:
             _bg_procs = None
+            _failed_exits = None
         decision = mgr.evaluate_after_turn(
             last_response, user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg,
-            recent_history=list(self.conversation_history),
+            recent_history=list(self.conversation_history), failed_exits=_failed_exits,
         )
         _print_decision_message(decision)
         if decision.get("should_continue"):
