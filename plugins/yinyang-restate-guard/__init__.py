@@ -41,7 +41,9 @@ USER_SIDE_SYSTEM = (
     "你是对话信号哨兵。对下面这条用户消息同时判定两个维度：\\n"
     "1. challenge：消息是否在质疑、反驳或纠正 AI 的某个说法/结论/行为"
     "（含直接指出错误、表达不认同、要求纠正）。"
-    "单纯提问、补充信息、闲聊、下达新任务不算。\\n"
+    "单纯提问、补充信息、闲聊、下达新任务不算；"
+    "批判/挑毛病/审查的对象是外部材料（方案文档/代码/第三方内容）"
+    "而非 AI 本身时，属于下达任务，不算 challenge。\\n"
     "2. decision：消息是否构成'重大方案定稿或决策承诺'——即：即将拍板采用某"
     "技术方案/架构选型/上生产部署/模型替换/大规模重构等影响面大且难回退的"
     "决策。只是讨论、提问、调研、汇报进度不算。\\n"
@@ -155,7 +157,7 @@ def _record_face_slap(message: str, sid: str) -> None:
                 "INSERT OR IGNORE INTO face_slaps (msg_hash, session_id, message, timestamp) "
                 "VALUES (?, ?, ?, ?)",
                 (h, sid, message[:2000],
-                 datetime.now(timezone.utc).isoformat()),
+                 datetime.now(timezone.utc).isoformat()),  # noqa: UP017 — 保持 datetime.timezone 显式形态
             )
             conn.commit()
         finally:
