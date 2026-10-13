@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import re  # noqa: R1 — dangerous command detection requires regex
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Optional
 
 from plugins._shared_state import get_session_state
 
@@ -25,22 +25,22 @@ logger = logging.getLogger(__name__)
 _NAMESPACE = "tool_safety"
 
 
-def _get_read_attempts(sid: str) -> Dict[str, int]:
+def _get_read_attempts(sid: str) -> dict[str, int]:
     """Track read_file attempts per path."""
     return get_session_state(sid, _NAMESPACE).setdefault("read_attempts", {})
 
 
-def _get_patch_attempts(sid: str) -> Dict[str, int]:
+def _get_patch_attempts(sid: str) -> dict[str, int]:
     """Track patch attempts per path."""
     return get_session_state(sid, _NAMESPACE).setdefault("patch_attempts", {})
 
 
-def _get_patch_verified(sid: str) -> Set[str]:
+def _get_patch_verified(sid: str) -> set[str]:
     """Track paths that have been verified after patch."""
     return get_session_state(sid, _NAMESPACE).setdefault("patch_verified", set())
 
 
-def _get_recent_tool_calls(sid: str) -> List[Dict[str, Any]]:
+def _get_recent_tool_calls(sid: str) -> list[dict[str, Any]]:
     """Recent tool calls in this session."""
     return get_session_state(sid, _NAMESPACE).setdefault("recent_calls", [])
 
@@ -62,7 +62,7 @@ def _is_batch_replace(code: str) -> bool:
     indicators = (
         r"\.replace\(", r"\.replace\s*\(",
         "for.*in.*files", "for.*in.*paths",
-        "read_file.*write_file", "open.*\.write",
+        "read_file.*write_file", r"open.*\.write",
     )
     lower = code.lower()
     count = sum(1 for ind in indicators if re.search(ind, lower))
@@ -83,7 +83,7 @@ def _is_empty_or_error_result(result: Any, status: str = "") -> bool:
     return False
 
 
-def _is_verification_tool_call(tool_name: str, args: Dict) -> bool:
+def _is_verification_tool_call(tool_name: str, args: dict) -> bool:
     """Check if tool call is verifying a previous write."""
     if tool_name == "search_files":
         return True  # grep after write = verification
@@ -150,7 +150,7 @@ def on_post_tool_call(**kwargs) -> None:
 
 # ── pre_tool_call hook ────────────────────────────────────────────────
 
-def on_pre_tool_call(**kwargs) -> Optional[Dict[str, Any]]:
+def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
     """Block unsafe tool usage patterns."""
     if _plugin_disabled():
         return None
