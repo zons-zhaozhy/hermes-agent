@@ -1324,6 +1324,26 @@ class TestCheckpoint:
             assert secret not in data[0]["command"]
             assert data[0]["command"] != command
 
+    def test_checkpoint_redacts_even_when_redaction_disabled(self, registry, tmp_path):
+        """``security.redact_secrets: false`` disables MODEL-output redaction only; the
+        checkpoint is a disk-persistence boundary (#77484) and must mask regardless."""
+        checkpoint = tmp_path / "procs.json"
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint), patch(
+            "agent.redact._redact_enabled", return_value=False
+        ):
+            secret = "sk-secret1234567890"
+            command = f"curl -H 'Authorization: Bearer {secret}' http://x"
+            s = _make_session(sid="proc_secret_off", command=command)
+            s.pid = 12346
+            s.host_start_time = int(time.time())
+            registry._running[s.id] = s
+            registry._write_checkpoint()
+
+            data = json.loads(checkpoint.read_text())
+            # 期望: 开关关闭下 force=True 仍脱敏——磁盘边界不随用户偏好降级
+            assert data[0]["session_id"] == "proc_secret_off"
+            assert secret not in data[0]["command"]
+
 # =========================================================================
 # Kill process
 # =========================================================================
