@@ -261,6 +261,21 @@ def _execute_code_py_targets(code: str) -> list[tuple[str, str]]:
       Postconditions: 返回 [(路径, 内容或 "")]；语法错误 / 无字面量目标 → []
       Invariants: 内容不可解析（路径字面量但内容非字面量）时内容段为 ""——调用方降级提示
     """
+    return _execute_code_write_targets(code, (".py",))
+
+
+def _execute_code_write_targets(code: str, exts: tuple[str, ...]) -> list[tuple[str, str]]:
+    """从 execute_code 源码静态提取字面量写目标（扩展名参数化变体）。
+
+    单一事实源：写形态识别（open/write_text/write_file/write 方法+变量绑定）
+    与 .py 专用版共用本实现；groundbreaking_gate 传多扩展集以覆盖
+    .ts/.vue/.go/.java（否则非 Python 扩展经 execute_code 写入不可见=射程缺口）。
+
+    Contract:
+      Preconditions: code 为待执行 Python 源码; exts 为目标扩展名元组（含点）
+      Postconditions: 返回 [(路径, 内容或 "")]；语法错误 / 无字面量目标 → []
+      Invariants: 动态路径一律不猜——猜错会误拦
+    """
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
@@ -268,11 +283,14 @@ def _execute_code_py_targets(code: str) -> list[tuple[str, str]]:
         return []
     bound = _open_path_bindings(tree)
     found: list[tuple[str, str]] = []
+    seen: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             target = _py_write_call_target(node, bound)
-            if target is not None and target[0].endswith(".py"):
-                found.append(target)
+            if target is not None and target[0].endswith(exts):
+                if target[0] not in seen:
+                    seen.add(target[0])
+                    found.append(target)
     return found
 
 
@@ -406,7 +424,7 @@ def _get_cached_ls_files(cwd: str) -> list[str]:
         result = subprocess.run(
             ["git", "ls-files", "*.py"],
             capture_output=True, text=True, timeout=10, cwd=cwd,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, check=False,
         )
         files = [
             f.strip() for f in result.stdout.splitlines()
@@ -437,7 +455,7 @@ def _rg_lines(pattern: str, cwd: str) -> Optional[list[str]]:
         r = subprocess.run(
             ["rg", "-n", "--no-heading", "--type", "py", pattern, "."],
             capture_output=True, text=True, timeout=_RG_TIMEOUT,
-            cwd=cwd, stdin=subprocess.DEVNULL,
+            cwd=cwd, stdin=subprocess.DEVNULL, check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         logger.warning("rg 检索不可用(pattern=%s): %s", pattern, e)
@@ -458,7 +476,7 @@ def _rg_files(pattern: str, cwd: str) -> Optional[list[str]]:
     files: list[str] = []
     for ln in lines:
         rel = ln.split(":", 1)[0]
-        rel = rel[2:] if rel.startswith("./") else rel
+        rel = rel.removeprefix("./")
         if rel and rel not in files and not _should_skip(rel):
             files.append(rel)
     return files
@@ -614,7 +632,7 @@ def _existing_symbol_files(symbols: set[str], cwd: str) -> tuple[dict[str, list[
     for ln in lines:
         rel, _, rest = ln.partition(":")
         _, _, body = rest.partition(":")
-        rel = rel[2:] if rel.startswith("./") else rel
+        rel = rel.removeprefix("./")
         sym = _symbol_of_line(body)
         if sym in symbols and not _should_skip(rel):
             bucket = hits.setdefault(sym, [])

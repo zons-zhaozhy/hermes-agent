@@ -33,6 +33,7 @@ from plugins.guards import (
     diff_debt,
     duplicate_check,
     four_axis,
+    groundbreaking_gate,
     pre_write,
     scope_gate,
     source_write,
@@ -52,6 +53,7 @@ _SUB_GUARDS = (
     ("casebook_gate", casebook_gate),
     ("batch_write", batch_write),
     ("scope_gate", scope_gate),
+    ("groundbreaking_gate", groundbreaking_gate),
 )
 
 
