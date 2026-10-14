@@ -82,9 +82,11 @@ v1 的三个错误（本设计的反面教材）：
 
 ### 2.3 与 scope_gate 的链路协同
 
-scope_gate 五条件（仓库内∧新文件∧父目录不存在∧深度≤2∧无授权）拦「未授权
-新开目录树」的首文件；有授权时放行→本门禁接棒查功课。两道顺序门：
-授权（用户允许）→功课（产物存在）→格式（coding_standards）→过程（diff_debt）。
+两道正交门，时序上互不依赖触发（审查 R7 修正：scope_gate 豁免 .md 等文档
+扩展，先保存功课文档再写码的常见时序里 scope_gate 根本不拦，本门禁是
+独立首道而非「接棒」）：scope_gate 拦「未授权新开目录树」的代码首文件，
+本门禁拦「已授权/豁免路径但无功课产物」的代码首文件。语义链=授权（用户
+允许）→功课（产物存在）→格式（coding_standards）→过程（diff_debt），
 每道判一个正交维度，无一重复。
 
 ### 2.4 真缺口结论
@@ -101,30 +103,47 @@ devil-advocate-audit。缺口成立，新建（进 guards 套件，非平行新�
 app-groundbreaking-seven-steps（方法论全文）。
 
 - 证据源三元组（EvidenceSpec）：
-  - E1 应用内功课文档：apps/<X>/ 下 rglob("*.md") 且非 README*
+  - E1 应用内功课文档：apps/<X>/ 下 rglob("*.md") 且非 README*，且**最小内容
+    判据**（审查 R1）：非空有效行数≥30 且标题行含「数据结构」「链路」「架构」
+    任一（str 方法匹配标题行，零正则零 LLM）。空文档/一行 touch 不构成证据。
   - E2 应用内数据结构：apps/<X>/ 下 *.sql 或 migrations/alembic/db/schema/ 目录
-  - E3 仓根蓝图功课：docs/blueprint/*.md 文件名含应用名（归一化=小写+连字符转下划线）
-- 豁免标记：内容含 `# groundbreaking-ok: ` 且理由≥8 字。
-- 代码扩展集合：.py/.ts/.vue/.go/.java。
-- 会话态优化（不改语义）：证据命中后 per-app 放行标记缓存到
-  plugins._shared_state（casebook_gate 同源基建），批量写时免重复磁盘扫描。
-- 不引入新配置文件：guards 家族零 yaml 判据先例（scope_gate 豁免扩展名=
-  常量），引入声明式配置=新范式，须单独论证（本设计不夹带）。
+  - E3 仓根蓝图功课：docs/blueprint/*.md 文件名 token 边界匹配（审查 R4：
+    文件名按 -_ 切分 token，与应用名归一化 token **整 token 相等**才命中，
+    禁子串 containment——实测 'aml' 子串误命中 3 份无关文档；短结构词
+    api/web/backend/data 入噪音词表，命中降级提示档要求 E1/E2 补强），
+    且满足与 E1 相同的最小内容判据。
+- 豁免载体（审查 R2）：豁免**只认仓根固定清单**
+  docs/blueprint/GROUNDBREAKING_EXEMPT.md（逐应用一行=应用名+理由+日期），
+  **禁在被写目标文件内生效**（否则一行 8 字注释即自豁免=后门）；门禁读该
+  清单匹配应用名，命中放行并记 WARNING 留痕。
+- 代码扩展集合：.py/.ts/.vue/.go/.java。存量扫描集合=触发集合=该五类扩展
+  的任意文件（**含 tests/*.py 与 __init__.py**，rglob 全子树，两集合强制相等，
+  审查 R5——否则「先写测试再写主码」路径判定歧义）。
+- 会话态优化（审查 R6 修正后语义）：per-app 缓存存**命中证据的绝对路径**
+  （非布尔值），命中时 os.path.exists 复验（单次 stat），失效即清缓存重走
+  证据三源——证据文件被删后缓存不续命。
+- 不引入新配置文件：guards 家族零 yaml **判据**先例（审查 R8 措辞限定：
+  判据一律代码常量；路径类配置有 casebook_gate 读 config.yaml 的先例，
+  本门禁路径键同此模式）。
 
 ## 4. 链路（判定流）
 
 ```
 pre_tool_call(write_file|patch|execute_code)
   → _parsed_target: 工具过滤 + 路径解析 + 代码扩展过滤 + apps/<X>/ 段定位
-  → 豁免: 会话态缓存命中 → 放行
-  → 存量判定: apps/<X>/ 已有代码文件 → 放行并写会话态缓存
-  → 证据三源 E1/E2/E3 → 任一命中 → 放行并写会话态缓存
+  → 豁免: 会话态缓存命中(证据路径 exists 复验) → 放行
+  → 豁免清单: GROUNDBREAKING_EXEMPT.md 含应用名 → 放行+WARNING
+  → 存量判定: apps/<X>/ 已有代码文件(五扩展含tests/__init__) → 放行并写缓存
+  → 证据三源 E1/E2/E3 → 任一命中 → 放行并写缓存(存证据绝对路径)
   → block: 三段式消息(命中证据/三源三态/分档下一步) + 指路 skill
 ```
 
-- execute_code 写形态识别复用 duplicate_check 基建（batch_write/scope_gate
-  同款 `_execute_code_py_targets`），不重复实现。
-- block 消息含豁免标记写法与「先表后码」指引。
+- execute_code 写形态识别：duplicate_check 基建扩展参数化变体
+  `_execute_code_write_targets(code, exts)`（审查 R3——既有
+  `_execute_code_py_targets` 硬过滤 .py，非 Python 扩展经 execute_code 写入
+  时不可见=射程缺口；变体满足单一事实源纪律，.py 原路径逐字不变供既有
+  调用方，本门禁传五扩展全集）。
+- block 消息含豁免清单写法（非行内标记）与「先表后码」指引。
 
 ## 5. 架构挂靠（动工三问过堂）
 
@@ -142,24 +161,29 @@ pre_tool_call(write_file|patch|execute_code)
 
 - 谁：未来所有会话（含本 agent 自己）在 OntoX/家族仓新建应用时。
 - 进：写 apps/<新>/main.py 且三证据全无 → 拦，消息列出三源三态。
-- 三档出路：①apps/<X>/docs/ 或仓根 docs/blueprint/ 落功课文档（文件名含
-  应用名）②先建 DDL/migrations（先表后码）③纯适配层显式豁免标记（≥8 字
-  理由，可被 grep 审计滥用）。
-- 离开：功课落盘后重写放行；或豁免留痕。
+- 三档出路：①apps/<X>/docs/ 或仓根 docs/blueprint/ 保存功课文档（token
+  匹配应用名+最小内容判据）②先建 DDL/migrations（先表后码）③纯适配层
+  在仓根 GROUNDBREAKING_EXEMPT.md 登记（应用名+理由+日期，集中可审计）。
+- 离开：功课保存后重写放行；或豁免清单留痕。
 - 可验问题清单：①三无新应用写首代码文件被拦？②三证据任一存在放行？
-  ③存量应用零打扰？④守卫异常 fail-open 不 raise？⑤豁免标记全库可审计
-  （grep groundbreaking-ok）？⑥execute_code 写形态同样被拦？
+  ③存量应用零打扰？④守卫异常 fail-open 不 raise？⑤豁免集中于单一清单
+  可审计？⑥execute_code 写形态（含 .ts 等非 Python 扩展）同样被拦？
+  ⑦空文档/短文档（<30 行或无必备标题）不构成证据仍拦？⑧目录仅有
+  tests/*.py 时写主码仍拦？⑨同会话删除证据文件后缓存失效重拦？
 
 ## 7. 闭环（施工顺序）
 
 1. 本设计文档 commit。
-2. 独立只读反方审查子代理（挑：证据代理有效性/first-wins 竞争/存量判定
-   边界如目录里只有测试文件/豁免滥用面/shared_state 并发）。
-3. 审查修正回灌本文档。
+2. 独立只读反方审查子代理。**已回（deleg_13eaea95，裁定=有条件通过）**：
+   8 项修正（R1 空文档击穿/R2 自豁免后门/R3 execute_code 射程缺口三项高；
+   R4 子串误命中实测/R5 集合边界两项中；R6 缓存复验/R7 scope_gate 关系
+   改述/R8 yaml 措辞三项低），全部回灌本文档 §2.3/§3/§4/§6。
+3. 审查修正回灌本文档（本条已执行）。
 4. 子模块代码+测试（含 fresh 子进程真机探针：discover_plugins+
    list_plugins enabled+探针行为三件）。
 5. preflight+rules_selfcheck 全绿。
-6. 双仓收尾核对（源码仓+运行副本 ~/.hermes/hermes-agent，零未推）。
+6. 收尾核对：源码仓 origin 零未推（fork 仓唯一同步通道=origin，
+   cnb remote 历史异源禁用——见 memory 1014 条目）。
 
 ## 附：证据索引
 
