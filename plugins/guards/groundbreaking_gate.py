@@ -50,6 +50,9 @@ _CODE_EXTS = (".py", ".ts", ".vue", ".go", ".java")
 # E1/E3 最小内容判据：非空有效行数下限 + 必备章节标题（任一）
 _MIN_DOC_LINES = 30
 _REQUIRED_HEADINGS = ("数据结构", "链路", "架构")
+# 数据库裁决为必备章节（用户指令 2026-10-14「确定数据结构的时候要先确定数据库」）：
+# 缺库归属裁决的功课文档不构成证据——判据=必备「数据库」+任一结构标题
+_MANDATORY_HEADINGS = ("数据库",)
 # E2 数据结构痕迹：DDL 目录名
 _SCHEMA_DIR_NAMES = ("migrations", "alembic", "db", "schema")
 # E3 token 匹配噪音词表：短结构词整词命中降级（不构成 E3 信号 token）
@@ -79,11 +82,26 @@ def _locate_app(path: Path) -> Optional[tuple[Path, str]]:
     return None
 
 
+def _heading_flags(lines: list[str]) -> tuple[bool, bool]:
+    """扫描标题行，返回 (含必备「数据库」标题, 含结构标题任一)。"""
+    has_mandatory = False
+    has_structural = False
+    for ln in lines:
+        stripped = ln.strip()
+        if stripped.startswith("#"):
+            if any(h in stripped for h in _MANDATORY_HEADINGS):
+                has_mandatory = True
+            if any(h in stripped for h in _REQUIRED_HEADINGS):
+                has_structural = True
+    return has_mandatory, has_structural
+
+
 def _doc_is_groundwork(md_path: Path) -> bool:
-    """E1/E3 内容判据：非空有效行数≥30 且标题行含必备章节任一。
+    """E1/E3 内容判据：非空有效行数≥30 且标题行含必备「数据库」+结构标题任一。
 
     Contract:
-      Postconditions: 文件不可读/行数不足/无必备标题 → False（空文档不构成证据）
+      Postconditions: 文件不可读/行数不足/无「数据库」标题/无结构标题任一
+        → False（空文档与缺库归属裁决的文档均不构成证据）
     """
     try:
         lines = md_path.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -91,11 +109,8 @@ def _doc_is_groundwork(md_path: Path) -> bool:
         return False
     if sum(1 for ln in lines if ln.strip()) < _MIN_DOC_LINES:
         return False
-    for ln in lines:
-        stripped = ln.strip()
-        if stripped.startswith("#") and any(h in stripped for h in _REQUIRED_HEADINGS):
-            return True
-    return False
+    has_mandatory, has_structural = _heading_flags(lines)
+    return has_mandatory and has_structural
 
 
 def _e1_groundwork_doc(app_dir: Path) -> Optional[Path]:
@@ -245,7 +260,7 @@ def _block_message(raw_path: str, app_name: str, e1: bool, e2: bool, e3: bool) -
         "message": (
             "[groundbreaking-gate] 新建应用缺功课证据，禁止直接写代码文件：\n"
             f"命中证据: 目标={raw_path}（新应用 apps/{app_name}/ 首个代码文件）\n"
-            f"三证据源: E1 应用内功课文档(非README, ≥{_MIN_DOC_LINES}行含数据结构/链路/架构标题)"
+            f"三证据源: E1 应用内功课文档(非README, ≥{_MIN_DOC_LINES}行含必备「数据库」标题+数据结构/链路/架构任一)"
             f"={'有' if e1 else '无'}; E2 数据结构痕迹(.sql/migrations/alembic/db/schema)"
             f"={'有' if e2 else '无'}; E3 仓根 docs/blueprint/ 文件名含 {app_name} 的功课文档"
             f"={'有' if e3 else '无'}\n"

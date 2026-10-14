@@ -104,8 +104,10 @@ app-groundbreaking-seven-steps（方法论全文）。
 
 - 证据源三元组（EvidenceSpec）：
   - E1 应用内功课文档：apps/<X>/ 下 rglob("*.md") 且非 README*，且**最小内容
-    判据**（审查 R1）：非空有效行数≥30 且标题行含「数据结构」「链路」「架构」
-    任一（str 方法匹配标题行，零正则零 LLM）。空文档/一行 touch 不构成证据。
+    判据**（审查 R1）：非空有效行数≥30 且标题行含**必备「数据库」**（用户指令
+    2026-10-14「确定数据结构的时候要先确定数据库」——缺库归属裁决的功课文档
+    不构成证据）+「数据结构」「链路」「架构」任一（str 方法匹配标题行，零正则
+    零 LLM）。空文档/一行 touch 不构成证据。
   - E2 应用内数据结构：apps/<X>/ 下 *.sql 或 migrations/alembic/db/schema/ 目录
   - E3 仓根蓝图功课：docs/blueprint/*.md 文件名 token 边界匹配（审查 R4：
     文件名按 -_ 切分 token，与应用名归一化 token **整 token 相等**才命中，

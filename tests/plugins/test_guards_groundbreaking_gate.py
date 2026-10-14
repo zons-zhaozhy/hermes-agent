@@ -32,7 +32,11 @@ from plugins.guards.duplicate_check import (
 
 _sid = itertools.count()
 
-GOOD_DOC = "# 架构功课\n" + "\n".join(f"内容行{i}" for i in range(30)) + "\n## 数据结构\n表族说明\n"
+GOOD_DOC = (
+    "# 架构功课\n"
+    + "\n".join(f"内容行{i}" for i in range(30))
+    + "\n## 数据结构\n表族说明\n## 数据库\n挂 aml_ng 库（实例 127.0.0.1:5416），依据=外键关联+同库事务。\n"
+)
 
 
 def _call(tool: str, path: Path | str, content: str = "x") -> dict[str, Any] | None:
@@ -97,6 +101,19 @@ def test_e1_readme_not_evidence(tmp_path: Path) -> None:
     (app / "README.md").write_text(GOOD_DOC, encoding="utf-8")
     v = _call("write_file", app / "main.py")
     assert v is not None and v.get("action") == "block"  # 期望: README 属豁免文档 → 仍拦
+
+
+def test_e1_doc_without_db_section_still_blocks(tmp_path: Path) -> None:
+    # 期望: 功课文档行数够+有结构标题但缺「数据库」章节 → 仍拦(用户指令: 先确定数据库)
+    repo = _mk_repo(tmp_path)
+    app = repo / "apps" / "demo_app"
+    (app / "docs").mkdir(parents=True)
+    (app / "docs" / "A.md").write_text(
+        "# 架构功课\n" + "\n".join(f"内容行{i}" for i in range(30)) + "\n## 数据结构\n表族说明\n",
+        encoding="utf-8",
+    )
+    v = _call("write_file", app / "main.py")
+    assert v is not None and v.get("action") == "block"  # 期望: 缺库归属裁决 → 拦
 
 
 def test_e2_sql_and_migrations_pass(tmp_path: Path) -> None:
