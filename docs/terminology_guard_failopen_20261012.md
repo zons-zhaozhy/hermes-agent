@@ -33,6 +33,14 @@
 
 install 建环境时的插件复制源刷新机制是深层根因——本次修复的是存量 19 份，未动该机制。若下次 hermes update 再从旧缓存复制，同类漂移会重现。观察点：下次 install 的 environments/*/workspace/plugins/ 是否再出现旧版（import yaml 检测）。
 
+## 根治闭环（2026-10-14，双案驱动）
+
+第二案（goal 双缺口补丁 4df33bdc24 在 29 个 workspace 中 0 个生效）确认漂移为结构性问题。根治=用户拍板切换单一真相源，详见 docs/single_source_gateway_20261014.md：
+
+- ~/Library/LaunchAgents/ai.hermes.gateway.plist 启动命令改指 fork 仓 /.hermes/bin/hermes（备份 ai.hermes.gateway.plist.bak-workspace-1014），gateway 拉起的全部会话直读 fork 源码，workspace 快照不再被生产路径加载。
+- PM 依赖环境按树路径 sha256 前 16 位登记（41bc58c3072daa3c 即 fork 树），依赖环境不变、只换源码树，零迁移成本。
+- 本节前述「遗留风险」已随切换消解：复制源刷新机制不再被生产路径依赖。tools/workspace_drift_check.py 退役保留（docstring 已标注）。
+
 ## 附：夜间出网抖动归属（哨兵 01:40 第二案）
 
 非 hermes 侧问题 [实测]：7890 端口 verge-mihomo（PID 22709）正常监听；hermes 进程 env 无代理变量；10-10 09:00 历史故障时段 error.log 显示当时 7890 连接拒绝（代理客户端死），而今晚 curl 短请求全通。今晚故障模式为「短通长断」（流式长连接持续断），属代理/链路层间歇丢长连接，建议用户层检查 verge-mihomo 配置或 Wi-Fi 路由器，晨报已带六波时间线。

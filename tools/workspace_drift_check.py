@@ -2,6 +2,10 @@
 # dupcheck-ok: workspace 漂移对账工具——全库无等价实现（search_files drift/installs workspace 零命中）
 """installs workspace 与 fork 源码的漂移对账与同步。
 
+【退役 2026-10-14】gateway 启动已切换为直读 fork 源码（单一真相源，见
+docs/single_source_gateway_20261014.md），workspace 快照不再被生产路径
+加载，本工具已无对账对象。保留作历史参照与 installs 形态排查兜底。
+
 背景（docs/terminology_guard_failopen_20261012.md）：install 建环境时复制
 hermes_cli/ 与 plugins/ 到 environments/*/workspace/，此后 fork 侧修复不会
 自动回流——运行副本滞留旧版（已两次实战：terminology-guard 19 份、goal
