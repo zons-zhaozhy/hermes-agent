@@ -180,7 +180,18 @@ pre_tool_call(write_file|patch|execute_code)
    改述/R8 yaml 措辞三项低），全部回灌本文档 §2.3/§3/§4/§6。
 3. 审查修正回灌本文档（本条已执行）。
 4. 子模块代码+测试（含 fresh 子进程真机探针：discover_plugins+
-   list_plugins enabled+探针行为三件）。
+   list_plugins enabled+探针行为三件）。**已执行（commit 2cdd810ec5）**：
+   plugins/guards/groundbreaking_gate.py（334 行）+ 套件注册（plugin.yaml
+   2.6.0+__init__._SUB_GUARDS）+ duplicate_check._execute_code_write_targets
+   参数化变体（.py 专用版薄委托）+ tests/plugins/test_guards_groundbreaking_
+   gate.py 16 用例（覆盖 §6 可验 9 问+R1-R8）94 passed（含套件 6 既有文件
+   回归）；真机探针：_SUB_GUARDS 11 子护栏含本模块、ontox 仓虚构新应用
+   block、存量 aml_ng 放行。施工中修三处实现缺陷：_e2 对不存在目录
+   iterdir 抛错被 fail-open 吞=静默放行；E1/E3 缓存载体由目录改具体文档
+   路径（删证据后缓存失效重拦）；open().write() 链双 Call 节点重复上报
+   去重。R5 审查建议内部矛盾裁定：两集合强制相等（含 tests/__init__）
+   优先于其负例「仅 tests 仍拦」——门禁拦首个代码文件本身，绕过链路
+   不成立。
 5. preflight+rules_selfcheck 全绿。
 6. 收尾核对：源码仓 origin 零未推（fork 仓唯一同步通道=origin，
    cnb remote 历史异源禁用——见 memory 1014 条目）。
