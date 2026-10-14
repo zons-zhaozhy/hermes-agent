@@ -160,8 +160,26 @@ def _tick_admitted(
         _results: list = []
         _all_futures: list = []
         pool = _sched._get_parallel_pool(_max_workers)
-        for job in due_jobs:
-            fut = _sched._submit_with_guard(job, pool, _process_job)
+        for _seq, job in enumerate(due_jobs):
+            # First-request density control (same primitive as the misfire catch-up
+            # path): an on-time batch of many due jobs fires first requests the
+            # moment workers pick them up and can exceed the account-level rate
+            # limit (code 1302). The wait sits BEFORE _process_due_job's store claim,
+            # so the claim still dates the actual start; a shutdown abort settles
+            # the execution receipt as never started instead of running half-shutdown.
+            # Small batches (< _FIRST_REQUEST_STAGGER_MIN_BATCH) and single-worker
+            # pools dispatch exactly as before — no wrapper at all.
+            if _sched.first_request_stagger_enabled(_seq, _max_workers):
+                def _staggered_process(j: dict) -> bool:
+                    if not _sched.await_first_request_slot():
+                        _sched.settle_unstarted_execution(
+                            j["execution_id"], j["id"],
+                            "First-request stagger wait aborted by shutdown")
+                        return False
+                    return _process_job(j)
+                fut = _sched._submit_with_guard(job, pool, _staggered_process)
+            else:
+                fut = _sched._submit_with_guard(job, pool, _process_job)
             if fut is None:
                 continue
             _all_futures.append(fut)

@@ -1241,6 +1241,74 @@ def discard_parallel_pools(home_keys) -> None:
             pool.shutdown(wait=False, cancel_futures=False)
 
 
+# ── First-request density control (single source of truth for both dispatch paths) ──
+# The parallel pool caps how many jobs RUN at once, but each job fires its first
+# LLM request the instant a worker picks it up: a same-instant batch (post-outage
+# catch-up 2026-10-13 06:18: 6 jobs / ~55s hit the account-level rate limit, code
+# 1302; an on-time tick batch of many due jobs is the same shape) can exceed the
+# account-level request rate. Control model: a token-bucket of first-request
+# slots — every staggered job reserves the next slot (one per interval, measured
+# from the ACTUAL start, so spacing survives pool queue reordering) and waits for
+# it inside the worker, BEFORE the store claim. Invariants:
+#   - claim-when-running: the CAS claim is stamped when the job actually starts,
+#     matching _process_due_job's discipline — a claim never ages inside a wait.
+#   - small batches are untouched: below _FIRST_REQUEST_STAGGER_MIN_BATCH the
+#     batch fires exactly as before (observed 1302 storms need ~6 simultaneous;
+#     2-3 concurrent first requests have never tripped the limit).
+#   - bounded: no job ever waits more than _FIRST_REQUEST_MAX_WAIT_SECONDS.
+_FIRST_REQUEST_MIN_INTERVAL_SECONDS = 15.0
+_FIRST_REQUEST_MAX_WAIT_SECONDS = 300.0
+_FIRST_REQUEST_STAGGER_MIN_BATCH = 4
+_first_request_stagger_abort = threading.Event()
+_first_request_slot_lock = threading.Lock()
+_last_first_request_monotonic: float = float("-inf")
+
+
+def first_request_stagger_enabled(seq: int, max_workers: Optional[int]) -> bool:
+    """Whether the seq-th (0-based) job of a dispatch batch must take a first-request slot.
+
+    Contract:
+      Precondition: seq >= 0
+      Postconditions: False for the first _FIRST_REQUEST_STAGGER_MIN_BATCH-1 jobs
+        of a batch (small batches stay untouched) and for single-worker pools
+        (density already 1 — a stagger would only add tail latency); True otherwise.
+    """
+    if seq + 1 < _FIRST_REQUEST_STAGGER_MIN_BATCH:
+        return False
+    return max_workers is None or max_workers > 1
+
+
+def await_first_request_slot() -> bool:
+    """Reserve the next first-request slot and wait for it. True = proceed to claim.
+
+    Contract:
+      Precondition: called from a dispatch worker, before the job's store claim.
+      Postconditions: True means the reserved slot was reached — proceed; False
+        means process shutdown aborted the wait — ABANDON the fire before
+        touching the store instead of running half-shutdown.
+    """
+    global _last_first_request_monotonic
+    if _first_request_stagger_abort.is_set():
+        # Shutdown wins even for an immediately-available slot: nothing should
+        # start firing while the interpreter is going down, delay or no delay.
+        return False
+    with _first_request_slot_lock:
+        now = time.monotonic()
+        target = max(now, _last_first_request_monotonic + _FIRST_REQUEST_MIN_INTERVAL_SECONDS)
+        if target - now > _FIRST_REQUEST_MAX_WAIT_SECONDS:
+            target = now + _FIRST_REQUEST_MAX_WAIT_SECONDS
+        _last_first_request_monotonic = target
+        delay = target - now
+    if delay <= 0:
+        return True
+    return not _first_request_stagger_abort.wait(timeout=delay)
+
+
+def _abort_first_request_stagger_on_exit() -> None:
+    """Release stagger waits at process exit (runs before the pool-shutdown wait)."""
+    _first_request_stagger_abort.set()
+
+
 def _shutdown_parallel_pool() -> None:
     """Shut down every profile's persistent pool on process exit."""
     for pool in list(_parallel_pools.values()):
@@ -1250,6 +1318,12 @@ def _shutdown_parallel_pool() -> None:
 
 
 atexit.register(_shutdown_parallel_pool)
+# Registered AFTER the pool shutdown (atexit is LIFO) so stagger waits are released
+# BEFORE _shutdown_parallel_pool's wait=True join — a sleeping staggered worker would
+# otherwise pin process exit for up to the 300s wait cap. Kept out of
+# _shutdown_parallel_pool itself: that function is also called mid-process (tests,
+# future graceful stops) and must not permanently wedge the one-way abort event.
+atexit.register(_abort_first_request_stagger_on_exit)
 # Per-fire usage audit log; resolves via _get_hermes_home() so profile-scoped paths work.
 def _usage_audit_path() -> Path:
     return _get_hermes_home() / "cron" / "usage_audit.jsonl"

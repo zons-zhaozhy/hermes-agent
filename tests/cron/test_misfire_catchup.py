@@ -113,7 +113,8 @@ class TestFireOverdueJobs:
 
     def test_fresh_external_claim_wins(self, tmp_cron_dir):
         """A concurrent external fire holds the store claim — the sweep's
-        claim_fire loses the CAS and must not dispatch (at-most-once)."""
+        worker claim_fire loses the CAS and must not fire (at-most-once;
+        the return counts dispatches, the claim itself is async in the worker)."""
         from cron.jobs import claim_job_for_fire
 
         job = create_job(prompt="p", schedule="every 1h")
@@ -125,7 +126,7 @@ class TestFireOverdueJobs:
         _park_in_past(job["id"], minutes=30)
 
         provider = RecordingProvider()
-        assert fire_overdue_jobs(provider) == 0
+        assert fire_overdue_jobs(provider) == 1
         assert provider.fired == []
 
     def test_claim_advances_next_run_no_refire(self, tmp_cron_dir):

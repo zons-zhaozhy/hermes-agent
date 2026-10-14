@@ -20,16 +20,6 @@ logger = logging.getLogger(__name__)
 _EMFILE_BACKOFF_MAX_SECONDS = 15 * 60
 DEFAULT_MISFIRE_GRACE_MINUTES = 10
 
-# Per-job stagger for misfire catch-up batches: first API call of the Nth job in a
-# recovery batch waits (N-1)*step seconds. The parallel pool (296ba5a93c) caps how
-# many catch-up jobs RUN at once, but each starts its first LLM request the moment
-# a worker picks it up — a post-outage recovery batch (2026-10-13 06:18, 6 jobs in
-# ~55s) still hit the account-level rate limit (code 1302). Staggering inside the
-# worker keeps the pool semantics unchanged: the sleep occupies one worker, so the
-# effective concurrency cap still holds; only the first-request density is spread.
-_MISFIRE_STAGGER_STEP_SECONDS = 30.0
-_MISFIRE_STAGGER_MAX_SECONDS = 300.0
-
 
 # Cap for the exponential tick backoff applied while consecutive ticks fail with fd exhaustion
 # (EMFILE/ENFILE, #87644). Base is the tick interval (60s by default); each consecutive EMFILE failure
@@ -376,29 +366,37 @@ def fire_overdue_jobs(
             overdue_seconds / 60,
         )
         try:
-            # Claim synchronously (CAS loss = external retry beat us), run off-thread: never block.
-            claimed = provider.claim_fire(job_id)
-            if claimed is None:
-                continue
-            # 经统一并行池分发(单一事实源: 复用 scheduler_tick 主路径的
-            # _resolve_max_parallel_workers + _get_parallel_pool), 禁裸 Thread 齐射——
-            # 重启积压补跑曾绕过 max_parallel_jobs 上限同秒齐发, 实测触发账户级
-            # 限速(code 1302)。池满时排队等待, 池 worker 数即并发上限。
+            # Dispatch through the unified parallel pool (single source of truth:
+            # the same _resolve_max_parallel_workers + _get_parallel_pool as the
+            # tick path); a bare-thread volley once bypassed the cap and fired
+            # same-second (account-level rate limit, code 1302).
             import cron.scheduler as _sched
-            _pool = _sched._get_parallel_pool(_sched._resolve_max_parallel_workers())
-            # 批次内错峰: 池只约束同时运行数, 不约束首请求密度——灾后恢复批次
-            # 各作业几乎同刻发首个 LLM 请求仍会打穿账户限速(10-13 06:18 实测
-            # 6 作业/55s 触发 1302)。worker 内递进延迟, sleep 占用一个 worker
-            # 故有效并发上限不变, 只摊薄首请求密度; 300s 封顶防大批次拖尾。
-            _delay = min((fired % 10) * _MISFIRE_STAGGER_STEP_SECONDS,
-                         _MISFIRE_STAGGER_MAX_SECONDS)
+            _max_workers = _sched._resolve_max_parallel_workers()
+            _pool = _sched._get_parallel_pool(_max_workers)
+            # First-request density control INSIDE the worker, BEFORE the claim:
+            # the pool caps concurrent runs, not first-request density — a recovery
+            # batch (2026-10-13 06:18: 6 jobs / ~55s) still hit code 1302. Waiting
+            # before claim_fire keeps claim-when-running (the CAS stamp dates the
+            # actual start, so a claim never ages inside a wait) and a shutdown-
+            # aborted wait abandons the fire without ever touching the store.
+            # Small batches (first _FIRST_REQUEST_STAGGER_MIN_BATCH-1 dispatches)
+            # and single-worker pools skip the slot entirely.
+            _take_slot = _sched.first_request_stagger_enabled(fired, _max_workers)
 
-            def _staggered_fire(claim: dict, delay: float) -> None:
-                if delay > 0:
-                    time.sleep(delay)
-                provider.fire_claimed(claim, adapters=adapters, loop=loop)
+            def _staggered_fire(job_id: str, take_slot: bool) -> None:
+                if take_slot and not _sched.await_first_request_slot():
+                    logger.info(
+                        "Misfire catch-up: shutdown aborted the stagger wait for "
+                        "job %s before its claim — leaving it for the next scan.",
+                        job_id,
+                    )
+                    return
+                claimed = provider.claim_fire(job_id)
+                if claimed is None:
+                    return
+                provider.fire_claimed(claimed, adapters=adapters, loop=loop)
 
-            _pool.submit(_staggered_fire, claimed, _delay)
+            _pool.submit(_staggered_fire, job_id, _take_slot)
             fired += 1
         except Exception as exc:
             logger.warning(
