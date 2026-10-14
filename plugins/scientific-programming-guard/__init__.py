@@ -512,13 +512,12 @@ def on_pre_tool_call(**kwargs):
 
 
 _CODING_SECTION = """[科学编程预算——写代码前先对表，一次写对免返工]
-写任何代码前当轮先完成对表，超预算的函数写出来必被拦（拦截在 write_file/patch 时刻）：
-1. 单函数圈复杂度 ≤10、函数体 ≤100 行——校验+解析+写库拆成 _parse_*/_validate_*/_insert_* 单一职责小函数；
-2. 新 def 全部带类型注解（参数+返回值）；test_/单行函数豁免；
-3. 异常处理禁吞：except 必须 logger（带 exc_info）或 raise，禁裸 pass；
-4. 断言期望值同线写「# 期望:」推导注释，禁先写代码再凑绿灯；
-5. 前端补充预算：async @click 按钮必带 :loading + try/finally；颜色只用 var(--el-*)；
-6. 本段是事前提示——动手前把预算注入脑内，别等守卫拦截后再拆（拦截=已浪费一轮）。"""
+1. 单函数圈复杂度 ≤10、函数体 ≤100 行；校验/解析/写库拆 _parse_*/_validate_*/_insert_*；
+2. 新 def 带类型注解（参数+返回值），test_/单行函数豁免；
+3. except 必须 logger(exc_info) 或 raise；finally 里的 close/清理调用同样要包 try/except+logger；
+4. 断言期望值写「# 期望:」注释，且必须在 assert 同一行行末——放到上一行=被拦；禁先写代码再凑绿灯；
+5. 引用本地模块（apps.X / plugins.X 等）前先 read_file 该模块源码，否则按「参数瞎猜」拦；
+6. 前端：async @click 必带 :loading + try/finally；颜色只用 var(--el-*)。"""
 
 # 子代理与批处理会话没有 clarify 通道，预算段会诱导空转——按 platform 跳过
 _EXCLUDED_PLATFORMS = {"subagent", "batch"}
