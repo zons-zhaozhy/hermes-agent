@@ -47,11 +47,14 @@ _NAMESPACE = "groundbreaking_gate"
 
 # 代码扩展集合：存量扫描集合=触发集合（含 tests/*.py 与 __init__.py，两集合强制相等）
 _CODE_EXTS = (".py", ".ts", ".vue", ".go", ".java")
-# E1/E3 最小内容判据：非空有效行数下限 + 必备章节标题（任一）
+# E1/E3 最小内容判据：非空有效行数下限 + 必备章节标题
 _MIN_DOC_LINES = 30
-_REQUIRED_HEADINGS = ("数据结构", "链路", "架构")
+# 结构章节必备词组（任一命中即可，覆盖域惯用写法）：表结构是重中之重
+# （用户定调 2026-10-14「表结构的质量和要素覆盖情况直接影响最终系统的成败和质量」），
+# 缺结构章节的功课文档不构成证据——链路/架构章节不能替代表结构本体
+_SCHEMA_HEADINGS = ("数据结构", "表族", "表结构")
 # 数据库裁决为必备章节（用户指令 2026-10-14「确定数据结构的时候要先确定数据库」）：
-# 缺库归属裁决的功课文档不构成证据——判据=必备「数据库」+任一结构标题
+# 缺库归属裁决的功课文档不构成证据
 _MANDATORY_HEADINGS = ("数据库",)
 # E2 数据结构痕迹：DDL 目录名
 _SCHEMA_DIR_NAMES = ("migrations", "alembic", "db", "schema")
@@ -83,25 +86,26 @@ def _locate_app(path: Path) -> Optional[tuple[Path, str]]:
 
 
 def _heading_flags(lines: list[str]) -> tuple[bool, bool]:
-    """扫描标题行，返回 (含必备「数据库」标题, 含结构标题任一)。"""
+    """扫描标题行，返回 (含必备「数据库」标题, 含结构标题任一——表结构本体证据)。"""
     has_mandatory = False
-    has_structural = False
+    has_schema = False
     for ln in lines:
         stripped = ln.strip()
         if stripped.startswith("#"):
             if any(h in stripped for h in _MANDATORY_HEADINGS):
                 has_mandatory = True
-            if any(h in stripped for h in _REQUIRED_HEADINGS):
-                has_structural = True
-    return has_mandatory, has_structural
+            if any(h in stripped for h in _SCHEMA_HEADINGS):
+                has_schema = True
+    return has_mandatory, has_schema
 
 
 def _doc_is_groundwork(md_path: Path) -> bool:
-    """E1/E3 内容判据：非空有效行数≥30 且标题行含必备「数据库」+结构标题任一。
+    """E1/E3 内容判据：非空有效行数≥30 且标题行含必备「数据库」+结构标题任一
+    （数据结构/表族/表结构——表结构本体证据，链路/架构章节不能替代）。
 
     Contract:
       Postconditions: 文件不可读/行数不足/无「数据库」标题/无结构标题任一
-        → False（空文档与缺库归属裁决的文档均不构成证据）
+        → False（空文档与缺库归属裁决、缺表结构本体的文档均不构成证据）
     """
     try:
         lines = md_path.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -109,8 +113,8 @@ def _doc_is_groundwork(md_path: Path) -> bool:
         return False
     if sum(1 for ln in lines if ln.strip()) < _MIN_DOC_LINES:
         return False
-    has_mandatory, has_structural = _heading_flags(lines)
-    return has_mandatory and has_structural
+    has_mandatory, has_schema = _heading_flags(lines)
+    return has_mandatory and has_schema
 
 
 def _e1_groundwork_doc(app_dir: Path) -> Optional[Path]:

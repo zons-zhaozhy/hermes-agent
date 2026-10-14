@@ -116,6 +116,21 @@ def test_e1_doc_without_db_section_still_blocks(tmp_path: Path) -> None:
     assert v is not None and v.get("action") == "block"  # 期望: 缺库归属裁决 → 拦
 
 
+def test_e1_doc_without_schema_heading_still_blocks(tmp_path: Path) -> None:
+    # 期望: 功课文档行数够+有「数据库」章节但缺结构标题(数据结构/表族/表结构) → 仍拦
+    # (用户定调 2026-10-14: 表结构是重中之重——链路/架构章节不能替代表结构本体证据)
+    repo = _mk_repo(tmp_path)
+    app = repo / "apps" / "demo_app2"
+    (app / "docs").mkdir(parents=True)
+    (app / "docs" / "B.md").write_text(
+        "# 架构功课\n" + "\n".join(f"内容行{i}" for i in range(30))
+        + "\n## 数据库\n挂 aml_ng 库\n## 链路\n五层组装\n## 架构\n挂靠说明\n",
+        encoding="utf-8",
+    )
+    v = _call("write_file", app / "main.py")
+    assert v is not None and v.get("action") == "block"  # 期望: 缺表结构本体 → 拦
+
+
 def test_e2_sql_and_migrations_pass(tmp_path: Path) -> None:
     # 期望: 应用内 DDL .sql 或 migrations/ 目录 → 放行(可验②E2)
     repo = _mk_repo(tmp_path)
