@@ -10,7 +10,7 @@
 授权」这条纪律机器化，拦在写入路径上。
 
 判定（下列条件同时成立才拦）：
-  1. 本次写入落在代码仓库内（cwd 之下，非临时/缓存目录）；
+  1. 本次写入落在代码仓库内（目标所在 .git 树内，非临时/缓存目录）；
   2. 目标文件当前不存在（新建，不是修改）；
   3. 目标的父目录当前也不存在——即本次写入要在仓库内新开一棵目录树；
   4. 新目录树的根距仓库根 ≤ _MAX_NEW_TREE_DEPTH 级；
@@ -170,16 +170,54 @@ def _split_shell_segments(command: str) -> list[str]:
         normalized = normalized.replace(sep, "\n")
     return [seg for seg in normalized.split("\n") if seg.strip()]
 
-def _terminal_targets(command: str) -> list[str]:
+def _resolve_cd_base(tokens: list[str], base: str) -> str:
+    """cd <dir> 段更新路径基准；不可解析形态返回原 base（保守，宁纵勿枉）。
+
+    Contract:
+      Preconditions: tokens 为 cd 段 token 列表（tokens[0] == "cd"），base 为当前基准绝对路径。
+      Postconditions: 单纯路径参数 → 返回展开后的新基准（相对 base 解析）；
+                      无参/`cd -`/多参数/含 $ 变量 → 返回 base 不变。
+    """
+    args = [tok for tok in tokens[1:] if tok]
+    if len(args) != 1 or args[0] == "-" or "$" in args[0]:
+        return base
+    target = os.path.expanduser(args[0])
+    return os.path.abspath(os.path.join(base, target))
+
+
+def _dir_cmd_targets(tokens: list[str], base: str) -> list[str]:
+    """单个建目录命令段（mkdir/touch/install -d）的目标解析。
+
+    Contract:
+      Preconditions: tokens 已剥前缀词且首词在 _DIR_CREATING 内；base 为基准绝对路径。
+      Postconditions: 返回目标绝对路径列表（目录类命令追加占位子段 "/_"，
+        使其在 _new_dir_root 里按目录而非文件处理）；选项参数与含 $ 动态路径剔除。
+    """
+    head = os.path.basename(tokens[0])
+    if head == "install" and "-d" not in tokens and "--directory" not in tokens:
+        return []
+    args = [tok for tok in tokens[1:] if not tok.startswith("-") and "$" not in tok]
+    as_dir = head in ("mkdir", "install")
+    targets: list[str] = []
+    for arg in args:
+        expanded = os.path.abspath(os.path.join(base, os.path.expanduser(arg)))
+        targets.append(os.path.join(expanded, "_") if as_dir else expanded)
+    return targets
+
+
+def _terminal_targets(command: str, workdir: str = "") -> list[str]:
     """提取终端命令里会被新建的目录/文件目标（覆盖 mkdir/touch/install -d）。
 
     Contract:
-      Preconditions: command 为 str。
-      Postconditions: 返回候选目标的绝对路径列表（目录类命令的目标追加占位子段
-        "/_"，使其在 _new_dir_root 里按目录而非文件处理）；无匹配命令 → []。
+      Preconditions: command 为 str；workdir 为 terminal 工具的工作目录参数（可空）。
+      Postconditions: 返回候选目标的绝对路径列表；无匹配命令 → []。
       Invariants: 只看每段的首个 token（跳过 sudo/env 等前缀词），不解析变量展开；
-        动态路径（含 $）不进表。
+        动态路径（含 $）不进表；相对路径按「workdir 参数 → 命令内 cd 段 → 进程 cwd」
+        的顺序解析——先行的 cd 段更新后续段的基准（cd a && mkdir b 里的 b 解析到 a 下）。
+        基准错位的既往误拦实例：命令 `cd <repo> && mkdir -p apps/x/docs` 在进程 cwd
+        恰为另一项目目录时，apps/x/docs 被解析到 cwd 下，误报「新建目录树: apps」。
     """
+    base = os.path.abspath(os.path.expanduser(workdir)) if workdir else os.getcwd()
     targets: list[str] = []
     for segment in _split_shell_segments(command):
         tokens = [tok for tok in segment.strip().split() if tok]
@@ -188,15 +226,10 @@ def _terminal_targets(command: str) -> list[str]:
         if not tokens:
             continue
         head = os.path.basename(tokens[0])
-        if head not in _DIR_CREATING:
-            continue
-        if head == "install" and "-d" not in tokens and "--directory" not in tokens:
-            continue
-        args = [tok for tok in tokens[1:] if not tok.startswith("-") and "$" not in tok]
-        as_dir = head in ("mkdir", "install")
-        for arg in args:
-            expanded = os.path.abspath(os.path.expanduser(arg))
-            targets.append(os.path.join(expanded, "_") if as_dir else expanded)
+        if head == "cd":
+            base = _resolve_cd_base(tokens, base)
+        elif head in _DIR_CREATING:
+            targets.extend(_dir_cmd_targets(tokens, base))
     return targets
 
 def _candidate_targets(tool_name: str, args: Any) -> list[str]:
@@ -206,8 +239,8 @@ def _candidate_targets(tool_name: str, args: Any) -> list[str]:
       Preconditions: args 为 dict 或任意类型。
       Postconditions: 返回候选项的绝对路径列表；无可判定目标 → []。
       Invariants: write_file/patch 取 args.path；execute_code 复用
-        duplicate_check 的字面量写形态识别；terminal 取显式建目录命令的目标；
-        动态路径不进表。
+        duplicate_check 的字面量写形态识别；terminal 取显式建目录命令的目标
+        （workdir 参数作为相对路径基准）；动态路径不进表。
     """
     if not isinstance(args, dict):
         return []
@@ -215,7 +248,8 @@ def _candidate_targets(tool_name: str, args: Any) -> list[str]:
         path = str(args.get("path") or "").strip()
         return [os.path.abspath(os.path.expanduser(path))] if path else []
     if tool_name == "terminal":
-        return _terminal_targets(str(args.get("command") or ""))
+        wd = str(args.get("workdir") or "").strip()
+        return _terminal_targets(str(args.get("command") or ""), wd)
     if tool_name == "execute_code":
         code = str(args.get("code") or "")
         return [os.path.abspath(os.path.expanduser(raw)) for raw, _ in _execute_code_py_targets(code)]
@@ -342,6 +376,54 @@ def _render(rel_root: str, trigger: str, user_text: str) -> str:
     )
 
 
+def _repo_root_of(full: str) -> str:
+    """返回目标所在仓库根（沿目录链向上找最近的 .git 父目录）。
+
+    Contract:
+      Preconditions: full 为绝对路径。
+      Postconditions: 目录链上存在 .git 目录时返回其父目录（realpath）；
+                     到文件系统根仍无 .git → 返回 ""（不在仓库内，调用方放行）。
+      Invariants: 逐级 isdir 实测，不猜；仓库边界与进程 cwd 解耦——同一进程可
+        跨多仓操作（cwd 常驻会话启动目录，写目标在任意仓库内）。
+    """
+    current = os.path.realpath(os.path.dirname(full))
+    while True:
+        if os.path.isdir(os.path.join(current, ".git")):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            return ""
+        current = parent
+
+
+def _first_block(targets: list[str], sid: str) -> Optional[tuple[str, str, str]]:
+    """逐候选评估，返回首个命中 (rel_root, 触发文件相对路径, 拦截消息) 或 None。
+
+    Contract:
+      Preconditions: targets 为绝对路径列表；sid 为会话标识。
+      Postconditions: 无命中返回 None；命中返回三元组（消息已渲染）；
+                      观察模式下命中记 WARNING 并跳过（不返回）。
+      Invariants: 仓库根逐目标解析（_repo_root_of）——同一轮候选可分属不同仓库，
+                  各自评估，互不借用基准。
+    """
+    for full in targets:
+        root = _repo_root_of(full)
+        if not root:
+            continue
+        hit = _block_hit(full, root, sid)
+        if hit is None:
+            continue
+        message = _render(hit, os.path.relpath(full, root), str(
+            get_session_state(sid, _NAMESPACE).get("user_text") or ""
+        ))
+        if _warn_only():
+            logger.warning("scope_gate 命中但观察模式放行:\n%s", message)
+            continue
+        logger.warning("scope_gate: 阻断未授权新建目录树 %s", hit)
+        return hit, os.path.relpath(full, root), message
+    return None
+
+
 def _on_pre_tool_call(**kwargs: Any) -> Optional[dict[str, Any]]:
     """pre_tool_call：新建仓库内目录树且当轮未授权时 block。
 
@@ -356,20 +438,10 @@ def _on_pre_tool_call(**kwargs: Any) -> Optional[dict[str, Any]]:
         sid = str(kwargs.get("session_id") or "")
         if sid.startswith("cron_"):
             return None
-        root = os.path.realpath(os.getcwd())
-        for full in _candidate_targets(str(kwargs.get("tool_name") or ""), kwargs.get("args")):
-            hit = _block_hit(full, root, sid)
-            if hit is None:
-                continue
-            message = _render(hit, os.path.relpath(full, root), str(
-                get_session_state(sid, _NAMESPACE).get("user_text") or ""
-            ))
-            if _warn_only():
-                logger.warning("scope_gate 命中但观察模式放行:\n%s", message)
-                continue
-            logger.warning("scope_gate: 阻断未授权新建目录树 %s", hit)
-            return {"action": "block", "message": message}
-        return None
+        hit = _first_block(
+            _candidate_targets(str(kwargs.get("tool_name") or ""), kwargs.get("args")), sid
+        )
+        return {"action": "block", "message": hit[2]} if hit else None
     except Exception:
         logger.exception("scope_gate: pre_tool_call 判定异常，放行")
         return None

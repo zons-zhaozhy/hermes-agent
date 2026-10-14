@@ -20,8 +20,10 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """以 tmp_path 作为仓库根，并在非豁免前提下做判定。
 
     pytest tmp_path 落在 macOS 系统临时目录（/private/var/folders），属生产
-    豁免区——block 语义测试须清空豁免前缀表才能构造。
+    豁免区——block 语义测试须清空豁免前缀表才能构造。仓库根判定走
+    _repo_root_of（.git 实测），fixture 须造 .git 目录。
     """
+    (tmp_path / ".git").mkdir()
     monkeypatch.setattr(scope_gate, "_EXEMPT_PREFIXES", ())
     monkeypatch.chdir(tmp_path)
     clear_session("s-test")
@@ -196,15 +198,42 @@ def test_terminal_mkdir_new_tree_blocked(repo, monkeypatch):
 
 
 def test_terminal_chained_mkdir_blocked(repo, monkeypatch):
-    """命令链中的 mkdir 同样被拦（逐段解析）。"""
+    """命令链中的 mkdir 同样被拦（逐段解析；cd 段更新基准后 sudo 前缀仍识别）。"""
+    (repo / "apps").mkdir()
     _authorize(monkeypatch, False)
     _user_says("考虑架构")
     verdict = scope_gate._on_pre_tool_call(
         tool_name="terminal",
-        args={"command": "cd /tmp && sudo mkdir -p apps/chain"},
+        args={"command": f"cd {repo}/apps && sudo mkdir -p newapp2"},
         session_id="s-test",
     )
-    assert verdict is not None and verdict["action"] == "block"  # 期望: sudo 前缀与 && 链后仍识别
+    assert verdict is not None and verdict["action"] == "block"  # 期望: cd 到 apps 下建浅层新树 → 拦
+
+
+def test_terminal_cd_prefix_deep_subdir_allowed(repo, monkeypatch):
+    """cd 到仓库内既有目录后建深层子目录 → 放行（cd 段基准修复，2026-10-14 实录）。"""
+    (repo / "apps" / "existing").mkdir(parents=True)
+    _authorize(monkeypatch, False)
+    _user_says("考虑架构")
+    verdict = scope_gate._on_pre_tool_call(
+        tool_name="terminal",
+        args={"command": f"cd {repo}/apps/existing && mkdir -p docs"},
+        session_id="s-test",
+    )
+    assert verdict is None  # 期望: 目标=apps/existing/docs depth=3>2 → 放行（修复前误解析到进程 cwd 报 rel_root='apps'）
+
+
+def test_terminal_workdir_param_deep_subdir_allowed(repo, monkeypatch):
+    """terminal workdir 参数作为相对 mkdir 目标的基准 → 深层子目录放行。"""
+    (repo / "apps" / "existing").mkdir(parents=True)
+    _authorize(monkeypatch, False)
+    _user_says("考虑架构")
+    verdict = scope_gate._on_pre_tool_call(
+        tool_name="terminal",
+        args={"command": "mkdir -p apps/existing/docs", "workdir": str(repo)},
+        session_id="s-test",
+    )
+    assert verdict is None  # 期望: workdir 基准下 apps/existing/docs depth=3>2 → 放行
 
 
 def test_terminal_touch_in_existing_dir_allowed(repo, monkeypatch):
