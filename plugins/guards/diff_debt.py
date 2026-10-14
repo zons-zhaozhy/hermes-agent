@@ -212,11 +212,15 @@ def on_pre_tool_call(**kwargs: Any) -> Optional[dict[str, Any]]:
         return _block_verdict(tool_name, sid, debts)
 
 
-_DEBT_SECTION = """[diff 出示前置——写工具调用前同轮先贴对照]
-连续写链（patch→patch→commit 等）中每个写工具调用前，同轮正文必须先出示
-对上一状态的真实 diff（diff 代码块/@@ 痕迹/前后对照均可）；写后欠账会在
-下一个写操作被拦（拦截=已浪费一整轮）。新文件 git add -N + git diff；
-skill 无 diff 回显时贴 old_string/new_string 对照。cron 会话豁免。"""
+def _debt_section(_session_info: Any) -> str:
+    """渲染 diff 出示前置段（读段库取最新）。
+
+    Contract:
+      Postconditions: 返回段库内 diff_debt 文本; 段缺失返回 ""（load_section 告警一次）。
+    """
+    from plugins.prompt_sections import load_section  # 延迟导入: 仅段渲染路径需要
+
+    return load_section("diff_debt")
 
 
 def register(ctx: Any) -> None:
@@ -224,9 +228,11 @@ def register(ctx: Any) -> None:
 
     双层同源执法：system prompt 段把「写前贴 diff」前置到动手之前
     （科学编程守卫同款模式），三钩子仍兜底执法——事前提示降轮次，
-    事后拦截保下限。
+    事后拦截保下限。段文本已外置为段库（prompt_sections/sections.json），
+    渲染器每次读盘取最新；在跑的会话由 discipline/section_reinjection 按
+    版本指纹补注。
     """
     ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("pre_tool_batch", on_pre_tool_batch)
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
-    ctx.register_system_prompt_section("diff_debt", lambda _info: _DEBT_SECTION)
+    ctx.register_system_prompt_section("diff_debt", _debt_section)

@@ -57,17 +57,11 @@ _SUB_GUARDS = (
     ("groundbreaking_gate", groundbreaking_gate),
 )
 
-# 事前注入段:六个子护栏此前只有拦截、无前置提示——实测同一轮里反复被拦
-# (每拦一次=一轮 API 白跑)。段文本与子护栏实现逐条同源:判据、阈值、豁免、
-# 后果一一对应,检错逻辑零改动。段体为稳定前缀,缓存安全。
-_PREFLIGHT_SECTION = """[guards 写前功课——六个子护栏的事前要求,动手前一次做齐免返工]
-1. 先读后写(pre_write):write_file/patch/execute_code 写某文件前,同一轮须已 read_file 或 search_files 读过它;terminal 读不计入。
-2. 四轴证据(four_axis,主闸门 ReadThinkGate):写代码前在回复正文逐项写出 影响面(受影响调用方 路径+函数名+行号)/原意图(最初 commit+不变量)/根因(症状位置 vs 根因位置,文件:行号)/风险(最坏场景+触发条件+影响范围+可恢复性);时效 10 分钟,隔轮即失效须重贴;terminal 豁免。
-3. 新建查重(duplicate_check):新建 .py 前 search_files 全库查同名/同功能实现;commit message 标「已查重,无等价实现」。
-4. 批量写红线(batch_write):一次 execute_code 改「已有文件」达 2 个即拦,逐个 patch;单 commit ≤8 个代码文件,超限走 manual-review 通道(先写 /tmp/.hermes_commit_msg_cache 再 commit -F)。
-5. 病例库(casebook_gate):OntoX 家族写操作前先查 education/casebook/INDEX.md 防同类复发;确认与既有病例无关则重试一次即放行。
-6. 新目录树(scope_gate):仓库内新开目录树须当轮用户原话授权;禁换通道重试。
-7. 源码直写(source_write):terminal 里 sed -i / cat > / python -c 直写源码被拦,改用 patch 或 write_file。"""
+# 事前注入段:六个子护栏与必败黑名单此前只有拦截、无前置提示——实测同一轮里
+# 反复被拦(每拦一次=一轮 API 白跑)。段文本已外置为段库 prompt_sections/sections.json
+# (单一事实源, 见 plugins/prompt_sections.py):渲染器每次读盘取最新, 故段文本修改
+# 对新会话立即生效, 对在跑的会话由 section_reinjection 通道按版本指纹补注。
+# 段文本与子护栏实现逐条同源:判据、阈值、豁免、后果一一对应, 检错逻辑零改动。
 
 # 子代理与批处理会话无写代码主循环,段体诱导空转——按 platform 跳过(同
 # scientific-programming-guard 口径)。
@@ -75,19 +69,35 @@ _EXCLUDED_PLATFORMS = frozenset({"subagent", "batch"})
 
 
 def _render_preflight_section(session_info: Mapping[str, Any]) -> str:
-    """渲染写前功课段；排除平台返回空(空段被 core 跳过)。
+    """渲染写前功课段（读段库取最新；排除平台返回空段）。
 
     Contract:
       Preconditions: session_info 为 core 冻结的只读映射,含 platform 键。
-      Postconditions: 常规会话返回 _PREFLIGHT_SECTION；_EXCLUDED_PLATFORMS 内返回 ""。
+      Postconditions: 常规会话返回段库内 guards_preflight 文本；排除平台返回 ""。
     """
     if str(session_info.get("platform") or "") in _EXCLUDED_PLATFORMS:
         return ""
-    return _PREFLIGHT_SECTION
+    from plugins.prompt_sections import load_section  # 延迟导入: 仅段渲染路径需要
+
+    return load_section("guards_preflight")
+
+
+def _render_blacklist_section(session_info: Mapping[str, Any]) -> str:
+    """渲染必败调用黑名单段（读段库取最新；排除平台返回空段）。
+
+    Contract:
+      Preconditions: session_info 含 platform 键。
+      Postconditions: 常规会话返回段库内 tool_blacklist 文本；排除平台返回 ""。
+    """
+    if str(session_info.get("platform") or "") in _EXCLUDED_PLATFORMS:
+        return ""
+    from plugins.prompt_sections import load_section
+
+    return load_section("tool_blacklist")
 
 
 def register(ctx: Any) -> None:
-    """套件入口——逐子护栏注册 + 注册写前功课段(单个失败不连坐)。"""
+    """套件入口——逐子护栏注册 + 注册文件型段(单个失败不连坐)。"""
     for name, mod in _SUB_GUARDS:
         try:
             mod.register(ctx)
@@ -95,8 +105,9 @@ def register(ctx: Any) -> None:
             logger.warning("guards: sub-guard %s failed to register", name, exc_info=True)
     try:
         ctx.register_system_prompt_section("guards_preflight", _render_preflight_section)
+        ctx.register_system_prompt_section("tool_blacklist", _render_blacklist_section)
     except Exception:
-        logger.warning("guards: preflight prompt section failed to register", exc_info=True)
+        logger.warning("guards: prompt section failed to register", exc_info=True)
 
 
 def preflight(paths):

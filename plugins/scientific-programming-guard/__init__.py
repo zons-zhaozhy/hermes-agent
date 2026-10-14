@@ -511,28 +511,28 @@ def on_pre_tool_call(**kwargs):
         return {}
 
 
-_CODING_SECTION = """[科学编程预算——写代码前先对表，一次写对免返工]
-1. 单函数圈复杂度 ≤10、函数体 ≤100 行；校验/解析/写库拆 _parse_*/_validate_*/_insert_*；
-2. 新 def 带类型注解（参数+返回值），test_/单行函数豁免；
-3. except 必须 logger(exc_info) 或 raise；finally 里的 close/清理调用同样要包 try/except+logger；
-4. 断言期望值写「# 期望:」注释，且必须在 assert 同一行行末——放到上一行=被拦；禁先写代码再凑绿灯；
-5. 引用本地模块（apps.X / plugins.X 等）前先 read_file 该模块源码，否则按「参数瞎猜」拦；
-6. 前端：async @click 必带 :loading + try/finally；颜色只用 var(--el-*)。"""
+# 段文本已外置为段库 prompt_sections/sections.json（键 scientific_programming, 单一
+# 事实源）: 渲染器每次读盘取最新——段修改对新会话立即生效, 对在跑的会话由
+# discipline/section_reinjection 通道按版本指纹补注。段内判据与下方 on_pre_tool_call
+# 的检错逻辑同源（阈值、豁免、后果逐条对应）。
 
 # 子代理与批处理会话没有 clarify 通道，预算段会诱导空转——按 platform 跳过
 _EXCLUDED_PLATFORMS = {"subagent", "batch"}
 
 
 def _coding_section(session_info: Mapping[str, Any]) -> str:
-    """渲染写码预算规范段；排除平台返回空（空段被 core 跳过）。
+    """渲染写码预算规范段（读段库取最新）；排除平台返回空（空段被 core 跳过）。
 
     Contract:
-        Preconditions: session_info 为 core 冻结的只读映射，含 ``platform`` 键。
-        Postconditions: 常规会话返回 ``_CODING_SECTION``；排除平台返回 ""。
+        Preconditions: session_info 为 core 冻结的只读映射，含 ``platform`` 键；
+          段库内存在键 scientific_programming。
+        Postconditions: 常规会话返回段文本；排除平台返回 ""；段缺失返回 ""（告警一次）。
     """
     if str(session_info.get("platform") or "") in _EXCLUDED_PLATFORMS:
         return ""
-    return _CODING_SECTION
+    from plugins.prompt_sections import load_section  # 延迟导入: 仅段渲染路径需要
+
+    return load_section("scientific_programming")
 
 
 def register(ctx: Any) -> None:
