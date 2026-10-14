@@ -212,8 +212,21 @@ def on_pre_tool_call(**kwargs: Any) -> Optional[dict[str, Any]]:
         return _block_verdict(tool_name, sid, debts)
 
 
+_DEBT_SECTION = """[diff 出示前置——写工具调用前同轮先贴对照]
+连续写链（patch→patch→commit 等）中每个写工具调用前，同轮正文必须先出示
+对上一状态的真实 diff（diff 代码块/@@ 痕迹/前后对照均可）；写后欠账会在
+下一个写操作被拦（拦截=已浪费一整轮）。新文件 git add -N + git diff；
+skill 无 diff 回显时贴 old_string/new_string 对照。cron 会话豁免。"""
+
+
 def register(ctx: Any) -> None:
-    """注册三钩子（post 记账 / batch 清账 / pre 执法）。"""
+    """注册三钩子（post 记账 / batch 清账 / pre 执法）+ 事前注入段。
+
+    双层同源执法：system prompt 段把「写前贴 diff」前置到动手之前
+    （科学编程守卫同款模式），三钩子仍兜底执法——事前提示降轮次，
+    事后拦截保下限。
+    """
     ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("pre_tool_batch", on_pre_tool_batch)
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
+    ctx.register_system_prompt_section("diff_debt", lambda _info: _DEBT_SECTION)
