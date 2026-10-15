@@ -115,6 +115,10 @@ _BILLING_PATTERNS = (
     # limit" free text is NOT matched: substring rules can't negate the
     # "non-terminal billing limit" wording, and the structured code covers it.
     "hard billing limit",
+    # 中文服务商的配额耗尽：zai 的 1308 原文「已达到 5 小时的使用上限。您的限额将在
+    # <时刻> 重置。」——给出未来恢复时刻的是配额型，不是 per-minute 瞬时限流；中文的
+    # 瞬时限流表述为「请求过于频繁」「服务繁忙」类，不含下列短语。
+    "使用上限", "限额将在", "额度已用完", "配额已用完",
 )
 
 # Not proof of exhaustion: Anthropic returns the same "out of extra usage" body

@@ -11,6 +11,7 @@ import pytest
 
 from agent import auxiliary_client as ac
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.auxiliary_health import fallback_candidate_quarantine_ttl
 
 
 class _Err(Exception):
@@ -90,3 +91,27 @@ def test_upstream_capacity_429_is_not_a_credential_to_bench(monkeypatch, body, b
     if benches_pool:
         assert pool.rotate_calls[0]["status_code"] == 429
         assert pool.rotate_calls[0]["api_key_hint"] == "sk-failed"
+
+
+def test_chinese_quota_exhaustion_429_is_billing_not_a_transient_rate_limit():
+    """zai 的 1308（5 小时窗口配额耗尽）必须走长 TTL，而非 per-minute 429 的 60 秒。"""
+    exc = _Err(
+        "Error code: 429 - {'error': {'code': '1308', 'message': "
+        "'已达到 5 小时的使用上限。您的限额将在 2026-10-15 20:16:06 重置。'}}",
+        429,
+    )
+    assert classify_api_error(exc).reason is FailoverReason.billing
+    assert ac._is_payment_error(exc)
+    # 契约：配额耗尽归 payment label，其隔离时长是长 TTL（None），不是 60 秒。
+    assert fallback_candidate_quarantine_ttl("payment error") is None
+    assert fallback_candidate_quarantine_ttl("rate limit") == 60.0
+
+
+def test_chinese_transient_rate_limit_is_not_mistaken_for_quota_exhaustion():
+    """反例：中文瞬时限流消息不含配额短语，必须仍判为 rate_limit（新增中文词不得误伤）。"""
+    exc = _Err(
+        "Error code: 429 - {'error': {'code': '1302', 'message': '请求过于频繁，请稍后重试。'}}",
+        429,
+    )
+    assert classify_api_error(exc).reason is FailoverReason.rate_limit
+    assert not ac._is_payment_error(exc)
