@@ -56,6 +56,10 @@ _SCHEMA_HEADINGS = ("数据结构", "表族", "表结构")
 # 数据库裁决为必备章节（用户指令 2026-10-14「确定数据结构的时候要先确定数据库」）：
 # 缺库归属裁决的功课文档不构成证据
 _MANDATORY_HEADINGS = ("数据库",)
+# 用户层章节必备词组（任一命中即可，2026-10-15 补：七步法第 6 步「产品能力」的
+# 机器判据——谁用/什么场景/拿到什么。缺用户层章节=能力规划未做，功课文档不构成证据；
+# 对应本会话用户四问暴露的「诉求覆盖无对账载体」缺口）
+_USER_HEADINGS = ("用户", "旅程", "诉求")
 # E2 数据结构痕迹：DDL 目录名
 _SCHEMA_DIR_NAMES = ("migrations", "alembic", "db", "schema")
 # E3 token 匹配噪音词表：短结构词整词命中降级（不构成 E3 信号 token）
@@ -85,27 +89,32 @@ def _locate_app(path: Path) -> Optional[tuple[Path, str]]:
     return None
 
 
-def _heading_flags(lines: list[str]) -> tuple[bool, bool]:
-    """扫描标题行，返回 (含必备「数据库」标题, 含结构标题任一——表结构本体证据)。"""
+def _heading_flags(lines: list[str]) -> tuple[bool, bool, bool]:
+    """扫描标题行，返回 (含必备「数据库」标题, 含用户层标题任一, 含结构标题任一)。"""
     has_mandatory = False
+    has_user = False
     has_schema = False
     for ln in lines:
         stripped = ln.strip()
         if stripped.startswith("#"):
             if any(h in stripped for h in _MANDATORY_HEADINGS):
                 has_mandatory = True
+            if any(h in stripped for h in _USER_HEADINGS):
+                has_user = True
             if any(h in stripped for h in _SCHEMA_HEADINGS):
                 has_schema = True
-    return has_mandatory, has_schema
+    return has_mandatory, has_user, has_schema
 
 
 def _doc_is_groundwork(md_path: Path) -> bool:
-    """E1/E3 内容判据：非空有效行数≥30 且标题行含必备「数据库」+结构标题任一
+    """E1/E3 内容判据：非空有效行数≥30 且标题行含必备「数据库」+用户层标题任一
+    （用户/旅程/诉求——产品能力证据）+结构标题任一
     （数据结构/表族/表结构——表结构本体证据，链路/架构章节不能替代）。
 
     Contract:
-      Postconditions: 文件不可读/行数不足/无「数据库」标题/无结构标题任一
-        → False（空文档与缺库归属裁决、缺表结构本体的文档均不构成证据）
+      Postconditions: 文件不可读/行数不足/无「数据库」标题/无用户层标题/
+        无结构标题任一 → False（空文档与缺库归属裁决、缺产品能力、
+        缺表结构本体的文档均不构成证据）
     """
     try:
         lines = md_path.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -113,8 +122,8 @@ def _doc_is_groundwork(md_path: Path) -> bool:
         return False
     if sum(1 for ln in lines if ln.strip()) < _MIN_DOC_LINES:
         return False
-    has_mandatory, has_schema = _heading_flags(lines)
-    return has_mandatory and has_schema
+    has_mandatory, has_user, has_schema = _heading_flags(lines)
+    return has_mandatory and has_user and has_schema
 
 
 def _e1_groundwork_doc(app_dir: Path) -> Optional[Path]:
