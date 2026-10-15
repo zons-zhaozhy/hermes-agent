@@ -86,6 +86,28 @@ def _is_false_continue(text: str) -> bool:
 _MAX_PRE_VERIFY_NUDGES = 3
 
 
+# ── 第三类失效收尾：真推迟（1015 用户批评「总是单独立项不立即处理」）──
+# 与请示式（问句）/宣言式假继续（说要继续）不同：真推迟是陈述句明确宣布
+# 「不列入本轮/单独立项/留待后续」后停轮——旧判定矩阵（_is_pushback/
+# _is_false_continue）对它零检测：不是问句、也不是继续宣言。用户价值序：
+# 顺带发现的缺陷属于当轮任务的一部分（零尾巴纪律），除非不可逆/凭据/付费
+# /需拍板级，不得外推。豁免沿用 _LEGIT_ASK_RE（不可逆/凭据/付费/必须先确认）。
+_DEFER_RE = re.compile(
+    r"(不列入本轮|单独立项|另行立项|另行处理|后续单独|留待后续|暂不处理"
+    r"|暂不混入|后续迭代|独立战线|本轮不处理|后续再处理|单独跟进|后续跟进"
+    r"|先记录在案)"
+)
+
+
+def _is_defer_pushout(text: str) -> bool:
+    """Contract: Preconditions: text 为 str（可空）；Postconditions: 命中
+    推迟性措辞（把发现的问题外推出当轮任务）且不命中合法豁免（不可逆/
+    凭据/付费/拍板/必须先确认）时返回 True，否则 False。"""
+    if not text:
+        return False
+    return bool(_DEFER_RE.search(text)) and not _LEGIT_ASK_RE.search(text)
+
+
 def _is_pushback(text: str) -> bool:
     """Contract: Preconditions: text 为 str（可空）；Postconditions: 命中请示句式
     且不命中合法豁免时返回 True，否则 False。"""
@@ -221,19 +243,21 @@ def _on_pre_verify(**kwargs) -> dict:
     changed_paths = list(kwargs.get("changed_paths") or [])
     code_changed = any(
         not p.endswith((".md", ".txt", ".rst")) for p in changed_paths)
-    if _is_pushback(tail) or _is_false_continue(tail):
+    if (_is_pushback(tail) or _is_false_continue(tail) or _is_defer_pushout(tail)):
         logger.warning(
-            "finish_guard: pre_verify 拦截请示式/宣言式收尾（attempt=%d），强制续跑", attempt
+            "finish_guard: pre_verify 拦截请示式/宣言式/推迟式收尾（attempt=%d），强制续跑", attempt
         )
         return {
             "action": "continue",
             "message": (
-                "[finish_guard] 你的收尾是请示式提问或宣言式假继续（宣布「继续/下一批」"
-                "却停轮）。撤回收尾，但注意：宣布过的「下一步」不因被写下就成为欠下的"
+                "[finish_guard] 你的收尾是请示式提问、宣言式假继续（宣布「继续/下一批」"
+                "却停轮）、或推迟式外推（把发现的问题宣布为「不列入本轮/单独立项/"
+                "留待后续」后停轮）。撤回收尾，但注意：宣布过的「下一步」不因被写下就成为欠下的"
                 "工作——它同样要过授权范围这一关。当轮授权范围 = 用户当轮原话里明确"
                 "要求产出的东西；分析、设计、评审、调研、可行性论证类请求不等于建造授权。"
                 "分支一（剩余步骤在范围内）：把可逆决策标注为假设后直接连做，跑完拿"
-                "真实结果收尾。分支二（超出范围：新增产物/方向级动作）：撤回该宣布，"
+                "真实结果收尾——顺带发现的缺陷属于当轮任务的一部分，可控可回滚就直接修完，"
+                "禁止以「单独立项/不列入本轮」外推。分支二（超出范围：新增产物/方向级动作）：撤回该宣布，"
                 "改为「必须先确认：」列出该项+你的建议+不回复时的默认动作，不要执行它。"
                 "不可逆操作、凭据、付费同样停下请示。"
             ),
@@ -266,13 +290,15 @@ def _transform_llm_output(response_text: str = "", **kwargs) -> str:
     if not output.strip():
         return output
     tail = _tail_text(output)
-    if not (_is_pushback(tail) or _is_false_continue(tail)):
+    if not (_is_pushback(tail) or _is_false_continue(tail) or _is_defer_pushout(tail)):
         return output
-    logger.warning("finish_guard: 请示式/宣言式收尾漏网（L1/L2 未覆盖），打用户可见标记")
+    logger.warning("finish_guard: 请示式/宣言式/推迟式收尾漏网（L1/L2 未覆盖），打用户可见标记")
     return (
         output
-        + "\n\n[finish_guard] 上面以请示式提问或宣言式假继续收尾。按既定纪律："
+        + "\n\n[finish_guard] 上面以请示式提问、宣言式假继续、或推迟式外推收尾。按既定纪律："
         "当轮授权范围内的可逆决策标注假设直接继续，不必等待确认；"
+        "顺带发现的缺陷属于当轮任务的一部分，可控可回滚就直接修完，禁止以"
+        "「单独立项/不列入本轮/留待后续」外推。"
         "但宣布过的「下一步」若超出当轮授权范围（新增产物如新文件/新目录/新应用/新依赖，"
         "或方向级动作、不可逆操作、凭据、付费），不得自行开工，须撤回该宣布并列为"
         "「必须先确认：」项呈报。当轮授权范围 = 用户当轮原话里明确要求产出的东西；"
