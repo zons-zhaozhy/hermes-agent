@@ -157,7 +157,11 @@ hermes config set auxiliary.compression.extra_body.max_tokens 16384
 
 以下两项需要用户拍板，不属于可自行决断的可控可回滚范围：
 
-1. **压缩辅助额度与 zai Coding Plan 共用**。当前压缩、标题生成、后台复核、视觉、多个守卫任务全部指向 zai，与该账户的对话额度共享同一 5 小时窗口。建议为压缩任务配置独立的 `fallback_chain`（额度独立、输出上限充足的模型）。默认动作（用户不回复时）：保持现状，仅保留本次 max_tokens 修复。
+1. **zai Coding Plan 额度池共用的量化事实**。三条实测证据：① 端点唯一——主对话 provider zai（`~/.hermes/config.yaml:53`）与 auxiliary.compression（`:237`）等全部 zai 辅助任务同为 `https://open.bigmodel.cn/api/coding/paas/v4`，全配置 20 余处 base_url 无一处指向按量端点；② 重置时刻唯一——837 条 429 原文中重置时刻只有一个取值 `2026-10-15 20:16:06`（主对话 `conversation_loop` 318 条 + 辅助 `auxiliary_client` 92 条）；③ 兜底链同指向——56 处 `fallback_chain` 条目（350–402 行区间）全部 `provider: zai` + 同一 coding 端点。
+
+   累计输入 tokens 占比（zai 通道）：主对话 302,383,879（84.1%）、辅助合计 57,225,249（15.9%），其中 `background_review` 37,056,376（10.3%）为辅助最大消耗者，`compression` 18,022,921（5.0%）。
+
+   该量化推翻了「为压缩任务拆出独立额度即可解决」的设想——拆走压缩收益上限仅 5.0%，额度主体是主对话的 84.1%（即并发会话数本身）。建议按 9-25 报告第六节处置：会话数收敛（只保留 1-2 个会话走 zai，其余切 deepseek）+ 下调 `threshold_tokens`。默认动作（用户不回复时）：保持现状，仅保留本次 max_tokens 修复。
 
 2. **本地裁剪门槛调整**。将 `compression.proactive_prune_min_result_chars` 由 8,000 下调至 1,500 字符，可让本地确定性裁剪成为摘要失败时的第二道防线；代价是裁剪提交会破坏 prompt 缓存前缀（`agent/context_compressor.py:3399` 注释：「A commit breaks the prompt cache」）。默认动作（用户不回复时）：不下调，因当前 prompt 缓存命中率接近满值（实测 280,064 / 280,247）。
 
