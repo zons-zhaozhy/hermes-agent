@@ -1,0 +1,8 @@
+name: skill_diff_echo
+description: skill_manage 回显根治——成功结果尾部内建逐操作 diff（patch 的 -old/+new、全量写的新文件头尾、删除标注），写后改动当轮可见，禁依赖会话层手补
+version: 1.0.0
+author: stan
+hooks:
+  - transform_tool_result
+tags:
+  - guard
