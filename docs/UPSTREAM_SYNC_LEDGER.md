@@ -1,6 +1,7 @@
 # 上游同步防冲突账本（SSOT）
 
-最后核验: 2026-09-26 · main 站上 upstream/main 8afaab3703 (304 提交合并, merge 34f69e8584), 落后 0
+最后核验: 2026-10-15 · main 站上 upstream/main 7bda2a3368 (2116 提交合并, merge cc2036d485), 落后 0
+(网络通道: SSH443/HTTPS 直连均被重置时, remote.upstream.url 临时切 gh-proxy.com 代理通道完成 lazy fetch, 完毕恢复)
 
 > 注意: `git rev-list --count main..upstream/main` 在官方导入完整历史后不再可信
 > (仓库现有 11 个根提交, upstream 可达 ~39.9k vs fork 可达 ~206)。真实落后量用
@@ -27,6 +28,10 @@ f799fd8578 在官方 Linux CI "Python tests / Run tests" = success。
   8027e3ef2d 已恢复官方实现, image_gen+memory+photon 625/625 绿
 - 时序抖动类(满载 20 worker 下偶发, 单跑绿): test_slash_worker_mcp_discovery(subprocess
   +MCP 发现窗口)
+- 上游自身回归(1015 实测, upstream/main 纯净树同构失败 1✗/5✓, 非本地定制所致, 不代改):
+  test_auxiliary_client.py::TestAuxUnhealthyCache::test_custom_billing_failure_keeps_distinct_
+  endpoint_eligible——hosted 402 后 fallback 链误判 exhausted; 根因在 b40998bc3c4 之后
+  should_skip_candidate/FailureScope 演进, 待上游修
 - 收集超时类: test_run_agent.py 等 3 大文件, 单跑 --collect-only 4.62s 正常, 系 runner
   并行限时形态
 - 处置: 不修(修 macOS 语义=打乱上游); 上游侧理想修法=补 linux_only 标记, 本地不代改
@@ -46,6 +51,8 @@ f799fd8578 在官方 Linux CI "Python tests / Run tests" = success。
 | tests/hermes_cli/test_pre_tool_batch_fail_closed.py | 5e0f4214ce: pre_tool_batch fail-closed 配套测试 | 零（测试文件） | 与 tool_executor 定制同命运 |
 | tests/cron/test_unreachable_retry.py | b929b65d16 配套测试 | 零（测试文件） | 与 cron 定制同命运 |
 | cron/unreachable_retry.py | b929b65d16: 恢复 unreachable ladder 的 offline 摘要+quota 429 transient 判定 | 中（官方改 retry 逻辑时撞） | 跟踪官方 retry 侧等价机制 |
+| pm/index_config.py (1015 新增) | 1 行: FORWARDED_UV_SETTINGS 白名单补 UV_OFFLINE(传输层设置转发缺口, 被墙网络下 uv 对 direct-url 依赖强制在线 revalidate 而缓存已齐) | 低（追加式） | 值得提 upstream PR |
+| ~~tools/bot_mode_dm.py + tests/tools/test_bot_*.py 3 件~~ | (1015 退役) _turn_child 排水定制随上游投递架构重构退役——上游 _wait_live_dm/admit 架构不再 capture_output 跑 turn, 本地修的管道继承卡死问题面消失, 且本地修复线概念(_LIVE_WAIT_MAX_SECONDS/relaunch/late replies)已全部上游化 | 已清零 | 已同步件 |
 | scripts/skill_sha_drift.py | b101a20a2d/74c996fef6: skill-drift-check 依赖脚本（基线切换恢复件+噪音修复） | 低（scripts/ 追加式） | 长期保留 |
 | scripts/paradigm_triage.py | cba41a4730: 范式级信号分诊件——信号词预筛+Ollama qwen2.5:0.5b 打分(0-9)→top 队列供日学习优先消化;判断题走小模型(SystemOne 纪律) | 低（scripts/ 追加式） | 长期保留（每日 12:40 cron 范式分诊·日跑消费） |
 | .hermes-rules.md | fork 根纪律文件（官方无此文件） | 零 | 长期保留；md5 与 HEAD 对齐由三问审计第4条核验 |
