@@ -22,6 +22,14 @@
 - 优先级：低（哨兵 09-27 通报，未复核）
 - 内容：哨兵称 .dev_logs/oms.log 无 profile 前缀，多 profile 共用一文件。需读 OMS dev_start 逻辑核实后决定是否修。
 
+### 3. [aux] 既有失败测试：custom 端点支付失败误跳过不同 URL 的候选
+- 优先级：中（测试红灯，非本 fork 引入）
+- 现象：tests/agent/test_auxiliary_client.py::TestAuxUnhealthyCache::test_custom_billing_failure_keeps_distinct_endpoint_eligible 失败——hosted 自定义端点返回 402 后，fallback 的 local 端点未被尝试，调用直接抛出主错误。
+- 证据：① git stash 暂存本次改动后复跑为同样的 1 failed / 239 passed，基线一致；② fork 与 upstream 在 agent/backend_identity.py 无差异，agent/auxiliary_client.py 的 18 行差异全在 _ladder_provider_fallback 的 request timed out 分支（fork 定制 ef562cb74a），payment 路径与 upstream 逐字相同；③ 运行时 _resolve_fallback_entry 零调用，并出现「all fallbacks exhausted」告警。
+- 疑似根因：_chain_failure_scope（auxiliary_client.py:7905）在 _custom_health_base_url(resolved_provider, route.base_info) 返回空时退化为 None，_failed_backend_skip 随即落到 FailureScope.CREDENTIAL；same_credential_surface（backend_identity.py:87）按 provider 名比较，custom == custom 即判同一凭据面并跳过候选，于是不同 URL 的候选被误跳过。
+- 方案候选：payment 作用域下改用按 base_url 比较的 same_endpoint 语义，而非 provider 名比较。
+- 阻塞：backend_identity.py / auxiliary_client.py 属核心文件（上游同步纪律），改动会与上游该语义分叉；建议先向上游报 issue/PR（需授权）。
+
 ## 已结案（防重题）
 
 - 429/1302 整点齐射 → 4 任务错峰已落地（:04/:07/:10/:11 分配表，哨兵回读核实）
