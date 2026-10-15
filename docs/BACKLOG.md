@@ -31,12 +31,13 @@
 - 阻塞：backend_identity.py / auxiliary_client.py 属核心文件（上游同步纪律），改动会与上游该语义分叉；建议先向上游报 issue/PR（需授权）。
 
 ### 4. [aux] 回退条目不支持自带 extra_body，task 级 provider 特有参数跨 provider 透传
-- 优先级：中（会使命中回退的调用被 422 拒绝，回退等于不生效）
+- 优先级：已缓解（2026-10-15 代码修复 76d800c136）
 - 现象：auxiliary.<task>.extra_body 里的 provider 特有键（如 zai 的 thinking.type=low）在回退到其他 provider 时被原样发送，目标 provider 以 422 拒绝。
 - 证据：实测 goal_judge 回退 deepseek 报 422「thinking.type: unknown variant 'low', expected one of 'adaptive', 'enabled', 'disabled'」；把该值改为 disabled（两家合法交集）后同链回退成功（返回 'OK'，模型 deepseek-flash）。
 - 根因：_resolve_fallback_entry（auxiliary_client.py:4452-4466）仅支持 provider/model/base_url/api_key/api_mode，不支持条目级 extra_body；_call_llm_impl（:7493-7494）把 task 级 extra_body 放进 effective_extra_body 后无条件传给所有候选。_with_custom_endpoint_extra_body（:6360）已为 custom 端点的 extra_body 实现「回退到别的 provider 不再继承」，但未覆盖 task 级 extra_body。
 - 方案候选：①回退条目支持自带 extra_body（声明式覆盖）；②按目标 provider 能力过滤 task 级 provider 特有键。
 - 阻塞：属核心文件（上游同步纪律）；当前以配置规避（改用两家合法交集取值）。
+- 2026-10-15 修复（76d800c136）：deepseek 取值拒绝词形（unknown variant）纳入 is_reasoning_field_rejection 邻近判定，命中 422 即触发 _without_reasoning_fields 自动剔除重试，回退路径自愈（端到端实测：thinking.type=low 直连 deepseek 修复前 422 失败→修复后返回 OK）；goal_judge 的 thinking.type 已恢复 low（主路径原语义）。剩余敞口＝非 reasoning 类 provider 专有键（厂商专有顶层参数）透传仍不自愈，保留观察。
 
 ## 已结案（防重题）
 
