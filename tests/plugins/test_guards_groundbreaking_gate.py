@@ -35,8 +35,10 @@ _sid = itertools.count()
 GOOD_DOC = (
     "# 架构功课\n"
     + "\n".join(f"内容行{i}" for i in range(30))
-    + "\n## 数据结构\n表族说明\n## 数据库\n挂 aml_ng 库（实例 127.0.0.1:5416），依据=外键关联+同库事务。"
-    + "\n## 用户\n模型管理员高频调参；合规岗低频裁定；监管检查只读取证。\n"
+    + "\n## 数据结构\n表族说明"
+    + "\n## 数据库\n挂 aml_ng 库（实例 127.0.0.1:5416），依据=外键关联+同库事务。"
+    + "\n## 用户\n模型管理员高频调参；合规岗低频裁定；监管检查只读取证。"
+    + "\n## 业务\n三域实验：可疑/客户风险等级/尽职调查，指标/规则/模型三级。\n"
 )
 
 
@@ -145,6 +147,24 @@ def test_e1_doc_without_user_section_still_blocks(tmp_path: Path) -> None:
     )
     v = _call("write_file", app / "main.py")
     assert v is not None and v.get("action") == "block"  # 期望: 缺产品能力证据 → 拦
+
+
+def test_e1_doc_without_biz_section_still_blocks(tmp_path: Path) -> None:
+    # 期望: 功课文档行数够+有「数据库」+用户层+结构标题但缺业务层标题
+    # (业务/场景/领域) → 仍拦
+    # (2026-10-15 补: 用户四问「要处理哪些业务」轴机器化——缺业务章节=
+    #  业务边界未划清)
+    repo = _mk_repo(tmp_path)
+    app = repo / "apps" / "demo_app4"
+    (app / "docs").mkdir(parents=True)
+    (app / "docs" / "C.md").write_text(
+        "# 架构功课\n" + "\n".join(f"内容行{i}" for i in range(30))
+        + "\n## 数据库\n挂 aml_ng 库\n## 数据结构\n表族说明\n"
+        + "\n## 用户\n模型管理员高频调参。\n",
+        encoding="utf-8",
+    )
+    v = _call("write_file", app / "main.py")
+    assert v is not None and v.get("action") == "block"  # 期望: 缺业务边界证据 → 拦
 
 
 def test_e2_sql_and_migrations_pass(tmp_path: Path) -> None:

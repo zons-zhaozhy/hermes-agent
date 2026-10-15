@@ -60,6 +60,10 @@ _MANDATORY_HEADINGS = ("数据库",)
 # 机器判据——谁用/什么场景/拿到什么。缺用户层章节=能力规划未做，功课文档不构成证据；
 # 对应本会话用户四问暴露的「诉求覆盖无对账载体」缺口）
 _USER_HEADINGS = ("用户", "旅程", "诉求")
+# 业务层章节必备词组（任一命中即可，2026-10-15 补：功课文档必须回答
+# 「要处理哪些业务」——处理域清单/场景枚举。缺业务章节=业务边界未划清，
+# 功课文档不构成证据；对应用户四问的「要处理哪些业务」轴）
+_BIZ_HEADINGS = ("业务", "场景", "领域")
 # E2 数据结构痕迹：DDL 目录名
 _SCHEMA_DIR_NAMES = ("migrations", "alembic", "db", "schema")
 # E3 token 匹配噪音词表：短结构词整词命中降级（不构成 E3 信号 token）
@@ -89,32 +93,38 @@ def _locate_app(path: Path) -> Optional[tuple[Path, str]]:
     return None
 
 
-def _heading_flags(lines: list[str]) -> tuple[bool, bool, bool]:
-    """扫描标题行，返回 (含必备「数据库」标题, 含用户层标题任一, 含结构标题任一)。"""
-    has_mandatory = False
-    has_user = False
-    has_schema = False
-    for ln in lines:
-        stripped = ln.strip()
-        if stripped.startswith("#"):
-            if any(h in stripped for h in _MANDATORY_HEADINGS):
-                has_mandatory = True
-            if any(h in stripped for h in _USER_HEADINGS):
-                has_user = True
-            if any(h in stripped for h in _SCHEMA_HEADINGS):
-                has_schema = True
-    return has_mandatory, has_user, has_schema
+def _has_any_heading(lines: list[str], headings: tuple[str, ...]) -> bool:
+    """判定标题行是否命中词组集合中任一词（零正则，str 方法）。
+
+    Contract:
+      Postconditions: 任一标题行（# 开头）含任一词 → True，否则 False。
+    """
+    return any(
+        ln.strip().startswith("#") and any(h in ln for h in headings)
+        for ln in lines
+    )
+
+
+def _heading_flags(lines: list[str]) -> tuple[bool, bool, bool, bool]:
+    """扫描标题行，返回 (含必备「数据库」标题, 含用户层标题任一, 含业务层标题任一, 含结构标题任一)。"""
+    return (
+        _has_any_heading(lines, _MANDATORY_HEADINGS),
+        _has_any_heading(lines, _USER_HEADINGS),
+        _has_any_heading(lines, _BIZ_HEADINGS),
+        _has_any_heading(lines, _SCHEMA_HEADINGS),
+    )
 
 
 def _doc_is_groundwork(md_path: Path) -> bool:
     """E1/E3 内容判据：非空有效行数≥30 且标题行含必备「数据库」+用户层标题任一
-    （用户/旅程/诉求——产品能力证据）+结构标题任一
+    （用户/旅程/诉求——产品能力证据）+业务层标题任一
+    （业务/场景/领域——处理域边界证据）+结构标题任一
     （数据结构/表族/表结构——表结构本体证据，链路/架构章节不能替代）。
 
     Contract:
       Postconditions: 文件不可读/行数不足/无「数据库」标题/无用户层标题/
-        无结构标题任一 → False（空文档与缺库归属裁决、缺产品能力、
-        缺表结构本体的文档均不构成证据）
+        无业务层标题/无结构标题任一 → False（空文档与缺库归属裁决、缺产品
+        能力、缺业务边界、缺表结构本体的文档均不构成证据）
     """
     try:
         lines = md_path.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -122,8 +132,8 @@ def _doc_is_groundwork(md_path: Path) -> bool:
         return False
     if sum(1 for ln in lines if ln.strip()) < _MIN_DOC_LINES:
         return False
-    has_mandatory, has_user, has_schema = _heading_flags(lines)
-    return has_mandatory and has_user and has_schema
+    has_mandatory, has_user, has_biz, has_schema = _heading_flags(lines)
+    return has_mandatory and has_user and has_biz and has_schema
 
 
 def _e1_groundwork_doc(app_dir: Path) -> Optional[Path]:
