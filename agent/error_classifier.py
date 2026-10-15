@@ -563,7 +563,13 @@ def is_reasoning_field_rejection(error_msg: str) -> bool:
     Known trade-off: a 400 about a thinking *state* ("Function calling is not supported when
     thinking is enabled") also matches — the marker sits right next to the token, so no proximity
     rule separates it from the forward wordings. Cost is one dropped-disable retry before the
-    spent path takes the fallback chain; the auxiliary ladder already treated it this way."""
+    spent path takes the fallback chain; the auxiliary ladder already treated it this way.
+
+    A strict-validating endpoint names the field and rejects its *value*: ``thinking.type: unknown
+    variant `low`, expected one of `adaptive`, `enabled`, `disabled``` (DeepSeek 422) — same remedy
+    (one retry without the reasoning wire controls), so that value-rejection word form joins the
+    proximity check.
+    """
     msg = (error_msg or "").lower()
     if _REASONING_PARAM_REJECTION.search(msg):
         return True
@@ -571,7 +577,10 @@ def is_reasoning_field_rejection(error_msg: str) -> bool:
     if token is None:
         return False
     near = msg[max(0, token.start() - 32):token.end() + 32]
-    return "unsupported" in near or any(m in msg for m in UNSUPPORTED_PARAM_MARKERS)
+    return (
+        "unsupported" in near or "unknown variant" in near
+        or any(m in msg for m in UNSUPPORTED_PARAM_MARKERS)
+    )
 
 
 def _billing_hints(error_msg: str) -> Verdict:

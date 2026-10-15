@@ -994,6 +994,30 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.reasoning_mandatory
         assert result.retryable is True and result.should_fallback is False
 
+    def test_deepseek_unknown_variant_value_rejection_is_reasoning_field_rejection(self):
+        """DeepSeek 422 names the field and rejects its *value*: ``thinking.type: unknown variant
+        `low`, expected one of `adaptive`, `enabled`, `disabled``` — the strict-validation word form
+        of a reasoning wire-control rejection, so the ladder retries once without the controls
+        instead of exhausting the fallback chain (observed 2026-10-15 on the goal_judge route)."""
+        body = {
+            "error": {
+                "message": "Failed to deserialize the JSON body into the target type: "
+                           "thinking.type: unknown variant `low`, expected one of "
+                           "`adaptive`, `enabled`, `disabled` at line 1 column 202",
+                "type": "invalid_request_error", "param": None, "code": "invalid_request_error",
+            }
+        }
+        msg = f"Error code: 422 - {body}"
+        # 期望: 字段被点名(thinking)且值被拒(unknown variant)→判 reasoning 字段拒绝→触发一次无该字段重试
+        assert is_reasoning_field_rejection(msg)
+        # 期望: 非 reasoning 字段的同类取值拒绝不含 reasoning token→不是 reasoning 字段拒绝
+        assert not is_reasoning_field_rejection(
+            "Error code: 422 - temperature: unknown variant `celsius`, expected one of `c`, `f`")
+        # 期望: unknown variant 与 token 距离超出邻近窗口→不判拒绝
+        assert not is_reasoning_field_rejection(
+            "thinking configured for this route earlier; unrelated note; the request also failed "
+            "because a field elsewhere had unknown variant `x`")
+
     # ── Provider-specific: llama.cpp grammar-parse ──
 
     def test_llama_cpp_unable_to_generate_parser_template(self):
