@@ -63,7 +63,7 @@ def diff_one_pair(fork_sub: Path, ws_sub: Path) -> dict[str, list[str]]:
     only_fork: list[str] = []
     drifted: list[str] = []
     for f, w in iter_pair_files(fork_sub, ws_sub):
-        rel = f.relative_to(fork_sub.parent)
+        rel = f.relative_to(FORK_ROOT)
         if not f.exists():
             continue  # 仅 workspace 有=运行态产物（.driftbak 等），不判漂移
         if not w.exists():
