@@ -4534,6 +4534,14 @@ class TestAuxUnhealthyCache:
         ), patch(
             "agent.auxiliary_client._resolve_fallback_entry",
             return_value=(local_client, "local-model"),
+        ), patch(
+            # The fallback walk's context gate (unified-gateway-runtime) screens unknown models at
+            # the 4096 conservative default, which would reject "local-model" for the compression
+            # task minimum (64000) before the billing semantics this test asserts are ever reached.
+            # Patch the production read site (same idiom as
+            # TestAuxiliaryFallbackChain.test_context_gate) so the local endpoint stays eligible.
+            "agent.auxiliary_client.get_model_context_length",
+            return_value=1_000_000,
         ):
             response = call_llm(
                 task="compression",
