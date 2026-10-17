@@ -30,8 +30,11 @@ logger = logging.getLogger("gateway.run")
 # Past this window with zero traffic the registration is stale — a transport that died
 # without ``detach``/``close``, or a surface that registered once and never judges — and the
 # gateway takes its own post-turn hooks back instead of leaving the session's goal loop with
-# no driver at all. A healthy viewer re-registers on its next call.
-STALE_VIEWER_AUTOMATION_SECONDS = 180.0
+# no driver at all. A healthy viewer re-registers on its next call. The window is sized for
+# the judge's actual latency (seconds), not for a whole polling cadence: a CLI window whose
+# heartbeats keep refreshing the stamp while its continuation queue never reaches the
+# gateway-run agent loop otherwise leaves the goal with no driver for the full window.
+STALE_VIEWER_AUTOMATION_SECONDS = 30.0
 
 _CALLS = {
     "goal": frozenset({"state", "set", "pause", "resume", "clear", "mark_done", "add_subgoal", "remove_subgoal",
