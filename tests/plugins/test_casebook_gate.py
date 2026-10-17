@@ -183,3 +183,129 @@ def test_config_fallback_when_module_attrs_empty(
     assert v is not None  # 期望: config 提供路径→护栏激活拦截（非死护栏）
     assert v["action"] == "block"  # 期望: 拦截动作字面量=block（规则语义）
     assert str(cb) in v["message"]  # 期望: 修复指引来自 config 路径
+
+
+# ── 只读误拦第三轮根修回归（2026-10-17）──────────────────────────────
+# 规则语义（独立于实现）：门禁对象是「写目标落在 OntoX 根内」的命令。
+# token 在命令中的角色是源/脚本路径/表达式/输入文件时，不构成写目标。
+# 依据：dispatcher 账本 cp、晚省 evening_retro_facts.py 执行连拦 2 次（实测复现）。
+# 期望值全部从「写目标角色」语义推导。
+
+
+def test_cp_from_ontox_to_scratch_not_blocked(
+    env: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """cp 源在 OntoX、目标在外部 scratch → 源是只读用途 → 零打扰。
+
+    2026-10-15~16 dispatcher 账本回看误拦形态：cp 只读复制被当写。
+    """
+    ontox, _cb = env
+    _clear_probes()
+    v = casebook_gate.on_pre_tool_call(
+        tool_name="terminal",
+        args={"command": f"cp {ontox}/apps/aml/main.py {tmp_path}/main_ro.py"},
+        session_id="s1",
+    )
+    assert v is None  # 期望: 写目标=最后操作数(外部 scratch)→源不是写目标→放行
+
+
+def test_cp_into_ontox_still_blocked(env: tuple[Path, Path]) -> None:
+    """cp 目标落在 OntoX 根内 → 真写 → 拦截（防漏报扩大）。"""
+    ontox, _cb = env
+    _clear_probes()
+    v = casebook_gate.on_pre_tool_call(
+        tool_name="terminal",
+        args={"command": f"cp /tmp/x.py {ontox}/apps/aml/x.py"},
+        session_id="s1",
+    )
+    assert v is not None  # 期望: 写目标=OntoX 内→拦截
+    assert v["action"] == "block"  # 期望: 拦截动作字面量=block（规则语义）
+
+
+def test_home_script_with_external_redirect_not_blocked(
+    env: tuple[Path, Path],
+) -> None:
+    """执行家目录脚本 + 重定向到 /tmp → 脚本路径是读角色 → 零打扰。
+
+    2026-10-16 晚省 evening_retro_facts.py 连拦 2 次形态：~ 路径被
+    非绝对拼根逻辑误判为 OntoX 目标。
+    """
+    _clear_probes()
+    v = casebook_gate.on_pre_tool_call(
+        tool_name="terminal",
+        args={
+            "command": "python3 ~/.hermes/cron/scripts/evening_retro_facts.py"
+            " > /tmp/evening_facts.json 2>&1"
+        },
+        session_id="s1",
+    )
+    assert v is None  # 期望: 唯一写目标=/tmp/evening_facts.json(根外)→放行
+
+
+def test_home_jsonl_append_not_blocked(
+    env: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """家目录 jsonl 追加（metrics 台账）→ 写目标在 OntoX 外 → 零打扰。
+
+    2026-10-15 三省 metrics 追加被拦形态：~ 重定向目标拼根恒真。
+    HOME 隔离到 tmp：~ 展开落在测试沙箱，不触发 home_io_guard。
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _clear_probes()
+    v = casebook_gate.on_pre_tool_call(
+        tool_name="terminal",
+        args={
+            "command": 'python3 -c "import json,time;print(json.dumps({1:2}))"'
+            " >> ~/.hermes/state/evolution_metrics.jsonl"
+        },
+        session_id="s1",
+    )
+    assert v is None  # 期望: 重定向目标 expanduser 后在 OntoX 根外→放行
+
+
+def test_sed_expr_with_external_file_not_blocked(
+    env: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """sed -i 作用于根外文件 → 表达式 token 非写目标 → 零打扰。"""
+    _clear_probes()
+    v = casebook_gate.on_pre_tool_call(
+        tool_name="terminal",
+        args={"command": f"sed -i 's/a/b/' {tmp_path}/t.txt"},
+        session_id="s1",
+    )
+    assert v is None  # 期望: sed 段写目标=脚本表达式之后的文件操作数(根外)→放行
+
+
+def test_sed_ontox_file_still_blocked(env: tuple[Path, Path]) -> None:
+    """sed -i 文件操作数落在 OntoX 根内 → 真写 → 拦截。"""
+    ontox, _cb = env
+    _clear_probes()
+    v = casebook_gate.on_pre_tool_call(
+        tool_name="terminal",
+        args={"command": f"sed -i 's/a/b/' {ontox}/apps/aml/main.py"},
+        session_id="s1",
+    )
+    assert v is not None  # 期望: 文件操作数=OntoX 内→拦截
+    assert v["action"] == "block"  # 期望: 拦截动作字面量=block（规则语义）
+
+
+def test_interpreter_c_literal_write_blocked(env: tuple[Path, Path]) -> None:
+    """terminal 解释器 -c 代码内字面量写 OntoX → 与 execute_code 通道等价防旁路。
+
+    旧代码漏报面（实测）：terminal python3 -c 内部 open(...,'w') 写
+    OntoX 零覆盖，而 execute_code 通道有字面量提取——通道间不对齐。
+    """
+    ontox, _cb = env
+    _clear_probes()
+    v = casebook_gate.on_pre_tool_call(
+        tool_name="terminal",
+        args={
+            "command": (
+                "python3 -c "
+                f'"open(\'{ontox}/apps/aml/x.py\',\'w\').write(\'y\')"'
+            )
+        },
+        session_id="s1",
+    )
+    assert v is not None  # 期望: 解释器代码内 OntoX 路径字面量=旁路写→拦截
+    assert v["action"] == "block"  # 期望: 拦截动作字面量=block（规则语义）

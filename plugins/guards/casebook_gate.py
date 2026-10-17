@@ -38,10 +38,203 @@ _CASEBOOK_DIR = os.path.expanduser(os.environ.get("CASEBOOK_DIR", ""))
 
 _WRITE_TOOLS = frozenset({"write_file", "patch", "execute_code"})
 
-# terminal 写文件的高置信模式（对齐 read_think_gate/gate.py 的模式表，取子集）
-_TERMINAL_WRITE_CMD_PREFIXES = (
-    "sed -i", "tee /", "tee ~", "cp ", "mv ", "rsync ", "dd of=",
-)
+# terminal 写目标解析（角色感知）。2026-10-17 第三轮误拦根修：旧实现
+# 用「写命令前缀表 + 全 token 扫描」判定，不区分 token 在命令中的角色，
+# 导致 cp 只读源（dispatcher 账本回看）、脚本路径（晚省盘点）、sed 表达式
+# 全被当写目标。新实现按命令头解析「写目标角色」的 token：
+#   cp/mv/rsync → 目标=最后一个操作数（源不判）
+#   sed -i      → 目标=脚本表达式之后的文件操作数
+#   dd          → 目标=of= 操作数
+#   tee         → 目标=非选项操作数
+#   其它        → 仅重定向目标（> / >>）
+#   解释器 -c   → 追加引号内路径字面量提取（与 execute_code 通道对齐防旁路）
+_FILE_COPY_HEADS = frozenset({"cp", "mv", "rsync"})
+_INTERPRETER_HEADS = frozenset({"python", "python3", "perl", "ruby", "node"})
+
+
+def _split_segments(cmd: str) -> list[str]:
+    """引号感知地把命令切分为 ; / && / || 分隔的子命令段。
+
+    Contract:
+      Postconditions: 引号内的分隔符不切分; 返回非空段列表（可能为空表）。
+    """
+    segments: list[str] = []
+    buf: list[str] = []
+    quote = ""
+    i = 0
+    n = len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == ";":
+            segments.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+        if ch in "&|" and cmd.startswith(ch * 2, i):
+            segments.append("".join(buf))
+            buf = []
+            i += 2
+            continue
+        buf.append(ch)
+        i += 1
+    segments.append("".join(buf))
+    return [s.strip() for s in segments if s.strip()]
+
+
+def _segment_tokens(seg: str) -> list[str]:
+    """单段 token 化（shlex，引号不闭合时退化到空格切分）。
+
+    Contract:
+      Postconditions: 恒返回列表（可能为空表），不抛异常。
+    """
+    try:
+        import shlex
+
+        return shlex.split(seg, posix=True)
+    except ValueError:
+        return seg.split()
+
+
+def _sed_file_operands(toks: list[str]) -> list[str]:
+    """提取 sed 文件操作数（跳过选项、-e/-f 携带的脚本参数与主脚本）。
+
+    Contract:
+      Postconditions: 仅返回文件操作数 token（可能为空表）; sed 语法
+        之外的 token 按「第一个非选项=主脚本，其后=文件」推导。
+    """
+    operands: list[str] = []
+    have_script = False
+    i = 1
+    while i < len(toks):
+        t = toks[i]
+        if t in ("-e", "-f") and i + 1 < len(toks):
+            i += 2
+            continue
+        if t.startswith("-"):
+            i += 1
+            continue
+        if not have_script:
+            have_script = True
+            i += 1
+            continue
+        operands.append(t)
+        i += 1
+    return operands
+
+
+def _copy_targets(toks: list[str]) -> list[str]:
+    """cp/mv/rsync 的写目标=最后一个非选项操作数（源是只读角色不判）。
+
+    Contract:
+      Postconditions: 无操作数返回空表; 恰返回 0 或 1 个目标。
+    """
+    operands = [t for t in toks[1:] if not t.startswith("-")]
+    return [operands[-1]] if operands else []
+
+
+def _dd_targets(toks: list[str]) -> list[str]:
+    """dd 的写目标=of= 操作数。
+
+    Contract:
+      Postconditions: 无 of= 返回空表。
+    """
+    return [t[len("of="):] for t in toks if t.startswith("of=")]
+
+
+def _tee_targets(toks: list[str]) -> list[str]:
+    """tee 的写目标=全部非选项操作数（tee 写每个文件操作数）。
+
+    Contract:
+      Postconditions: 仅含非选项操作数（可能为空表）。
+    """
+    return [t for t in toks[1:] if not t.startswith("-")]
+
+
+def _sed_targets(toks: list[str]) -> list[str]:
+    """sed 的写目标=仅 -i 就地改写时的文件操作数（无 -i 是纯读）。
+
+    Contract:
+      Postconditions: 非 -i 形态返回空表。
+    """
+    if any(t == "-i" or t.startswith("-i") for t in toks[1:]):
+        return _sed_file_operands(toks)
+    return []
+
+
+def _interpreter_payload(toks: list[str]) -> str:
+    """解释器 -c 之后的代码载荷 token（无 -c 时退化整段拼接）。
+
+    Contract:
+      Postconditions: shlex 已剥掉载荷外层引号，字面量提取可直接进行;
+        无 -c 时返回整段（脚本路径场景通常无引号字面量→空提取）。
+    """
+    for i, t in enumerate(toks):
+        if t == "-c" and i + 1 < len(toks):
+            return toks[i + 1]
+    return " ".join(toks)
+
+
+def _default_targets(seg: str, toks: list[str]) -> list[str]:
+    """其它命令头：仅重定向目标是写目标; 解释器 -c 追加字面量提取。
+
+    Contract:
+      Postconditions: 解释器代码内 OntoX 路径字面量计入目标（与
+        execute_code 通道对齐防旁路）; 普通命令只认 > / >> 目标。
+
+    字面量提取须用 -c 载荷 token 而非整段原文——外层包裹引号会使
+    引号配对提前闭合，路径落在配对间隙（2026-10-17 实测定性）。
+    """
+    targets = list(_redirect_targets(seg))
+    if toks and toks[0].rsplit("/", 1)[-1] in _INTERPRETER_HEADS:
+        lit = _extract_first_ontox_path(_interpreter_payload(toks))
+        if lit:
+            targets.append(lit)
+    return targets
+
+
+def _segment_write_targets(seg: str) -> list[str]:
+    """按命令头分派单段内「写目标角色」的 token 列表。
+
+    Contract:
+      Postconditions: 只返回构成写目标的 token（源/脚本路径/表达式/输入
+        文件不进目标集）; 空表=本段无写目标（只读段）。
+    """
+    toks = _segment_tokens(seg)
+    if not toks:
+        return []
+    head = toks[0]
+    if head in _FILE_COPY_HEADS:
+        return _copy_targets(toks)
+    if head == "dd":
+        return _dd_targets(toks)
+    if head == "tee":
+        return _tee_targets(toks)
+    if head == "sed":
+        return _sed_targets(toks)
+    return _default_targets(seg, toks)
+
+
+def _terminal_write_targets(cmd: str) -> list[str]:
+    """全命令（多段）的写目标合集。
+
+    Contract:
+      Postconditions: 恒返回列表; 空表=命令无任何写目标（只读命令）。
+    """
+    out: list[str] = []
+    for seg in _split_segments(cmd):
+        out.extend(_segment_write_targets(seg))
+    return out
 
 
 def _config_paths() -> tuple[str, str]:
@@ -93,7 +286,10 @@ def _is_ontox_target(path: str) -> bool:
     ontox_root, _cb = _paths()
     if not ontox_root:
         return False
-    p = Path(path)
+    # ~ 前缀是家目录绝对语义，必须先展开再判定——2026-10-17 误拦根修：
+    # 旧逻辑把 ~/.hermes/... 当"相对路径"拼到 OntoX 根下恒真，导致晚省
+    # 盘点脚本与 metrics 台账追加被拦（实测 2 形态）。
+    p = Path(path).expanduser()
     if not p.is_absolute():
         p = Path(ontox_root) / p
     try:
@@ -124,20 +320,23 @@ def _redirect_targets(cmd: str) -> list[str]:
     return targets
 
 
-def _terminal_writes_file(cmd: str) -> bool:
-    """Contract: Postconditions: 命中写命令前缀或存在重定向文件目标 → True。
+def _target_from_terminal(cmd: str) -> str:
+    """从 terminal 命令里提取第一个落在 OntoX 根内的写目标。
 
-    判据收紧史（2026-10-10 误报根修）：旧表含 " > " 字面子串——SQL 的
-    WHERE ts > 'x' 比较符与其同形，叠加对无斜杠裸词拼根恒真的路径判定，
-    导致只读 sqlite SELECT 被误拦（当日亲历 2 次）。重定向改为 token 化
-    判定（> / >> 的下一 token 才是目标文件），命令前缀族保留子串语义。
+    Contract:
+      Postconditions: 非写命令或写目标均不在 OntoX 根内 → 空串;
+        命令含 casebook 关键词（检索病例库自身）→ 空串（豁免）。
+
+    判据收紧史：2026-10-10 裸词拼根恒真 + SQL > 比较符两处根修;
+    2026-10-17 第三轮——全 token 角色不分（cp 源/脚本路径/sed 表达式
+    误当写目标）替换为按命令头的写目标角色解析（见 _segment_write_targets）。
     """
-    if any(
-        cmd.startswith(p) or f"; {p}" in cmd or f"&& {p}" in cmd
-        for p in _TERMINAL_WRITE_CMD_PREFIXES
-    ):
-        return True
-    return bool(_redirect_targets(cmd))
+    if "casebook" in cmd:
+        return ""
+    for t in _terminal_write_targets(cmd):
+        if _is_ontox_target(t):
+            return t
+    return ""
 
 
 def _extract_first_ontox_path(code: str) -> str:
@@ -225,21 +424,6 @@ def _target_from_write_tool(tool_name: str, args: dict[str, Any]) -> str:
     code = str(args.get("code", ""))
     if "open(" in code or ".write" in code or "write_text" in code:
         return _extract_first_ontox_path(code)
-    return ""
-
-
-def _target_from_terminal(cmd: str) -> str:
-    """从 terminal 写命令里提取第一个 OntoX 路径 token。
-
-    Contract:
-      Postconditions: 非写命令或无 OntoX 路径 → 空串。
-    """
-    if not _terminal_writes_file(cmd) or "casebook" in cmd:
-        return ""
-    for tok in cmd.replace(";", " ").split():
-        tok_clean = tok.strip("\"'")
-        if _is_ontox_target(tok_clean):
-            return tok_clean
     return ""
 
 
