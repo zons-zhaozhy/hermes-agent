@@ -80,3 +80,33 @@ def test_terminal_receipt_lifts_the_unknown_pause_it_caused(tmp_path, monkeypatc
         jobs.pause_job(job['id'], reason='operator hold')
         scheduler_authority.reconcile_pending()
         assert jobs.get_job(job['id'])['paused_reason'] == 'operator hold'
+
+
+def test_recovery_tail_installs_secret_scope_under_multiplex(tmp_path, monkeypatch):
+    """A multiplexing gateway fails ``get_secret`` closed without a profile scope, and the
+    recovery tail resolves Matrix delivery targets through it — without installing one the
+    receipt defers forever instead of being booked."""
+    from agent import secret_scope
+
+    with jobs.use_cron_store(tmp_path / 'cron'):
+        job = jobs.create_job(prompt='report', schedule='every 1h', deliver='local')
+        fire = executions.create_execution(job['id'], source='test')['id']
+        executions.mark_execution_running(fire)
+        journal = _foreign_journal(job, fire)
+        _peer(monkeypatch, lambda method: {'status': 'terminal',
+                                           'result': [True, 'document', 'answer', None],
+                                           'job': jobs.get_job(job['id']), 'job_flags': {}})
+        seen = {}
+
+        def fake_save(delivery, fence, answer, output, **kwargs):
+            seen['scope'] = secret_scope.current_secret_scope()
+            seen['home_room'] = secret_scope.get_secret('MATRIX_HOME_ROOM')  # 期望: multiplex 下不抛 UnscopedSecretError
+
+        monkeypatch.setattr(scheduler, '_save_compose_deliver', fake_save)
+        secret_scope.set_multiplex_active(True)
+        try:
+            scheduler_authority.reconcile_pending()
+        finally:
+            secret_scope.set_multiplex_active(False)
+        assert seen['scope'] is not None  # 期望: 恢复路径安装了 profile 作用域（修前为 None）
+        assert not journal.exists()  # 期望: 收据完成记账并出列（修前每 tick deferred 循环）
