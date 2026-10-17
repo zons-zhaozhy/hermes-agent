@@ -145,3 +145,41 @@ async def test_a_read_that_clears_a_goal_barrier_repaints_the_other_viewers(owne
     await owner.call(kind, call)
     assert len(updates) == 1 and 'wait_barrier' not in updates[0]['control']['goal']
     assert updates[0]['control']['loop']['deferred_by_goal'] is True
+
+
+@pytest.mark.asyncio
+async def test_stale_viewer_registration_is_reclaimed(owner):
+    """A registration with no session.automation traffic past the stale window must stop deferring
+    the gateway's hooks, and the dead registration is dropped so the goal loop regains a driver."""
+    import time as _time
+
+    from gateway.session_viewer_automation import STALE_VIEWER_AUTOMATION_SECONDS, viewer_driven
+
+    sid = owner.ref.session_id
+    await owner.call('goal', 'set', 'keep going')  # registers + stamps the viewer
+    owner.viewer.subscriptions[sid] = 'sub-2'
+    assert viewer_driven(owner.authority, sid), 'fresh registration defers the gateway hooks'
+    owner.authority.viewer_automation_stamps[sid] = _time.monotonic() - STALE_VIEWER_AUTOMATION_SECONDS - 1.0
+    assert not viewer_driven(owner.authority, sid), 'stale registration: the gateway hooks take over'
+    assert sid not in (getattr(owner.authority, 'viewer_automation', {}) or {})
+    assert sid not in (getattr(owner.authority, 'viewer_automation_stamps', {}) or {})
+
+
+@pytest.mark.asyncio
+async def test_automation_traffic_refreshes_the_liveness_stamp(owner):
+    """Any session.automation call is viewer liveness: after a stale takeover the next call
+    re-registers and defers the gateway hooks again."""
+    import time as _time
+
+    from gateway.session_viewer_automation import STALE_VIEWER_AUTOMATION_SECONDS, viewer_driven
+
+    sid = owner.ref.session_id
+    await owner.call('goal', 'set', 'keep going')
+    owner.viewer.subscriptions[sid] = 'sub-3'
+    assert viewer_driven(owner.authority, sid)
+    owner.authority.viewer_automation_stamps[sid] = _time.monotonic() - STALE_VIEWER_AUTOMATION_SECONDS - 1.0
+    assert not viewer_driven(owner.authority, sid)
+    await owner.call('goal', 'state')  # a read still proves the viewer is alive
+    assert sid in owner.authority.viewer_automation
+    assert viewer_driven(owner.authority, sid), 'fresh traffic re-defers the gateway hooks'
+    await owner.call('goal', 'clear')

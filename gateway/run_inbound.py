@@ -1316,7 +1316,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
                     agent_result=_agent_result, source=source, is_internal=is_internal, event=event,
                 )
             except Exception as _goal_exc:
-                logger.debug("post-turn hook failed: %s", _goal_exc)
+                logger.info("post-turn hook failed: %s", _goal_exc)
             return _agent_result
         finally:
             # One-shot restore (/moa, /model --once) must run on EVERY exit path (success,

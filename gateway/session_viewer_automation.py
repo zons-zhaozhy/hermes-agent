@@ -16,9 +16,22 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
+import time
 from pathlib import Path
+from typing import Any, Optional
 
 from hermes_state_runtime import RuntimeStoreError
+
+logger = logging.getLogger("gateway.run")
+
+# A viewer registration is a liveness claim only while that viewer keeps sending
+# ``session.automation`` traffic (the classic CLI judges seconds after each of its turns).
+# Past this window with zero traffic the registration is stale — a transport that died
+# without ``detach``/``close``, or a surface that registered once and never judges — and the
+# gateway takes its own post-turn hooks back instead of leaving the session's goal loop with
+# no driver at all. A healthy viewer re-registers on its next call.
+STALE_VIEWER_AUTOMATION_SECONDS = 180.0
 
 _CALLS = {
     "goal": frozenset({"state", "set", "pause", "resume", "clear", "mark_done", "add_subgoal", "remove_subgoal",
@@ -33,12 +46,41 @@ _FIELDS = frozenset({"session_id", "profile", "kind", "call", "args", "kwargs"})
 _ERRORS = (RuntimeError, ValueError, IndexError)
 
 
-def viewer_driven(authority, session_id) -> bool:
+def viewer_driven(authority: Any, session_id: Optional[str]) -> bool:
     """Whether a local viewer drives this session's goal/loop judging (see the module doc): only while
-    that viewer's connection still holds its subscription, so a TUI or Desktop attached after it left
-    gets the gateway's own post-turn hooks again."""
+    that viewer's connection still holds its subscription AND has sent ``session.automation`` traffic
+    within :data:`STALE_VIEWER_AUTOMATION_SECONDS`, so a TUI or Desktop attached after it left — or a
+    registration whose transport died without ``detach``/``close`` — gets the gateway's own post-turn
+    hooks again instead of a goal loop with no driver."""
     connection = getattr(authority, "viewer_automation", {}).get(session_id) if authority is not None else None
-    return bool(connection is not None and connection.subscriptions.get(session_id))
+    if authority is None or connection is None or not connection.subscriptions.get(session_id):
+        return False
+    stamps = getattr(authority, "viewer_automation_stamps", None)
+    if stamps is None:
+        # Pre-existing registration from before the stamp existed: keep deferring now, take
+        # over on the next sighting if the viewer stays silent for the whole window.
+        try:
+            authority.viewer_automation_stamps = stamps = {}
+        except Exception as exc:
+            logger.warning("viewer_driven: stamp init failed for %s, deferring: %s", session_id, exc)
+            return True
+    last_seen = stamps.get(session_id)
+    if last_seen is None:
+        stamps[session_id] = time.monotonic()
+        return True
+    if time.monotonic() - last_seen <= STALE_VIEWER_AUTOMATION_SECONDS:
+        return True
+    try:
+        authority.viewer_automation.pop(session_id, None)
+        stamps.pop(session_id, None)
+    except Exception as exc:
+        logger.warning("viewer_driven: stale-registration cleanup failed for %s: %s", session_id, exc)
+    logger.info(
+        "goal continuation: stale viewer automation registration for %s (no session.automation "
+        "traffic for %.0fs) — gateway resuming its own post-turn goal/loop hooks",
+        session_id, STALE_VIEWER_AUTOMATION_SECONDS,
+    )
+    return False
 
 
 def _max_turns(runner):
@@ -150,6 +192,13 @@ async def automation(connection, ref, params):
     if not hasattr(authority, "viewer_automation"):
         authority.viewer_automation = {}
     authority.viewer_automation[ref.session_id] = connection
+    # Any automation traffic from this viewer is a liveness signal: refresh the stamp that
+    # ``viewer_driven`` checks, so an active viewer keeps the gateway's hooks deferred while an
+    # abandoned registration ages out and the gateway resumes judging (see that function).
+    stamps = getattr(authority, "viewer_automation_stamps", None)
+    if stamps is None:
+        authority.viewer_automation_stamps = stamps = {}
+    stamps[ref.session_id] = time.monotonic()
     runner = authority.runner
     home = Path(authority.profile_id)
 

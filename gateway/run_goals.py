@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import logging
 import time
 from contextlib import nullcontext, suppress
@@ -342,7 +343,7 @@ class GatewayGoalsMixin:
             try:
                 await admit_route_wake(self, self._delivery_adapter_for(source), source, prompt, "goal-continuation")
             except Exception:  # health: allow BLE001 -- best-effort like the FIFO enqueue below; traceback logged
-                logger.debug("goal continuation: local admission failed", exc_info=True)
+                logger.info("goal continuation: local admission failed", exc_info=True)
             return
         # Enqueue via the adapter's FIFO so a user message already in flight preempts naturally.
         try:
@@ -351,7 +352,7 @@ class GatewayGoalsMixin:
             if adapter and _quick_key:
                 self._enqueue_fifo(_quick_key, self._synthetic_prompt_event(source, prompt), adapter)
         except Exception as exc:
-            logger.debug("goal continuation: enqueue failed: %s", exc)
+            logger.info("goal continuation: enqueue failed: %s", exc)
 
     async def _run_post_turn_hooks(
         self, *, agent_result: Any, source: Any, is_internal: bool, event: Any = None,
@@ -359,7 +360,10 @@ class GatewayGoalsMixin:
         """Run goal and loop bookkeeping after an agent turn returns."""
         from gateway.session_authorities import active_authority
         from gateway.session_viewer_automation import viewer_driven
-        if viewer_driven(active_authority(self), getattr(source, "chat_id", None)):
+        authority = active_authority(self)
+        _viewer_sid = getattr(source, "chat_id", None)
+        if viewer_driven(authority, _viewer_sid):
+            self._log_viewer_driven_goal_deferral(authority, _viewer_sid)
             return  # the classic CLI viewer judges and continues through ``session.automation``
         final_text = self._final_text_for_post_turn_hooks(agent_result, event)
         try:
@@ -389,6 +393,30 @@ class GatewayGoalsMixin:
         from gateway.session_authorities import active_authority
         from gateway.session_control_actions import publish
         publish(active_authority(self), source.chat_id, only_if_present=only_if_present)
+
+    def _log_viewer_driven_goal_deferral(self, authority: Any, session_id: Optional[str]) -> None:
+        """Best-effort INFO trace when a viewer-driven deferral leaves an active goal unjudged by
+        the gateway: without this line the no-driver stall (viewer registered but never judging)
+        is invisible at INFO level.
+
+        Contract:
+            Preconditions: ``authority`` is the active session authority or None; ``session_id``
+                is the chat's session key or None.
+            Postconditions: never raises; emits at most one INFO line per call when the goal row
+                exists with status == "active"; any read failure downgrades to a warning.
+        """
+        if not session_id:
+            return
+        try:
+            row = authority.db.get_meta(f"goal:{session_id}")
+            state = json.loads(row) if isinstance(row, str) and row else None
+            if isinstance(state, dict) and state.get("status") == "active":
+                logger.info(
+                    "goal continuation: %s is viewer-driven (goal active, %s/%s turns) — gateway hook deferred",
+                    session_id, state.get("turns_used"), state.get("max_turns"),
+                )
+        except Exception as exc:
+            logger.warning("goal continuation: viewer-deferral trace failed for %s: %s", session_id, exc)
 
     @staticmethod
     def _final_text_for_post_turn_hooks(agent_result, event=None) -> str:
