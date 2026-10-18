@@ -61,6 +61,12 @@ def _run_hermes(args: list[str], timeout: int = 30) -> subprocess.CompletedProce
     for index, (prefix, key) in enumerate(rewrite.items()):
         env[f"GIT_CONFIG_KEY_{index}"] = key
         env[f"GIT_CONFIG_VALUE_{index}"] = prefix
+    # The channel resolver reads GitHub's API over urllib, which the git rewrite
+    # cannot reach: a dead local proxy fails it just as fast (upstream 1018).
+    env["HTTPS_PROXY"] = "http://127.0.0.1:9"
+    env["https_proxy"] = "http://127.0.0.1:9"
+    env["NO_PROXY"] = ""
+    env["no_proxy"] = ""
     return subprocess.run(
         [sys.executable, "-m", "hermes_cli.main"] + args,
         capture_output=True,
