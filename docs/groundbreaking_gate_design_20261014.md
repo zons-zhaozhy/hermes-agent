@@ -69,6 +69,7 @@ v1 的三个错误（本设计的反面教材）：
 | devil-advocate-audit | — | 重大方案定稿前须有 delegate 反方 | 覆盖七步法第 7 步（闭环），不覆盖 1-6 步 |
 | skill-drift-check | — | skill 源文件 SHA 漂移检测 | 非「skill 未加载」拦截，不覆盖第 0 步 |
 | finish_guard | — | 回合形态（请示/假继续） | 回合域 |
+| deep-test-gate | — | 「深度测试完成」强声明须有战役账本+三门禁证据 | 回合域（pre_verify, 与 finish_guard 同钩不同判定面） |
 
 ### 2.2 与 casebook_gate 的分工判据（同族两「写前功课」并存）
 
