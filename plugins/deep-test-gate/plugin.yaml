@@ -1,0 +1,9 @@
+name: deep-test-gate
+description: 深度测试声明门禁——最终回复含「深度测试/测试战役+完成/全绿/通过」强声明且本回合改过代码时，若目标 pytest 项目无 battle_plan.yaml 战役账本或回复无三门禁（deep-test-matrix/rtm-check/coverage-ratchet）PASS 证据，强制续跑补机制。非 pytest 项目/已带证据/attempt 超限豁免
+version: 1.0.0
+author: stan
+hooks:
+  - pre_verify
+tags:
+  - guard
+  - testing
