@@ -12,6 +12,7 @@ import contextlib
 import dataclasses
 import json
 import logging
+import queue as _queue_typing
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
@@ -67,6 +68,27 @@ _SELF_CLEARING_STORAGE_CAUSES = frozenset({"compression", "compression_closed", 
 # Process-watcher retries of a refused completion: ~5 min at the default 5 s check interval.
 _MAX_COMPLETION_INJECTION_ATTEMPTS = 8
 _COMPLETION_INJECTION_RETRY_MAX_DELAY = 60
+_QUEUE_EVENT_REQUEUE_LIMIT = 5
+
+
+def _requeue_with_dead_letter(queue: _queue_typing.Queue, evt: dict, *, context: str) -> None:
+    """Requeue an undelivered queue event, dead-lettering it after repeated rejections.
+
+    A persistent refusal (e.g. ``invalid_params``) otherwise requeues forever at drain cadence —
+    the bounded-retry contract ``_MAX_COMPLETION_INJECTION_ATTEMPTS`` already applies to the
+    watcher path. Delegation events stay recoverable: their ledger rows remain pending and are
+    replayed after a restart (``restore_undelivered_completions``).
+    """
+    rejects = int(evt.get("_wake_rejects") or 0) + 1
+    evt["_wake_rejects"] = rejects
+    if rejects >= _QUEUE_EVENT_REQUEUE_LIMIT:
+        logger.error(
+            "Dead-lettering %s event after %d rejected injections: type=%s session=%s "
+            "(persistent rejection — see 'not admitted' warnings)",
+            context, rejects, evt.get("type"),
+            evt.get("origin_session_id") or evt.get("session_id"))
+        return
+    queue.put(evt)
 
 # Durable async-delegation claim transitions: kind -> (tools.async_delegation function, failure log).
 _DURABLE_CLAIM_OPS = {
@@ -730,7 +752,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                         delivered = False
             # The original event: a requeued tick folds again from what is still queued.
             if delivered is False:
-                completion_queue.put(evt)
+                _requeue_with_dead_letter(completion_queue, evt, context="watch")
 
     def _adapter_by_platform_value(self, platform_name: str):
         """Literal ``p.value == platform_name`` scan over connected adapters (native adapters only)."""
@@ -1479,7 +1501,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         if delivered is None:
             # Primary dropped/owned elsewhere: retry the unadmitted siblings.
             for evt, _claim_id in siblings:
-                _pr.completion_queue.put(evt)
+                _requeue_with_dead_letter(_pr.completion_queue, evt, context="unadmitted sibling")
         return delivered
 
     def _restore_secondary_completion_ledgers(self, profile_homes) -> None:
@@ -1563,10 +1585,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                         delivered = await self._deliver_async_delegation_group(group)
                         if delivered is False:
                             for evt in group:
-                                _pr.completion_queue.put(evt)
+                                _requeue_with_dead_letter(_pr.completion_queue, evt, context="async delegation group")
                     except Exception as e:
                         for evt in group:
-                            _pr.completion_queue.put(evt)
+                            _requeue_with_dead_letter(_pr.completion_queue, evt, context="async delegation group error")
                         logger.error("Async delegation injection error: %s", e)
             await asyncio.sleep(interval)
 
