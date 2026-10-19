@@ -24,10 +24,13 @@ Contract:
 
 from __future__ import annotations
 
+import ast
 import logging
 import os
 import re  # re-ok: shell命令扫描器,正则即本体实现 # noqa: scanner plugin
 from typing import Any, Optional
+
+from plugins.guards.duplicate_check import _execute_code_write_targets  # 写形态识别单一事实源
 
 logger = logging.getLogger(__name__)
 
@@ -67,76 +70,170 @@ _SAFE_DIRNAMES = (
 )
 
 # ── Layer 1: Python inline write detection ────────────────────────────────
+# 2026-10-19 根修（守卫误拦同型缺陷第四轮）：旧实现 _RE_PYTHON_INLINE 对整条
+# 命令全文子串匹配（引号盲），载荷字符串数据里的 python3 -c "open('x.py','w')"
+# 字样被当 shell 命令——守卫验证命令（外层 python heredoc，open 形态仅存在于
+# 字符串字面量）被整条拦截（实测）。新实现只取 shell 层 python 调用（段头）的
+# 真实载荷（-c 参数 / heredoc 体），AST 识别真实写调用；动态路径写保守拦截
+# （旧版提取伪目标 "w" 后早退放行=旁路漏报，一并收紧）。
 
-_RE_PYTHON_INLINE = re.compile(
-    r"python[23]?\s+-c\b"
-    r"|python[23]?\s+/dev/stdin"
-    r"|python[23]?\s*<<",
-    re.MULTILINE,
-)
+_PY_HEADS = frozenset({"python", "python3"})
 
 _WRITE_INDICATORS = (
     ".write(", ".write_text(", ".write_bytes(",
     "write_file(", "patch(",
 )
 
-_RE_OPEN_WRITE = re.compile(r"open\s*\([^)]*['\"]w['\"]")
+_RE_OPEN_WRITE = re.compile(r"open\s*\([^)]*['\"]w['\"]")  # re-ok: shell命令扫描器本体,保守回退分支专用
 
-def _python_inline_write_targets(command: str) -> list:
-    """提取 python 内联脚本中所有 open(...,'w') 的第一个路径参数（无正则）。
+
+def _head_tokens(head_line: str) -> list:
+    """首行 token 化（shlex 引号感知；不闭合退化空格切分）。
 
     Contract:
-      Preconditions: command is non-empty string
-      Postconditions: 返回路径字符串列表（可能为空——提取不到）
+      Postconditions: 恒返回列表（可能为空表），不抛异常。
     """
-    targets: list = []
-    # 无正则切分（R2 纪律）: 逐个找 "open(" 后的首个引号参数
-    rest = command
-    while True:
-        i = rest.find("open(")
-        if i < 0:
-            break
-        seg = rest[i + len("open("):]
-        # 只在 write 模式的 open 才算写目标: 参数里须含 'w"/"w' 模式字样
-        j = seg.find(")")
-        body = seg[:j] if j >= 0 else seg[:80]
-        if ("'w'" in body) or ('"w"' in body) or ("'wb'" in body) or ('"wb"' in body) or ("'a'" in body) or ('"a"' in body):
-            # 第一个参数 = 首个引号对内容
-            for q in ("'", '"'):
-                k = body.find(q)
-                if k >= 0:
-                    m = body.find(q, k + 1)
-                    if m > k:
-                        targets.append(body[k + 1:m])
-                        break
-        rest = seg
-    return targets
+    try:
+        import shlex
+
+        return shlex.split(head_line, posix=True)
+    except ValueError:
+        return head_line.split()
+
+
+def _strip_to_marker(body: str, marker: str) -> str:
+    """截掉 heredoc 终止标记行及其后内容。
+
+    Contract:
+      Postconditions: 无匹配标记行时原样返回（best-effort，多余文本由
+        AST 解析失败分支回退保守判据兜住）。
+    """
+    lines = body.split("\n")
+    for idx, line in enumerate(lines):
+        if line.strip() == marker:
+            return "\n".join(lines[:idx])
+    return body
+
+
+def _flag_c_payload(toks: list) -> Optional[str]:
+    """-c 参数 token（无 -c 返回 None）。
+
+    Contract:
+      Postconditions: 返回紧跟 -c 的 token 或 None。
+    """
+    for k, t in enumerate(toks):
+        if t == "-c" and k + 1 < len(toks):
+            return toks[k + 1]
+    return None
+
+
+def _segment_python_payload(seg: str) -> Optional[tuple]:
+    """单段 shell 层 python 载荷（非 python 段头返回 None）。
+
+    Contract:
+      Postconditions: 返回 (payload, trusted)——trusted=True=载荷文本可靠
+        （-c 参数 / heredoc 体），False=载荷不可取（/dev/stdin）须保守回退；
+        echo 等非 python 段头 → None。
+    """
+    head_line, _nl, tail = seg.partition("\n")
+    toks = _head_tokens(head_line)
+    if not toks or toks[0].rsplit("/", 1)[-1] not in _PY_HEADS:
+        return None
+    payload = _flag_c_payload(toks)
+    if payload is not None:
+        return payload, True
+    if "<<" in head_line and tail:
+        marker = head_line.split("<<", 1)[1].strip().strip("'\"")
+        return _strip_to_marker(tail, marker), True
+    if "/dev/stdin" in head_line:
+        return seg, False
+    return None
+
+
+def _python_payloads(command: str) -> list:
+    """shell 层 python 调用的真实载荷列表（含可靠性标记）。
+
+    Contract:
+      Postconditions: 仅 python 段头的段产出条目；无 python 段头 → 空表。
+    """
+    out: list = []
+    for seg in _split_compound(command):
+        item = _segment_python_payload(seg)
+        if item is not None:
+            out.append(item)
+    return out
+
+
+def _is_write_mode(node: ast.AST) -> bool:
+    """open 第二实参是否写模式字面量（语义与 duplicate_check._target_from_open 一致）。"""
+    return (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and any(m in node.value for m in ("w", "a", "x"))
+    )
+
+
+def _is_write_call(node: ast.Call) -> bool:
+    """ast.Call 是否写形态（open 写模式 / write·write_text·write_bytes / write_file）。"""
+    fn = node.func
+    if isinstance(fn, ast.Name) and fn.id == "open" and len(node.args) > 1:
+        return _is_write_mode(node.args[1])
+    if isinstance(fn, ast.Attribute) and fn.attr in ("write_text", "write_bytes", "write"):
+        return True
+    return isinstance(fn, ast.Name) and fn.id == "write_file"
+
+
+def _ast_write_signals(payload: str) -> tuple:
+    """AST 级写信号：真实写调用判定 + 字面量写目标提取。
+
+    Contract:
+      Postconditions: 返回 (parse_ok, has_write_call, 字面量目标列表)；
+        parse_ok=False=载荷非合法 Python 源（调用方回退保守判据）；
+        has_write_call=存在写形态 ast.Call（含动态路径形态——保守拦截依据）；
+        目标提取委托 duplicate_check._execute_code_write_targets（单一事实源）。
+    """
+    try:
+        tree = ast.parse(payload)
+    except SyntaxError:
+        return False, False, []
+    targets = [p for p, _c in _execute_code_write_targets(payload, tuple(_SOURCE_EXTENSIONS))]
+    has = any(isinstance(n, ast.Call) and _is_write_call(n) for n in ast.walk(tree))
+    return True, has or bool(targets), targets
+
+
+def _payload_write_verdict(payload: str, trusted: bool) -> bool:
+    """单载荷写判定（True=拦截）。
+
+    Contract:
+      Postconditions: trusted 载荷 AST 可解析时按（字面量目标 / 写调用保守）
+        判定; 不可解析或非受信载荷回退旧保守判据（写指示词/open 写模式正则）。
+    """
+    if trusted:
+        parse_ok, has_write, targets = _ast_write_signals(payload)
+        if parse_ok:
+            if any(_is_source_file(t) and not _is_safe_path(t) for t in targets):
+                return True
+            if not targets and has_write:
+                return True
+            return False
+    if any(ind in payload for ind in _WRITE_INDICATORS):
+        return True
+    return bool(_RE_OPEN_WRITE.search(payload))  # re-ok: shell命令扫描器本体,保守回退分支
 
 
 def _is_python_inline_write(command: str) -> bool:
-    """Check if command is a python3 inline script with file writes.
+    """Check if command is a python inline script with file writes.
 
     只拦「写到源码路径」的内联写——open('/tmp/..','w') 等安全路径放行
     （对齐插件头 Exclusions 契约与 Layer 2/3 的 _is_safe_path 判定）。
+    载荷字符串字面量里的写形态字样（测试数据/文档样例）不是写动作。
 
     Contract:
       Preconditions: command is non-empty string
-      Postconditions: True iff python3 inline AND 写目标为源码路径；
-                      提取不到路径但含写指示词时保守拦截（防绕过）。
+      Postconditions: True iff 任一 shell 层 python 载荷判定为写（见
+        _payload_write_verdict）。
     """
-    if not _RE_PYTHON_INLINE.search(command):  # re-ok: shell命令扫描器本体,检测python -c调用形态
-        return False
-    targets = _python_inline_write_targets(command)
-    if targets:
-        # 有明确 open 路径: 任何一个非安全路径的源码写 → 拦
-        return any(_is_source_file(t) and not _is_safe_path(t) for t in targets)
-    # 无 open 但含其他写指示词(write_text 等): 提取不到路径，保守拦截
-    for indicator in _WRITE_INDICATORS:
-        if indicator in command:
-            return True
-    if _RE_OPEN_WRITE.search(command):  # re-ok: shell命令扫描器本体,open写模式检测
-        return True
-    return False
+    return any(_payload_write_verdict(payload, trusted) for payload, trusted in _python_payloads(command))
 
 
 # ── Layer 2: Shell redirect to source file ───────────────────────────────
