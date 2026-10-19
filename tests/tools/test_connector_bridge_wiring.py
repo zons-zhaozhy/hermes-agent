@@ -156,19 +156,55 @@ def test_normalize_rejects_malformed_batches(bad, expected_fragment):
 
 
 def test_missing_name_error_echoes_correct_shape():
-    """1007 实测病灶：模型把 name 键嵌进 arguments 内部反复重发（66 发/24h）。
-    错误消息必须①锚点串保留②指认嵌套病灶③回显正确形态——三查俱全模型才能自纠。"""
-    nested = {"calls": [{"arguments": {"name": "mcp__glm_web_reader__webReader",
-                                       "url": "https://example.com"}}]}
+    """缺 name 且嵌套值不可解析为 deferred 工具时：错误消息必须①锚点串保留
+    ②指认嵌套病灶③回显正确形态——三查俱全模型才能自纠。
+    （可解析的嵌套工具名走自动上提，见 test_normalize_lifts_nested_name。）"""
+    nested = {"calls": [{"arguments": {"name": "季度风控报告.docx",
+                                       "query": "x"}}]}
     entries, err = normalize_tool_call_entries(nested)
     err_text = err or ""
-    assert entries == []  # 期望: []——缺name条目必须拒绝,拒绝即不产出entries(契约)
+    assert entries == []  # 期望: []——数据值name不可上提,拒绝即不产出entries(契约)
     # 期望: 锚点串保留——既有参数化断言依赖该串,语义不变量
     assert "requires a 'name'" in err_text  # 期望: True——旧文案锚点串必须存活(向后兼容)
     # 期望: 指认嵌套病灶——request_dump 实测形态 name 嵌 arguments 内,须点破
     assert "nested inside 'arguments'" in err_text  # 期望: True——病灶指认短语存在
     # 期望: 回显正确形态骨架——echo 原则(同 local_batch_error docstring)
     assert '"calls":[{"name":<tool_name>,"arguments":{...}}]' in err_text  # 期望: True——形态骨架串存在
+
+
+def test_missing_name_error_rejects_nested_bridge_name():
+    """嵌套值是桥工具名时不可上提（上提=自我递归调用），必须拒绝并保留锚点诊断。"""
+    bridge = {"calls": [{"arguments": {"name": "tool_call", "calls": []}}]}
+    entries, err = normalize_tool_call_entries(bridge)
+    assert entries == []  # 期望: []——bridge名禁上提(防递归)
+    assert "requires a 'name'" in (err or "")  # 期望: True——锚点串存活
+
+
+def test_normalize_lifts_nested_name(caplog):
+    """2026-10-19 契约变更：entry 缺 name 但 arguments.name 可解析为 deferred
+    工具名（bridge 前缀或注册表命中）时自动上提并打 warning——诊断式拒绝经
+    5 日实测（每日 8-19 笔）无法阻止重发，归一是本函数既有宽容路径的延伸。
+    上提后 name 键不得残留在 arguments（残留=未知属性,下游 schema 校验必拒）。"""
+    nested = {"calls": [{"arguments": {"name": "mcp__glm_web_reader__webReader",
+                                       "url": "https://example.com"}}]}
+    with caplog.at_level("WARNING", logger="tools.tool_search"):
+        entries, err = normalize_tool_call_entries(nested)
+    assert err is None  # 期望: None——可解析嵌套名必须成功归一
+    assert entries == [  # 期望: name已上提且arguments中name键已剥离
+        {"name": "mcp__glm_web_reader__webReader", "arguments": {"url": "https://example.com"}}
+    ]
+    assert "lifted" in caplog.text  # 期望: True——上提动作必须留warning日志(可观测)
+
+
+def test_normalize_does_not_lift_unprefixed_name():
+    """无 deferred 前缀的嵌套名不上提——桥名恒为 mcp__*/connectors__* 前缀，
+    无前缀值按数据值处理（误上提=静默改道调用）。直接列表工具名（如
+    session_search）嵌套时同样拒绝：上提后也会被 not_deferrable_error 拒，
+    不如诊断直指病灶。"""
+    nested = {"calls": [{"arguments": {"name": "session_search", "query": "x"}}]}
+    entries, err = normalize_tool_call_entries(nested)
+    assert entries == []  # 期望: []——无前缀名禁上提(守卫边界)
+    assert "requires a 'name'" in (err or "")  # 期望: True——锚点诊断存活
 
 
 def test_missing_name_error_echoes_correct_shape_plain():

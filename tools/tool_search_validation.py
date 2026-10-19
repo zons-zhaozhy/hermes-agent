@@ -187,8 +187,25 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
         if not isinstance(raw, dict):
             return [], f"tool_call calls[{position}] must be an object with 'name' and 'arguments'"
         name = str(raw.get("name") or "").strip()
+        lifted_from_arguments = False
         if not name:
-            return [], _missing_name_error(position, raw)
+            nested_args = raw.get("arguments")
+            candidate = str(nested_args.get("name") or "").strip() if isinstance(nested_args, dict) else ""
+            # Lift only candidates that carry a deferred-tool prefix: every bridge
+            # name is mcp__*/connectors__* by convention, and lifting a data value
+            # would silently redirect the call to a wrong tool. Unprefixed names
+            # stay rejected — the diagnostic echo unsticks the sender.
+            # Diagnostic-only rejection proved insufficient (8-19 identical
+            # calls/day for 5 consecutive days) for the prefixed dominant form.
+            if (candidate and candidate not in BRIDGE_TOOL_NAMES
+                    and candidate.startswith(("mcp__", "connectors__"))):
+                name = candidate
+                lifted_from_arguments = True
+                logger.warning(
+                    "tool_call: calls[%d] was missing 'name'; lifted nested "
+                    "arguments.name=%r (dominant malformed form)", position, candidate)
+            else:
+                return [], _missing_name_error(position, raw)
         if name in BRIDGE_TOOL_NAMES:
             return [], f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
         raw_args = raw.get("arguments")
@@ -205,6 +222,11 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
                 return [], f"tool_call calls[{position}].arguments is not valid JSON: {e}"
         if not isinstance(raw_args, dict):
             return [], f"tool_call calls[{position}].arguments must be an object"
+        if lifted_from_arguments and isinstance(raw_args.get("name"), str) \
+                and str(raw_args["name"]).strip() == name:
+            # The lifted key is the tool selector, not an argument: strip it or
+            # downstream schema validation rejects an unexpected property.
+            raw_args = {k: v for k, v in raw_args.items() if k != "name"}
         entries.append({"name": name, "arguments": raw_args})
     return entries, None
 
