@@ -328,23 +328,50 @@ def _load_consolidated_raw(cached: bool = False) -> dict[str, Any]:
     """
     path = _consolidated_path()
     if not path.exists():
-        path.write_text(
-            "# 固化词典（terminology-guard 语义层，自动维护）\n"
-            "# 词出现于 ≥3 个不同会话（admission）即固化，全局锚定；\n"
-            "# candidates 段为 admission 计数（sessions/last_seen）；\n"
-            "# 可直接编辑 terms 删词；删文件=重置全部固化状态。\n"
-            "terms: []\n"
-            "candidates: {}\n",
-            encoding="utf-8",
-        )
+        _write_skeleton(path)
     stat = path.stat()
     key: tuple[int, int] = (stat.st_mtime_ns, stat.st_size)
     if cached and _RAW_CACHE["key"] == key and _RAW_CACHE["raw"] is not None:
         return _RAW_CACHE["raw"]
-    raw: dict[str, Any] = safe_load(path.read_text(encoding="utf-8")) or {}
+    text = path.read_text(encoding="utf-8")
+    try:
+        raw: dict[str, Any] = safe_load(text) or {}
+    except Exception as exc:
+        # 损坏自愈：撕裂/半写文件会使所有进程读路径永久失败（记账 fail-open
+        # → 淘汰永不执行 → 膨胀与损坏互锁）。改名留证后重建骨架，terms 丢失
+        # 由 admission 重新积累，代价远低于注入钩子反复解析损坏文件直至超时。
+        import time as _time_mod
+
+        corrupt = path.with_name(
+            f"{path.name}.corrupt-{_time_mod.strftime('%Y%m%d-%H%M%S')}"
+        )
+        os.replace(path, corrupt)
+        _write_skeleton(path)
+        logger.warning(
+            "terminology-guard: 固化词典损坏已隔离重建 (%s → %s): %s",
+            path.name, corrupt.name, exc, exc_info=True,
+        )
+        raw = {}
+    if "terms" not in raw:
+        raw["terms"] = []
+    if "candidates" not in raw:
+        raw["candidates"] = {}
     if cached:
         _RAW_CACHE.update(key=key, raw=raw)
     return raw
+
+
+def _write_skeleton(path: Any) -> None:
+    """重建固化词典骨架（损坏自愈路径专用，与文件不存在时同构）。"""
+    path.write_text(
+        "# 固化词典（terminology-guard 语义层，自动维护）\n"
+        "# 词出现于 ≥3 个不同会话（admission）即固化，全局锚定；\n"
+        "# candidates 段为 admission 计数（sessions/last_seen）；\n"
+        "# 可直接编辑 terms 删词；删文件=重置全部固化状态。\n"
+        "terms: []\n"
+        "candidates: {}\n",
+        encoding="utf-8",
+    )
 
 
 def _save_consolidated_raw(raw: dict[str, Any]) -> None:
@@ -352,7 +379,7 @@ def _save_consolidated_raw(raw: dict[str, Any]) -> None:
 
     Contract: Postconditions: 文件与 raw 一致且任意时刻可完整解析；异常上抛。"""
     path = _consolidated_path()
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     tmp.write_text(
         safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8"
     )
@@ -431,6 +458,10 @@ def _consolidate(fresh: list[str], sid: str) -> None:
                     continue
                 sessions = [s for s in (rec.get("sessions") or []) if s != sid]
                 sessions.append(sid)
+                if len(sessions) > 8:
+                    # admission 判定需 ≥3 个会话，保留最近 8 个即可；无界累积
+                    # 是膨胀主因之一（实测 27,570 行 sessions 归属行）。
+                    sessions = sessions[-8:]
                 rec["sessions"] = sessions
                 rec["last_seen"] = today
                 candidates[term] = rec
