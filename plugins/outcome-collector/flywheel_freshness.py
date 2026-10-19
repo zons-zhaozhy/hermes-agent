@@ -27,11 +27,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 
 def _resolve_home(explicit: Optional[str]) -> Path:
@@ -53,7 +54,7 @@ def _latest_audit(home: Path) -> Optional[Path]:
     return cands[-1] if cands else None
 
 
-def _age_check(name: str, path: Optional[Path], max_age_hours: float) -> Dict[str, Any]:
+def _age_check(name: str, path: Optional[Path], max_age_hours: float) -> dict[str, Any]:
     """单产出时效检查。缺失=最老（账龄 None，reason=missing）。
 
     Contract:
@@ -86,7 +87,7 @@ def _latest_mtime(directory: Path, pattern: str = "*.md") -> Optional[float]:
     return max(mtimes) if mtimes else None
 
 
-def _age_check_dir(name: str, directory: Path, max_age_hours: float) -> Dict[str, Any]:
+def _age_check_dir(name: str, directory: Path, max_age_hours: float) -> dict[str, Any]:
     """目录级产出时效检查（按最新文件 mtime）。
 
     Contract:
@@ -107,24 +108,85 @@ def _age_check_dir(name: str, directory: Path, max_age_hours: float) -> Dict[str
     }
 
 
-def check_freshness(home: Path) -> Dict[str, Any]:
+# arXiv 收割链判活参数。文件 mtime 不能做该源的唯一判活依据：arXiv OAI-PMH
+# 周六/周日零 datestamp 记录，周五晨收割→下周二晨收割的合法产出间隙≈72h，
+# 恒大于旧 50h 阈值——每逢完整周末后的周一结构性误报（2026-10-14/10-19 两案
+# 定性）。主信号=收割 job 自身执行结果；内容 mtime 降为兜底地板（80h=最长
+# 合法间隙 72h + 8h 余量），地板击穿且机器不活才告警。
+ARXIV_PAPERS_DIR = Path("/Users/stan/Knowledge-Base/ai-research/papers")
+ARXIV_HARVEST_JOB_ID = "504c034bbdba"  # 「AI专题知识OAI增量采集」每日 07:10
+ARXIV_CONTENT_FLOOR_HOURS = 80.0
+ARXIV_MACHINERY_WINDOW_HOURS = 48.0
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _harvest_job_alive(home: Path, job_id: str,
+                       window_hours: float = ARXIV_MACHINERY_WINDOW_HOURS) -> Optional[bool]:
+    """收割 job 近 window_hours 内是否有 completed 执行。
+
+    Contract:
+      Preconditions: executions.db 位于 home/cron/executions.db（可能不存在）
+      Postconditions: True/False=判定结果；None=无法判定（db 缺失/查询异常，
+        调用方走内容地板兜底）；永不 raise
+    """
+    import sqlite3
+    db = home / "cron" / "executions.db"
+    if not db.is_file():
+        return None
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            row = con.execute(
+                "select count(*) from executions where job_id=? and status='completed' "
+                "and julianday(finished_at)>julianday('now', ?)",
+                (job_id, f"-{window_hours:g} hours"),
+            ).fetchone()
+        finally:
+            try:
+                con.close()
+            except sqlite3.Error:  # close 失败不得掩盖查询原始异常
+                _LOGGER.warning("harvest liveness: close executions.db failed", exc_info=True)
+    except sqlite3.Error as e:
+        _LOGGER.warning("harvest liveness: query executions.db failed: %s", e)
+        return None
+    return bool(row and row[0] > 0)
+
+
+def _age_check_arxiv(home: Path) -> dict[str, Any]:
+    """arxiv-papers 判活：内容地板 + 收割机器信号双门。
+
+    告警条件=内容真空超地板 且 收割 job 48h 内无 completed 执行（双失才报，
+    周末上游零增量不报——机器活着即链路健康）。job 自身失败由每日 cron 失败
+    审计独立覆盖，不在此重复。
+
+    Contract:
+      Preconditions: home 为 Path
+      Postconditions: 返回含 name/ok/path/age_hours/reason 的 dict，永不 raise
+    """
+    content = _age_check_dir("arxiv-papers", ARXIV_PAPERS_DIR, ARXIV_CONTENT_FLOOR_HOURS)
+    if content["ok"]:
+        return content
+    if _harvest_job_alive(home, ARXIV_HARVEST_JOB_ID):
+        content["ok"] = True
+        content["reason"] = "upstream-quiet-harvest-ok"
+    return content
+
+
+def check_freshness(home: Path) -> dict[str, Any]:
     """逐项检查飞轮产出时效。
 
     Contract:
       Preconditions: home 为 Path（可能不存在——按全缺失处理）
       Postconditions: 返回 {"home","alerts","checked"}，永不 raise
     """
-    checks: List[Dict[str, Any]] = []
+    checks: list[dict[str, Any]] = []
     checks.append(_age_check("daily-audit", _latest_audit(home), max_age_hours=26))
     checks.append(_age_check("regression-alerts", home / "outcomes" / "regression_alerts.json", 26))
     checks.append(_age_check("analyzer-findings", home / "outcomes" / "findings.md", 12))
-    # 知识采集层：arXiv 论文收割每日 07:10 cron，断流 >50h 告警
-    # （2026-09-26 实证：采集断流 6 天零告警——监测盲区补齐）
-    checks.append(_age_check_dir(
-        "arxiv-papers",
-        Path("/Users/stan/Knowledge-Base/ai-research/papers"),
-        max_age_hours=50,
-    ))
+    # 知识采集层：arXiv 收割链判活（内容地板 80h + 收割 job 48h 双门，
+    # 2026-10-19 根治周末结构性误报——详见 _age_check_arxiv 注释）
+    checks.append(_age_check_arxiv(home))
 
     stale = [c for c in checks if not c["ok"]]
     return {"home": str(home), "alerts": stale, "checked": checks}
