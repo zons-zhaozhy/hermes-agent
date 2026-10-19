@@ -101,7 +101,7 @@ _secret_capture_callback = None
 _LOOKUP_HINT = "Use a skill name or relative path within the skills directory."
 
 
-def _skill_lookup_path_error(name: str) -> Optional[str]:
+def skill_lookup_path_error(name: str) -> Optional[str]:
     """Error if lookup *name* could escape the search roots it is joined onto. Windows drive
     paths are rejected too: their ``:`` would be misread as a plugin namespace separator."""
     from tools.path_security import has_traversal_component
@@ -216,7 +216,7 @@ def _is_skill_disabled(*names: str, platform: str | None = None) -> bool:
         return False
 
 
-def _skill_search_dirs() -> tuple[list[tuple[int, Path]], Path]:
+def skill_search_dirs() -> tuple[list[tuple[int, Path]], Path]:
     """(``(tier, dir)`` roots in precedence order, active_skills_dir) — the shared
     ``agent.skill_utils.get_skill_search_roots`` order with the live profile dir (dropped if absent)."""
     from agent.skill_utils import TIER_LOCAL, get_skill_search_roots
@@ -235,7 +235,7 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
         TIER_PROJECT, is_disabled_entry, iter_project_skill_files, iter_skill_index_files, resolve_skill_catalog)
     cache_key = ("with_disabled" if skip_disabled else "filtered", include_hidden)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
-    roots, _ = _skill_search_dirs()
+    roots, _ = skill_search_dirs()
     signature = _skills_scan_signature([d for _t, d in roots], disabled)
     now = time.monotonic()
     cached = _SKILLS_CACHE.get(cache_key)
@@ -274,7 +274,7 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
     return [dict(s) for s in skills]
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:
+def find_all_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:
     """Loadable skills (name, description, category): ``name`` is what skill_view() accepts —
     the declared name, or the exact relative path for a same-tier duplicate. Shadowed and
     unloadable copies are left out. ``skip_disabled=True`` ignores disabled state (config UI)."""
@@ -282,7 +282,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:
             for s in _skill_catalog(skip_disabled=skip_disabled) if s["load_name"]]
 
 
-def _sort_skills(skills: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def sort_skills(skills: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep every skill listing path ordered the same way."""
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
 
@@ -335,7 +335,7 @@ def _plugin_skills() -> list[dict[str, Any]]:
 
 def _listing_payload(skills: list[dict[str, Any]], query: str | None, note: str | None) -> dict[str, Any]:
     """Response body for ``skills_list``: sorted skills, categories, count, and the query echo."""
-    ordered = _sort_skills(skills)
+    ordered = sort_skills(skills)
     payload: dict[str, Any] = {
         "success": True, "skills": ordered,
         "categories": sorted({s.get("category") for s in ordered if s.get("category")}),
@@ -357,7 +357,10 @@ def skills_list(category: str | None = None, query: str | None = None, task_id: 
     """
     try:
         _skills_dir().mkdir(parents=True, exist_ok=True)
-        all_skills = [*_find_all_skills(), *_plugin_skills()]
+        # Fork structure (plugin skills via _plugin_skills(), which already applies
+        # upstream's platform/disabled filtering); upstream's evolved catalog reader
+        # (skip_disabled-aware) stays the public find_all_skills().
+        all_skills = [*find_all_skills(), *_plugin_skills()]
         if not all_skills:
             return _json({"success": True, "skills": [], "categories": [],
                           "message": "No skills found in skills/ directory."})
@@ -563,7 +566,7 @@ def _owning_search_dir(skill_md: Path, all_dirs) -> Optional[Path]:
     return max(owners, key=lambda d: len(d.parts), default=None)
 
 
-def _locate_skill(name: str, local_category_name: Optional[str], roots):
+def locate_skill(name: str, local_category_name: Optional[str], roots):
     """Unique on-disk skill for *name* over ``(tier, dir)`` *roots*: cross-tier precedence
     (project > local > create_dir > external, shadowed copies logged), same-tier collision refusal,
     same-root identical-copy ranking, quarantine gate, not-found listing. ``(error_json, skill_dir,
@@ -612,7 +615,7 @@ def _locate_skill(name: str, local_category_name: Optional[str], roots):
                 hint="Inspect the skill in the repo checkout, or untrust the repo with "
                 "`hermes skills untrust`."), None, None
     if not skill_md or not skill_md.exists():
-        available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]
+        available = [s["name"] for s in sort_skills(find_all_skills())[:20]]
         return _fail(f"Skill '{name}' not found.", available_skills=available,
                      hint="Use skills_list to see all available skills"), None, None
     return None, skill_dir, skill_md
@@ -651,7 +654,7 @@ def skill_view(
     try:
         # Validate before the ':' dispatch so a Windows drive path (C:\skills\foo) can't be
         # reinterpreted as a plugin namespace.
-        if lookup_error := _skill_lookup_path_error(name):
+        if lookup_error := skill_lookup_path_error(name):
             return _fail(lookup_error, hint=_LOOKUP_HINT)
         local_category_name: str | None = None
         if ":" in name:  # plugin registry; bare names use the flat-tree scan below
@@ -660,11 +663,11 @@ def skill_view(
                 return served
         # The fall-through form (namespace/bare) joins onto each search dir too; re-validate it
         # since `bare` is not namespace-checked.
-        if local_category_name and (lookup_error := _skill_lookup_path_error(local_category_name)):
+        if local_category_name and (lookup_error := skill_lookup_path_error(local_category_name)):
             return _fail(lookup_error, hint=_LOOKUP_HINT)
-        roots, active_skills_dir = _skill_search_dirs()
+        roots, active_skills_dir = skill_search_dirs()
         all_dirs = [d for _t, d in roots]
-        error, skill_dir, skill_md = _locate_skill(name, local_category_name, roots)
+        error, skill_dir, skill_md = locate_skill(name, local_category_name, roots)
         if error is not None:
             return error
         try:  # read once — reused for platform check and main content
