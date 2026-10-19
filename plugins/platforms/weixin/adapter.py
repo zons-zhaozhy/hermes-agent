@@ -251,6 +251,107 @@ class TypingTicketCache:
         self._cache[user_id] = (ticket, time.time())
 
 
+class PendingDeliveryStore:
+    """Disk-backed outbound texts parked while the peer's iLink session is not ready.
+
+    iLink refuses bot-initiated sends once the peer's context_token expires, so an
+    outbound reply in that window is deterministically lost — the peer must message
+    the bot first. This store parks such texts (text only; media file paths do not
+    survive a restart) and the inbound path flushes them once a fresh context_token
+    arrives. Bounded per peer (``max_per_peer``, oldest dropped) and by age
+    (``ttl_seconds``), so a silent peer cannot accumulate an unbounded backlog.
+    """
+
+    def __init__(self, hermes_home: str, *, max_per_peer: int = 5, ttl_seconds: float = 86400.0,
+                 max_attempts: int = 2):
+        self._root = _account_dir(hermes_home)
+        self._cache: dict[str, list[dict[str, Any]]] = {}
+        self._max_per_peer = max_per_peer
+        self._ttl_seconds = ttl_seconds
+        self._max_attempts = max_attempts
+        self._persist_lock = asyncio.Lock()
+
+    @staticmethod
+    def _key(account_id: str, user_id: str) -> str:
+        return f"{account_id}:{user_id}"
+
+    def restore(self, account_id: str) -> None:
+        path = self._root / f"{account_id}.pending-deliveries.json"
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception as exc:
+            logger.warning("weixin: failed to restore pending deliveries for %s: %s", _safe_id(account_id), exc)
+            return
+        restored = {self._key(account_id, u): v for u, v in data.items() if isinstance(v, list)}
+        self._cache.update(restored)
+        if restored:
+            total = sum(len(v) for v in restored.values())
+            logger.info("weixin: restored %d pending deliverie(s) across %d peer(s) for %s",
+                        total, len(restored), _safe_id(account_id))
+
+    def _prune(self, entries: list[dict[str, Any]], now: float) -> list[dict[str, Any]]:
+        return [e for e in entries
+                if isinstance(e, dict) and isinstance(e.get("text"), str) and e.get("text")
+                and int(e.get("attempts") or 0) < self._max_attempts
+                and now - float(e.get("queued_at") or 0) < self._ttl_seconds]
+
+    async def enqueue(self, account_id: str, user_id: str, text: str) -> bool:
+        """Park one outbound text. False when the entry list was already full (oldest kept was dropped)."""
+        key = self._key(account_id, user_id)
+        now = time.time()
+        entries = self._prune(self._cache.get(key) or [], now)
+        entries.append({"text": text, "queued_at": now, "attempts": 0})
+        dropped = len(entries) - self._max_per_peer
+        if dropped > 0:
+            entries = entries[dropped:]
+        self._cache[key] = entries
+        async with self._persist_lock:
+            await asyncio.to_thread(self._persist, account_id)
+        return dropped <= 0
+
+    async def take_due(self, account_id: str, user_id: str) -> list[tuple[str, int]]:
+        """Remove and return this peer's parked texts as (text, attempts) pairs, oldest first.
+
+        The attempts count travels with the text so a flush failure can requeue at
+        attempts+1; ``_prune`` drops entries at ``max_attempts`` on the next pass.
+        """
+        key = self._key(account_id, user_id)
+        entries = self._prune(self._cache.get(key) or [], time.time())
+        self._cache.pop(key, None)
+        async with self._persist_lock:
+            await asyncio.to_thread(self._persist, account_id)
+        return [(e["text"], int(e.get("attempts") or 0)) for e in entries]
+
+    async def requeue_failed(self, account_id: str, user_id: str, items: list[tuple[str, int]]) -> None:
+        """Put flush-failed (text, attempts) pairs back at attempts+1 — never resetting the
+        count, so a text that keeps failing is dropped after max_attempts total flush tries."""
+        key = self._key(account_id, user_id)
+        now = time.time()
+        entries = self._prune(self._cache.get(key) or [], now)
+        for text, attempts in items:
+            entries.append({"text": text, "queued_at": now, "attempts": attempts + 1})
+        dropped = len(entries) - self._max_per_peer
+        if dropped > 0:
+            entries = entries[dropped:]
+        self._cache[key] = entries
+        async with self._persist_lock:
+            await asyncio.to_thread(self._persist, account_id)
+
+    def _persist(self, account_id: str) -> None:
+        prefix = f"{account_id}:"
+        payload = {key[len(prefix):]: value for key, value in self._cache.items()
+                   if key.startswith(prefix) and value}
+        try:
+            if payload:
+                atomic_json_write(self._root / f"{account_id}.pending-deliveries.json", payload)
+            else:
+                (self._root / f"{account_id}.pending-deliveries.json").unlink(missing_ok=True)
+        except Exception as exc:
+            logger.warning("weixin: failed to persist pending deliveries for %s: %s", _safe_id(account_id), exc)
+
+
 def _parse_aes_key(aes_key_b64: str) -> bytes:
     decoded = base64.b64decode(aes_key_b64)
     if len(decoded) == 16:
@@ -711,6 +812,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._hermes_home = hermes_home = str(get_hermes_home())
         self._token_store = ContextTokenStore(hermes_home)
         self._typing_cache = TypingTicketCache()
+        self._pending_store = PendingDeliveryStore(hermes_home)
+        self._flushing_pending: set[str] = set()
         self._poll_session = self._send_session = None  # type: Optional[aiohttp.ClientSession]
         self._poll_task: Optional[asyncio.Task] = None
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
@@ -769,6 +872,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         # _api_post/_api_get enforce timeouts with asyncio.wait_for() instead.
         self._send_session = _new_session(timeout=aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None))
         self._token_store.restore(self._account_id)
+        self._pending_store.restore(self._account_id)
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
         self._mark_connected()
         _LIVE_ADAPTERS[self._token] = self
@@ -897,6 +1001,9 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
             await self._token_store.set(self._account_id, sender_id, context_token)
+            # A fresh context_token means the peer's iLink session is live again: deliver the
+            # texts parked while the protocol refused bot-initiated sends.
+            asyncio.create_task(self._flush_pending(sender_id))
         if self._poll_session and self._token and not self._typing_cache.get(sender_id):
             asyncio.create_task(self._fetch_typing_ticket(self._poll_session, sender_id, context_token or None, "getConfig failed"))
         media_paths, media_types = [], []  # type: List[str], List[str]
@@ -1064,7 +1171,45 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             return SendResult(success=True, message_id=last_message_id)
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
+            if str(exc).startswith("iLink sendmessage session not ready") and final_content.strip():
+                # Deterministic protocol rejection (the peer's session expired and iLink refuses
+                # bot-initiated sends): park the text; the peer's next inbound message flushes it.
+                parked = await self._pending_store.enqueue(self._account_id, chat_id, final_content.strip())
+                logger.warning("[%s] session not ready; parked text for %s for inbound flush (queue_ok=%s)",
+                               self.name, _safe_id(chat_id), parked)
             return SendResult(success=False, error=str(exc))
+
+    async def _flush_pending(self, user_id: str) -> None:
+        """Deliver this peer's parked texts now that their fresh context_token has landed.
+
+        Contract:
+            Preconditions: called from the inbound path after ``_token_store.set`` — the peer's
+                iLink session is active again, so bot-initiated sends are permitted once more.
+            Postconditions: every parked text is sent once; failures are requeued exactly once
+                (``attempts`` cap drops them afterwards). Never raises into the inbound path.
+        """
+        if user_id in self._flushing_pending:
+            return
+        self._flushing_pending.add(user_id)
+        try:
+            texts = await self._pending_store.take_due(self._account_id, user_id)
+            if not texts:
+                return
+            logger.info("[%s] flushing %d parked text(s) to %s after session recovery",
+                        self.name, len(texts), _safe_id(user_id))
+            failed: list[tuple[str, int]] = []
+            for text, attempts in texts:
+                result = await self.send(user_id, text)
+                if not result.success:
+                    failed.append((text, attempts))
+            if failed:
+                logger.warning("[%s] %d parked text(s) still failing for %s; requeueing once",
+                               self.name, len(failed), _safe_id(user_id))
+                await self._pending_store.requeue_failed(self._account_id, user_id, failed)
+        except Exception as exc:
+            logger.warning("[%s] pending flush failed for %s: %s", self.name, _safe_id(user_id), exc)
+        finally:
+            self._flushing_pending.discard(user_id)
 
     async def _ensure_typing_ticket(self, chat_id: str) -> Optional[str]:
         """Return a valid typing ticket, refreshing via getConfig once the 600s TTL evicts it —
