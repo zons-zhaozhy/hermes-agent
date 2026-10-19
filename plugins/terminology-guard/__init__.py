@@ -18,6 +18,7 @@ admission control, Einziger et al. 2017）:
 
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
 from typing import Any, Mapping, Optional
@@ -296,8 +297,16 @@ def _update_ledger(response_text: str, sid: str, st: dict[str, Any]) -> None:
 _CONSOLIDATED_FILE = "terminology_consolidated.yaml"
 _CONSOLIDATE_THRESHOLD_SESSIONS = 3
 _CONSOLIDATED_MAX = 100
+# candidates 有界化：admission 需 ≥3 会话，超限时按（会话数, last_seen）淘汰
+# 最不活跃者。无上限时实测增长到 18484 条/2.2MB，单次全量解析 8.27s，
+# 注入钩子（每次 API 调用）被拖到 30s 超时。
+_CANDIDATES_MAX = 2000
 _CONSOLIDATED_BUDGET = 400
 _CANDIDATE_STALE_DAYS = 30
+
+# 进程内解析缓存（mtime+size 键）：注入路径每 API 调用都读固化词典，
+# 必须避免重复全量解析；记账路径（_consolidate）始终读最新，不走缓存。
+_RAW_CACHE: dict[str, Any] = {"key": None, "raw": None}
 
 
 def _consolidated_path() -> Any:
@@ -306,12 +315,16 @@ def _consolidated_path() -> Any:
     return get_hermes_home() / _CONSOLIDATED_FILE
 
 
-def _load_consolidated_raw() -> dict[str, Any]:
+def _load_consolidated_raw(cached: bool = False) -> dict[str, Any]:
     """读固化词典 raw（terms=已固化词, candidates=admission 计数）；文件不
     存在则建骨架。IO/解析异常向上抛，由调用方 fail-open。
 
+    cached=True 走进程内缓存（mtime+size 键）：注入路径每 API 调用都读，
+    全量解析秒级，必须缓存；记账路径（_consolidate）要读最新，禁用缓存。
+
     Contract:
-      Postconditions: 返回 dict 含 terms/candidates 键
+      Postconditions: 返回 dict 含 terms/candidates 键；cached=True 命中缓存
+                      时返回共享对象，调用方不得原地修改
     """
     path = _consolidated_path()
     if not path.exists():
@@ -324,14 +337,44 @@ def _load_consolidated_raw() -> dict[str, Any]:
             "candidates: {}\n",
             encoding="utf-8",
         )
-    return safe_load(path.read_text(encoding="utf-8")) or {}
+    stat = path.stat()
+    key: tuple[int, int] = (stat.st_mtime_ns, stat.st_size)
+    if cached and _RAW_CACHE["key"] == key and _RAW_CACHE["raw"] is not None:
+        return _RAW_CACHE["raw"]
+    raw: dict[str, Any] = safe_load(path.read_text(encoding="utf-8")) or {}
+    if cached:
+        _RAW_CACHE.update(key=key, raw=raw)
+    return raw
 
 
 def _save_consolidated_raw(raw: dict[str, Any]) -> None:
-    """固化词典整体落盘。Contract: Postconditions: 文件与 raw 一致；异常上抛。"""
-    _consolidated_path().write_text(
+    """固化词典整体落盘（临时文件+原子替换：多会话并发写不撕裂）。
+
+    Contract: Postconditions: 文件与 raw 一致且任意时刻可完整解析；异常上抛。"""
+    path = _consolidated_path()
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(
         safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8"
     )
+    os.replace(tmp, path)
+
+
+def _evict_candidates(candidates: dict[str, Any]) -> dict[str, Any]:
+    """candidates 超限淘汰：按（会话数, last_seen）升序丢最不活跃者。
+
+    Contract:
+      Preconditions: candidates 值为 {sessions: list, last_seen: str} 形态
+      Postconditions: 返回条目数 ≤ _CANDIDATES_MAX 的新 dict；入参不变
+    """
+    if len(candidates) <= _CANDIDATES_MAX:
+        return candidates
+
+    def _rank(item: tuple[str, Any]) -> tuple[int, str]:
+        rec = item[1] if isinstance(item[1], dict) else {}
+        return (len(rec.get("sessions") or []), str(rec.get("last_seen") or ""))
+
+    ranked = sorted(candidates.items(), key=_rank, reverse=True)
+    return dict(ranked[:_CANDIDATES_MAX])
 
 
 def _is_stale(last_seen: str, today: str) -> bool:
@@ -366,38 +409,45 @@ def _consolidate(fresh: list[str], sid: str) -> None:
     try:
         import time as _time
 
-        raw = _load_consolidated_raw()
         today = _time.strftime("%Y-%m-%d")
-        terms = [e for e in (raw.get("terms") or []) if isinstance(e, dict)]
-        candidates: dict[str, Any] = raw.get("candidates") or {}
-        known = {e.get("canonical") for e in terms}
-        promoted: list[str] = []
-        for term in fresh:
-            if term in known:
-                continue
-            rec = candidates.get(term) or {}
-            last_seen = str(rec.get("last_seen") or "")
-            if last_seen and _is_stale(last_seen, today):
-                continue
-            sessions = [s for s in (rec.get("sessions") or []) if s != sid]
-            sessions.append(sid)
-            rec["sessions"] = sessions
-            rec["last_seen"] = today
-            candidates[term] = rec
-            if len(set(sessions)) >= _CONSOLIDATE_THRESHOLD_SESSIONS:
-                promoted.append(term)
-        for term in promoted:
-            if len(terms) < _CONSOLIDATED_MAX:
-                terms.append({
-                    "canonical": term,
-                    "aliases": [],
-                    "note": f"固化（{today}）——出现于 {len(candidates[term]['sessions'])} 个会话",
-                })
-                logger.info("terminology-guard: 用词固化入语义层: %s", term)
-            candidates.pop(term, None)
-        raw["terms"] = terms
-        raw["candidates"] = candidates
-        _save_consolidated_raw(raw)
+        # 跨进程互斥：多会话并发对同一文件做读改写，无锁会交错撕裂
+        # （实测产生孤儿半行使全文件不可解析）。锁文件独立于数据文件。
+        lock_path = _consolidated_path().with_name(
+            _consolidated_path().name + ".lock"
+        )
+        with open(lock_path, "a", encoding="utf-8") as _lk:
+            fcntl.flock(_lk, fcntl.LOCK_EX)
+            raw = _load_consolidated_raw()
+            terms = [e for e in (raw.get("terms") or []) if isinstance(e, dict)]
+            candidates: dict[str, Any] = raw.get("candidates") or {}
+            known = {e.get("canonical") for e in terms}
+            promoted: list[str] = []
+            for term in fresh:
+                if term in known:
+                    continue
+                rec = candidates.get(term) or {}
+                last_seen = str(rec.get("last_seen") or "")
+                if last_seen and _is_stale(last_seen, today):
+                    continue
+                sessions = [s for s in (rec.get("sessions") or []) if s != sid]
+                sessions.append(sid)
+                rec["sessions"] = sessions
+                rec["last_seen"] = today
+                candidates[term] = rec
+                if len(set(sessions)) >= _CONSOLIDATE_THRESHOLD_SESSIONS:
+                    promoted.append(term)
+            for term in promoted:
+                if len(terms) < _CONSOLIDATED_MAX:
+                    terms.append({
+                        "canonical": term,
+                        "aliases": [],
+                        "note": f"固化（{today}）——出现于 {len(candidates[term]['sessions'])} 个会话",
+                    })
+                    logger.info("terminology-guard: 用词固化入语义层: %s", term)
+                candidates.pop(term, None)
+            raw["terms"] = terms
+            raw["candidates"] = _evict_candidates(candidates)
+            _save_consolidated_raw(raw)
     except Exception as exc:
         logger.warning(
             "terminology-guard: 固化词典写入失败（fail-open）: %s", exc, exc_info=True
@@ -411,7 +461,7 @@ def _load_consolidated() -> list[str]:
       Postconditions: 返回 list[str]（≤_CONSOLIDATED_MAX）；绝不 raise
     """
     try:
-        raw = _load_consolidated_raw()
+        raw = _load_consolidated_raw(cached=True)
         return [
             str(e["canonical"])
             for e in (raw.get("terms") or [])

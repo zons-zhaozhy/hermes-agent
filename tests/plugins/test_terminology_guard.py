@@ -282,6 +282,28 @@ def test_consolidate_stale_candidate_skipped(monkeypatch: Any, tmp_path: Any) ->
     assert (raw2.get("terms") or []) == []  # 期望: 老化候选禁入 terms
 
 
+def test_consolidate_candidates_capped(monkeypatch: Any, tmp_path: Any) -> None:
+    mod = _load_plugin()
+    home = _fake_home(monkeypatch, tmp_path)
+    path = home / "terminology_consolidated.yaml"
+    from hermes_yaml import safe_dump as _yaml_dump, safe_load as _yaml_load
+    # 预置超限候选：单会话旧日期噪声 + 一条双会话候选
+    raw: Any = {"terms": [], "candidates": {}}
+    for i in range(mod._CANDIDATES_MAX + 500):
+        raw["candidates"][f"噪声词{i}"] = {
+            "sessions": ["sA"], "last_seen": "2001-01-01",
+        }
+    raw["candidates"]["多会话保留词"] = {
+        "sessions": ["sA", "sB"], "last_seen": "2001-06-01",
+    }
+    path.write_text(_yaml_dump(raw, allow_unicode=True), encoding="utf-8")
+    mod._consolidate(["新词"], "sC")
+    raw2 = _yaml_load(path.read_text(encoding="utf-8"))
+    assert len(raw2["candidates"]) <= mod._CANDIDATES_MAX  # 期望: 上限生效
+    assert "多会话保留词" in raw2["candidates"]  # 期望: 双会话优先于单会话保留
+    assert raw2["candidates"]["新词"]["sessions"] == ["sC"]  # 期望: 本轮记账未被淘汰
+
+
 def test_consolidated_line_budget() -> None:
     mod = _load_plugin()
     words = [f"超长术语测试条目{i:03d}" for i in range(60)]
