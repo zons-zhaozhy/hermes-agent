@@ -47,9 +47,16 @@ _WRITE_TOOLS = frozenset({"write_file", "patch", "execute_code"})
 #   dd          → 目标=of= 操作数
 #   tee         → 目标=非选项操作数
 #   其它        → 仅重定向目标（> / >>）
-#   解释器 -c   → 追加引号内路径字面量提取（与 execute_code 通道对齐防旁路）
+#   解释器 -c   → 载荷含写特征时追加引号内路径字面量提取（与 execute_code
+#                 通道同一特征集，2026-10-19 第四轮根修：纯读脚本零提取）
 _FILE_COPY_HEADS = frozenset({"cp", "mv", "rsync"})
 _INTERPRETER_HEADS = frozenset({"python", "python3", "perl", "ruby", "node"})
+
+# 解释器载荷写特征（terminal -c 与 execute_code 两通道共用的单一事实源）。
+# 无写特征的纯读脚本不做字面量提取——2026-10-19 误拦根修：dataless 盘点
+# 只读脚本 print(f'...{t/1e6:.1f}MB') 的格式说明符斜杠被当路径分隔符，
+# 相对拼根恒真，纯读诊断被拦（目标列显示为 f-string 片段）。
+_PY_WRITE_FEATURES = ("open(", ".write", "write_text")
 
 
 def _split_segments(cmd: str) -> list[str]:
@@ -189,17 +196,20 @@ def _default_targets(seg: str, toks: list[str]) -> list[str]:
     """其它命令头：仅重定向目标是写目标; 解释器 -c 追加字面量提取。
 
     Contract:
-      Postconditions: 解释器代码内 OntoX 路径字面量计入目标（与
-        execute_code 通道对齐防旁路）; 普通命令只认 > / >> 目标。
+      Postconditions: 解释器载荷含写特征时，代码内 OntoX 路径字面量计入
+        目标（与 execute_code 通道同一特征集防旁路）; 无写特征纯读脚本
+        零提取; 普通命令只认 > / >> 目标。
 
     字面量提取须用 -c 载荷 token 而非整段原文——外层包裹引号会使
     引号配对提前闭合，路径落在配对间隙（2026-10-17 实测定性）。
     """
     targets = list(_redirect_targets(seg))
     if toks and toks[0].rsplit("/", 1)[-1] in _INTERPRETER_HEADS:
-        lit = _extract_first_ontox_path(_interpreter_payload(toks))
-        if lit:
-            targets.append(lit)
+        payload = _interpreter_payload(toks)
+        if _payload_has_write_feature(payload):
+            lit = _extract_first_ontox_path(payload)
+            if lit:
+                targets.append(lit)
     return targets
 
 
@@ -339,17 +349,41 @@ def _target_from_terminal(cmd: str) -> str:
     return ""
 
 
+def _payload_has_write_feature(code: str) -> bool:
+    """解释器载荷是否含写调用特征（两通道共用的单一事实源）。
+
+    Contract:
+      Postconditions: 任一 _PY_WRITE_FEATURES 子串命中 → True;
+        纯读脚本（os.walk/lstat/print 等）→ False。
+    """
+    return any(f in code for f in _PY_WRITE_FEATURES)
+
+
+def _looks_like_path(s: str) -> bool:
+    """字符串字面量是否为路径形态（排除格式串与 URL）。
+
+    Contract:
+      Postconditions: 含空白/花括号（f-string·format 占位）/URL 方案
+        （://）→ False（不可能构成文件路径字面量）; 其余非空 → True。
+    """
+    if not s or "://" in s:
+        return False
+    return not any(ch.isspace() or ch in "{}" for ch in s)
+
+
 def _extract_first_ontox_path(code: str) -> str:
     """从 execute_code 代码里提取第一个落在 OntoX 根内的路径字面量。
 
     Contract:
-      Postconditions: 找不到返回空串（调用方 fail-open）。
+      Postconditions: 找不到返回空串（调用方 fail-open）; 格式串/URL
+        字面量不构成候选（2026-10-19 根修：{t/1e6:.1f} 类斜杠占位
+        曾被相对拼根恒真升级为写目标）。
     """
     import re  # re-ok: 字符串字面量提取
 
-    hits = re.findall(r'["\']([^"\']+)["\']', code)  # re-ok: 引号配对提取,str方法无法表达
+    hits = re.findall(r'[\"\']([^\"\']+)[\"\']', code)  # re-ok: 引号配对提取,str方法无法表达
     for h in hits:
-        if "/" in h and _is_ontox_target(h):
+        if _looks_like_path(h) and _is_ontox_target(h):
             return h
     return ""
 
@@ -422,7 +456,7 @@ def _target_from_write_tool(tool_name: str, args: dict[str, Any]) -> str:
     if tool_name in ("write_file", "patch"):
         return str(args.get("path", ""))
     code = str(args.get("code", ""))
-    if "open(" in code or ".write" in code or "write_text" in code:
+    if _payload_has_write_feature(code):
         return _extract_first_ontox_path(code)
     return ""
 

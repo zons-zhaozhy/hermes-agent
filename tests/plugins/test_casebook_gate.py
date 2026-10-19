@@ -309,3 +309,72 @@ def test_interpreter_c_literal_write_blocked(env: tuple[Path, Path]) -> None:
     )
     assert v is not None  # 期望: 解释器代码内 OntoX 路径字面量=旁路写→拦截
     assert v["action"] == "block"  # 期望: 拦截动作字面量=block（规则语义）
+
+
+# ── 只读误拦第四轮根修回归（2026-10-19）──────────────────────────────
+# 规则语义（独立于实现）：门禁对象是「写目标落在 OntoX 根内」。
+# 解释器 -c 纯读脚本（无 open/write 调用）不是写命令；载荷内含斜杠的
+# 格式串（f-string 格式说明符 {t/1e6:.1f}）不是路径字面量。
+# 依据：dataless 盘点只读脚本 os.walk+lstat 被 block，目标列显示为
+# f-string 片段 "shallow dataless: n={n}, {t/1e6:.1f}MB"（实测复现）。
+
+
+def test_interpreter_c_readonly_scan_not_blocked(env: tuple[Path, Path]) -> None:
+    """terminal 解释器 -c 纯只读盘点脚本 → 无写特征 → 零打扰。
+
+    2026-10-19 实锤误拦形态：os.walk+lstat 只读脚本，print(f'...{t/1e6:.1f}MB')
+    的格式说明符斜杠被当路径分隔符，相对拼根恒真 → 只读诊断被拦。
+    """
+    _clear_probes()
+    v = casebook_gate.on_pre_tool_call(
+        tool_name="terminal",
+        args={
+            "command": (
+                'python3 -c "import os\n'
+                "n=t=0\n"
+                "for r,dirs,files in os.walk('.'):\n"
+                "    for f in files:\n"
+                "        st=os.lstat(os.path.join(r,f))\n"
+                "        t+=st.st_size;n+=1\n"
+                "print(f'shallow dataless: n={n}, {t/1e6:.1f}MB')\""
+            )
+        },
+        session_id="s1",
+    )
+    assert v is None  # 期望: 无写特征纯读脚本→非写命令→放行（只读零打扰不变量）
+
+
+def test_interpreter_c_write_outside_fstring_slash_not_blocked(
+    env: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """解释器写根外文件+载荷含斜杠格式串 → 唯一 OntoX 候选是格式串 → 零打扰。
+
+    格式占位 {n}/{t} 的斜杠同属误判形态：写字面量在 OntoX 根外，
+    格式串不应被相对拼根升级为写目标。
+    """
+    _clear_probes()
+    v = casebook_gate.on_pre_tool_call(
+        tool_name="terminal",
+        args={
+            "command": (
+                "python3 -c "
+                f"\"open('{tmp_path}/out.txt','w').write(f'done {{n}}/{{t}}')\""
+            )
+        },
+        session_id="s1",
+    )
+    assert v is None  # 期望: 写目标=根外 tmp 文件；格式串非路径→放行
+
+
+def test_interpreter_c_relative_literal_write_still_blocked(
+    env: tuple[Path, Path],
+) -> None:
+    """解释器 -c 相对路径字面量写 OntoX → 路径过滤不误伤真相对路径 → 拦截。"""
+    _clear_probes()
+    v = casebook_gate.on_pre_tool_call(
+        tool_name="terminal",
+        args={"command": "python3 -c \"open('apps/aml/x.py','w')\""},
+        session_id="s1",
+    )
+    assert v is not None  # 期望: 相对路径字面量仍构成 OntoX 写目标→拦截
+    assert v["action"] == "block"  # 期望: 拦截动作字面量=block（规则语义）
