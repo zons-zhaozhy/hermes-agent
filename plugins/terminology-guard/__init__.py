@@ -8,7 +8,7 @@ admission control, Einziger et al. 2017）:
     人工维护的规范名+禁用别名 SSOT。每次注入全部锚定（预算内）。
   情景层 session working lexicon（会话内）
     每轮回复抽取关键用词，首见即锁——把开放集问题在会话内转化为封闭集。
-  语义层 consolidated lexicon（~/.hermes/terminology_consolidated.yaml）
+  语义层 consolidated lexicon（~/.hermes/terminology_consolidated.json）
     跨会话 admission：词出现于 ≥3 个不同会话（持久化计数，进程重启不丢）
     即固化为全局锚定词；last_seen 超期标 stale 不再注入（老化衰减）。
 
@@ -19,13 +19,14 @@ admission control, Einziger et al. 2017）:
 from __future__ import annotations
 
 import fcntl
+import json
 import logging
 import os
 from typing import Any, Mapping, Optional
 
 from plugins._llm_judge import llm_judge_json, llm_judge_multi
 from plugins._shared_state import get_session_state
-from hermes_yaml import safe_dump, safe_load
+from hermes_yaml import safe_load as _yaml_safe_load
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +257,7 @@ def _update_ledger(response_text: str, sid: str, st: dict[str, Any]) -> None:
     L2 会话用词账本：开放集漂移的根治件——会话内首次用词即成为契约，
     每轮注入「已确立用词」，把开放集问题在会话内转化为封闭集。
     跨会话固化（consolidation）：词出现于 ≥3 个不同会话 → 固化入
-    terminology_consolidated.yaml，新会话开局即有锚，不再从零。
+    terminology_consolidated.json，新会话开局即有锚，不再从零。
 
     Contract:
       Preconditions: response_text 为 str；sid 为会话 id；st 为会话状态 dict
@@ -291,10 +292,14 @@ def _update_ledger(response_text: str, sid: str, st: dict[str, Any]) -> None:
 
 
 # ── 语义层：跨会话固化（admission control, W-TinyLFU 同构）────────────────
-# 固化词典 terminology_consolidated.yaml 与策展层同格式；admission 计数持久化
+# 固化词典 terminology_consolidated.json（JSON，机器状态高频读写）；admission 计数持久化
 # 在同一文件的 candidates 段（词 → {sessions: [sid], last_seen: 日期}），
 # 进程重启不丢；候选 last_seen 超 30 天视为陈旧，不再参与晋升（老化衰减）。
-_CONSOLIDATED_FILE = "terminology_consolidated.yaml"
+# 存储用 JSON 而非 YAML：此文件是机器维护的高频读写状态（每轮回复记账），
+# ruamel pure-Python 解析 333KB 实测 13.7s、dump 4.6s——多会话 flock 排队
+# 分钟级冻结；stdlib json 同数据解析 0.007s（1953 倍）。YAML round-trip
+# 能力（注释/引号保留）对机器状态无意义。
+_CONSOLIDATED_FILE = "terminology_consolidated.json"
 _CONSOLIDATE_THRESHOLD_SESSIONS = 3
 _CONSOLIDATED_MAX = 100
 # candidates 有界化：admission 需 ≥3 会话，超限时按（会话数, last_seen）淘汰
@@ -327,7 +332,20 @@ def _load_consolidated_raw(cached: bool = False) -> dict[str, Any]:
                       时返回共享对象，调用方不得原地修改
     """
     path = _consolidated_path()
+    legacy = path.with_name("terminology_consolidated.yaml")
     if not path.exists():
+        if legacy.exists():
+            # 旧 YAML 一次性迁移：ruamel 慢解析只付最后一次；迁移后旧文件
+            # 改名 .migrated 留证（未运行新代码的旧进程仍写旧名，其记账
+            # 自然失效，候选计数由 admission 重新积累）。
+            raw_legacy = _yaml_safe_load(legacy.read_text(encoding="utf-8")) or {}
+            if not isinstance(raw_legacy, dict):
+                raw_legacy = {}
+            raw_legacy.setdefault("terms", [])
+            raw_legacy.setdefault("candidates", {})
+            _save_consolidated_raw(raw_legacy)
+            os.replace(legacy, legacy.with_name(legacy.name + ".migrated"))
+            return raw_legacy
         _write_skeleton(path)
     stat = path.stat()
     key: tuple[int, int] = (stat.st_mtime_ns, stat.st_size)
@@ -335,7 +353,7 @@ def _load_consolidated_raw(cached: bool = False) -> dict[str, Any]:
         return _RAW_CACHE["raw"]
     text = path.read_text(encoding="utf-8")
     try:
-        raw: dict[str, Any] = safe_load(text) or {}
+        raw: dict[str, Any] = json.loads(text) or {}
     except Exception as exc:
         # 损坏自愈：撕裂/半写文件会使所有进程读路径永久失败（记账 fail-open
         # → 淘汰永不执行 → 膨胀与损坏互锁）。改名留证后重建骨架，terms 丢失
@@ -364,12 +382,20 @@ def _load_consolidated_raw(cached: bool = False) -> dict[str, Any]:
 def _write_skeleton(path: Any) -> None:
     """重建固化词典骨架（损坏自愈路径专用，与文件不存在时同构）。"""
     path.write_text(
-        "# 固化词典（terminology-guard 语义层，自动维护）\n"
-        "# 词出现于 ≥3 个不同会话（admission）即固化，全局锚定；\n"
-        "# candidates 段为 admission 计数（sessions/last_seen）；\n"
-        "# 可直接编辑 terms 删词；删文件=重置全部固化状态。\n"
-        "terms: []\n"
-        "candidates: {}\n",
+        json.dumps(
+            {
+                "_doc": (
+                    "固化词典（terminology-guard 语义层，自动维护）。"
+                    "词出现于 ≥3 个不同会话（admission）即固化，全局锚定；"
+                    "candidates 段为 admission 计数（sessions/last_seen）。"
+                    "可直接编辑 terms 删词；删文件=重置全部固化状态。"
+                ),
+                "terms": [],
+                "candidates": {},
+            },
+            ensure_ascii=False,
+            indent=1,
+        ),
         encoding="utf-8",
     )
 
@@ -381,7 +407,7 @@ def _save_consolidated_raw(raw: dict[str, Any]) -> None:
     path = _consolidated_path()
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     tmp.write_text(
-        safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8"
+        json.dumps(raw, ensure_ascii=False, indent=1), encoding="utf-8"
     )
     os.replace(tmp, path)
 

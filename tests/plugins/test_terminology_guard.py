@@ -232,8 +232,8 @@ def test_consolidate_three_sessions_persistent(monkeypatch: Any, tmp_path: Any) 
         mod2 = _load_plugin()
         mod2._consolidate(["评分卡"], sid)
     mod._consolidate(["评分卡"], "sessC")
-    from hermes_yaml import safe_load as _yaml_load
-    raw = _yaml_load((home / "terminology_consolidated.yaml").read_text(encoding="utf-8"))
+    import json
+    raw = json.loads((home / "terminology_consolidated.json").read_text(encoding="utf-8"))
     terms = raw.get("terms") or []
     # 期望: 第 3 会话触发固化（admission 计数跨"重启"持久），词入 terms
     assert [e["canonical"] for e in terms] == ["评分卡"]  # 期望: 3 会话达标即固化
@@ -242,7 +242,7 @@ def test_consolidate_three_sessions_persistent(monkeypatch: Any, tmp_path: Any) 
     assert "评分卡" not in (raw.get("candidates") or {})  # 期望: 晋升即出列
     # 第 4 会话再来同词 → 不重复追加
     mod._consolidate(["评分卡"], "sessD")
-    raw2 = _yaml_load((home / "terminology_consolidated.yaml").read_text(encoding="utf-8"))
+    raw2 = json.loads((home / "terminology_consolidated.json").read_text(encoding="utf-8"))
     # 期望: terms 仍 1 条（已固化词去重）
     assert len(raw2.get("terms") or []) == 1  # 期望: known 集合去重
 
@@ -252,14 +252,14 @@ def test_consolidate_two_sessions_keeps_candidates(monkeypatch: Any, tmp_path: A
     home = _fake_home(monkeypatch, tmp_path)
     mod._consolidate(["临时词"], "sessA")
     mod._consolidate(["临时词"], "sessB")
-    from hermes_yaml import safe_load as _yaml_load
-    raw = _yaml_load((home / "terminology_consolidated.yaml").read_text(encoding="utf-8"))
+    import json
+    raw = json.loads((home / "terminology_consolidated.json").read_text(encoding="utf-8"))
     # 期望: 2 会话未达标 → terms 空，但 candidates 持久化计数在（重启不丢）
     assert (raw.get("terms") or []) == []  # 期望: 2 < 3 阈值
     assert "临时词" in (raw.get("candidates") or {})  # 期望: admission 计数已落盘
     # 期望: 同会话重复出现不重复计会话
     mod._consolidate(["临时词"], "sessA")
-    raw2 = _yaml_load((home / "terminology_consolidated.yaml").read_text(encoding="utf-8"))
+    raw2 = json.loads((home / "terminology_consolidated.json").read_text(encoding="utf-8"))
     assert len(raw2["candidates"]["临时词"]["sessions"]) == 2  # 期望: 去重后仍 2
 
 
@@ -267,17 +267,17 @@ def test_consolidate_stale_candidate_skipped(monkeypatch: Any, tmp_path: Any) ->
     mod = _load_plugin()
     home = _fake_home(monkeypatch, tmp_path)
     mod._consolidate(["旧词"], "s1")
-    from hermes_yaml import safe_dump as _yaml_dump, safe_load as _yaml_load
+    import json
     # 手工把 last_seen 改成 40 天前 → 老化命中，跳过晋升
-    path = home / "terminology_consolidated.yaml"
-    raw = _yaml_load(path.read_text(encoding="utf-8"))
+    path = home / "terminology_consolidated.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
     from datetime import date, timedelta
     raw["candidates"]["旧词"]["last_seen"] = str(date.today() - timedelta(days=40))
-    path.write_text(_yaml_dump(raw, allow_unicode=True), encoding="utf-8")
+    path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
     mod2 = _load_plugin()
     mod2._consolidate(["旧词"], "s2")
     mod2._consolidate(["旧词"], "s3")
-    raw2 = _yaml_load(path.read_text(encoding="utf-8"))
+    raw2 = json.loads(path.read_text(encoding="utf-8"))
     # 期望: stale 候选不晋升（terms 空）
     assert (raw2.get("terms") or []) == []  # 期望: 老化候选禁入 terms
 
@@ -285,8 +285,8 @@ def test_consolidate_stale_candidate_skipped(monkeypatch: Any, tmp_path: Any) ->
 def test_consolidate_candidates_capped(monkeypatch: Any, tmp_path: Any) -> None:
     mod = _load_plugin()
     home = _fake_home(monkeypatch, tmp_path)
-    path = home / "terminology_consolidated.yaml"
-    from hermes_yaml import safe_dump as _yaml_dump, safe_load as _yaml_load
+    path = home / "terminology_consolidated.json"
+    import json
     # 预置超限候选：单会话旧日期噪声 + 一条双会话候选
     raw: Any = {"terms": [], "candidates": {}}
     for i in range(mod._CANDIDATES_MAX + 500):
@@ -296,9 +296,9 @@ def test_consolidate_candidates_capped(monkeypatch: Any, tmp_path: Any) -> None:
     raw["candidates"]["多会话保留词"] = {
         "sessions": ["sA", "sB"], "last_seen": "2001-06-01",
     }
-    path.write_text(_yaml_dump(raw, allow_unicode=True), encoding="utf-8")
+    path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
     mod._consolidate(["新词"], "sC")
-    raw2 = _yaml_load(path.read_text(encoding="utf-8"))
+    raw2 = json.loads(path.read_text(encoding="utf-8"))
     assert len(raw2["candidates"]) <= mod._CANDIDATES_MAX  # 期望: 上限生效
     assert "多会话保留词" in raw2["candidates"]  # 期望: 双会话优先于单会话保留
     assert raw2["candidates"]["新词"]["sessions"] == ["sC"]  # 期望: 本轮记账未被淘汰
