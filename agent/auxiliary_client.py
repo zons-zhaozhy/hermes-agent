@@ -3169,6 +3169,33 @@ def _normalize_chain_label(provider: str) -> str:
 _AUX_UNHEALTHY_PAYMENT_REASON = "payment / credit error"
 
 
+# Consecutive-timeout backoff for the transient quarantine: a wedged local endpoint
+# (listening but inference-dead) re-pays the full timeout budget on every 60s half-open
+# retry — 359 doomed attempts over one 17h outage (2026-10-19 audit). The TTL doubles
+# with each timeout inside a 1h streak window and caps at 30min; a quiet hour resets it,
+# so a genuinely transient blip still only costs the original 60s.
+_aux_timeout_streak: dict[Any, tuple[float, int]] = {}
+_TIMEOUT_QUARANTINE_BASE_SECONDS = 60.0
+_TIMEOUT_QUARANTINE_MAX_SECONDS = 1800.0
+_TIMEOUT_STREAK_RESET_SECONDS = 3600.0
+
+
+def _transient_timeout_quarantine_ttl(provider: str, base_info: Optional[str]) -> float:
+    """Quarantine TTL for a timed-out endpoint, doubling with consecutive timeouts.
+
+    Contract:
+        Preconditions: provider non-empty; base_info is the endpoint's base URL or None
+        Postconditions: returns 60 * 2^(streak-1) capped at 1800; the streak counter
+            for this endpoint is updated (incremented, or reset to 1 after a quiet window)
+    """
+    key = _unhealthy_cache_key(_normalize_chain_label(provider), base_info)
+    now = time.time()
+    last_at, streak = _aux_timeout_streak.get(key, (0.0, 0))
+    streak = streak + 1 if now - last_at < _TIMEOUT_STREAK_RESET_SECONDS else 1
+    _aux_timeout_streak[key] = (now, streak)
+    return min(_TIMEOUT_QUARANTINE_BASE_SECONDS * 2 ** (streak - 1), _TIMEOUT_QUARANTINE_MAX_SECONDS)
+
+
 def _mark_provider_unhealthy(
     provider: str, ttl: Optional[float] = None, *, base_url: Optional[str] = None,
     reason: str = _AUX_UNHEALTHY_PAYMENT_REASON, level: int = logging.WARNING,
@@ -3229,6 +3256,7 @@ def _reset_aux_unhealthy_cache() -> None:
     _aux_unhealthy_until.clear()
     _aux_unhealthy_logged_at.clear()
     _aux_unhealthy_reason.clear()
+    _aux_timeout_streak.clear()
 
 
 def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
@@ -7873,7 +7901,7 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         _mark_provider_unhealthy(
             _recoverable_pool_provider(resolved_provider, route.client, main_runtime=route.main_runtime)
             or resolved_provider,
-            ttl=_TRANSIENT_CANDIDATE_QUARANTINE_SECONDS,
+            ttl=_transient_timeout_quarantine_ttl(resolved_provider, route.base_info),
             base_url=route.base_info,
             reason="stalled stream (transient slow endpoint)" if stalled
                    else "request timed out (transient slow endpoint)",
