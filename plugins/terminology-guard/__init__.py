@@ -91,7 +91,7 @@ def _load_glossary() -> list[dict[str, Any]]:
             return _GLOSSARY_CACHE["entries"]
         entries: list[dict[str, Any]] = []
         if path.exists():
-            raw = safe_load(path.read_text(encoding="utf-8")) or {}
+            raw = _yaml_safe_load(path.read_text(encoding="utf-8")) or {}
             # aliases 为空列表合法（纯规范名锚定，无禁用变体）；只拦结构残缺
             entries = [
                 e

@@ -380,6 +380,33 @@ def test_ledger_excludes_glossary_covered_terms(monkeypatch: Any) -> None:
 
 # ── 4. fail-open ───────────────────────────────────────────────────────────
 
+
+def test_load_glossary_reads_terms_yaml(monkeypatch: Any, tmp_path: Any) -> None:
+    """术语表 SSOT 直读——94 行用错名（safe_load 裸名 NameError 被 fail-open
+    吞成空表）会本测红：41.5h×260 次 WARNING 病历（引入 89cfed79a6）。"""
+    mod = _load_plugin()
+    home = _fake_home(monkeypatch, tmp_path)
+    (home / "terminology.yaml").write_text(
+        "terms:\n"
+        "  - canonical: 名单筛查\n"
+        "    aliases: [名单扫描]\n",
+        encoding="utf-8",
+    )
+    got = mod._load_glossary()
+    # 期望: 合法术语表直读成功，条目结构保真（NameError 退化态返回空表）
+    assert got == [{"canonical": "名单筛查", "aliases": ["名单扫描"]}]
+
+
+def test_load_glossary_fail_open_on_corrupt_yaml(monkeypatch: Any, tmp_path: Any) -> None:
+    """fail-open 契约保护——损坏表按空表降级，绝不 raise（修复不得改变此契约）。"""
+    mod = _load_plugin()
+    home = _fake_home(monkeypatch, tmp_path)
+    (home / "terminology.yaml").write_text("terms: [未闭合", encoding="utf-8")
+    got = mod._load_glossary()
+    # 期望: 解析异常 → 空表 + 不 raise
+    assert got == []
+
+
 def test_fail_open_judge_crash(monkeypatch: Any) -> None:
     mod = _load_plugin()
     ctx = _FakeCtx()
