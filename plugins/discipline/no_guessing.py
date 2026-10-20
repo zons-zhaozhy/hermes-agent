@@ -333,36 +333,76 @@ def _normalize(command: str) -> str:
     return " ".join(command.split())
 
 
-def _extract_service_names(command: str):
-    """从命令尾部提取非选项令牌（服务名位置）。
-    Contract: 只返回不以 - 开头的非动词令牌；--list/help/服务名子命令除外。
+# deploy/build 子命令词：出现在服务名参数区，但不是服务名
+_DEPLOY_SUBCOMMANDS = {
+    "cloud", "cloud-run", "cloud-svc-run", "local", "run", "build",
+    "up", "down", "restart", "logs", "status",
+}
+# shell 分隔/重定向令牌：服务名参数区在此终止（其后是新命令，与服务名无关）
+_SHELL_SEPARATORS = {"&&", "||", ";", "|", "&", ">", ">>", "<", "2>&1", "2>", "1>"}
+
+
+def _is_invoked_script(tok: str, prev: str) -> bool:
+    """Contract: tok 为被 bash/sh/sudo/source/. 调用（或位于命令首）的脚本令牌。"""
+    return tok.endswith(("build.sh", "deploy.sh")) and (
+        prev in ("bash", "sh", "sudo", "source", ".", "")
+    )
+
+
+def _is_region_separator(tok: str) -> bool:
+    """Contract: tok 为 shell 分隔/重定向令牌（服务名参数区终止符）。"""
+    return tok in _SHELL_SEPARATORS or tok.startswith(("2>", "1>"))
+
+
+def _strip_trailing_boundary(tok: str) -> str:
+    """Contract: 剥离粘在令牌尾部的命令边界符（;|&>）。
+
+    shlex 无标点模式下 `portal; echo` 的 `;` 粘在前令牌尾，独立分隔符表
+    匹配不到——服务名不含边界符，剥尾判定安全。
+    """
+    return tok.rstrip(";|&>")
+
+
+def _is_service_candidate(tok: str) -> bool:
+    """Contract: 参数区内 tok 为服务名候选（排除选项/子命令/路径/变量/非 ascii）。"""
+    if tok.startswith("-") or tok in _DEPLOY_SUBCOMMANDS:
+        return False
+    return "/" not in tok and not tok.startswith("$") and tok.isascii()
+
+
+def _extract_service_names(command: str) -> list:
+    """定位式提取 build.sh/deploy.sh 调用位之后参数区内的服务名。
+
+    历史缺陷（同根因反复修单点：git/tail/grep 入白名单、&& 入白名单，直到
+    ssh/sleep 两次实锤误拦）：旧实现对整条复合命令全令牌做白名单排除式收集，
+    管道/&& 另一端的验证命令令牌（sleep/ssh/curl）被当服务名去注册表对账，
+    查不到即拦。根治=服务名只可能出现在脚本调用令牌之后的参数区，遇到 shell
+    分隔符参数区即关闭；白名单排除机制整体废除。
+
+    Contract:
+      Postconditions: 返回各调用参数区内非选项、非子命令、非路径的 ascii
+                      令牌列表；无脚本调用令牌时返回 []；多个调用各自成区。
     """
     try:
         tokens = shlex.split(command)
     except ValueError:
         return []
-    known_subcommands = {"cloud", "cloud-run", "cloud-svc-run", "local", "run",
-                         "build", "up", "down", "restart", "logs", "status",
-                         "deploy.sh", "build.sh", "bash",
-                         # 0828 实锤误拦修复: git/循环/管道等通用 shell 令牌不是服务名
-                         "git", "add", "commit", "push", "pull", "cd", "for",
-                         "in", "do", "done", "if", "then", "fi", "while",
-                         "echo", "sh", "xargs", "grep", "tail", "head",
-                         # 0830 复现修复: shlex 保留的 shell 操作符/连接词被提取为"服务名"导致
-                         # 'cd x && bash deploy.sh cloud <真名>' 永远误拦(&& 不在注册表)
-                         "&&", "||", ";", "|", "&", ">", "<", ">>", "2>&1",
-                         "sudo", "source", ".", "env", "export"}
     names = []
-    for tok in tokens:
-        if tok.startswith("-") or tok in known_subcommands or tok.endswith((".sh", ".yml", ".yaml")):
-            continue
-        if "/" in tok or tok.startswith("$"):
-            continue
-        # 散文令牌永远不是服务名：脚本注释里的中文短语（如「构建多个」）与
-        # 注释符号（#）曾被读成服务名，导致 build.sh --list 本身被 R7 拦
-        if not tok.isascii() or tok.startswith("#"):
-            continue
-        names.append(tok)
+    in_args = False
+    for i, tok in enumerate(tokens):
+        prev = tokens[i - 1] if i > 0 else ""
+        head = _strip_trailing_boundary(tok)
+        boundary = head != tok
+        if _is_invoked_script(head, prev):
+            in_args = True
+        elif boundary:
+            if in_args and head and _is_service_candidate(head):
+                names.append(head)  # 'portal;' 的前缀 portal 是服务名，先收再关区
+            in_args = False
+        elif _is_region_separator(tok):  # '2>&1' 等纯分隔/重定向令牌只关区不收集
+            in_args = False
+        elif in_args and _is_service_candidate(tok):
+            names.append(tok)
     return names
 
 
