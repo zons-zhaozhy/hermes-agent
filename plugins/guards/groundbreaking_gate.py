@@ -79,13 +79,37 @@ def _plugin_disabled() -> bool:
     }
 
 
+def _anchored_candidates(path: Path) -> list[Path]:
+    """相对路径锚定候选：cwd 及其各级祖先拼接原始相对路径。
+
+    Contract:
+      Postconditions: 返回 [cwd/p, cwd.parent/p, ..., /p]；目录是否真实存在
+        由调用方逐个检验（此处只生成候选，不做存在性断言）。
+    """
+    cwd = Path.cwd()
+    return [anc / path for anc in [cwd, *cwd.parents]]
+
+
 def _locate_app(path: Path) -> Optional[tuple[Path, str]]:
     """定位 /apps/<name>/ 段，返回 (apps 根, 应用名)；无该段返回 None。
+
+    相对路径先沿 cwd 祖先链锚定（插件进程 cwd 可能不是仓库根——resolve 会
+    把 apps/<X>/ 解析到不存在位置，导致存量应用被误判为新应用且三证据全查
+    错路径）；锚定成功的判据=候选 apps 段的父目录真实存在。绝对路径与锚定
+    全失败时回退纯 resolve（新应用首目录未建时仍可触发门禁语义）。
 
     Contract:
       Preconditions: path 为绝对或可绝对化路径
       Postconditions: 命中=apps 段后仍有子路径（目标在应用目录内）
     """
+    candidates: list[Path] = [path] if path.is_absolute() else _anchored_candidates(path)
+    for cand in candidates:
+        parts = cand.resolve().parts
+        for i, seg in enumerate(parts):
+            if seg == "apps" and i + 2 < len(parts):
+                root = Path(*parts[: i + 1])
+                if root.parent.is_dir():
+                    return root, parts[i + 1]
     parts = path.resolve().parts
     for i, seg in enumerate(parts):
         if seg == "apps" and i + 2 < len(parts):
