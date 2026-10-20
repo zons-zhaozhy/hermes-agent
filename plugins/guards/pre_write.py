@@ -25,11 +25,11 @@ logger = logging.getLogger(__name__)
 _NAMESPACE = "pre_write_guard"
 
 
-def _get_read_files(sid: str) -> Set[str]:
+def _get_read_files(sid: str) -> set[str]:
     return get_session_state(sid, _NAMESPACE).setdefault("read_files", set())
 
 
-def _get_schema_confirmed(sid: str) -> Set[str]:
+def _get_schema_confirmed(sid: str) -> set[str]:
     """Set of connection identifiers whose schema has been confirmed."""
     return get_session_state(sid, _NAMESPACE).setdefault("schema_confirmed", set())
 
@@ -64,11 +64,21 @@ def _extract_paths_from_code(code: str) -> list:
     return [p for p in patterns if "/" in p or p.endswith(".py") or p.endswith(".md")]
 
 
-def _paths_overlap(target: str, read_set: Set[str]) -> bool:
+def _norm(path: str) -> str:
+    """Normalize a path to absolute form for cross-form comparison.
+
+    read_file/search_files record paths exactly as passed (sometimes relative),
+    while the pre_tool_call layer may hand us an already-resolved absolute
+    target. Comparing raw strings makes the same file mismatch itself.
+    """
+    return os.path.normpath(os.path.abspath(path))
+
+
+def _paths_overlap(target: str, read_set: set[str]) -> bool:
     """Check if target path was read or any parent/child was read."""
-    target_norm = os.path.normpath(target)
+    target_norm = _norm(target)
     for read_path in read_set:
-        read_norm = os.path.normpath(read_path)
+        read_norm = _norm(read_path)
         if target_norm == read_norm:
             return True
         if target_norm.startswith(read_norm + "/"):
@@ -90,12 +100,12 @@ def on_post_tool_call(**kwargs) -> None:
         if tool_name == "read_file":
             path = args.get("path", "")
             if path:
-                _get_read_files(sid).add(path)
+                _get_read_files(sid).add(_norm(path))
         elif tool_name == "search_files":
             # Any search counts as investigation for the searched path
             path = args.get("path", ".")
             if path:
-                _get_read_files(sid).add(path)
+                _get_read_files(sid).add(_norm(path))
 
     # Also track schema confirmations
     if tool_name == "terminal":
@@ -109,7 +119,7 @@ def on_post_tool_call(**kwargs) -> None:
 
 # ── pre_tool_call hook ────────────────────────────────────────────────
 
-def on_pre_tool_call(**kwargs) -> Optional[Dict[str, Any]]:
+def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
     """Block write operations if the target hasn't been read first."""
     if _plugin_disabled():
         return None
@@ -124,9 +134,7 @@ def on_pre_tool_call(**kwargs) -> Optional[Dict[str, Any]]:
     # Determine the target path(s)
     target_path = ""
 
-    if tool_name == "write_file":
-        target_path = args.get("path", "")
-    elif tool_name == "patch":
+    if tool_name == "write_file" or tool_name == "patch":
         target_path = args.get("path", "")
     elif tool_name == "execute_code":
         code = args.get("code", "")
