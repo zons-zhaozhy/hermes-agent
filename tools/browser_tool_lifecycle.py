@@ -157,7 +157,8 @@ def _cleanup_inactive_browser_sessions():
 
     with _bt._cleanup_lock:
         sessions_to_cleanup = [task_id for task_id, last_time in list(_bt._session_last_activity.items())
-                               if current_time - last_time > _bt.BROWSER_SESSION_INACTIVITY_TIMEOUT]
+                               if current_time - last_time > _bt.BROWSER_SESSION_INACTIVITY_TIMEOUT
+                               and task_id not in _bt._session_inflight]
 
     for task_id in sessions_to_cleanup:
         with _session_owner_scope(task_id):
@@ -475,6 +476,32 @@ def _update_session_activity(task_id: str):
     with _bt._cleanup_lock:
         _bt._session_last_activity[task_id] = time.time()
         _bt._session_owner_homes.setdefault(task_id, str(get_hermes_home()))
+
+
+@contextlib.contextmanager
+def inflight_exec(task_id: str):
+    """Mark a browser exec as running for ``task_id``; the janitor never reaps it.
+
+    Contract:
+      Preconditions: ``task_id`` non-empty; caller wraps ONLY the exec body (route
+        resolution may still reap a genuinely idle session before the call starts).
+      Postconditions: on every exit path (return, exception, timeout) the id leaves
+        ``_session_inflight`` and its activity timestamp is fresh, so a crash right
+        after the exec still leaves a normally-idle (reapable) session behind.
+
+    The harness daemon talks CDP directly to the browser, so a long exec never passes
+    through ``_update_session_activity``: without this guard the janitor reads the
+    wall-clock silence as idle and kills the browser mid-call (observed as a
+    deterministic crash at exactly the inactivity timeout).
+    """
+    with _bt._cleanup_lock:
+        _bt._session_inflight.add(task_id)
+    try:
+        yield
+    finally:
+        with _bt._cleanup_lock:
+            _bt._session_inflight.discard(task_id)
+            _bt._session_last_activity[task_id] = time.time()
 
 
 def _kill_process_tree(proc: subprocess.Popen) -> None:

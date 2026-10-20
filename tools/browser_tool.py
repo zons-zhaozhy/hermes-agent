@@ -413,6 +413,11 @@ BROWSER_ORPHAN_REAP_INTERVAL = 300  # seconds
 BROWSER_ORPHAN_GRACE_SECONDS = max(3600, BROWSER_SESSION_INACTIVITY_TIMEOUT * 20)
 
 _session_last_activity: dict[str, float] = {}
+# Task-ids with a browser exec currently RUNNING. Its CDP traffic bypasses
+# _update_session_activity (the harness daemon talks CDP directly to the browser),
+# so the janitor must not read wall-clock inactivity as an idle session and kill
+# the browser mid-call. Guarded by _cleanup_lock like _session_last_activity.
+_session_inflight: set[str] = set()
 # Owner Hermes home per session: the janitor is one process-global thread, so each
 # teardown must re-enter the OWNING profile's scope (copy_context at spawn would
 # pin the first profile's secrets onto every other profile's teardown).

@@ -35,6 +35,11 @@ _SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # Set on the env dict by the CDP resolvers when the resolved browser is EXCLUSIVE to this named session
 # (per-name provider / named BU cloud / Lightpanda). Popped before the subprocess launches — never exported.
 _PRIVATE_BROWSER_SENTINEL = "_HERMES_BU_PRIVATE_BROWSER"
+# Route resolved to Hermes' packaged Chromium through agent-browser: that daemon carries
+# its own idle self-termination timer (AGENT_BROWSER_IDLE_TIMEOUT_MS) which never sees
+# the harness's direct CDP traffic, so a long exec needs a heartbeat while it runs
+# (a cheap "get cdp-url" refreshes both the daemon timer and the janitor's activity).
+_MANAGED_ENGINE_SENTINEL = "_HERMES_BU_MANAGED_ENGINE"
 # Internal route provenance: this exec resolved to a browser on the Bot Desktop display and must use
 # the same human-control lease fence as the built-in browser tools. Popped before launching the CLI.
 _BOT_DESKTOP_BROWSER_SENTINEL = "_HERMES_BU_BOT_DESKTOP_BROWSER"
@@ -466,6 +471,7 @@ def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_nam
     cdp = _reach_sandbox_cdp(cdp)
     _set_cdp_env(env, cdp)
     env[_PRIVATE_BROWSER_SENTINEL] = "1"  # one Chromium per cache key: nothing to share a tab with
+    env[_MANAGED_ENGINE_SENTINEL] = "1"  # the agent-browser daemon's idle timer needs the exec heartbeat
     env[_BOT_DESKTOP_BROWSER_SENTINEL] = "1"
     _export_real_profile_note(env, _backend_cache_key(task_id, session_name, sidecar))
     return None
@@ -655,6 +661,9 @@ def _clamp_timeout(timeout_s: Any) -> int:
 # After a whole-group SIGKILL, every pipe holder is dead, so the drain below is normally
 # instant; the deadline only guards against a process outside the group still holding a pipe.
 _POST_KILL_DRAIN_S = 10.0
+# Exec heartbeat cadence: well under the daemon's idle timer (>=120s) so a beat always
+# lands inside the window; cheap enough (one local CLI round-trip) to run this often.
+_EXEC_HEARTBEAT_INTERVAL_S = 30.0
 
 
 def _kill_cli_process_group(proc) -> None:
@@ -691,6 +700,38 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
             proc.communicate(timeout=_POST_KILL_DRAIN_S)
         raise
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
+def _start_exec_heartbeat(cache_key: str) -> Callable[[], None]:
+    """While one browser_exec runs, refresh the agent-browser daemon's idle timer every 30s.
+
+    Contract:
+      Preconditions: ``cache_key`` is the SAME key the route used (sidecar suffix and
+        profile tag included) — the heartbeat must hit the exact session the exec drives.
+      Postconditions: returns the stop callback; the thread is a daemon, never blocks
+        interpreter exit, and one in-flight beat at most lingers after stop (harmless:
+        a single "get cdp-url" only refreshes activity, it never tears anything down).
+
+    The harness daemon talks CDP directly to the browser, so the exec's own traffic is
+    invisible to BOTH idle collectors (the Python janitor and the agent-browser
+    daemon's self-termination timer). A cheap ``get cdp-url`` per beat goes through
+    ``_run_browser_command`` and refreshes both — same call the route itself makes
+    once per exec; long execs just need it repeated while they run.
+    """
+    stop = threading.Event()
+
+    def _beat() -> None:
+        while not stop.wait(_EXEC_HEARTBEAT_INTERVAL_S):
+            try:
+                from tools.browser_tool_session import _run_browser_command
+                from tools.browser_tool import _get_open_command_timeout
+                _run_browser_command(cache_key, "get", ["cdp-url"],
+                                     timeout=_get_open_command_timeout(first_open=True))
+            except Exception as exc:  # heartbeat is best-effort; the inflight guard still protects the exec
+                logger.debug("browser exec heartbeat failed (non-fatal): %s", exc)
+
+    threading.Thread(target=_beat, name=f"bu-exec-heartbeat-{cache_key}", daemon=True).start()
+    return stop.set
 
 
 # Harness daemons this process drove: each latches BU_CDP_* at start and outlives every call, so a backend
@@ -832,8 +873,17 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         with _driven_daemons_lock:
             daemon = daemon_identity(env)
             _driven_daemons[daemon] = hermes_home_key()
+        # Managed-Chromium routes must repeat the route's own "get cdp-url" refresh while
+        # the exec runs (daemon idle timer + janitor activity both refresh on it), and every
+        # route needs the inflight guard so the janitor cannot read the exec's CDP silence
+        # as an idle session and kill the browser mid-call.
+        managed_engine = bool(env.pop(_MANAGED_ENGINE_SENTINEL, None))
+        cache_key = _backend_cache_key(task_id, session, local_sidecar)
+        stop_heartbeat = _start_exec_heartbeat(cache_key) if managed_engine else None
+        from tools.browser_tool_lifecycle import inflight_exec
         try:
-            return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
+            with inflight_exec(cache_key):
+                return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
         except subprocess.TimeoutExpired:
             return {"error_result": tool_error(
                 f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
@@ -842,6 +892,9 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             )}
         except OSError as e:
             return {"error_result": tool_error(f"Failed to launch browser-use CLI: {e}")}
+        finally:
+            if stop_heartbeat:
+                stop_heartbeat()
 
     if bot_desktop_browser:
         from tools.browser_tool_session import run_fenced
