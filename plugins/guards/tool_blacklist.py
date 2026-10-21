@@ -53,8 +53,8 @@ _BLOCK_CODEGRAPH = (
 )
 
 _BLOCK_MEMORY_BATCH = (
-    "[TOOL-BLACKLIST BLOCK] memory 批量 operations（多行 replace 必败："
-    "实测 983/1235 失败）被拦截。\n正解：按 current_entries 逐条提交，"
+    "[TOOL-BLACKLIST BLOCK] memory 批量 operations（高失败率 79.6%："
+    "实测 983/1235 失败——批量 all-or-nothing，单条 old_text 不匹配即全批拒绝）被拦截。\n正解：按 current_entries 逐条提交，"
     "每个操作单独一次调用（action 单独指定，不用 operations 数组）。"
 )
 
