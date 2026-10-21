@@ -9,7 +9,9 @@ OntoX 路径写操作前，本会话必须存在一次 casebook 检索证据；�
 
 from __future__ import annotations
 
+import json
 import sys
+import time
 from pathlib import Path
 from typing import Iterator
 
@@ -18,6 +20,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from plugins.guards import casebook_gate 
+
+
+@pytest.fixture(autouse=True)
+def _probe_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """隔离 marker 缓存目录——防测试触碰真实 ~/.hermes（home_io_guard 拒绝真实 home I/O）。"""
+    monkeypatch.setenv("CASEBOOK_PROBE_CACHE", str(tmp_path / "probe_cache"))
 
 
 @pytest.fixture()
@@ -35,6 +43,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[Path,
 def _clear_probes(sid: str = "s1") -> None:
     st = casebook_gate._get_state(sid)
     st.pop("probes", None)
+    casebook_gate._probe_marker(sid).unlink(missing_ok=True)
 
 
 def test_write_to_ontox_without_probe_blocked(env: tuple[Path, Path]) -> None:
@@ -378,3 +387,35 @@ def test_interpreter_c_relative_literal_write_still_blocked(
     )
     assert v is not None  # 期望: 相对路径字面量仍构成 OntoX 写目标→拦截
     assert v["action"] == "block"  # 期望: 拦截动作字面量=block（规则语义）
+def test_probe_marker_survives_memory_reset(env: tuple[Path, Path]) -> None:
+    """跨进程语义：内存态清空（=另一进程判定）后磁盘 marker 仍是有效证据。
+
+    背景实证（2026-10-21）：pre/post 钩子分属不同进程时，仅内存态会让解锁条件永假。
+    """
+    ontox, cb = env
+    _clear_probes()
+    casebook_gate.on_post_tool_call(
+        tool_name="read_file", args={"path": f"{cb}/INDEX.md"}, session_id="s1"
+    )
+    st = casebook_gate._get_state("s1")
+    st.pop("probes", None)  # 模拟判定进程无内存态
+    v = casebook_gate.on_pre_tool_call(
+        tool_name="patch", args={"path": f"{ontox}/apps/aml/main.py"}, session_id="s1"
+    )
+    assert v is None  # 期望: 证据落盘后跨进程解锁——仍拦=marker 通道失效
+
+
+def test_stale_marker_fails_closed(env: tuple[Path, Path]) -> None:
+    """TTL 过期 marker 不构成证据（fail-closed，防残留永久免查）。"""
+    ontox, _cb = env
+    _clear_probes()
+    marker = casebook_gate._probe_marker("s1")
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(
+        json.dumps({"sid": "s1", "ts": time.time() - casebook_gate._PROBE_MARKER_TTL - 60}),
+        encoding="utf-8",
+    )
+    v = casebook_gate.on_pre_tool_call(
+        tool_name="patch", args={"path": f"{ontox}/apps/aml/main.py"}, session_id="s1"
+    )
+    assert v is not None  # 期望: 过期 marker 无效——放行=TTL 机制失效

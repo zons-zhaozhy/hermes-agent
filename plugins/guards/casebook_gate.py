@@ -19,8 +19,11 @@ Contract:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -401,14 +404,58 @@ def _get_state(sid: str) -> dict[str, Any]:
     return get_session_state(sid, _NAMESPACE)
 
 
+_PROBE_MARKER_TTL = 86400  # 24h：marker 过期即失效，防残留导致永久免查
+
+
+def _probe_marker(sid: str) -> Path:
+    """解锁证据的磁盘 marker 路径（跨进程共享的唯一载体）。
+
+    Contract:
+      Postconditions: 恒返回 <CASEBOOK_PROBE_CACHE 或 ~/.hermes/cache>/
+        casebook_probe_<sha256(sid)[:16]>.json，不触碰其它路径。
+    """
+    digest = hashlib.sha256(sid.encode("utf-8")).hexdigest()[:16]
+    cache = os.environ.get("CASEBOOK_PROBE_CACHE") or os.path.expanduser("~/.hermes/cache")
+    return Path(cache) / f"casebook_probe_{digest}.json"
+
+
+def _write_probe_marker(sid: str) -> None:
+    """原子写 marker——内存态之外的双保险；失败仅告警不抛（记证据是尽力路径）。
+
+    Contract:
+      Postconditions: marker 落盘且内容为 {"sid":…,"ts":…}；OSError 时日志告警且不改既有 marker。
+    """
+    try:
+        marker = _probe_marker(sid)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        tmp = marker.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"sid": sid, "ts": time.time()}), encoding="utf-8")
+        tmp.replace(marker)
+    except OSError:
+        logger.warning("casebook_gate: probe marker write failed", exc_info=True)
+
+
+def _marker_fresh(marker: Path) -> bool:
+    """marker 存在、sid 非空且未过 TTL 才算证据；其余一律 False（fail-closed）。"""
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        return bool(data.get("sid")) and time.time() - float(data.get("ts", 0)) < _PROBE_MARKER_TTL
+    except (OSError, ValueError, TypeError):
+        logger.debug("casebook_gate: probe marker unreadable/stale: %s", marker, exc_info=True)
+        return False
+
+
 def _casebook_probed(sid: str) -> bool:
     """本会话是否已检索过病例库（证据集非空）。"""
-    return bool(_get_state(sid).get("probes"))
+    if _get_state(sid).get("probes"):
+        return True
+    return _marker_fresh(_probe_marker(sid))
 
 
 def _record_probe(sid: str, evidence: str) -> None:
     st = _get_state(sid)
     st.setdefault("probes", set()).add(evidence)
+    _write_probe_marker(sid)
 
 
 # ── 检索证据记录 ─────────────────────────────────────────────────────
