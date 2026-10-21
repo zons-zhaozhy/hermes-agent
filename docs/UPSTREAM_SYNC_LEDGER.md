@@ -41,6 +41,16 @@ f799fd8578 在官方 Linux CI "Python tests / Run tests" = success。
   worktree 对照 2 failed 同构); generate-icons 缺 PIL、update-ui spawn 链缺 ruamel=
   子进程解释器环境; channel-smoke/desktop-builder/web-compiles 为满载超时。
   typecheck 曾报 @types/plist 缺失=merge 后 node_modules 未重装, npm install 即愈
+- 1021 merge 566faf26fc 后全量(proc 63100, 满载 10 worker+4 会话并发):
+  ① memory 簇 101 失败(target_contract 64/memory_tool 20/patch_action 12/
+  write_approval 5)【已翻案修复 d5625c69f4】: 非本次 merge 引入(merge 对
+  memory_tool.py 零改动), 系历史 merge 将该文件覆盖回两参旧版(逆向 40+/68-),
+  而 store.py:555 与测试已为 upstream 三参契约——git checkout 0b8dee00fa
+  恢复后 171+69 全绿;
+  ② worktree 簇 13 失败: 并发/环境敏感, 空闲单跑 29 passed 0 failed, 基线
+  worktree 同构失败, 勿当代码缺陷;
+  ③ 17 文件收集失败+1 文件全过但退出非零: 满载假红(test_web_server 单跑
+  192 全过), 空闲复跑即绿。
 - 处置: 不修(修 macOS 语义=打乱上游); 上游侧理想修法=补 linux_only 标记, 本地不代改
 
 ## 一、本地独有面（= 唯一可能冲突的地方, 已压到最小）
