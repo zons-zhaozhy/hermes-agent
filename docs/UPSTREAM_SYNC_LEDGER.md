@@ -36,6 +36,11 @@ f799fd8578 在官方 Linux CI "Python tests / Run tests" = success。
   should_skip_candidate/FailureScope 演进, 待上游修
 - 收集超时类: test_run_agent.py 等 3 大文件, 单跑 --collect-only 4.62s 正常, 系 runner
   并行限时形态
+- tests-js vitest (1021 实测, merge 前基线同构失败, 勿当同步引入): node-deps×2+
+  product-builders×2 为 macOS /var→/private/var 符号链接归一差异(be4fb4c4f9 基线
+  worktree 对照 2 failed 同构); generate-icons 缺 PIL、update-ui spawn 链缺 ruamel=
+  子进程解释器环境; channel-smoke/desktop-builder/web-compiles 为满载超时。
+  typecheck 曾报 @types/plist 缺失=merge 后 node_modules 未重装, npm install 即愈
 - 处置: 不修(修 macOS 语义=打乱上游); 上游侧理想修法=补 linux_only 标记, 本地不代改
 
 ## 一、本地独有面（= 唯一可能冲突的地方, 已压到最小）
