@@ -291,7 +291,7 @@ def _check_sleep_wait(command: str, sleep_limit: int = 10, is_background: bool =
     # 超限 sleep：组合式（; 或 && 后仍有实质命令）=轮询退化→提醒放行；纯 sleep→block
     after = _re.split(r"sleep \d+", command, maxsplit=1)
     tail = after[1] if len(after) > 1 else ""
-    has_followup = any(tok.strip() for tok in _re.split(r"[;&&]+", tail))
+    has_followup = any(tok.strip() for tok in _re.split(r"[;&]+", tail))
     if has_followup:
         return "HINT"  # 组合式轮询退化：调用方注入提醒但不阻断
     return _BLOCK_SLEEP_LOOP
