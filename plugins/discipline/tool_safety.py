@@ -11,6 +11,7 @@ ACTIVATION: ON by default. Set TOOL_SAFETY_DISABLE=1 to turn off.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re  # noqa: R1 — dangerous command detection requires regex
@@ -74,13 +75,24 @@ def _is_empty_or_error_result(result: Any, status: str = "") -> bool:
     result_str = str(result).lower() if result else ""
     if status == "error":
         return True
-    # read_file returns empty for binary files or non-existent files
-    if "is_binary" in result_str or "does not exist" in result_str:
-        return True
-    # Empty content
-    if len(result_str.strip()) < 20:
-        return True
-    return False
+    # 按值判定，禁子串匹配——成功载荷恒带 is_binary/not_found 键（值 False），键名即子串，
+    # 旧逻辑把每次成功读取误判为失败致计数永不清零；{"error":…} 失败载荷又不含这些子串而漏判。
+    data: Any = result
+    if isinstance(result, str):
+        try:
+            data = json.loads(result)
+        except (ValueError, TypeError):
+            data = None
+    if isinstance(data, dict):
+        if data.get("error"):
+            return True
+        if data.get("is_binary") is True or data.get("not_found") is True:
+            return True
+        content = data.get("content")
+        if content is None:
+            return True
+        return len(str(content).strip()) < 20
+    return len(result_str.strip()) < 20
 
 
 def _is_verification_tool_call(tool_name: str, args: dict) -> bool:
