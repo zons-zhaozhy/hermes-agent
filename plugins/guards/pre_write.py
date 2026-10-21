@@ -13,8 +13,12 @@ plugins._shared_state.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
+import time
+from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 from plugins._shared_state import get_session_state
@@ -28,6 +32,57 @@ _NAMESPACE = "pre_write_guard"
 
 def _get_read_files(sid: str) -> set[str]:
     return get_session_state(sid, _NAMESPACE).setdefault("read_files", set())
+
+
+_PW_PROBE_TTL = 86400  # 24h：marker 过期即失效，防残留导致永久免检
+
+
+def _read_marker(sid: str) -> Path:
+    """已读证据的磁盘 marker 路径——pre/post 钩子分属不同进程时的共享载体。
+
+    Contract:
+      Postconditions: 恒返回 <PW_READ_PROBE_CACHE 或 ~/.hermes/cache>/
+        pw_read_probe_<sha256(sid)[:16]>.json，不触碰其它路径。
+    """
+    digest = hashlib.sha256(sid.encode("utf-8")).hexdigest()[:16]
+    cache = os.environ.get("PW_READ_PROBE_CACHE") or os.path.expanduser("~/.hermes/cache")
+    return Path(cache) / f"pw_read_probe_{digest}.json"
+
+
+def _write_read_marker(sid: str, paths: set[str]) -> None:
+    """原子写 marker——内存态之外的双保险；失败仅告警不抛（记证据是尽力路径）。
+
+    Contract:
+      Postconditions: marker 内容为 {"sid":…,"ts":…,"paths":[…]}；OSError 时日志
+        告警且不改既有 marker。
+    """
+    try:
+        marker = _read_marker(sid)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        tmp = marker.with_suffix(".tmp")
+        payload = json.dumps({"sid": sid, "ts": time.time(), "paths": sorted(paths)})
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(marker)
+    except OSError:
+        logger.warning("pre_write: read marker write failed", exc_info=True)
+
+
+def _disk_read_paths(sid: str) -> set[str]:
+    """从 marker 恢复已读集合；不可读/过期/格式错一律空集（fail-closed）。
+
+    Contract:
+      Postconditions: 返回值 ⊆ marker 中 paths；marker 缺失、sid 不符或超 TTL
+        返回空集。
+    """
+    marker = _read_marker(sid)
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        if not data.get("sid") or time.time() - float(data.get("ts", 0)) >= _PW_PROBE_TTL:
+            return set()
+        return {str(p) for p in data.get("paths", []) if p}
+    except (OSError, ValueError, TypeError):
+        logger.debug("pre_write: read marker unreadable: %s", marker, exc_info=True)
+        return set()
 
 
 def _get_schema_confirmed(sid: str) -> set[str]:
@@ -101,12 +156,16 @@ def on_post_tool_call(**kwargs) -> None:
         if tool_name == "read_file":
             path = args.get("path", "")
             if path:
-                _get_read_files(sid).add(_norm(path))
+                files = _get_read_files(sid)
+                files.add(_norm(path))
+                _write_read_marker(sid, files)
         elif tool_name == "search_files":
             # Any search counts as investigation for the searched path
             path = args.get("path", ".")
             if path:
-                _get_read_files(sid).add(_norm(path))
+                files = _get_read_files(sid)
+                files.add(_norm(path))
+                _write_read_marker(sid, files)
 
     # Also track schema confirmations
     if tool_name == "terminal":
@@ -154,7 +213,7 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
     # to existing files that haven't been read yet.
     # Try both absolute and relative-to-cwd paths.
     import os as _os
-    read_files = _get_read_files(sid)
+    read_files = _get_read_files(sid) | _disk_read_paths(sid)
 
     unread_existing: list[str] = []
     for target_path in targets:
