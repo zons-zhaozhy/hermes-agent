@@ -11,6 +11,20 @@ from tests.module_clock import install_module_clock
 from tests.waiting import async_wait_until
 
 
+def _notice_warnings(records) -> list[str]:
+    """Warning-level records about watch-notice admission only.
+
+    The ``gateway.run`` logger also carries host-environment warnings — e.g. the live
+    launchd ``restart_drain_timeout`` notice a developer machine with an installed
+    ai.hermes.gateway service emits — which have nothing to do with the notice-drain
+    behavior under test. Exact-count assertions must not see them.
+    """
+    return [r.getMessage() for r in records
+            if r.levelno >= logging.WARNING
+            and 'restart_drain_timeout' not in r.getMessage()
+            and 'launchd' not in r.getMessage()]
+
+
 async def _gateway(monkeypatch):
     from gateway.config import GatewayConfig, Platform, PlatformConfig
     from gateway.platforms.base import SendResult
@@ -93,7 +107,7 @@ async def test_notice_pinned_to_a_reset_session_is_dropped_once(monkeypatch, cap
             await runner._drain_watch_notifications(pending)
 
         assert pending.empty(), 'a notice the closed session can never admit must not be requeued'
-        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        warnings = _notice_warnings(caplog.records)
         assert len(warnings) == 1, warnings
         assert 'permanently gone' in warnings[0]
         assert retired in warnings[0] and live in warnings[0] and 'admission_conflict' in warnings[0]
@@ -120,7 +134,7 @@ async def test_notice_pinned_to_a_compression_ancestor_still_admits(monkeypatch,
             await runner._drain_watch_notifications(pending)
 
         assert pending.empty()
-        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert not _notice_warnings(caplog.records)
         admitted = _queued_admissions(authority, parent) + _queued_admissions(authority, child)
         assert [row['status'] for row in admitted] == ['queued']
     finally:
