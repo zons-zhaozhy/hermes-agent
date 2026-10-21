@@ -94,6 +94,9 @@ def _find_scorecard(cwd: Optional[str]) -> Optional[Path]:
             cand2 = p / "docs" / "standards" / _SCORECARD_NAME
             if cand2.is_file():
                 return cand2
+            cand3 = p / "docs" / _SCORECARD_NAME
+            if cand3.is_file():
+                return cand3
             # 应用子目录形态（monorepo）：apps/*/docs/QUALITY_SCORECARD.md
             apps = p / "apps"
             if apps.is_dir():
