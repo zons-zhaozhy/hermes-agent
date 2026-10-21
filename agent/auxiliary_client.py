@@ -3193,7 +3193,11 @@ def _transient_timeout_quarantine_ttl(provider: str, base_info: Optional[str]) -
     last_at, streak = _aux_timeout_streak.get(key, (0.0, 0))
     streak = streak + 1 if now - last_at < _TIMEOUT_STREAK_RESET_SECONDS else 1
     _aux_timeout_streak[key] = (now, streak)
-    return min(_TIMEOUT_QUARANTINE_BASE_SECONDS * 2 ** (streak - 1), _TIMEOUT_QUARANTINE_MAX_SECONDS)
+    # 60 * 2**5 already exceeds the 1800s cap, so clamping the exponent is behaviour-identical;
+    # an unbounded one overflows float at streak ~1023, which a persistent-timeout band
+    # (5s budget × hundreds of judge calls per hour) reaches inside one streak window.
+    exponent = min(streak - 1, 5)
+    return min(_TIMEOUT_QUARANTINE_BASE_SECONDS * 2 ** exponent, _TIMEOUT_QUARANTINE_MAX_SECONDS)
 
 
 def _mark_provider_unhealthy(
