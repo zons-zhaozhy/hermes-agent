@@ -234,7 +234,7 @@ class GatewayModelCommandsMixin:
                     base_url=result.base_url, api_mode=result.api_mode,
                 )
             except Exception as exc:
-                logger.debug("Failed to persist model switch to DB: %s", exc)
+                logger.warning("Failed to persist model switch to DB: %s", exc, exc_info=True)
         # Prepended to the next user message (no system messages mid-history). Display form strips
         # opaque Palantir RID prefixes; the override map keeps the full ID for the wire.
         if not hasattr(self, "_pending_model_notes"):

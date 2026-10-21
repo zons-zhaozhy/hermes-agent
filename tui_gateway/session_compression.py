@@ -221,7 +221,7 @@ def _apply_pending_model_switch(sid: str, session: dict) -> None:
         logger.warning("Queued model switch to %s failed for session %s: %s", model, sid, e)
         text = f"Could not switch model: {e}"
     _emit("notification.show", sid, {
-        "text": text.rstrip(), "level": "warn", "kind": "ttl", "ttl_ms": 12000,
+        "text": text.rstrip(), "level": "warn", "kind": "sticky",
         "key": "model_switch.dropped", "id": "model_switch.dropped"})
     _emit_session_info(sid, session)
 

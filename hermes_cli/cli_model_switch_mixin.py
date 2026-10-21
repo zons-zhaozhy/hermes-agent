@@ -366,7 +366,11 @@ def _commit_model_switch(
     # The row records what THIS session runs even on --global (else a later resume restores the
     # stale creation-time model); --once is restored after one turn and never touches the row.
     if not one_turn:
-        HermesCLI._persist_model_switch_to_session(cli, result)
+        persisted = HermesCLI._persist_model_switch_to_session(cli, result)
+        if persisted is False:
+            # In-process the switch already holds; this only warns that a resume
+            # would restore the stale row (#79536's failure mode).
+            _cprint(f"    {t('cli.model.persist_failed')}")
 
 
 def _show_model_picker(cli, ctx, force_refresh: bool) -> None:
@@ -493,7 +497,7 @@ class CLIModelSwitchMixin:
                 changed = True
         return changed
 
-    def _persist_model_switch_to_session(self, result) -> None:
+    def _persist_model_switch_to_session(self, result) -> bool:
         """Persist a session-scoped /model switch to the session DB row.
 
         Writes the model column plus the route in both shapes readers use — nested
@@ -511,7 +515,10 @@ class CLIModelSwitchMixin:
         db = getattr(self, "_session_db", None)
         sid = getattr(self, "session_id", None)
         if not db or not sid:
-            return
+            # A silent skip here shows "switched" in the UI while every resume path
+            # restores the stale creation-time model from the row (#79536's failure mode).
+            logger.warning("Model switch not persisted (session store or session id unavailable): sid=%s", sid)
+            return False
         route = {
             "provider": _heal_bare_custom_provider(
                 result.target_provider, base_url=result.base_url, model=result.new_model,
@@ -528,7 +535,9 @@ class CLIModelSwitchMixin:
             db.update_session_model(sid, result.new_model)
             db.patch_session_model_config(sid, {"gateway_runtime": route, **route})
         except Exception:
-            logger.debug("Failed to persist model switch to session DB", exc_info=True)
+            logger.warning("Failed to persist model switch to session DB", exc_info=True)
+            return False
+        return True
 
     def _restore_session_model(self, session_meta: dict, *, quiet: bool = False) -> None:
         """Restore model/provider from the session DB row on every resume path.

@@ -2067,6 +2067,7 @@ cli:
     saved_global: "Saved to config.yaml (--global)"
     next_turn_only: "(next turn only — restores after one response)"
     session_only: "(session only — add --global to persist)"
+    persist_failed: "! Switch applied in-process, but saving it to the session row failed — resuming this session will restore the previous model (see logs)."
     # picker
     effort_none: "none (disable reasoning)"
     effort_keep_current: "Keep current effort"

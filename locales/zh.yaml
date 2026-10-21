@@ -1975,6 +1975,7 @@ cli:
     saved_global: "已保存到 config.yaml（--global）"
     next_turn_only: "（仅下一回合——一次回复后恢复）"
     session_only: "（仅本会话——加 --global 可永久保存）"
+    persist_failed: "！切换已在本进程生效，但保存到会话记录失败——恢复本会话时会回到之前的模型（详见日志）。"
     effort_none: "none（关闭推理）"
     effort_keep_current: "保持当前强度"
     no_authenticated_providers: "未找到已认证的提供方。"
