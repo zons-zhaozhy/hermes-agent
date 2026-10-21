@@ -108,6 +108,30 @@ def _is_defer_pushout(text: str) -> bool:
     return bool(_DEFER_RE.search(text)) and not _LEGIT_ASK_RE.search(text)
 
 
+# ── 第五类失效收尾：根因隐匿（1021 用户指令「找到根因必须在回复里准确、
+# 清晰说明，不能不告知、不回复、不显示」）——回复宣称已定位/根治问题，
+# 但通篇无根因实质内容（file:line 引用或「根因：/原因在于」展开）。
+# 与前四类（请示/假继续/推迟/无commit证据）不同：它有完成宣言，缺的是
+# 根因陈述本身。判定面=全文（根因宣称可能在正文任意处，不限尾部）。
+_ROOT_CAUSE_CLAIM_RE = re.compile(
+    r"(根治|已定位根因|找到根因|根因已[明确查明]|已查明.{0,6}原因)"
+)
+_ROOT_CAUSE_EVIDENCE_RE = re.compile(
+    r"(\.[A-Za-z]{1,4}:\d{1,4}|根因[:：]|根因是|原因[:：是]|原因在于"
+    r"|定位到|位于[^。\n]{0,30}行|第\s?\d+\s?行)"
+)  # re-ok: 中文句式+路径:行号混合形态无 str 等价
+
+
+def _is_rootcause_hidden(text: str) -> bool:
+    """Contract: Preconditions: text 为 str（可空）；Postconditions: 命中
+    根因宣称词、且全文无根因证据（file:line 或根因展开句式）时返回
+    True，否则 False。宣称与证据并存的正常收尾不拦。"""
+    if not text:
+        return False
+    return bool(_ROOT_CAUSE_CLAIM_RE.search(text)
+                and not _ROOT_CAUSE_EVIDENCE_RE.search(text))
+
+
 def _is_pushback(text: str) -> bool:
     """Contract: Preconditions: text 为 str（可空）；Postconditions: 命中请示句式
     且不命中合法豁免时返回 True，否则 False。"""
@@ -262,6 +286,20 @@ def _on_pre_verify(**kwargs) -> dict:
                 "不可逆操作、凭据、付费同样停下请示。"
             ),
         }
+    if _is_rootcause_hidden(final_response):
+        logger.warning(
+            "finish_guard: pre_verify 检测到根因宣称无根因陈述（attempt=%d），强制补述", attempt
+        )
+        return {
+            "action": "continue",
+            "message": (
+                "[finish_guard] 回复宣称已定位/根治问题，但通篇没有根因的实质陈述。"
+                "根因必答纪律：找到根因必须在回复正文准确、清晰、完整说明——"
+                "根因是什么（机制/成因）、证据是什么（file:line 或原始输出）、"
+                "症状位置与根因位置的关系。禁止只宣称「已根治/已定位」而不展示内容。"
+                "重写收尾：补上根因陈述段，再结束回合。"
+            ),
+        }
     # 收尾纪律动作化：改了代码文件但回复无 commit 证据 → 强制先提交再收尾
     if code_changed and not _has_commit_evidence(final_response):
         logger.warning(
@@ -284,12 +322,20 @@ def _on_pre_verify(**kwargs) -> dict:
 
 def _transform_llm_output(response_text: str = "", **kwargs) -> str:
     """Contract: Preconditions: response_text 为本回合 LLM 输出（核心键名）；
-    Postconditions: L1/L2 未兜住且尾部命中请示式时返回打标文本（用户可见留痕），
-    否则原样返回。"""
+    Postconditions: L1/L2 未兜住且尾部命中请示式、或全文根因宣称无证据时
+    返回打标文本（用户可见留痕），否则原样返回。"""
     output = response_text or ""
     if not output.strip():
         return output
     tail = _tail_text(output)
+    if _is_rootcause_hidden(output):
+        logger.warning("finish_guard: 根因宣称无根因陈述漏网（L1/L2 未覆盖），打用户可见标记")
+        return (
+            output
+            + "\n\n[finish_guard] 上面宣称已定位/根治问题，但未在回复中展示根因内容"
+            "（根因是什么、证据是什么、症状与根因的位置关系）。根因必答：补述根因后，"
+            "该结论才算交付。"
+        )
     if not (_is_pushback(tail) or _is_false_continue(tail) or _is_defer_pushout(tail)):
         return output
     logger.warning("finish_guard: 请示式/宣言式/推迟式收尾漏网（L1/L2 未覆盖），打用户可见标记")
