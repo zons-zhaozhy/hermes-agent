@@ -1923,8 +1923,8 @@ class TestPreToolCallModify:
         assert block_msg == "still blocked"
         assert modified == {"path": "/safe"}
 
-    def test_modify_after_block_is_invisible(self, monkeypatch):
-        """A modify after a block is never reached — first block wins."""
+    def test_modify_after_block_is_visible(self, monkeypatch):
+        """A modify after a block stays visible — blocks aggregate instead of returning early."""
         monkeypatch.setattr(
             "hermes_cli.plugins.invoke_hook",
             lambda hook_name, **kwargs: [
@@ -1936,7 +1936,35 @@ class TestPreToolCallModify:
             "write_file", {"path": "/original"}
         )
         assert block_msg == "stopped"
-        assert modified is None
+        assert modified == {"path": "/invisible"}
+
+    def test_multiple_blocks_aggregate(self, monkeypatch):
+        """All block verdicts merge into one message so every gate can be fixed in one pass."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "block", "message": "GUARD-A: first"},
+                {"action": "block", "message": "GUARD-B: second"},
+            ],
+        )
+        block_msg, _modified = _dispatch_pre_tool_call_hooks(
+            "write_file", {"path": "/x"}
+        )
+        assert "GUARD-A" in block_msg and "GUARD-B" in block_msg
+        assert "2 个护栏同时拦截" in block_msg
+
+    def test_single_block_keeps_original_message(self, monkeypatch):
+        """A lone block keeps its message verbatim — no aggregation header."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "block", "message": "only gate"},
+            ],
+        )
+        block_msg, _modified = _dispatch_pre_tool_call_hooks(
+            "write_file", {"path": "/x"}
+        )
+        assert block_msg == "only gate"
 
     def test_modify_with_none_args(self, monkeypatch):
         """Modify should handle None args gracefully."""

@@ -2008,6 +2008,10 @@ def _get_pre_tool_call_directive_details(
     )
     modified_args: Optional[dict[str, Any]] = None
     first_approve: Optional[tuple[Optional[str], Optional[str]]] = None  # (message, rule_key)
+    # 聚合所有 block verdict——first-wins 让每次只看到第一个护栏的意见,修完一个
+    # 再撞下一个(实测 1175 个 turn 被拦≥3 次,打地鼠根源)。一次性收集全部 block,
+    # 合并成一条消息,一次修复全部合规。2000 字/条功能性上限防 tool result 超长。
+    block_msgs: list[str] = []
     for result in hook_results:
         if not isinstance(result, dict):
             continue
@@ -2029,11 +2033,22 @@ def _get_pre_tool_call_directive_details(
         if action == "block" and not message:
             continue
         if action == "block":
-            return _PreToolCallDirective(action="block", message=message, modified_args=modified_args)
+            block_msgs.append(message[:2000])
+            continue
         # approve is held back until the whole list has been scanned for a veto.
         if first_approve is None:
             rule_key = result.get("rule_key")
             first_approve = (message, (rule_key.strip() or None) if isinstance(rule_key, str) else None)
+    if block_msgs:
+        # 多护栏命中时标头计数+分隔,单护栏命中保持原文(既有测试兼容)。
+        if len(block_msgs) == 1:
+            block_msg = block_msgs[0]
+        else:
+            block_msg = (
+                f"[护栏聚合] {len(block_msgs)} 个护栏同时拦截——全部修完再重试,禁止修一个撞下一个:\n\n"
+                + "\n\n──────\n\n".join(block_msgs)
+            )
+        return _PreToolCallDirective(action="block", message=block_msg, modified_args=modified_args)
     if first_approve is not None:
         return _PreToolCallDirective(action="approve", message=first_approve[0], rule_key=first_approve[1],
                                      modified_args=modified_args)
