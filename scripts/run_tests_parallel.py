@@ -646,6 +646,11 @@ def _run_one_file_once(
     # Every tempfile.* call inside the test process lands in the same per-run root, so the
     # parent's cleanup of ``temproot`` removes them too instead of leaving them in /tmp.
     env["TMPDIR"] = temproot
+    # 回环请求禁走宿主代理：urllib 会读 macOS 系统级代理（scutil），把测试内建
+    # HTTP 服务的请求转发给 127.0.0.1:7890 得 502（HEAD~1 基线实测 3 红）。
+    # CI 无代理，NO_PROXY 为无操作；开发机借此与 CI 同结果。
+    env["NO_PROXY"] = "127.0.0.1,::1,localhost"
+    env["no_proxy"] = env["NO_PROXY"]
 
     subproc_start = time.monotonic()
     # launch the pytest process
