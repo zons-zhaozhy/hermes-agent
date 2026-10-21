@@ -233,13 +233,14 @@ def _write_targets(tree: ast.AST) -> set[str]:
     return targets
 
 
-def _existing_targets(code: str) -> list[str]:
+def _existing_targets(code: str, cwd: str = "") -> list[str]:
     """解析源码中「磁盘上已存在且非豁免目录」的写入目标。
 
     Contract:
-      Preconditions: code 为待执行 Python 源码
+      Preconditions: code 为待执行 Python 源码; cwd 为会话工作目录(空=进程 cwd)
       Postconditions: 返回已存在目标的绝对路径列表；语法错误/无目标返回 []
-      Invariants: 路径不可解析的写不参与计数——未证明批量即放行
+      Invariants: 路径不可解析的写不参与计数——未证明批量即放行;
+        相对路径按会话 cwd 解析(与 duplicate_check 同口径,非 hook 进程 cwd)
     """
     try:
         tree = ast.parse(code)
@@ -248,7 +249,7 @@ def _existing_targets(code: str) -> list[str]:
         return []
     existing: list[str] = []
     for raw in _write_targets(tree):
-        full = os.path.abspath(os.path.expanduser(raw))
+        full = os.path.abspath(os.path.join(cwd, os.path.expanduser(raw)))
         if _is_exempt(full):
             continue
         if os.path.exists(full):
@@ -267,7 +268,7 @@ def _on_pre_tool_call(**kwargs: Any) -> Optional[dict[str, Any]]:
     args = kwargs.get("args") or {}
     if not isinstance(args, dict):
         return None
-    existing = _existing_targets(str(args.get("code") or ""))
+    existing = _existing_targets(str(args.get("code") or ""), str(kwargs.get("cwd") or ""))
     if len(existing) < _BATCH_THRESHOLD:
         return None
     preview = "; ".join(existing[:3])

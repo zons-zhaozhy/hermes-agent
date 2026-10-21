@@ -28,6 +28,9 @@ from plugins._shared_state import get_session_state
 
 logger = logging.getLogger(__name__)
 
+# fail-open 只告警一次——未配置部署里逐 pre_tool_call 刷 warning 属日志噪音
+_fail_open_warned = False
+
 _NAMESPACE = "casebook_gate"
 
 # OntoX 家族仓库根（写操作目标命中才门控）。仅 env 提供——缺失走 fail-open 分支
@@ -506,7 +509,10 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
     if _plugin_disabled():
         return None
     if not _casebook_exists():
-        logger.warning("casebook_gate: CASEBOOK_DIR not set or missing → fail-open")
+        global _fail_open_warned
+        if not _fail_open_warned:
+            logger.warning("casebook_gate: CASEBOOK_DIR not set or missing → fail-open（此后静默）")
+            _fail_open_warned = True
         return None
 
     sid = kwargs.get("session_id", "") or kwargs.get("task_id", "")

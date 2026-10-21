@@ -1,7 +1,8 @@
 """guards.pre_write — enforce pre-investigation gate.
 
 Blocks write_file/patch/execute_code(write) if the target file has not been
-read (read_file/search_files) earlier in the same turn.
+read (read_file/search_files) earlier in the same session (the read-set is
+session-persistent, not per-turn).
 
 ACTIVATION: ON by default. Set PRE_WRITE_GUARD_DISABLE=1 to turn off.
 
@@ -132,52 +133,55 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
         return None
 
     # Determine the target path(s)
-    target_path = ""
+    targets: list[str] = []
 
     if tool_name == "write_file" or tool_name == "patch":
-        target_path = args.get("path", "")
+        _single = args.get("path", "")
+        if _single:
+            targets.append(_single)
     elif tool_name == "execute_code":
         code = args.get("code", "")
         if not _contains_write(code):
             return None  # read-only code, don't block
-        paths = _extract_paths_from_code(code)
-        if not paths:
-            return None  # can't determine targets
-        target_path = paths[0]  # check the first extracted path
+        # check ALL extracted paths — checking only paths[0] left writes to
+        # paths[1:] unguarded (2026-10-21 audit)
+        targets = _extract_paths_from_code(code)
 
-    if not target_path:
+    if not targets:
         return None  # can't determine target, allow
 
     # Creating a brand-new file is always valid — only block modifications
     # to existing files that haven't been read yet.
     # Try both absolute and relative-to-cwd paths.
     import os as _os
-    target_norm = _os.path.normpath(target_path)
-    if not _os.path.exists(target_norm):
-        # Try relative to cwd
-        try:
-            cwd = _os.getcwd()
-            if _os.path.exists(_os.path.join(cwd, target_norm)):
-                pass  # exists relative to cwd
-            else:
-                return None  # truly new file
-        except Exception:  # noqa: D5 — 探测失败按不存在处理,但留痕观测
-            logger.warning("guards.pre_write: target existence check failed for %s", target_norm, exc_info=True)
-            return None
-
     read_files = _get_read_files(sid)
 
-    if _paths_overlap(target_path, read_files):
-        return None  # file has been read, allow
+    unread_existing: list[str] = []
+    for target_path in targets:
+        target_norm = _os.path.normpath(target_path)
+        if not _os.path.exists(target_norm):
+            # Try relative to cwd
+            try:
+                cwd = _os.getcwd()
+                if not _os.path.exists(_os.path.join(cwd, target_norm)):
+                    continue  # truly new file
+            except Exception:  # noqa: D5 — 探测失败按不存在处理,但留痕观测
+                logger.warning("guards.pre_write: target existence check failed for %s", target_norm, exc_info=True)
+                continue
+        if not _paths_overlap(target_path, read_files):
+            unread_existing.append(target_path)
+
+    if not unread_existing:
+        return None
 
     return {
         "action": "block",
         "message": (
             f"[PreWriteGuard] 预调查门禁拦截：write_file/patch/execute_code 前"
             f"必须先 read_file 或 search_files 读取目标文件。\n"
-            f"  目标: {target_path}\n"
+            f"  未读已存在目标: {unread_existing}\n"
             f"  已读: {sorted(read_files) if read_files else '（无）'}\n"
-            f"  修复: 先执行 read_file('{target_path}') 确认磁盘内容。"
+            f"  修复: 先执行 read_file('上述目标') 确认磁盘内容。"
         ),
     }
 

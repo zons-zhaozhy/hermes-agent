@@ -22,40 +22,24 @@ Contract:
   Invariants: 子模块代码为纯移动,检测逻辑与迁移前逐字一致。
 """
 
-from __future__ import annotations
-
+import importlib
 import logging
 from typing import Any, Mapping
 
-from plugins.guards import (
-    batch_write,
-    casebook_gate,
-    coding_standards,
-    diff_debt,
-    duplicate_check,
-    four_axis,
-    groundbreaking_gate,
-    pre_write,
-    scope_gate,
-    source_write,
-    tool_blacklist,
-)
-
 logger = logging.getLogger(__name__)
 
-_SUB_GUARDS = (
-    ("tool_blacklist", tool_blacklist),
-    ("four_axis", four_axis),
-    ("pre_write", pre_write),
-    ("duplicate_check", duplicate_check),
-    ("source_write", source_write),
-    ("coding_standards", coding_standards),
-    ("diff_debt", diff_debt),
-    ("casebook_gate", casebook_gate),
-    ("batch_write", batch_write),
-    ("scope_gate", scope_gate),
-    ("groundbreaking_gate", groundbreaking_gate),
-)
+# 逐个导入: 任一子模块 import 失败仅记录日志并跳过(独立降级,见模块 Contract)——
+# 单条 from-import 会让一个 ImportError 连坐全套 11 守卫(2026-10-21 审计发现)。
+_LOADED: list[tuple[str, Any]] = []
+for _name in ("tool_blacklist", "four_axis", "pre_write", "duplicate_check", "source_write",
+              "coding_standards", "diff_debt", "casebook_gate", "batch_write", "scope_gate",
+              "groundbreaking_gate"):
+    try:
+        _LOADED.append((_name, importlib.import_module(f"plugins.guards.{_name}")))
+    except Exception:
+        logger.warning("guards: 子模块 %s import 失败,独立降级跳过", _name, exc_info=True)
+
+_SUB_GUARDS = tuple(_LOADED)
 
 # 事前注入段:六个子护栏与必败黑名单此前只有拦截、无前置提示——实测同一轮里
 # 反复被拦(每拦一次=一轮 API 白跑)。段文本已外置为段库 prompt_sections/sections.json
