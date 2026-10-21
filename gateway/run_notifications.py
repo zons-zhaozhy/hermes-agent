@@ -1533,7 +1533,12 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         )
         if delivered is None:
             # Primary dropped/owned elsewhere: retry the unadmitted siblings.
-            for evt, _claim_id in siblings:
+            # Pace the retry (#140899 semantics): without a backoff stamp the hold
+            # check in the drain loop never applies, so a persistently refused
+            # sibling re-enters claim/admit every 2 s tick.
+            sibling_evts = [evt for evt, _claim_id in siblings]
+            self._back_off_refused_completions(sibling_evts)
+            for evt in sibling_evts:
                 _pr.completion_queue.put(evt)
         return delivered
 
@@ -1625,6 +1630,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                             for evt in group:
                                 _pr.completion_queue.put(evt)
                     except Exception as e:
+                        # Same #140899 pacing for the exception path: a persistent
+                        # exception otherwise requeues + logger.error every 2 s tick.
+                        self._back_off_refused_completions(group)
                         for evt in group:
                             _pr.completion_queue.put(evt)
                         logger.error("Async delegation injection error: %s", e)
