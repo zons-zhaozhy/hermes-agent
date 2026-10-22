@@ -95,6 +95,10 @@ def _goal_blocks_loop_tick(mgr) -> bool:
 class CLILoopsMixin:
     """Simple slash-command wrappers plus goal/heartbeat/loop manager hooks for the interactive CLI"""
 
+    # Supplied by CLIChatTurnMixin (HermesCLI composes both); declared here for the hooks below.
+    _last_turn_interrupt_reason: str | None
+    _last_turn_interrupt_message: str | None
+
     def _cmd_exit(self, cmd_original: str):
         # /exit --delete also removes the session's transcripts + SQLite history.
         from cli import _DIM, _RST, _cprint, _slash_args
@@ -818,14 +822,19 @@ class CLILoopsMixin:
             return
 
         # A user-cancelled wakeup turn pauses the loop (recoverable via /loop resume) — same
-        # contract as the goal loop. A Hermes-side cancellation (fork preemption, teardown) is
-        # not the user abandoning the run, so it falls through and the tick is completed.
-        if getattr(self, "_last_turn_interrupted", False) and _interrupt_abandons_run(
-                self._last_turn_interrupt_reason):
+        # contract as the goal loop. Two shapes must NOT pause: a Hermes-side cancellation
+        # (fork preemption, teardown) and a user-message handover — the preempting message's
+        # own turn completes the tick instead.
+        if (getattr(self, "_last_turn_interrupted", False)
+                and _interrupt_abandons_run(self._last_turn_interrupt_reason)
+                and not self._last_turn_interrupt_message):
             try:
                 mgr.pause(reason="user-interrupted (Ctrl+C)")
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.warning("loop pause-on-interrupt failed: %s", exc)
+            logging.info(
+                "loop paused on user cancellation: exit_reason=%r",
+                self._last_turn_interrupt_reason)
             _cprint(f"  {_DIM}{t('cli.loop.paused_interrupted')}{_RST}")
             return
         decision = mgr.complete_tick(self._last_assistant_response_text())
@@ -863,13 +872,18 @@ class CLILoopsMixin:
                     return
         except Exception:
             pass
-        # Only a user abandonment pauses the goal; a Hermes-side cancellation must be judged.
-        if getattr(self, "_last_turn_interrupted", False) and _interrupt_abandons_run(
-                self._last_turn_interrupt_reason):
+        # Only a bare user cancellation pauses the goal. Neither a Hermes-side cancellation nor
+        # a user-message handover abandons the goal: the preempting message's own turn re-judges.
+        if (getattr(self, "_last_turn_interrupted", False)
+                and _interrupt_abandons_run(self._last_turn_interrupt_reason)
+                and not self._last_turn_interrupt_message):
             try:
                 mgr.pause(reason="user-interrupted (Ctrl+C)")
             except Exception as exc:
                 logging.debug("goal pause-on-interrupt failed: %s", exc)
+            logging.info(
+                "goal paused on user cancellation: exit_reason=%r interrupt_message=%r",
+                self._last_turn_interrupt_reason, self._last_turn_interrupt_message)
             _cprint(f"  {_DIM}{t('cli.goal.paused_interrupted')}{_RST}")
             return
 

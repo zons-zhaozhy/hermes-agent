@@ -161,3 +161,38 @@ class TestInterruptSource:
         state = mgr.state
         assert state is not None
         assert state.status == "paused"  # 期望: 用户中断仍暂停
+
+    def test_user_message_handover_is_judged_not_paused(self, hermes_home):
+        """A message that preempted the turn hands control over; the goal keeps going."""
+        sid = f"sid-handover-{uuid.uuid4().hex}"
+        cli, mgr = _make_cli_with_goal(sid)
+        cli._last_turn_interrupted = True
+        cli._last_turn_interrupt_reason = "interrupted_by_user"
+        cli._last_turn_interrupt_message = "客户表里机构是空？"
+        cli.conversation_history = [
+            {"role": "assistant", "content": "did some work, more to do"},
+        ]
+        with patch(
+            "hermes_cli.goals.judge_goal",
+            return_value=("continue", "needs more steps", False, None, False),
+        ):
+            cli._maybe_continue_goal_after_turn()
+
+        state = mgr.state
+        assert state is not None
+        assert state.status == "active"  # 期望: 用户插话接管不暂停 goal
+
+    def test_bare_ctrl_c_without_message_still_pauses(self, hermes_home):
+        """A bare Ctrl+C (no preempting message) keeps the auto-pause."""
+        sid = f"sid-barecc-{uuid.uuid4().hex}"
+        cli, mgr = _make_cli_with_goal(sid)
+        cli._last_turn_interrupted = True
+        cli._last_turn_interrupt_reason = "interrupted_by_user"
+        cli._last_turn_interrupt_message = None
+        cli.conversation_history = [{"role": "assistant", "content": "partial"}]
+        with patch("hermes_cli.goals.judge_goal"):
+            cli._maybe_continue_goal_after_turn()
+
+        state = mgr.state
+        assert state is not None
+        assert state.status == "paused"  # 期望: 裸 Ctrl+C 仍暂停

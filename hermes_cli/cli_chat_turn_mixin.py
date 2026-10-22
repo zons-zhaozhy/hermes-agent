@@ -36,6 +36,10 @@ class CLIChatTurnMixin:
     # cancellation (fork preemption, session teardown), which must not pause them.
     _last_turn_interrupt_reason: str | None = None
 
+    # The user message that preempted the last turn (empty for a bare Ctrl+C). A handover is
+    # the user taking over, not abandoning: the preempting message's own turn re-judges.
+    _last_turn_interrupt_message: str | None = None
+
     def _sync_fallback_chain_with_config(self, agent) -> None:
         """Adopt ``fallback_providers`` edits made while this chat is open (#95066) — the same
         per-turn, fail-closed contract as the Desktop/TUI and messaging gateways: a torn config.yaml
@@ -70,6 +74,7 @@ class CLIChatTurnMixin:
         # Reset per turn; only a real interrupt flips it, so early returns leave it False.
         self._last_turn_interrupted = False
         self._last_turn_interrupt_reason = None
+        self._last_turn_interrupt_message = None
 
         if not self._ensure_runtime_credentials():
             return None
@@ -616,6 +621,8 @@ class CLIChatTurnMixin:
         # teardown) must not read as the user abandoning a goal/loop continuation.
         _result = turn.result if isinstance(turn.result, dict) else None
         self._last_turn_interrupt_reason = (_result or {}).get("turn_exit_reason")
+        self._last_turn_interrupt_message = (
+            (_result or {}).get("interrupt_message") or interrupt_msg)
         # Post-turn hooks (e.g. goal continuation) skip themselves on a user-cancelled turn.
         self._last_turn_interrupted = _interrupted_this_turn
         if _interrupted_this_turn:
