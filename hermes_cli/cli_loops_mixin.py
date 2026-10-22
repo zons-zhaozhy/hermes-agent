@@ -21,6 +21,26 @@ def _preview(payload: str) -> str:
     return f"{payload[:80]}{'...' if len(payload) > 80 else ''}"
 
 
+# Turn-exit reasons that mean HERMES cancelled the turn (fork preemption, session teardown,
+# watchdog) rather than the user abandoning the run. A continuation cancelled this way must be
+# judged, not auto-paused: the user never withdrew it.
+_SYSTEM_INTERRUPT_MARKERS = ("interrupted_by_system", "background_review_superseded")
+
+
+def _interrupt_abandons_run(exit_reason: str | None) -> bool:
+    """Whether a turn's exit reason means the user abandoned the run.
+
+    Contract:
+        Preconditions: ``exit_reason`` is ``turn.result["turn_exit_reason"]`` or None.
+        Postconditions: None (no recorded reason) -> True, preserving the historical
+            "an interrupted turn means the user stopped it" behaviour. A reason naming a
+            Hermes-side cancellation -> False. A user reason -> True.
+    """
+    if not exit_reason:
+        return True
+    return not any(marker in exit_reason for marker in _SYSTEM_INTERRUPT_MARKERS)
+
+
 def _queue_usage() -> str:
     return t("cli.queue.usage")
 
@@ -797,9 +817,11 @@ class CLILoopsMixin:
         if state is None or not state.awaiting_response:
             return
 
-        # A user-interrupted wakeup turn pauses the loop (recoverable via /loop resume)
-        # — same contract as the goal loop's Ctrl+C handling.
-        if getattr(self, "_last_turn_interrupted", False):
+        # A user-cancelled wakeup turn pauses the loop (recoverable via /loop resume) — same
+        # contract as the goal loop. A Hermes-side cancellation (fork preemption, teardown) is
+        # not the user abandoning the run, so it falls through and the tick is completed.
+        if getattr(self, "_last_turn_interrupted", False) and _interrupt_abandons_run(
+                self._last_turn_interrupt_reason):
             try:
                 mgr.pause(reason="user-interrupted (Ctrl+C)")
             except Exception:
@@ -841,7 +863,9 @@ class CLILoopsMixin:
                     return
         except Exception:
             pass
-        if getattr(self, "_last_turn_interrupted", False):
+        # Only a user abandonment pauses the goal; a Hermes-side cancellation must be judged.
+        if getattr(self, "_last_turn_interrupted", False) and _interrupt_abandons_run(
+                self._last_turn_interrupt_reason):
             try:
                 mgr.pause(reason="user-interrupted (Ctrl+C)")
             except Exception as exc:

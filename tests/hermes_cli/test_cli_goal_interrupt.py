@@ -120,3 +120,44 @@ class TestHealthyTurnStillRuns:
 
         assert cli._pending_input.empty()
         assert mgr.state.status == "done"
+
+
+class TestInterruptSource:
+    """Only a USER cancellation pauses; a Hermes-side cancellation is judged, not paused."""
+
+    def test_background_review_supersede_is_judged_not_paused(self, hermes_home):
+        """A fork-preemption exit reason must not read as the user abandoning the goal."""
+        sid = f"sid-bgsupersede-{uuid.uuid4().hex}"
+        cli, mgr = _make_cli_with_goal(sid)
+        cli._last_turn_interrupted = True
+        cli._last_turn_interrupt_reason = (
+            "interrupted_during_api_call(background_review_superseded)"
+        )
+        cli.conversation_history = [
+            {"role": "assistant", "content": "did some work, more to do"},
+        ]
+        with patch(
+            "hermes_cli.goals.judge_goal",
+            return_value=("continue", "needs more steps", False, None, False),
+        ):
+            cli._maybe_continue_goal_after_turn()
+
+        state = mgr.state
+        assert state is not None
+        assert state.status == "active"  # 期望: 系统侧取消不暂停 goal
+        assert state.paused_reason is None  # 期望: 不留 Ctrl+C 暂停原因
+
+    def test_user_interrupt_still_pauses(self, hermes_home):
+        """Ctrl+C keeps the historical auto-pause."""
+        sid = f"sid-usercc-{uuid.uuid4().hex}"
+        cli, mgr = _make_cli_with_goal(sid)
+        cli._last_turn_interrupted = True
+        cli._last_turn_interrupt_reason = "interrupted_by_user"
+        cli.conversation_history = [{"role": "assistant", "content": "partial"}]
+
+        with patch("hermes_cli.goals.judge_goal"):
+            cli._maybe_continue_goal_after_turn()
+
+        state = mgr.state
+        assert state is not None
+        assert state.status == "paused"  # 期望: 用户中断仍暂停

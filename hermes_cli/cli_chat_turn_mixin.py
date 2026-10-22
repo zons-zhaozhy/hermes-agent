@@ -31,6 +31,11 @@ class CLIChatTurnMixin:
     # process exit code (see cli._run_single_query_mode) read this instead.
     _last_turn_result = None
 
+    # Why the last turn ended when it was interrupted (turn_exit_reason). The goal/loop
+    # post-turn hooks read it to tell a user abandonment (Ctrl+C) from a Hermes-side
+    # cancellation (fork preemption, session teardown), which must not pause them.
+    _last_turn_interrupt_reason: str | None = None
+
     def _sync_fallback_chain_with_config(self, agent) -> None:
         """Adopt ``fallback_providers`` edits made while this chat is open (#95066) — the same
         per-turn, fail-closed contract as the Desktop/TUI and messaging gateways: a torn config.yaml
@@ -64,6 +69,7 @@ class CLIChatTurnMixin:
         set_secret_capture_callback(self._secret_capture_callback)
         # Reset per turn; only a real interrupt flips it, so early returns leave it False.
         self._last_turn_interrupted = False
+        self._last_turn_interrupt_reason = None
 
         if not self._ensure_runtime_credentials():
             return None
@@ -606,6 +612,10 @@ class CLIChatTurnMixin:
         pending_message = None
         _show_interrupt_marker = False
         _interrupted_this_turn = bool(turn.result and turn.result.get("interrupted"))
+        # Record WHY next to the flag: a Hermes-side cancellation (fork preemption, session
+        # teardown) must not read as the user abandoning a goal/loop continuation.
+        _result = turn.result if isinstance(turn.result, dict) else None
+        self._last_turn_interrupt_reason = (_result or {}).get("turn_exit_reason")
         # Post-turn hooks (e.g. goal continuation) skip themselves on a user-cancelled turn.
         self._last_turn_interrupted = _interrupted_this_turn
         if _interrupted_this_turn:
