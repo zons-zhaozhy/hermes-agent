@@ -1,10 +1,49 @@
 """A Stop after the turn adopted its agent reaches that agent even if the cache no longer holds it."""
 import asyncio
+import threading
 
 import pytest
 
+from tools import interrupt as tool_interrupt
 from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit, _wire_turn_agent
 from tests.gateway.test_session_authority_preadopt_stop import Agent
+
+
+def test_adopt_with_no_delivered_stop_still_clears_a_lingering_thread_interrupt(tmp_path, monkeypatch):
+    """A stop signalled on the execution thread without a delivered_stops entry (thread-level
+    signal after the finalizer ran) must not survive into the adopting turn: adopt_agent clears
+    the interrupt even when nothing was recorded for this session, or the new turn's first tools
+    die with exit 130."""
+    _, authority = _authority(tmp_path, monkeypatch)
+
+    class ClearRecordingAgent(Agent):
+        def __init__(self) -> None:
+            super().__init__()
+            self.clear_calls = 0
+            self._execution_thread_id = threading.current_thread().ident
+
+        def clear_interrupt(self) -> None:
+            self.clear_calls += 1
+            self.interrupted = False
+            # Mirror the real agent's clear_interrupt: drop this thread's interrupt bit.
+            tool_interrupt.set_interrupt(False, self._execution_thread_id)
+
+    agent = ClearRecordingAgent()
+    tid = threading.current_thread().ident
+    tool_interrupt.set_interrupt(True, tid, reason="explicit stop requested")
+    try:
+        assert tool_interrupt.is_thread_interrupted(tid)  # 期望: 残留位已置上
+        authority.adopt_agent('s', 7, agent)
+        assert agent.clear_calls == 1  # 期望: 无交付记录也必须清
+        assert not tool_interrupt.is_thread_interrupted(tid)  # 期望: 位已清
+    finally:
+        tool_interrupt.set_interrupt(False, tid)
+
+    # Same generation WITH a delivered stop must NOT clear: the latched fire must survive.
+    agent2 = ClearRecordingAgent()
+    authority.delivered_stops['s'] = 7
+    authority.adopt_agent('s', 7, agent2)
+    assert agent2.clear_calls == 0  # 期望: 本回合交付不清
 
 
 @pytest.mark.asyncio

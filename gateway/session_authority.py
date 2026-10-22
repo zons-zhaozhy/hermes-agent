@@ -942,7 +942,9 @@ class SessionAuthority:
         with live.event_stream.lock if live is not None else contextlib.nullcontext():
             self.adopted[session_id] = (generation, agent)
             clear = getattr(agent, 'clear_interrupt', None)
-            if self.delivered_stops.pop(session_id, generation) != generation and clear is not None:
+            # Default None, not generation: no record must also clear — a stop signalled on the
+            # execution thread without a delivered_stops entry otherwise survives into this turn.
+            if self.delivered_stops.pop(session_id, None) != generation and clear is not None:
                 clear()
             if self.pending_stops.get(session_id) == generation:
                 del self.pending_stops[session_id]
