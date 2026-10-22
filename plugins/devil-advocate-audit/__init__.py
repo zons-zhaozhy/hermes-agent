@@ -64,10 +64,21 @@ _NAMESPACE = "devil_advocate_audit"
 
 _MAX_JUDGE_CALLS = 30
 
+# armed 时仍放行的只读工具：冻结的立法本意是「定稿前先审」，只读调查正是
+# 把决策审清楚的前提，拦只读 = 阻止取证（2026-10-22 实录：armed 拦 grep）。
+# 仅收纯只读；tool_call/memory/manage_connections 等可触写通道不放。
+_READONLY_TOOLS = frozenset({
+    "read_file", "search_files", "session_search", "web_search", "web_extract",
+    "tool_search", "tool_describe", "skills_list", "skill_view", "todo_list",
+    "clarify",
+})
+
 _JUDGE_SYSTEM = (
-    "你是决策审查哨兵。判断下面这条会话消息是否构成'重大方案定稿或决策承诺'——"
-    "即：即将拍板采用某技术方案/架构选型/上生产部署/模型替换/大规模重构等"
-    "影响面大且难回退的决策。只是讨论、提问、调研、汇报进度不算。"
+    "你是决策审查哨兵。判断这条会话消息是否即将引发一个影响面大且难回退的"
+    "重大动作或方案定稿——如架构选型、上生产部署、模型供应商替换、大规模"
+    "重构、删除或覆盖不可恢复数据、对外承诺，无论提出者是用户还是 AI。"
+    "以下一律不算：有备份或可回滚的配置与参数调整（含用户明确指令的执行）；"
+    "讨论、提问、调研、汇报进度、只读操作。"
     "只回答 JSON：{\\\"decision\\\": true} 或 {\\\"decision\\\": false}"
 )
 
@@ -392,6 +403,8 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
             if _goal_has_review_marker(_extract_delegate_goals(kwargs.get("args"))):
                 st["reviewed"] = True
             return None  # 正门：反方审查委派本身放行
+        if tool_name in _READONLY_TOOLS:
+            return None  # 只读调查放行：armed 是「定稿前先审」，不拦审查取证
         return {
             "action": "block",
             "message": _BLOCK_MSG_TEMPLATE.format(tool_name=tool_name),
