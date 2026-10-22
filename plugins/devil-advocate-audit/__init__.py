@@ -62,7 +62,8 @@ logger = logging.getLogger(__name__)
 
 _NAMESPACE = "devil_advocate_audit"
 
-_MAX_JUDGE_CALLS = 30
+# 与 yinyang 同病同修：30 对超长会话不足，预算打满后 decision 判定全停。
+_MAX_JUDGE_CALLS = 200
 
 # armed 时仍放行的只读工具：冻结的立法本意是「定稿前先审」，只读调查正是
 # 把决策审清楚的前提，拦只读 = 阻止取证（2026-10-22 实录：armed 拦 grep）。

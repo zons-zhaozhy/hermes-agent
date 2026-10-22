@@ -85,7 +85,9 @@ def judge_user_side(message: str) -> dict[str, Optional[bool]]:
 _NAMESPACE = "yinyang_restate_guard"
 
 _MAX_REMINDERS = 3
-_MAX_JUDGE_CALLS = 30
+# judge 预算按消息次数计；30 对超长会话不足（20261022 实测：本会话 40+ 条
+# 消息预算打满后，后半程质疑全部漏判），本地小模型单次毫秒级，放宽到 200。
+_MAX_JUDGE_CALLS = 200
 
 _JUDGE_SYSTEM = (
     "你是对话信号哨兵。判断下面这条用户消息是否在质疑、反驳或纠正 AI 的"
