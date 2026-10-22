@@ -452,6 +452,25 @@ def _session_has_read(src_file: Path) -> bool:
     return False
 
 
+def _parse_maybe_fragment(text: str):
+    """Parse a whole file or a patch fragment into an AST, else None.
+
+    Contract:
+        Preconditions: text 非空字符串。
+        Postconditions: 完整文件/可补壳片段返回 ast.Module；两者皆不可解析返回 None。
+    """
+    try:
+        return ast.parse(text)
+    except (SyntaxError, IndentationError, ValueError):
+        pass
+    # patch 的 new_string 是片段（顶层名/续行/缩进块）——补一层壳再试。
+    indented = "\n".join(("    " + line) if line.strip() else line for line in text.splitlines())
+    try:
+        return ast.parse("if True:\n" + indented)
+    except (SyntaxError, IndentationError, ValueError):
+        return None
+
+
 def on_pre_tool_call(**kwargs):
     """pre_tool_call 入口——写 .py 前机检科学编程纪律。
 
@@ -483,7 +502,19 @@ def on_pre_tool_call(**kwargs):
                         "git merge 冲突标记未解决就写入。先逐块裁定冲突再写。"
                     ),
                 }
-        tree = ast.parse(text)
+        tree = _parse_maybe_fragment(text)
+        if tree is None:
+            if args.get("content"):
+                # write_file 写的是完整文件：解析不了=语法坏，直接拦（守卫规则不能整段放空）。
+                return {
+                    "action": "block",
+                    "message": (
+                        "[scientific-programming-guard] write_file 内容不是可解析的 Python"
+                        "（SyntaxError）——先修语法再写入，AST 规则必须能作用于完整文件。"
+                    ),
+                }
+            # patch 片段不可解析：跳过 AST 层；文本层规则（R7 冲突标记等）已在前面跑过。
+            return {}
         # 防错层规则——所有 .py 生效
         issues = _check_complexity_budget(tree)
         issues += _check_type_annotations(tree)
