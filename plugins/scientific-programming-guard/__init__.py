@@ -21,7 +21,7 @@ v2 升级(对应四层十五律):
 import ast
 import logging
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -452,23 +452,30 @@ def _session_has_read(src_file: Path) -> bool:
     return False
 
 
-def _parse_maybe_fragment(text: str):
-    """Parse a whole file or a patch fragment into an AST, else None.
+def _parse_maybe_fragment(text: str) -> "tuple[Optional[ast.Module], list]":
+    """Parse a whole file or a patch fragment into an AST, else none-pair.
+
+    返回 (tree, lines)：lines 与 AST lineno 同一坐标系——补壳路径含壳行
+    （「if True:」占第 1 行），消费方禁再传原片段行列表（行号会整体错位 +1，
+    实测把片段 line N 的违规报成 line N+1 的误报源）。
 
     Contract:
         Preconditions: text 非空字符串。
-        Postconditions: 完整文件/可补壳片段返回 ast.Module；两者皆不可解析返回 None。
+        Postconditions: 可解析返回 (ast.Module, 该坐标系物理行列表)；
+        两者皆不可解析返回 (None, [])。
     """
     try:
-        return ast.parse(text)
-    except (SyntaxError, IndentationError, ValueError):
-        pass
+        return ast.parse(text), text.splitlines()
+    except (SyntaxError, IndentationError, ValueError) as exc:
+        logger.warning("完整文件解析失败，改试补壳片段解析: %s", exc, exc_info=True)
     # patch 的 new_string 是片段（顶层名/续行/缩进块）——补一层壳再试。
     indented = "\n".join(("    " + line) if line.strip() else line for line in text.splitlines())
+    shell = "if True:\n" + indented
     try:
-        return ast.parse("if True:\n" + indented)
-    except (SyntaxError, IndentationError, ValueError):
-        return None
+        return ast.parse(shell), shell.splitlines()
+    except (SyntaxError, IndentationError, ValueError) as exc:
+        logger.warning("补壳片段解析亦失败（放行，文本层规则已跑）: %s", exc, exc_info=True)
+        return None, []
 
 
 def on_pre_tool_call(**kwargs):
@@ -502,7 +509,7 @@ def on_pre_tool_call(**kwargs):
                         "git merge 冲突标记未解决就写入。先逐块裁定冲突再写。"
                     ),
                 }
-        tree = _parse_maybe_fragment(text)
+        tree, parsed_lines = _parse_maybe_fragment(text)
         if tree is None:
             if args.get("content"):
                 # write_file 写的是完整文件：解析不了=语法坏，直接拦（守卫规则不能整段放空）。
@@ -524,7 +531,7 @@ def on_pre_tool_call(**kwargs):
             issues += _check_l3_guarded_cleanup(tree)
         # 测试纪律层——仅 tests/ 下文件生效
         if "/tests/" in path or path.startswith("tests/"):
-            issues += _check_expected_annotation(tree, text.splitlines())
+            issues += _check_expected_annotation(tree, parsed_lines)
             issues += _check_unverified_local_imports(tree, path)
             issues += _check_guessed_kwargs(tree, path)
         if issues:
