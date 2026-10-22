@@ -543,10 +543,11 @@ def _detect_source_write(command: str) -> tuple[bool, str]:
         target = _extract_redirect_target(command)
         if target and _is_source_file(target) and not _is_safe_path(target):
             return True, f"tee 写入源码文件 ({target})"
-        # tee without explicit target but writing to source
-        for ext in _SOURCE_EXTENSIONS:
-            if ext in command.lower() and not _is_safe_path(command):
-                return True, "tee 写入源码文件"
+        elif not target:
+            # tee without explicit target but writing to source
+            for ext in _SOURCE_EXTENSIONS:
+                if ext in command.lower() and not _is_safe_path(command):
+                    return True, "tee 写入源码文件"
 
     # Generic > redirect (echo, printf, etc.)
     target = _extract_redirect_target(command)
