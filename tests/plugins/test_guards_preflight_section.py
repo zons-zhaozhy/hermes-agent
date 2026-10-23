@@ -84,7 +84,7 @@ def test_guards_sections_read_library_content() -> None:
         assert clause in text  # 期望: 每条判据在段内(六个子护栏全覆盖)
     assert "达 2 个即拦" in text  # 期望: 批量改已有文件阈值=2, 与 batch_write 实现一致
     assert "≤8 个代码文件" in text  # 期望: 单 commit 文件数上限=8, 与 batch_write 一致
-    assert "10 分钟" in text  # 期望: 四轴 marker 有效期=10 分钟, 与 four_axis 一致
+    assert "30 分钟" in text  # 期望: 四轴 marker 有效期=30 分钟(four_axis._MARKER_MAX_AGE_SECONDS=1800, 600s 旧值实测不够已调), 与段库/架构文档一致
     assert "terminal 豁免" in text  # 期望: 四轴对 terminal 的豁免, 与主门禁一致
     blacklist = ctx.sections["tool_blacklist"]({"platform": "cli"})
     assert "vision_analyze" in blacklist  # 期望: 必败调用在段内
