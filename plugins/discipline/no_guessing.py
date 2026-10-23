@@ -383,7 +383,7 @@ def _normalize(command: str) -> str:
 
 # deploy/build 子命令词：出现在服务名参数区，但不是服务名
 _DEPLOY_SUBCOMMANDS = {
-    "cloud", "cloud-run", "cloud-svc-run", "local", "run", "build",
+    "cloud", "cloud-run", "cloud-svc-run", "cloud-status", "local", "run", "build",
     "up", "down", "restart", "logs", "status",
 }
 # shell 分隔/重定向令牌：服务名参数区在此终止（其后是新命令，与服务名无关）
