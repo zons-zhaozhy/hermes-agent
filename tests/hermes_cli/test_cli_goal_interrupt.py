@@ -196,3 +196,32 @@ class TestInterruptSource:
         state = mgr.state
         assert state is not None
         assert state.status == "paused"  # 期望: 裸 Ctrl+C 仍暂停
+
+
+class TestMirrorResyncOnExternalWrite:
+    """Another writer moved state_meta; the CLI's frozen mirror must resync
+    before the active check so a done/cleared goal stops the loop and the dock."""
+
+    def test_cleared_by_another_writer_stops_judging_and_repaints(self, hermes_home):
+        sid = f"sid-resync-{uuid.uuid4().hex}"
+        cli, mgr = _make_cli_with_goal(sid)
+        from hermes_cli.goals import clear_goal
+        clear_goal(sid)  # out-of-band write: DB row changes, the mirror does not
+        assert mgr.state is not None and mgr.state.status == "active"  # 期望: 镜像仍冻结在 active
+        with patch("hermes_cli.goals.judge_goal") as judge:
+            cli._maybe_continue_goal_after_turn()
+        assert not judge.called  # 期望: 库已 cleared，不再评估
+        assert not mgr.has_goal()  # 期望: 镜像从库重读，dock 行消失
+
+    def test_done_by_another_writer_stops_judging(self, hermes_home):
+        sid = f"sid-resync-done-{uuid.uuid4().hex}"
+        cli, mgr = _make_cli_with_goal(sid)
+        from hermes_cli.goals import GoalManager, save_goal
+        other = GoalManager(session_id=mgr.session_id, default_max_turns=5)
+        assert other.state is not None
+        other.state.status = "done"
+        save_goal(mgr.session_id, other.state)  # a distinct object, like another process
+        with patch("hermes_cli.goals.judge_goal") as judge:
+            cli._maybe_continue_goal_after_turn()
+        assert not judge.called  # 期望: goal 已 done，不再评估
+        assert mgr.state is not None and mgr.state.status == "done"  # 期望: 镜像同步为 done（dock 不再显示 active）
