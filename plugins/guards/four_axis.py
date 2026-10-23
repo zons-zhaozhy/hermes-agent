@@ -18,7 +18,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,9 @@ logger = logging.getLogger(__name__)
 # write_file/patch 覆盖)。副防线曾额外拦 execute_code,与主防线裁定
 # 冲突,实测产生 474 次误拦。以主防线为唯一裁定源。
 _WRITE_TOOLS = frozenset({"write_file", "patch"})
-_MARKER_MAX_AGE_SECONDS = 600  # marker 有效期 10 分钟，超时视为无效
+_MARKER_MAX_AGE_SECONDS = 1800  # marker 有效期 30 分钟——600s 实测小于单任务写链时长
+                              # （含验证跑测+多笔 patch），中途过期重拦 5.3k 次；仍保留
+                              # 时效防跨任务沿用，且 gate 每 turn 重写刷新覆盖。
 
 
 def _marker_file() -> Path:
@@ -133,7 +135,7 @@ def _read_marker() -> Optional[dict]:
     return None
 
 
-def _block_message(tool_name: str) -> Optional[Dict[str, Any]]:
+def _block_message(tool_name: str) -> Optional[dict[str, Any]]:
     """生成阻断消息。"""
     return {
         "action": "block",
@@ -149,7 +151,7 @@ def _block_message(tool_name: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def on_pre_tool_call(**kwargs) -> Optional[Dict[str, Any]]:
+def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
     """pre_tool_call hook：写工具执行前检查四轴 marker。"""
     tool_name = kwargs.get("tool_name", "")
     if tool_name not in _WRITE_TOOLS:

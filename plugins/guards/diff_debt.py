@@ -72,6 +72,10 @@ _COMPENSATION_KEYWORDS: tuple[str, ...] = (
     "写前diff",
 )
 
+# 结果回显判定的专用形态——str(result) 的换行被转义为字面 \n 两字符,
+# 行首锚定恒 miss;结果由框架生成(非模型可控),含该子串必是 diff 回显。
+_RESULT_DIFF_RE = re.compile(r"@@ -\d|diff --git|```diff")  # re-ok: 无回溯子串探测
+
 
 def _has_diff_evidence(content: str) -> bool:
     """判定 assistant 正文是否出示了 diff 或合规代偿。
@@ -164,6 +168,16 @@ def on_post_tool_call(**kwargs: Any) -> None:
         return
     args = kwargs.get("args") or {}
     path = str(args.get("path") or args.get("file_path") or args.get("name") or "")
+    # 工具结果已携带 diff 形态（框架生成的回显，非模型可控）=义务已履行的
+    # 等价形态，不再记账——旧版无条件记账把正常写链每笔都征两次义务
+    # （回显一次+正文一次），实测 17.5k 次拦截的主要来源。
+    result_text = str(kwargs.get("result") or "")
+    if _RESULT_DIFF_RE.search(result_text):
+        return
+    # 空路径欠账无法出示对照（义务对象缺失）——记账即制造永久无法清偿的
+    # 死锁条目（skill_manage 无名操作形态实测），不记。
+    if not path:
+        return
     sid = _session_key(kwargs)
     _record_debt(sid, tool_name, path)
     logger.info("diff-debt guard: debt recorded (tool=%s path=%s session=%s)", tool_name, path, sid)

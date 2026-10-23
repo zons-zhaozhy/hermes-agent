@@ -55,6 +55,9 @@ _SAFE_PREFIXES = (
     "/tmp/",
     "/var/",
     "/dev/null",
+    # Hermes 官方临时区（TMPDIR 指向 ~/.hermes/cache/scratch，24h 自动清理）——
+    # 与 /tmp 同语义的临时产物落点，不含资产，误拦实测（PR 载荷 heredoc）。
+    os.path.expanduser("~/.hermes/cache/").lower().replace("\\", "/"),
 )
 
 _SAFE_DIRNAMES = (

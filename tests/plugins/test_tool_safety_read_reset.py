@@ -57,3 +57,20 @@ def test_genuine_failures_still_count():
     assert got is True  # 期望: True——空内容是真空读
     got = tool_safety._is_empty_or_error_result("", "error")
     assert got is True  # 期望: True——status=error 一票判失败
+
+
+def test_read_tool_never_blocks_even_at_retry_threshold():
+    sid = "test-noblock-s1"
+    path = "/tmp/toolsafety_noblock_probe.txt"
+    for _ in range(4):
+        tool_safety.on_post_tool_call(
+            session_id=sid,
+            tool_name="read_file",
+            args={"path": path},
+            result=json.dumps({"error": "TCC denied"}),
+            status="error",
+        )
+    verdict = tool_safety.on_pre_tool_call(
+        session_id=sid, tool_name="read_file", args={"path": path}
+    )
+    assert verdict is None  # 期望: None——读是幂等无副作用操作,达到阈值也只留日志不拦截

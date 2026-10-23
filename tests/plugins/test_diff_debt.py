@@ -152,6 +152,23 @@ def test_ok_write_records_debt_without_status_kwarg() -> None:
     assert len(diff_debt._DIFF_DEBT["s1"]) == 1  # 期望: 恰好一笔欠账
 
 
+def test_post_no_debt_when_result_carries_diff() -> None:
+    # 期望: 工具结果已含 unified diff 形态（框架回显）=义务已履行,不记账
+    _fresh_debt()
+    diff_debt.on_post_tool_call(
+        tool_name="write_file", args={"path": "/tmp/a.py"}, session_id="s1",
+        result='{"diff": "--- a//tmp/a.py\\n@@ -1 +1,2 @@\\n-old\\n+new\\n", "verified": true}')
+    assert not diff_debt._DIFF_DEBT  # 期望: 零欠账
+
+
+def test_post_no_debt_when_path_unresolvable() -> None:
+    # 期望: 路径解析为空(无法出示对照的欠账对象)不记账——记账即死锁
+    _fresh_debt()
+    diff_debt.on_post_tool_call(
+        tool_name="skill_manage", args={"action": "list"}, session_id="s1")
+    assert not diff_debt._DIFF_DEBT  # 期望: 零欠账
+
+
 # ── 层1：WriteResult.diff 回显 ────────────────────────────────────────────
 
 

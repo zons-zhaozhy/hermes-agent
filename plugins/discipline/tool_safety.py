@@ -185,22 +185,22 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
                 ),
             }
 
-    # ── Check 2: read_file retry loop ─────────────────────────────
+    # ── Check 2: read_file retry loop (hint, never block) ─────────
+    # 读是幂等无副作用操作,失败重试无破坏面;硬拦的实测代价(1897 次阻断,
+    # TCC 权限/大文件场景指引的 execute_code open() 同样失败)远超收益。
+    # 保留检测价值:完全相同的参数连续失败=无进展信号,降级为提示。
     if tool_name == "read_file":
         path = args.get("path", "")
         if path:
             attempts = _get_read_attempts(sid)
             count = attempts.get(path, 0)
+            # 达阈值不拦截不提示——插件回调无「放行+提示」通道(modify 只变换参数),
+            # 无进展循环由 block_escalation 的失败观测层兜底升级。
             if count >= _MAX_READ_RETRIES:
-                return {
-                    "action": "block",
-                    "message": (
-                        f"[ToolSafety] read_file 对 {path} 已重试 {count} 次。"
-                        f"可能文件是 binary、不存在或 path 有误。\n"
-                        f"  修复: 切换到 execute_code Python open() 读取，"
-                        f"或先用 terminal ls/检查文件是否存在。"
-                    ),
-                }
+                logger.warning(
+                    "tool-safety: read_file retry loop detected, pass-through "
+                    "(path=%s attempts=%d session=%s)", path, count, sid,
+                )
 
     # ── Check 3: patch falsification (3+ attempts, unverified) ──
     if tool_name == "patch":

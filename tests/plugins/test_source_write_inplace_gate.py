@@ -13,6 +13,13 @@ from plugins.guards import source_write as sw
 _SRC = "/Users/stan/code/apps/foo/services.py"
 
 
+def test_hermes_cache_tmpdir_is_safe_path():
+    import os
+    scratch = os.path.expanduser("~/.hermes/cache/scratch/pr_payload.json")
+    assert sw._is_safe_path(scratch) is True  # 期望: True——TMPDIR 指向的官方临时区,与 /tmp 同语义
+    assert sw._is_safe_path(_SRC) is False    # 期望: False——仓库内源码路径仍拦
+
+
 def test_commit_message_mentioning_inplace_pattern_allowed():
     """提交信息里提到 in-place 字样（数据非命令）→ 放行。"""
     cmd = 'git commit -m "只覆盖 open(...,\'w\')/重定向/sed -i 三类直写形态" -- tests/plugins/test_scope_gate.py'
