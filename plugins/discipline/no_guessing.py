@@ -207,10 +207,12 @@ _BLOCK_UNVERIFIED_NAME = (
 )
 
 _REMINDER_AFTER_FAIL = (
-    "[瞎猜纪律提醒] 刚发生工具失败。三条铁律：\n"
+    "[瞎猜纪律提醒] 刚发生工具失败。四条铁律：\n"
     "1. 标识符（名字/路径/端点/账号/配置值）写入命令前，必须先有当轮只读工具输出它；\n"
     "2. 报错后禁原样重试——先读错误全文定位根因；同错两次必须换策略；\n"
-    "3. 「应该是/大概是」= 未查证。要么查，要么明说未查证，禁止当命令参数。"
+    "3. 「应该是/大概是」= 未查证。要么查，要么明说未查证，禁止当命令参数。\n"
+    "4. 失败归因必须穷尽证据链（白名单缺失/槽位错/IP 不在白名单等环境因素先排除）"
+    "才能下结论；结论要写入记忆时必须同时带失败根因与复现命令，禁止只存结论。"
 )
 
 # 触发服务名核验的命令片段（按子串判断，集合小且稳定）
@@ -242,6 +244,52 @@ _SLEEP_COMBO_HINT = (
 
 # 规则6：诊断命令吞错——2>/dev/null 会把报错证据扔掉，违反 log-first 诊断纪律
 # （仅处理诊断类命令；编译/构建输出重定向属正常用法不碰）。机械改写 2>&1，不 block。
+
+# 规则8：跨架构本地构建——本机 arm64 上 docker build 默认产 arm64 镜像；云端 amd64
+# 交付禁本地构建（QEMU 跨架构下原生扩展必崩，1023 booster rolldown/binding 实锤）。
+# 显式 --platform 在场=明知故为，放行；本机自用 arm64 镜像也合法，故 HINT 提醒放行
+# 不阻断（与 R5 组合式同档），记档 outcome=hint 保留习惯度量。
+_CROSS_ARCH_HINT = (
+    "[NO-GUESSING 提醒 R8] 本机为 arm64，docker build 未带 --platform。"
+    "若该镜像用于云端 amd64 部署：禁本地构建——QEMU 跨架构下原生扩展（binding/"
+    "二进制依赖）必崩，实测踩坑。正解=rsync 源码树上云原生构建。"
+    "本次放行；确属本机自用 arm64 镜像可忽略本提醒。"
+)
+
+_SHELL_COMMAND_BOUNDARIES = ("&&", "||", ";", "|", "&", "do", "then", "else", "(", "{")
+
+
+def _is_command_position(idx: int, tokens: list) -> bool:
+    """Contract: tokens[idx] 是否处于独立命令起始位（首位或分隔符之后）。"""
+    if idx == 0:
+        return True
+    return tokens[idx - 1] in _SHELL_COMMAND_BOUNDARIES
+
+
+def _find_docker_build_call(tokens: list) -> bool:
+    """Contract: tokens 中存在命令位 docker 之后接 build / compose build 时返回 True。"""
+    for i, tok in enumerate(tokens):
+        if tok != "build" or i == 0:
+            continue
+        prev = tokens[i - 1]
+        if prev == "docker" and _is_command_position(i - 1, tokens):
+            return True
+        if prev == "compose" and i >= 2 and tokens[i - 2] == "docker" \
+                and _is_command_position(i - 2, tokens):
+            return True
+    return False
+
+
+def _check_cross_arch_build(command: str) -> bool:
+    """Contract: docker build / docker compose build 且无 --platform 时返回 True。
+    shlex token 判定子命令位，echo/注释/文档中的 docker build 字面量不触发。"""
+    if "--platform" in command:
+        return False
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return False
+    return _find_docker_build_call(tokens)
 
 
 def _is_diagnostic_command(command: str) -> bool:
@@ -560,6 +608,11 @@ def _on_pre_tool_call(**kwargs):
     msg = _check_script_indirection(command)
     if msg:
         return _block_with_escalation("R7", command, msg, sid)
+
+    # 规则8：跨架构本地构建提醒（HINT 放行不阻断，云端 amd64 交付禁本地构建）
+    if _check_cross_arch_build(command):
+        _record_violation("R8", command, "L1", sid, outcome="hint")
+        return {"action": "allow", "context": _CROSS_ARCH_HINT}
 
     return {}
 
