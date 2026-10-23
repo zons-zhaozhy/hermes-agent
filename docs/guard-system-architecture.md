@@ -100,3 +100,20 @@ diff_debt 17,517 / four_axis 5,356 / tool_safety-read 1,897 / pre_write 2,673。
 优先重审判定面而非加豁免标记。每次守卫修改后跑
 `sqlite3 ~/.hermes/outcomes.db "SELECT tool_name, error_type, COUNT(*) FROM tool_outcomes WHERE status='blocked' GROUP BY 1,2 ORDER BY 3 DESC LIMIT 20;"`
 对表拦截构成变化。
+
+### 反方审查五修（2026-10-24，四修的证伪复核）
+
+反方审查子代理对四修逐条证伪，五条高置信缺陷全部本人读码复核属实后修复：
+
+| # | 缺陷 | 根因 | 根修 |
+|---|---|---|---|
+| D1 | 四修声称的「block_escalation 失败观测兜底层」不存在——`_on_post_tool_call` 只处理 blocked/ok，error 状态零分支；且 read_file 指纹恒 ()（不计数），读通道结构性失明 | 放行政策成立但兜底承诺是虚构的 | `_on_post_tool_call` 补 error 分支（与 blocked 同指纹计数，成功清账）；`_intent_fingerprint` 补 read_file/search_files 指纹（工具名+路径）——error 无进展循环现被 DB 观测并升级提示（输出层，非拦截，不变量保持） |
+| D2 | 回显豁免「结果非模型可控」断言对 skill_manage 为假——其 result 含 frontmatter description 前 120 字符（模型自写），塞 `@@ -1` 子串即可静音欠账 | 豁免未按工具的 result 构造方分型 | `_RESULT_DIFF_RE` 豁免限定 write_file/patch（框架 diff 字段）；skill_manage 一律记账 |
+| D3 | 段库「write_file/patch 正常调用不产生欠账」与新文件矛盾——新文件 old_content 空恒 diff=None，照记欠账 | 文本把「修改已有文件」误写成全称 | 段库改精确：修改已有文件（有 diff 回显）豁免；新文件仍须正文贴 git add -N + git diff（编辑纪律原义） |
+| D4 | cache 豁免前缀 import 期 `expanduser("~/.hermes/")` 冻结默认 home——profile 会话 TMPDIR 不在冻结前缀内，误拦原样存在（PR #3575 同类） | 插件路径未与 `get_hermes_home()` 同源解析 | `_hermes_cache_prefix()` 每次调用经 `get_hermes_home()` 现算（延迟解析，four_axis marker 同模式） |
+| D5 | 段库承诺「terminal 格式化器改文件欠账」但 diff_debt 的 `_WRITE_TOOLS` 不含 terminal——承诺无实现 | 段文本超出实现范围 | 段库删该表述，欠账工具集合与 `_WRITE_TOOLS` 严格一致 |
+
+复核方法备忘：子代理结论逐条读码验证后才修（D1 三处查证：block_escalation error
+无分支、_intent_fingerprint 恒 ()、error_discipline 仅执法 terminal）；其中 item 3
+（four_axis TTL）与 item 5（不变量冲突）证伪不成立——marker 每 turn 清除+turn 内
+重写实测成立，DevilAdvocate 拦读已于 10-22 修复（afb2cee4e6）。

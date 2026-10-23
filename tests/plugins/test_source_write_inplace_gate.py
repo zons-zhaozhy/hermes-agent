@@ -14,8 +14,10 @@ _SRC = "/Users/stan/code/apps/foo/services.py"
 
 
 def test_hermes_cache_tmpdir_is_safe_path():
-    import os
-    scratch = os.path.expanduser("~/.hermes/cache/scratch/pr_payload.json")
+    # TMPDIR 由启动链从 get_hermes_home() 派生（profile-aware）——期望值与
+    # 被测插件用同一解析，不硬编码 expanduser（隔离 fixture 下两者不同）。
+    import hermes_constants
+    scratch = str(hermes_constants.get_hermes_home() / "cache" / "scratch" / "pr_payload.json")
     assert sw._is_safe_path(scratch) is True  # 期望: True——TMPDIR 指向的官方临时区,与 /tmp 同语义
     assert sw._is_safe_path(_SRC) is False    # 期望: False——仓库内源码路径仍拦
 

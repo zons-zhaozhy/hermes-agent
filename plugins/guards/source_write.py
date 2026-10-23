@@ -55,10 +55,22 @@ _SAFE_PREFIXES = (
     "/tmp/",
     "/var/",
     "/dev/null",
-    # Hermes 官方临时区（TMPDIR 指向 ~/.hermes/cache/scratch，24h 自动清理）——
-    # 与 /tmp 同语义的临时产物落点，不含资产，误拦实测（PR 载荷 heredoc）。
-    os.path.expanduser("~/.hermes/cache/").lower().replace("\\", "/"),
 )
+
+
+def _hermes_cache_prefix() -> str:
+    """Hermes 官方临时区前缀（TMPDIR 指向 <home>/cache/scratch，24h 自动清理）。
+
+    profile-aware：home 经 get_hermes_home() 每次调用现算——import 期
+    expanduser("~/.hermes/") 会冻结默认 home 路径，非默认 profile 会话的
+    TMPDIR 不在冻结前缀内，误拦原样存在（PR #3575 同类路径漂移）。
+    """
+    try:
+        from hermes_constants import get_hermes_home
+        base = str(get_hermes_home())
+    except Exception:
+        base = os.path.expanduser("~/.hermes")
+    return (base.rstrip("/").lower().replace("\\", "/") + "/cache/")
 
 _SAFE_DIRNAMES = (
     "node_modules/",
@@ -409,7 +421,8 @@ def _is_safe_path(path: str) -> bool:
       Postconditions: True iff path is a temp/build/cache path
     """
     lower = path.lower().replace("\\", "/")
-    for prefix in _SAFE_PREFIXES:
+    prefixes = _SAFE_PREFIXES + (_hermes_cache_prefix(),)
+    for prefix in prefixes:
         if lower.startswith(prefix):
             return True
     for dirname in _SAFE_DIRNAMES:

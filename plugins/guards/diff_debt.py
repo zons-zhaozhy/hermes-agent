@@ -168,12 +168,16 @@ def on_post_tool_call(**kwargs: Any) -> None:
         return
     args = kwargs.get("args") or {}
     path = str(args.get("path") or args.get("file_path") or args.get("name") or "")
-    # 工具结果已携带 diff 形态（框架生成的回显，非模型可控）=义务已履行的
-    # 等价形态，不再记账——旧版无条件记账把正常写链每笔都征两次义务
-    # （回显一次+正文一次），实测 17.5k 次拦截的主要来源。
-    result_text = str(kwargs.get("result") or "")
-    if _RESULT_DIFF_RE.search(result_text):
-        return
+    # 工具结果已携带 diff 形态=义务已履行的等价形态，不再记账——旧版无条件
+    # 记账把正常写链每笔都征两次义务（回显一次+正文一次），实测 17.5k 次拦截
+    # 的主要来源。豁免只对 write_file/patch 生效：其 result 的 diff 字段由框架
+    # 生成（非模型可控）。skill_manage 排除——其 result 含 frontmatter
+    # description 前 120 字符（skill_manager_tool._change.description，模型
+    # 自写内容），description 里出现 "@@ -1" 等子串即可静音欠账义务。
+    if tool_name in ("write_file", "patch"):
+        result_text = str(kwargs.get("result") or "")
+        if _RESULT_DIFF_RE.search(result_text):
+            return
     # 空路径欠账无法出示对照（义务对象缺失）——记账即制造永久无法清偿的
     # 死锁条目（skill_manage 无名操作形态实测），不记。
     if not path:

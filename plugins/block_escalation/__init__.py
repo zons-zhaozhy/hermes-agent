@@ -258,6 +258,12 @@ def _intent_fingerprint(tool_name: str, args: dict) -> tuple:
         return _extract_paths(cmd) or tuple(sorted(set(cmd.split()))[:12])
     if tool_name in ("write_file", "patch", "edit"):
         return (str(args.get("path") or ""),)
+    if tool_name in ("read_file", "search_files"):
+        # 读工具指纹=path（或 pattern+path）——error/blocked 循环的观测键。
+        # 曾恒返回 ()，读循环从不参与计数，失败观测层对读通道结构性失明。
+        target = str(args.get("path") or "")
+        pattern = str(args.get("pattern") or "")
+        return (f"{tool_name}:{target or pattern}",)
     if tool_name == "execute_code":
         return _extract_paths(str(args.get("code") or ""))
     return ()
@@ -372,9 +378,13 @@ def _clear_streak(tool_name: str, args: dict) -> None:
 def _on_post_tool_call(tool_name: str = "", status: str = "", error_type: str = "",
                        args: dict | None = None, session_id: str = "", **kwargs) -> None:
     """Contract: Preconditions: 核心以 status/error_type 复播工具结果；
-    Postconditions: status=blocked 时记录意图指纹；status=ok 时同指纹
-    清账（成功落地=streak 作废，防误判残留）；纯观察无返回值。"""
-    if status == "blocked":
+    Postconditions: status=blocked 时记录意图指纹；status=error 时同指纹
+    计数（未成功落地与被拦同构——error 循环曾无任何观测分支，读工具
+    放行后的无进展循环零拦截零升级）；status=ok 时同指纹清账（成功落地
+    =streak 作废，防误判残留）；纯观察无返回值。"""
+    if status in ("blocked", "error"):
+        # blocked/error 同为「未成功落地」——同指纹计数（error 循环曾无任何
+        # 观测分支，读工具放行后的无进展循环零拦截零升级）。
         _note_blocked(tool_name, args or {}, session_id=session_id)
     elif status == "ok":
         _clear_streak(tool_name, args or {})
