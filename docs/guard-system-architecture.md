@@ -68,3 +68,35 @@
 - 长驻进程持有旧模块：插件代码改动需新进程才加载。实测：进程 11:15 启动、`diff_debt`
   段 16:15 提交 → 同一会话渲染日志始终 4 段，而同刻新起的 cron 进程 5 段。
   结论：改门禁后须开新会话/新进程才全量生效，长期在跑的会话是注入盲区。
+
+## 七、拦截密度治理（2026-10-24 数据驱动收敛）
+
+数据画像（outcomes.db 全量）：plugin_block 47,800 次 / 调用 515,337 次（9.3%）。
+按工具：patch 18,451 / terminal 11,642 / write_file 7,526（合计 79%）；按护栏：
+diff_debt 17,517 / four_axis 5,356 / tool_safety-read 1,897 / pre_write 2,673。
+
+四大误拦源与根修（commit 3722a5969c）：
+
+| 误拦源 | 根因 | 根修 |
+|---|---|---|
+| diff_debt | 工具结果已自带 diff 回显的写仍被记欠账——义务双重征收（回显+正文两份） | 结果含 diff 形态（`_RESULT_DIFF_RE`，无锚定子串）不记账；空路径欠账不记（无法出示对照的死锁对象） |
+| tool_safety Check2 | 读是幂等无副作用操作，连续失败 3 次永久拦；样本全在 TCC 权限区，拦截指引 execute_code open() 同样必败 | 留日志放行；无进展循环由 block_escalation 观测层兜底 |
+| four_axis | marker 时效 600s < 单任务写链时长（含跑测+多笔 patch），中途过期重拦 | 1800s；仍保留时效 + gate 每 turn 重写刷新 |
+| source_write | `_SAFE_PREFIXES` 缺 `~/.hermes/cache/`（TMPDIR 官方临时区，24h 清理） | 加入豁免，与 /tmp 同语义 |
+
+### 两条体系级不变量（本轮确立）
+
+1. **读工具零拦截**：read_file/search_files/skill_view 等只读工具任何护栏不得 block。
+   读失败无副作用、无破坏面，拦截的代价（每拦=一轮 API 白跑）恒大于收益。
+   观测型检测（重试循环、空结果）一律降为日志。
+2. **欠账必须可清偿**：任何「记账→拦截」结构的门禁，记账时必须保证存在可出示的
+   清偿证据形态（如 diff 对照）。无法清偿的欠账（空路径、对照上下文已丢失）记入
+   即死锁——记账前判定，而非拦截后补救。此原则扩展适用一切 fail-open 出口设计：
+   开口 fail-open + 加锁 fail-open = 只进不出死锁。
+
+### 拦截密度预算（后续守卫改动对表）
+
+单一守卫的拦截中「误拦」（无真实风险损失的拦截）占比应趋零；误拦 > 真拦的守卫
+优先重审判定面而非加豁免标记。每次守卫修改后跑
+`sqlite3 ~/.hermes/outcomes.db "SELECT tool_name, error_type, COUNT(*) FROM tool_outcomes WHERE status='blocked' GROUP BY 1,2 ORDER BY 3 DESC LIMIT 20;"`
+对表拦截构成变化。
