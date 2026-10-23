@@ -82,6 +82,7 @@ f799fd8578 在官方 Linux CI "Python tests / Run tests" = success。
 | tools/mcp_tool_config.py + tests/tools/test_mcp_tool.py (0926 补记) | MCP stdio env 标量归一为字符串(540014b918): YAML 标量 int/float/bool 转 str, 非标量响亮拒绝 | 低（追加式分支） | 值得提 upstream PR |
 | tui_gateway/prompt_turn.py (0926 补记) | 3 行: prompt 轮次微调 | 低 | 上游改同参数时让位 |
 | pyproject.toml + uv.lock (0926 补记) | 依赖钉版差异（fork 追加依赖） | 低（追加式） | 每次 pm lock 后重新对账 |
+| tools/browser_tool_lifecycle.py + browser_use_cli.py + browser_tool.py + tests/test_browser_inflight_reaper.py (1023 移除) | f9203bf53a inflight 保护: >120s 长调用被闲置回收器误杀的根治; 官方 68500d9ff9 删除 agent-browser 与旧 lifecycle, 载体消失, 1023 同步时跟随官方删除; 官方新架构 cleanup_inactive_sessions 仍无执行中豁免, 缺口仍在待移植 | 已消除(载体删除) | 移植 inflight 语义到 browser_session_lifecycle janitor 后提 upstream |
 
 ## 二、防冲突铁律（同步操作规程）
 
