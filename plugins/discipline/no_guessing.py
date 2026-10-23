@@ -676,12 +676,25 @@ def _on_post_tool_call(**kwargs):
         return {}
     result = kwargs.get("result", {}) or {}
     if isinstance(result, str):
-        # terminal 等工具的 result 以 JSON 字符串传入钩子；解析成 dict 再取字段
+        parsed = None
         try:
-            result = json.loads(result)
-        except (json.JSONDecodeError, TypeError) as e:
-            logging.warning("no-guessing: result JSON 解析失败按空dict: %s", e)
-            result = {}
+            parsed = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            # 形态2: 合法 JSON 尾随杂讯(实测 Extra data)——raw_decode 取前缀对象
+            try:
+                parsed, _ = json.JSONDecoder().raw_decode(result.lstrip())
+            except (json.JSONDecodeError, ValueError):
+                parsed = None
+        if isinstance(parsed, dict):
+            result = parsed
+        else:
+            # 形态3: 纯文本 result(实测到达钩子)——原逻辑按空 dict 静默吞掉,
+            # 注册表采集失效→R3 全量误拦。纯文本即 output 本身,
+            # 成败以 observer 推导的 status 为准(model_tools._tool_result_observer_fields)。
+            result = {
+                "output": result,
+                "exit_code": 0 if kwargs.get("status") == "ok" else 1,
+            }
     if not isinstance(result, dict):
         result = {}
     if not _is_terminal_with_command(tool_name, args):
