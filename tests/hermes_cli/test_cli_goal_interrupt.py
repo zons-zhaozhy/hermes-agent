@@ -225,3 +225,30 @@ class TestMirrorResyncOnExternalWrite:
             cli._maybe_continue_goal_after_turn()
         assert not judge.called  # 期望: goal 已 done，不再评估
         assert mgr.state is not None and mgr.state.status == "done"  # 期望: 镜像同步为 done（dock 不再显示 active）
+
+    def test_resumed_by_another_writer_reactivates_mirror(self, hermes_home):
+        """done→active drift: another surface resumed the goal; the mirror must see it."""
+        sid = f"sid-resync-resume-{uuid.uuid4().hex}"
+        cli, mgr = _make_cli_with_goal(sid)
+        cli.conversation_history = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "did some work, more to do"},
+        ]
+        from hermes_cli.goals import GoalManager, save_goal
+        other = GoalManager(session_id=mgr.session_id, default_max_turns=5)
+        assert other.state is not None
+        other.state.status = "done"
+        save_goal(mgr.session_id, other.state)
+        mgr.refresh()  # the CLI saw the judge's done first — mirror is now done
+        assert mgr.state is not None and mgr.state.status == "done"
+        other2 = GoalManager(session_id=mgr.session_id, default_max_turns=5)
+        assert other2.state is not None
+        other2.state.status = "active"  # a TUI-side /goal resume
+        save_goal(mgr.session_id, other2.state)
+        with patch(
+            "hermes_cli.goals.judge_goal",
+            return_value=("continue", "resumed", False, None, False),
+        ) as judge:
+            cli._maybe_continue_goal_after_turn()
+        assert judge.called  # 期望: 恢复 active 后继续评估
+        assert mgr.is_active()  # 期望: 镜像看到恢复后的 active，dock 行重现

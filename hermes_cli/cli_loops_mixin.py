@@ -856,10 +856,10 @@ class CLILoopsMixin:
             return
         # Another writer (the gateway's post-turn judge takeover, /goal from
         # another surface, a tool) may have moved state_meta since this
-        # manager's mirror was built. A frozen "active" mirror would skip
-        # judging forever and the dock keeps showing a done/cleared goal.
-        if mgr.has_goal():
-            mgr.refresh()
+        # manager's mirror was built. A frozen mirror would skip judging
+        # forever (active→done/cleared) or hide a resumed goal (done→active).
+        # Unconditional: either direction of drift breaks the display.
+        mgr.refresh()
         if not mgr.is_active():
             return
 
