@@ -74,6 +74,12 @@ _READONLY_TOOLS = frozenset({
     "clarify",
 })
 
+# process_manage 按动作细分：list/poll/log/wait 为纯读取证（取后台输出核对
+# 执行结果），kill/write/submit/close/handoff 触写通道，armed 时仍冻结。
+_PROCESS_MANAGE_READONLY_ACTIONS = frozenset({
+    "list", "poll", "log", "wait",
+})
+
 _JUDGE_SYSTEM = (
     "你是决策审查哨兵。判断这条会话消息是否即将引发一个影响面大且难回退的"
     "重大动作或方案定稿——如架构选型、上生产部署、模型供应商替换、大规模"
@@ -406,6 +412,11 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
             return None  # 正门：反方审查委派本身放行
         if tool_name in _READONLY_TOOLS:
             return None  # 只读调查放行：armed 是「定稿前先审」，不拦审查取证
+        if tool_name == "process_manage":
+            args = kwargs.get("args")
+            action = str(args.get("action") or "") if isinstance(args, dict) else ""
+            if action in _PROCESS_MANAGE_READONLY_ACTIONS:
+                return None  # 只读动作放行（取后台输出核对）；写动作仍拦
         return {
             "action": "block",
             "message": _BLOCK_MSG_TEMPLATE.format(tool_name=tool_name),

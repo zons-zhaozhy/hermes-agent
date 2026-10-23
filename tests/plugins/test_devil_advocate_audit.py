@@ -63,7 +63,8 @@ def plugin(monkeypatch):
     get_session_state("cli-test-1", mod._NAMESPACE).clear()
     get_session_state("cli-test-2", mod._NAMESPACE).clear()
     get_session_state("cli-test-3", mod._NAMESPACE).clear()
-    for sid in ("cli-test-6", "cli-test-7", "cli-test-8", "cli-test-9"):
+    for sid in ("cli-test-6", "cli-test-7", "cli-test-8", "cli-test-9",
+                "cli-test-10", "cli-test-11"):
         get_session_state(sid, mod._NAMESPACE).clear()
 
 
@@ -72,7 +73,7 @@ class TestCronNoDeadlock:
 
     def test_cron_platform_does_not_arm(self, plugin):
         sid = "cron-test-1"
-        ret = plugin.on_pre_llm_call(
+        plugin.on_pre_llm_call(
             session_id=sid, task_id="t1", user_message="决定上生产部署方案A",
             platform="cron",
         )
@@ -110,6 +111,42 @@ class TestCronNoDeadlock:
             session_id=sid, tool_name="terminal", args={"command": "date"},
         )
         assert directive is not None and directive.get("action") == "block"
+
+
+class TestProcessManageReadonlySplit:
+    """armed 冻结按 action 细分：process_manage 只读动作放行、写动作仍拦。
+
+    背景（2026-10-23 实录）：armed 会话取后台部署日志（action="log"）被
+    整名拦截——只读取证被阻断，违背「拦只读=阻止取证」的立法本意。
+    """
+
+    def test_armed_process_manage_readonly_actions_pass(self, plugin):
+        sid = "cli-test-10"
+        plugin.on_pre_llm_call(
+            session_id=sid, task_id="t10", user_message="决定上生产部署方案A",
+            platform="cli",
+        )
+        for action in ("list", "poll", "log", "wait"):
+            directive = plugin.on_pre_tool_call(
+                session_id=sid, tool_name="process_manage",
+                args={"action": action, "session_id": "proc_x"},
+            )
+            # 期望: 只读动作放行（armed 冻结不拦取证）
+            assert directive is None
+
+    def test_armed_process_manage_write_actions_still_blocked(self, plugin):
+        sid = "cli-test-11"
+        plugin.on_pre_llm_call(
+            session_id=sid, task_id="t11", user_message="决定上生产部署方案A",
+            platform="cli",
+        )
+        for action in ("kill", "write", "submit", "close", "handoff"):
+            directive = plugin.on_pre_tool_call(
+                session_id=sid, tool_name="process_manage",
+                args={"action": action, "session_id": "proc_x"},
+            )
+            # 期望: 触写通道的动作仍冻结
+            assert directive is not None and directive.get("action") == "block"
 
 
 class TestJudgeOutageNoDeadlock:
