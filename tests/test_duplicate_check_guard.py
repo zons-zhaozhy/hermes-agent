@@ -44,6 +44,23 @@ def _hook(repo: Path, path: str, content: str) -> Optional[dict[str, str]]:
         tool_name="write_file", args={"path": path, "content": content}, cwd=str(repo))
 
 
+def test_tilde_path_modifying_existing_file_not_treated_as_new(tmp_path: Path, monkeypatch: Any) -> None:
+    """~ 前缀路径指向已存在文件时属「修改」不属「新建」——不得进入查重射程。
+
+    回归：10-23 knowledge_rss_collector 三连误拦案（patch 修改既有文件被
+    join(cwd,"~/x") 恒不存在误判新建，再与该文件自身判重 → block-escalation）。
+    """
+    repo = _make_repo(tmp_path)
+    monkeypatch.setenv("HOME", str(repo))
+    m = _load_guard()
+    result = m._on_pre_tool_call(
+        tool_name="patch",
+        args={"path": "~/pkg/connector_spec.py",
+              "new_string": "class ConnectorSpec:\n    pass\n"},
+        cwd=str(tmp_path / "elsewhere"))
+    assert result is None  # 期望: ~ 展开后为已存在文件=修改语义，零拦截
+
+
 def test_topic_keyword_only_is_advisory(tmp_path: Path) -> None:
     """仅主题词命中（异目录、顶层符号全新）→ 放行。"""
     repo = _make_repo(tmp_path)

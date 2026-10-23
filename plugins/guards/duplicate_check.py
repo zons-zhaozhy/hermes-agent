@@ -108,6 +108,9 @@ def _normalize_new_py(path: str, cwd: str) -> str:
     """
     if not path or not path.endswith(".py"):
         return ""
+    # ~ 前缀不展开会让 join(cwd, "~/x") 恒不存在，把「修改既有文件」误判成
+    # 「新建」再与该文件自身判重（10-23 knowledge_rss_collector 三连误拦案）
+    path = os.path.expanduser(path)
     full = path if os.path.isabs(path) else os.path.join(cwd, path)
     try:
         real_cwd = os.path.realpath(cwd)
@@ -282,16 +285,18 @@ def _execute_code_write_targets(code: str, exts: tuple[str, ...]) -> list[tuple[
         logger.warning("execute_code 源码解析失败，跳过查重: %s", e)
         return []
     bound = _open_path_bindings(tree)
-    found: list[tuple[str, str]] = []
-    seen: set[str] = set()
+    # path 去重但保内容最全的一条：with open(...) 先入表（内容空），后续
+    # f.write("...") 同 path 再命中时内容非空——丢后者会让「修改/新建」都
+    # 降级成空内容提示档（test_execute_code_with_open_blocks 基线红实证）
+    found: dict[str, str] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             target = _py_write_call_target(node, bound)
             if target is not None and target[0].endswith(exts):
-                if target[0] not in seen:
-                    seen.add(target[0])
-                    found.append(target)
-    return found
+                path, content = target
+                if not found.get(path):
+                    found[path] = content
+    return [(p, c) for p, c in found.items()]
 
 
 def _heredoc_body(cmd: str) -> str:
