@@ -308,3 +308,32 @@ def test_env_disable(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.setenv("HERMES_GROUNDBREAKING_GATE_DISABLE", "1")
     repo = _mk_repo(tmp_path)
     assert _call("write_file", repo / "apps" / "demo" / "main.py") is None  # 期望: env 禁用 → 放行
+
+
+def test_phantom_apps_root_not_adopted_when_cwd_outside_repo(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    # 期望: cwd 在仓外且 cwd 下无 apps/ 时，幽灵 apps 根不被采纳——存量应用放行
+    # （回归 2026-10-24: 仅查 root.parent.is_dir() 放过幽灵根，存量应用被误拦）
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    repo = _mk_repo(repo_root)
+    app = repo / "apps" / "existapp"
+    app.mkdir(parents=True)
+    (app / "a.py").write_text("x", encoding="utf-8")
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.chdir(other)
+    assert _call("write_file", "apps/existapp/b.py") is None  # 期望: 幽灵根拒绝 → 放行
+
+
+def test_relative_path_from_repo_root_still_gates_new_app(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    # 期望: cwd=仓库根时相对路径锚定成功，三无新应用首代码文件仍被拦（防收紧后失效）
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    repo = _mk_repo(repo_root)
+    monkeypatch.chdir(repo)
+    v = _call("write_file", "apps/newapp/main.py")
+    assert v is not None and v.get("action") == "block"  # 期望: 真实 apps 根锚定 → 拦

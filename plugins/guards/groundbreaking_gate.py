@@ -95,7 +95,8 @@ def _locate_app(path: Path) -> Optional[tuple[Path, str]]:
 
     相对路径先沿 cwd 祖先链锚定（插件进程 cwd 可能不是仓库根——resolve 会
     把 apps/<X>/ 解析到不存在位置，导致存量应用被误判为新应用且三证据全查
-    错路径）；锚定成功的判据=候选 apps 段的父目录真实存在。绝对路径与锚定
+    错路径）；锚定成功的判据=候选 apps 根目录自身真实存在（仅查父目录会放
+    过幽灵根——cwd 下不存在的 apps/<X> 被误判为新应用）。绝对路径与锚定
     全失败时回退纯 resolve（新应用首目录未建时仍可触发门禁语义）。
 
     Contract:
@@ -108,12 +109,14 @@ def _locate_app(path: Path) -> Optional[tuple[Path, str]]:
         for i, seg in enumerate(parts):
             if seg == "apps" and i + 2 < len(parts):
                 root = Path(*parts[: i + 1])
-                if root.parent.is_dir():
+                if root.is_dir():
                     return root, parts[i + 1]
     parts = path.resolve().parts
     for i, seg in enumerate(parts):
         if seg == "apps" and i + 2 < len(parts):
-            return Path(*parts[: i + 1]), parts[i + 1]
+            root = Path(*parts[: i + 1])
+            if root.is_dir():
+                return root, parts[i + 1]
     return None
 
 
