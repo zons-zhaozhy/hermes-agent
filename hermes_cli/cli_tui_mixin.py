@@ -1028,14 +1028,16 @@ class CLITuiMixin:
         doesn't fire (no keystroke); re-triggering here makes stage-2 models appear immediately.
         """
         buf = event.current_buffer
+        # 空完成态残留(complete_state 非 None 但无可选项)不吞键——落穿到 ghost
+        # 建议分支，否则 ghost 显示与 tab 行为分裂（headless 组B 复现：tab 被吞）。
+        completion = None
         if buf.complete_state:
             completion = buf.complete_state.current_completion
-            if completion is None:
-                # Menu open but nothing selected — select first then grab it
+            if completion is None and buf.complete_state.completions:
+                # Menu open with items but nothing selected — select first then grab it
                 buf.go_to_completion(0)
-                completion = buf.complete_state and buf.complete_state.current_completion
-            if completion is None:
-                return
+                completion = buf.complete_state.current_completion if buf.complete_state else None
+        if completion is not None:
             buf.apply_completion(completion)
         elif buf.suggestion and buf.suggestion.text:
             buf.insert_text(buf.suggestion.text)
