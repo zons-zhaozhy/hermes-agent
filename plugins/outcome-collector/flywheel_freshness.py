@@ -118,6 +118,16 @@ ARXIV_HARVEST_JOB_ID = "504c034bbdba"  # 「AI专题知识OAI增量采集」每�
 ARXIV_CONTENT_FLOOR_HOURS = 80.0
 ARXIV_MACHINERY_WINDOW_HOURS = 48.0
 
+# 产出 → 生产 job id（cron/jobs.json 的 enabled 状态决定判活预期）。
+# 2026-10-25 实测：三生产 job 停用 5 天，mTime-only 判活对结构性不可达状态
+# 误报 exit 1 计 130 次。停用（enabled=False）是用户显式状态而非静默断流，
+# 判活预期须随停用收敛；机制与 arxiv 双门（64f774478c）同构——机器信号门。
+_ARTIFACT_PRODUCERS: dict[str, tuple[str, ...]] = {
+    "daily-audit": ("0ee8fec495c8",),        # 每日自我审计·行动与进步
+    "regression-alerts": ("a7c3f9d2e1b4",),  # discipline-regression
+    "analyzer-findings": ("72e85e6646fe",),  # outcome-analyzer
+}
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -173,6 +183,37 @@ def _age_check_arxiv(home: Path) -> dict[str, Any]:
     return content
 
 
+def _producers_all_disabled(home: Path, job_ids: tuple[str, ...]) -> Optional[bool]:
+    """判定全部生产 job 是否已停用（读 cron/jobs.json 的 enabled 布尔）。
+
+    Contract:
+      Preconditions: home/cron/jobs.json 可能缺失、结构变化或条目缺 enabled
+      Postconditions: True=全部停用；False=至少一个启用；None=无法判定
+        （文件缺失/解析失败/条目缺失/enabled 非布尔——调用方保持原告警，
+        fail-loud 保守侧，禁把不可判定洗白为停用）；永不 raise
+    """
+    import json
+    jobs_file = home / "cron" / "jobs.json"
+    if not jobs_file.is_file():
+        return None
+    try:
+        data = json.loads(jobs_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        _LOGGER.warning("producer liveness: parse jobs.json failed: %s", e)
+        return None
+    entries = data if isinstance(data, list) else data.get("jobs") if isinstance(data, dict) else None
+    if not isinstance(entries, list):
+        return None
+    by_id = {e.get("id"): e for e in entries if isinstance(e, dict)}
+    states: list[bool] = []
+    for jid in job_ids:
+        entry = by_id.get(jid)
+        if entry is None or not isinstance(entry.get("enabled"), bool):
+            return None
+        states.append(not entry["enabled"])
+    return all(states)
+
+
 def check_freshness(home: Path) -> dict[str, Any]:
     """逐项检查飞轮产出时效。
 
@@ -187,6 +228,15 @@ def check_freshness(home: Path) -> dict[str, Any]:
     # 知识采集层：arXiv 收割链判活（内容地板 80h + 收割 job 48h 双门，
     # 2026-10-19 根治周末结构性误报——详见 _age_check_arxiv 注释）
     checks.append(_age_check_arxiv(home))
+
+    # 生产 job 显式停用（enabled=False）时产出静默属预期，判活预期随停用收敛，
+    # 不构成断流告警；jobs.json 不可判定时保持原告警（fail-loud 保守侧）
+    for c in checks:
+        if not c["ok"]:
+            producers = _ARTIFACT_PRODUCERS.get(c["name"])
+            if producers and _producers_all_disabled(home, producers) is True:
+                c["ok"] = True
+                c["reason"] = "producer-disabled"
 
     stale = [c for c in checks if not c["ok"]]
     return {"home": str(home), "alerts": stale, "checked": checks}

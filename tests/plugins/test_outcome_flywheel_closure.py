@@ -19,6 +19,7 @@ Contract:
 import importlib.util
 import json
 import logging
+import os
 import sqlite3
 import types
 from datetime import datetime, timedelta
@@ -207,3 +208,73 @@ def test_watchdog_covers_audit_freshness():
     body = checker.read_text(encoding="utf-8")
     assert "regression_alerts" in body or "regression-" in body  # 期望: 覆盖 regression 产出
     assert "audit-" in body  # 期望: 覆盖每日审计产出
+
+
+def _seed_stale_flywheel_home(home: Path) -> None:
+    """构造三项产出全部过期(48h>26h/12h 阈值)的假 home。"""
+    old = datetime.now().timestamp() - 48 * 3600
+    sug = home / "skill_suggestions"
+    sug.mkdir(parents=True)
+    audit = sug / "audit-20260101.md"
+    audit.write_text("stale", encoding="utf-8")
+    os.utime(audit, (old, old))
+    out = home / "outcomes"
+    out.mkdir(parents=True)
+    for name in ("regression_alerts.json", "findings.md"):
+        p = out / name
+        p.write_text("stale", encoding="utf-8")
+        os.utime(p, (old, old))
+
+
+def _write_jobs(home: Path, enabled_map: dict) -> None:
+    """Contract: 写出仅含 enabled_map 条目的 jobs.json 供停用门判定。"""
+    cron = home / "cron"
+    cron.mkdir(parents=True, exist_ok=True)
+    (cron / "jobs.json").write_text(
+        json.dumps({"jobs": [{"id": jid, "enabled": en} for jid, en in enabled_map.items()]}),
+        encoding="utf-8",
+    )
+
+
+_PRODUCER_IDS = ("0ee8fec495c8", "a7c3f9d2e1b4", "72e85e6646fe")
+_STALE_NAMES = ("daily-audit", "regression-alerts", "analyzer-findings")
+
+
+def test_stale_but_all_producers_disabled_not_alerted(tmp_path: Path):
+    """生产 job 全部显式停用时,产出静默属预期——三项过期不得进 alerts。"""
+    _seed_stale_flywheel_home(tmp_path)
+    _write_jobs(tmp_path, {jid: False for jid in _PRODUCER_IDS})
+    ff = _load("ff_under_test", "flywheel_freshness.py")
+    result = ff.check_freshness(tmp_path)
+    alerted = {a["name"] for a in result["alerts"]}
+    for name in _STALE_NAMES:
+        assert name not in alerted  # 期望: 生产者停用→判活预期收敛→不告警
+    reasons = {c["name"]: c["reason"] for c in result["checked"]}
+    assert all(reasons.get(n) == "producer-disabled" for n in _STALE_NAMES)  # 期望: 停用门留下可审计标记
+
+
+def test_stale_and_producer_enabled_still_alerted(tmp_path: Path):
+    """任一生产 job 启用时,该产出必须照常告警——停用门不得吞真断流。
+
+    门按产出逐项判定:仅 daily-audit 的生产者启用时,daily-audit 告警,
+    其余两项(生产者仍停用)消警。
+    """
+    _seed_stale_flywheel_home(tmp_path)
+    enabled_map = {jid: False for jid in _PRODUCER_IDS}
+    enabled_map["0ee8fec495c8"] = True
+    _write_jobs(tmp_path, enabled_map)
+    ff = _load("ff_under_test", "flywheel_freshness.py")
+    result = ff.check_freshness(tmp_path)
+    alerted = {a["name"] for a in result["alerts"]}
+    assert "daily-audit" in alerted  # 期望: 该项生产者启用→过期照常告警
+    assert "regression-alerts" not in alerted  # 期望: 该项生产者停用→消警
+    assert "analyzer-findings" not in alerted  # 期望: 该项生产者停用→消警
+
+
+def test_stale_and_jobs_json_unresolvable_still_alerted(tmp_path: Path):
+    """jobs.json 缺失(不可判定)时必须保持原告警——fail-loud 保守侧。"""
+    _seed_stale_flywheel_home(tmp_path)
+    ff = _load("ff_under_test", "flywheel_freshness.py")
+    result = ff.check_freshness(tmp_path)
+    alerted = {a["name"] for a in result["alerts"]}
+    assert set(_STALE_NAMES).issubset(alerted)  # 期望: 无法判定停用→照常告警
