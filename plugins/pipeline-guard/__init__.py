@@ -30,7 +30,7 @@ import logging
 import os
 import re  # noqa: session-id sanitization — regex is essential
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -97,11 +97,14 @@ def _is_pipeline_active(session_id: str) -> bool:
     return bool(state.get("active", False))
 
 
-def _is_readonly_terminal(args: Optional[Dict[str, Any]]) -> bool:
+def _is_readonly_terminal(args: Optional[dict[str, Any]]) -> bool:
     if not args:
         return False
     cmd = str(args.get("command", "")).strip().lower()
     if not cmd:
+        return False
+    # 重定向写形态（>, >>，含 2>/1> 变体）不是只读——前缀只读命令也可借 ">" 写文件
+    if ">" in cmd:
         return False
     if "scripts/run_tests.sh" in cmd:
         return True
@@ -121,7 +124,7 @@ def _unlock_hint(session_id: str) -> str:
 
 # ── pre_tool_call hook ─────────────────────────────────────────────────
 
-def on_pre_tool_call(**kwargs) -> Optional[Dict[str, Any]]:
+def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
     """Block write tools in pipeline stages 1-3. Only when pipeline is active."""
     tool_name = kwargs.get("tool_name", "")
     if tool_name in _ALWAYS_ALLOWED:
@@ -159,7 +162,7 @@ def on_pre_tool_call(**kwargs) -> Optional[Dict[str, Any]]:
 
 # ── pre_verify hook ────────────────────────────────────────────────────
 
-def on_pre_verify(**kwargs) -> Optional[Dict[str, Any]]:
+def on_pre_verify(**kwargs) -> Optional[dict[str, Any]]:
     """Block premature 'done' — force verification. Only when pipeline active."""
     session_id = kwargs.get("session_id", "")
 
