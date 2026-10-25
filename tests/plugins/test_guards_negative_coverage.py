@@ -29,32 +29,8 @@ NEGATIVE_NAME_WORDS = ("blocked", "escape", "negative", "defer_pushout", "fail_o
 
 # 存量缺口基线（棘轮只准降）。新 guard 落地必须自带负例测试，不进此清单。
 # 第一轮实测（2026-10-25）：33 项 guard 资产中 21 项缺负例覆盖。
-# 真缺口=无配套测试（read_think_gate/scientific-programming-guard/yinyang-restate-guard 等）；
-# 形态盲区=测试存在但断言为计数型/形态型（block_escalation 的 streak 计数、
-# skill_diff_echo 的回显断言），判定器不识别——两类都记录在此，逐项清偿时删除。
-NEGATIVE_COVERAGE_BASELINE: frozenset[str] = frozenset({
-    "block_escalation",
-    "dao-recurring-error-guard",
-    "declare_act_guard",
-    "deep-test-gate",
-    "discipline",
-    "engine-invariants",
-    "failure_preflight",
-    "guard_sentinel",
-    "guards/coding_standards",
-    "guards/duplicate_check",
-    "guards/four_axis",
-    "guards/preflight",
-    "guards/rules_selfcheck",
-    "guards/tool_blacklist",
-    "jspace-guard",
-    "negative-conclusion-guard",
-    "pipeline-guard",
-    "read_think_gate",
-    "scientific-programming-guard",
-    "skill_diff_echo",
-    "yinyang-restate-guard",
-})
+# 同日清偿完毕：判定器扩全树扫描后 19 项真债全部补齐，基线清零。
+NEGATIVE_COVERAGE_BASELINE: frozenset[str] = frozenset()
 
 
 def _guard_submodule_assets() -> list[str]:
