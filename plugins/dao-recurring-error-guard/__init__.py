@@ -9,7 +9,9 @@ pre_llm_call 注入提示：第三次必须成规则/skill/脚本，禁止再手
 第三次必须是规则/skill/plugin，不许再手工处理"（道生法）。
 
 聚合策略（刻意保守，宁可漏报不误报）：
-- 只对 error/exception 类工具结果计数
+- 只对框架判定 status=error 的工具结果计数（成功/被拦截结果一律不计——
+  正文含错误类别词不等于调用失败，status 由 model_tools.py
+  _tool_result_observer_fields 统一派生）
 - 指纹 = 工具名 + 从错误文本提取的有限类别词（ImportError/SyntaxError/
   Timeout/ConnectionError/401/403/404/500/1064/exit code 非零），
   不做自由文本哈希——与 db-safety/negative-conclusion-guard 的
@@ -224,13 +226,19 @@ def on_post_tool_call(**kwargs) -> None:
         else:
             get_session_state(sid, _NAMESPACE)["codified"] = True
 
-    # 错误计数：status=error 或结果文本可归类
+    # 错误计数：只认框架派生的 status=error。旧实现
+    # `status == "error" or err_text` 使成功结果正文也进入错误归类——
+    # skill_view 成功返回的 SKILL.md 正文含 TIMEOUT/timed out 字样即被
+    # 计入（2026-10-25 实测：14 天账面 skill_view×Timeout 2940 次几乎
+    # 全为误报，outcomes.db 同期真超时 1 次）。status 由 model_tools.py
+    # _tool_result_observer_fields 从结果统一派生（error/ok/blocked），
+    # 插件层不做二次内容嗅探。
     err_text = ""
     if isinstance(result, dict):
         err_text = str(result.get("error") or result.get("output") or "")
     elif result is not None:
         err_text = str(result)
-    cls = classify_error(err_text) if status == "error" or err_text else None
+    cls = classify_error(err_text) if status == "error" else None
     if cls is None:
         return
     key = f"{tool_name}×{cls}"

@@ -53,3 +53,45 @@ def test_classify_error_known_and_unknown() -> None:
     assert dao.classify_error("ModuleNotFoundError: No module named 'x'") is not None  # 期望: 已知类别命中
     assert dao.classify_error("一切正常无错误") is None  # 期望: 未知文本不归类（宁可漏报）
     assert dao.classify_error("") is None  # 期望: 空串不归类
+
+
+def test_success_result_with_class_word_not_counted() -> None:
+    # 回归：skill_view 成功返回的 SKILL.md 正文含 TIMEOUT/timed out 字样，
+    # 旧实现 `status == "error" or err_text` 把成功输出也归类计数，
+    # 14 天账面 skill_view×Timeout 2940 次几乎全为误报（outcomes.db 同期真超时 1 次）
+    sid = "dao-reg1"
+    for _ in range(4):
+        dao.on_post_tool_call(
+            session_id=sid, tool_name="skill_view", args={"name": "x"},
+            result={"output": '{"success": true, "name": "adversarial-review-dispatch", '
+                              '"content": "_DEFAULT_CONCURRENT_TOOL_TIMEOUT_S '
+                              'Non-streaming API call timed out after 150s"}'},
+            status="ok")
+    assert dao.on_pre_llm_call(session_id=sid) is None  # 期望: 成功结果不计数，永不到阈值
+
+
+def test_error_key_result_with_ok_status_not_counted() -> None:
+    # 插件只认框架派生的 status，不做二次内容嗅探——result 带 error 键但 status=ok 不计数
+    sid = "dao-reg2"
+    for _ in range(4):
+        dao.on_post_tool_call(session_id=sid, tool_name="skill_view", args={},
+                              result={"error": "Request timed out after 30s"}, status="ok")
+    assert dao.on_pre_llm_call(session_id=sid) is None  # 期望: status=ok 一律不计
+
+
+def test_blocked_result_not_counted() -> None:
+    # 被护栏拦截（status=blocked）不是调用错误，不进道生法计数
+    sid = "dao-reg3"
+    for _ in range(4):
+        dao.on_post_tool_call(session_id=sid, tool_name="terminal", args={},
+                              result={"error": "grep timed out blocked by guard"},
+                              status="blocked")
+    assert dao.on_pre_llm_call(session_id=sid) is None  # 期望: blocked 不计
+
+
+def test_real_error_still_counted() -> None:
+    # 真错误（status=error 且错误文本含类别词）必须照常计数——修复不得漏报真错误
+    sid = "dao-reg4"
+    _bump_error(sid, "skill_view", "Non-streaming API call timed out after 150s", 3)
+    out = dao.on_pre_llm_call(session_id=sid)
+    assert out is not None and "skill_view×Timeout" in out["context"]  # 期望: 真超时错误计数且指纹正确
