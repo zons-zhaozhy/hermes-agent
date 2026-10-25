@@ -812,7 +812,18 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._hermes_home = hermes_home = str(get_hermes_home())
         self._token_store = ContextTokenStore(hermes_home)
         self._typing_cache = TypingTicketCache()
-        self._pending_store = PendingDeliveryStore(hermes_home)
+        # Outbound-window resilience: iLink ret=-2 (prepare failed) strands outbound texts
+        # once the peer's context_token ages out (measured window: ~4-5 min, 2026-10-25).
+        # Queue capacity and retry budget are extra-tunable so a long agent turn's texts
+        # survive until the peer's next inbound message flushes them.
+        self._pending_store = PendingDeliveryStore(
+            hermes_home,
+            max_per_peer=int(_extra_or_secret(extra, "pending_max_per_peer", "10")),
+            max_attempts=int(_extra_or_secret(extra, "pending_max_attempts", "4")))
+        self._peer_last_inbound: dict[str, float] = {}
+        self._keepalive_interval_seconds = float(_extra_or_secret(extra, "keepalive_interval_seconds", "150"))
+        self._keepalive_peer_active_seconds = float(_extra_or_secret(extra, "keepalive_peer_active_seconds", "600"))
+        self._keepalive_task: Optional[asyncio.Task] = None
         self._flushing_pending: set[str] = set()
         self._poll_session = self._send_session = None  # type: Optional[aiohttp.ClientSession]
         self._poll_task: Optional[asyncio.Task] = None
@@ -874,6 +885,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._token_store.restore(self._account_id)
         self._pending_store.restore(self._account_id)
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
+        self._keepalive_task = asyncio.create_task(self._keepalive_loop(), name="weixin-keepalive")
         self._mark_connected()
         _LIVE_ADAPTERS[self._token] = self
         logger.info("[%s] Connected account=%s base=%s", self.name, _safe_id(self._account_id), self._base_url)
@@ -897,6 +909,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._pending_text_batch_tasks.clear()
         await cancel_task(self._poll_task)
         self._poll_task = None
+        await cancel_task(self._keepalive_task)
+        self._keepalive_task = None
         for attr in ("_poll_session", "_send_session"):
             session = getattr(self, attr)
             if session and not session.closed:
@@ -999,6 +1013,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         elif not self._is_dm_intake_allowed(sender_id):
             return
         context_token = str(message.get("context_token") or "").strip()
+        self._peer_last_inbound[sender_id] = time.monotonic()
         if context_token:
             await self._token_store.set(self._account_id, sender_id, context_token)
             # A fresh context_token means the peer's iLink session is live again: deliver the
@@ -1058,6 +1073,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     async def _fetch_typing_ticket(self, session: Any, user_id: str, context_token: Optional[str], failure_label: str) -> Optional[str]:
         try:
             response = await _get_config(session, base_url=self._base_url, token=self._token, user_id=user_id, context_token=context_token)
+            self._maybe_roll_token(user_id, response)
             typing_ticket = str(response.get("typing_ticket") or "")
             if typing_ticket:
                 self._typing_cache.set(user_id, typing_ticket)
@@ -1065,6 +1081,42 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[%s] %s for %s: %s", self.name, failure_label, _safe_id(user_id), exc)
         return None
+
+    def _maybe_roll_token(self, user_id: str, resp: dict[str, Any]) -> None:
+        """Persist a context_token the server rolled into an API response (sendmessage/getConfig),
+        so the next outbound echo uses the freshest token instead of an aging one. No-op when the
+        response carries none or the same token we already hold."""
+        rolled = str((resp or {}).get("context_token") or "").strip()
+        if rolled and rolled != (self._token_store.get(self._account_id, user_id) or ""):
+            asyncio.get_running_loop().create_task(self._token_store.set(self._account_id, user_id, rolled))
+            logger.info("[%s] rolled context_token stored for %s", self.name, _safe_id(user_id))
+
+    async def _keepalive_loop(self) -> None:
+        """Refresh context_tokens for recently-active peers. Measured 2026-10-25: the outbound
+        window after an inbound refresh is ~4-5 minutes (14:31:48 inbound -> 14:36:08 ret=-2),
+        so a live conversation's outbound texts get stranded in the parked queue mid-turn. A
+        periodic getConfig per active peer rolls the token when iLink supports it; failures are
+        debug-only so the loop adds no load when iLink is rate-limiting or the session is down."""
+        while self._running:
+            await asyncio.sleep(self._keepalive_interval_seconds)
+            if not self._poll_session or not self._token:
+                continue
+            now = time.monotonic()
+            for user_id, ts in list(self._peer_last_inbound.items()):
+                if now - ts > self._keepalive_peer_active_seconds:
+                    self._peer_last_inbound.pop(user_id, None)
+                    continue
+                token = self._token_store.get(self._account_id, user_id)
+                if not token:
+                    continue
+                try:
+                    resp = await _get_config(self._poll_session, base_url=self._base_url, token=self._token,
+                                             user_id=user_id, context_token=token)
+                except Exception as exc:
+                    logger.debug("[%s] keepalive getConfig failed for %s: %s", self.name, _safe_id(user_id), exc)
+                    continue
+                self._maybe_roll_token(user_id, resp)
+
 
     def _split_text(self, content: str) -> list[str]:
         return _split_text_for_weixin_delivery(content, self.MAX_MESSAGE_LENGTH, self._split_multiline_messages)
@@ -1127,6 +1179,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                         continue
                     self._rate_limit_events.clear()
                     self._rate_limit_circuit_until = 0.0
+                    self._maybe_roll_token(chat_id, resp)
                     return
                 except Exception as exc:
                     last_error = exc
