@@ -31,6 +31,7 @@ v2 改用真实有效通道，三层：
 import json
 import logging
 import re  # re-ok: 中文句式模糊匹配（问句/宣言/豁免词）无 str 等价
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -95,17 +96,23 @@ _MAX_PRE_VERIFY_NUDGES = 3
 _DEFER_RE = re.compile(
     r"(不列入本轮|单独立项|另行立项|另行处理|后续单独|留待后续|暂不处理"
     r"|暂不混入|后续迭代|独立战线|本轮不处理|后续再处理|单独跟进|后续跟进"
-    r"|先记录在案)"
+    r"|先记录在案|先记录|后续做|后续会话|稍后做|待办)"
 )
+
+# 推迟词的完成态否定形态（2026-10-25 实测 state.db：「无待办」在完成态收尾中
+# 出现 491 次量级的「待办」命中里占多数）——命中即视为完成声明，不拦。
+_NEG_DEFER_RE = re.compile(r"(无待办|没有待办|待办清零|待办已清|无未清|无残留待办)")
 
 
 def _is_defer_pushout(text: str) -> bool:
     """Contract: Preconditions: text 为 str（可空）；Postconditions: 命中
     推迟性措辞（把发现的问题外推出当轮任务）且不命中合法豁免（不可逆/
-    凭据/付费/拍板/必须先确认）时返回 True，否则 False。"""
+    凭据/付费/拍板/必须先确认）与完成态否定（无待办等）时返回 True，
+    否则 False。"""
     if not text:
         return False
-    return bool(_DEFER_RE.search(text)) and not _LEGIT_ASK_RE.search(text)
+    return (bool(_DEFER_RE.search(text)) and not _LEGIT_ASK_RE.search(text)
+            and not _NEG_DEFER_RE.search(text))
 
 
 # ── 第五类失效收尾：根因隐匿（1021 用户指令「找到根因必须在回复里准确、
@@ -352,9 +359,12 @@ def _transform_llm_output(response_text: str = "", **kwargs) -> str:
     )
 
 
-def register(ctx):
-    """插件入口：三层钩子注册。"""
+def register(ctx: Any) -> None:
+    """插件入口：三层钩子注册 + 跨会话任务债务闭环。"""
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("pre_verify", _on_pre_verify)
     ctx.register_hook("transform_llm_output", _transform_llm_output)
-    logger.info("finish_guard v2 已注册——clarify 拦截 + pre_verify 续跑 + 可见标记")
+    from . import todo_debt
+    ctx.register_hook("post_tool_call", todo_debt.on_todo_write)
+    ctx.register_hook("pre_llm_call", todo_debt.on_session_open)
+    logger.info("finish_guard v2 已注册——clarify 拦截 + pre_verify 续跑 + 可见标记 + 跨会话任务债务闭环")
