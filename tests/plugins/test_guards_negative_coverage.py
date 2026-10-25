@@ -21,7 +21,6 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 GUARDS_DIR = REPO / "plugins" / "guards"
 PLUGINS_DIR = REPO / "plugins"
-TESTS_DIR = Path(__file__).resolve().parent
 
 # assert 字符串常量中的拦截语义证据（block=硬拦, hint=软拦 R5, 拦/拦截=中文形态）
 BLOCK_WORDS = frozenset({"block", "blocked", "hint", "拦", "拦截"})
@@ -91,10 +90,13 @@ def _matching_tests(asset: str) -> list[Path]:
 
     Contract:
         Preconditions: asset 形如 guards/casebook_gate 或 finish_guard
-        Postconditions: 返回匹配的 test_*.py 列表（可为空）
+        Postconditions: 返回匹配的 test_*.py 列表（tests/ 全树+插件树内，可为空）
     """
     stem = asset.split("/")[-1].replace("-", "_")
-    return [t for t in TESTS_DIR.glob("test_*.py") if stem in t.name]
+    matches = {t for t in (REPO / "tests").rglob("test_*.py") if stem in t.name}
+    pdir = PLUGINS_DIR / asset.split("/")[0]
+    matches.update(t for t in pdir.rglob("test_*.py") if stem in t.name)
+    return sorted(matches)
 
 
 def _count_block_asserts(func: ast.FunctionDef) -> int:
