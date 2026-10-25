@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 _LOADED: list[tuple[str, Any]] = []
 for _name in ("tool_blacklist", "four_axis", "pre_write", "duplicate_check", "source_write",
               "coding_standards", "diff_debt", "casebook_gate", "batch_write", "scope_gate",
-              "groundbreaking_gate", "slow_search"):
+              "groundbreaking_gate", "slow_search", "db_target_audit"):
     try:
         _LOADED.append((_name, importlib.import_module(f"plugins.guards.{_name}")))
     except Exception:
