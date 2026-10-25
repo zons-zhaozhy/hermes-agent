@@ -217,6 +217,11 @@ class ContextTokenStore:
     def get(self, account_id: str, user_id: str) -> Optional[str]:
         return self._cache.get(self._key(account_id, user_id))
 
+    def invalidate(self, account_id: str, user_id: str) -> None:
+        """Drop the cached (server-rejected) token for this peer — memory only; the next inbound
+        message re-populates both memory and disk. Public so call sites never touch ``_cache``."""
+        self._cache.pop(self._key(account_id, user_id), None)
+
     async def set(self, account_id: str, user_id: str, token: str) -> None:
         self._cache[self._key(account_id, user_id)] = token
         # atomic_json_write() fsyncs, so the flush is offloaded off the loop; the payload is snapshotted
@@ -821,8 +826,10 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             max_per_peer=int(_extra_or_secret(extra, "pending_max_per_peer", "10")),
             max_attempts=int(_extra_or_secret(extra, "pending_max_attempts", "4")))
         self._peer_last_inbound: dict[str, float] = {}
-        self._keepalive_interval_seconds = float(_extra_or_secret(extra, "keepalive_interval_seconds", "150"))
-        self._keepalive_peer_active_seconds = float(_extra_or_secret(extra, "keepalive_peer_active_seconds", "600"))
+        # 120s default = half the measured ~4-5 min outbound window lower bound; floored at 30s
+        # so a misconfigured 0/negative value cannot busy-spin the loop.
+        self._keepalive_interval_seconds = max(30.0, float(_extra_or_secret(extra, "keepalive_interval_seconds", "120")))
+        self._keepalive_peer_active_seconds = max(60.0, float(_extra_or_secret(extra, "keepalive_peer_active_seconds", "600")))
         self._keepalive_task: Optional[asyncio.Task] = None
         self._flushing_pending: set[str] = set()
         self._poll_session = self._send_session = None  # type: Optional[aiohttp.ClientSession]
@@ -884,6 +891,10 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._send_session = _new_session(timeout=aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None))
         self._token_store.restore(self._account_id)
         self._pending_store.restore(self._account_id)
+        # Idempotent against a connect() re-entry that skipped disconnect(): an orphaned prior
+        # keepalive task would double the refresh traffic and outlive its session reference.
+        if self._keepalive_task and not self._keepalive_task.done():
+            self._keepalive_task.cancel()
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
         self._keepalive_task = asyncio.create_task(self._keepalive_loop(), name="weixin-keepalive")
         self._mark_connected()
@@ -1085,10 +1096,20 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     def _maybe_roll_token(self, user_id: str, resp: dict[str, Any]) -> None:
         """Persist a context_token the server rolled into an API response (sendmessage/getConfig),
         so the next outbound echo uses the freshest token instead of an aging one. No-op when the
-        response carries none or the same token we already hold."""
+        response carries none or the same token we already hold. Background-task form for inbound-
+        side call sites (``_fetch_typing_ticket``, keepalive) only."""
         rolled = str((resp or {}).get("context_token") or "").strip()
         if rolled and rolled != (self._token_store.get(self._account_id, user_id) or ""):
             asyncio.get_running_loop().create_task(self._token_store.set(self._account_id, user_id, rolled))
+            logger.info("[%s] rolled context_token stored for %s", self.name, _safe_id(user_id))
+
+    async def _roll_token_now(self, user_id: str, resp: dict[str, Any]) -> None:
+        """Awaited form for outbound-path call sites (``_send_text_chunk``): a scheduled background
+        set() there could race the stale-token invalidation and resurrect the token that path just
+        evicted, or overwrite a newer inbound token (last-writer-wins). Awaiting closes the race."""
+        rolled = str((resp or {}).get("context_token") or "").strip()
+        if rolled and rolled != (self._token_store.get(self._account_id, user_id) or ""):
+            await self._token_store.set(self._account_id, user_id, rolled)
             logger.info("[%s] rolled context_token stored for %s", self.name, _safe_id(user_id))
 
     async def _keepalive_loop(self) -> None:
@@ -1096,26 +1117,51 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         window after an inbound refresh is ~4-5 minutes (14:31:48 inbound -> 14:36:08 ret=-2),
         so a live conversation's outbound texts get stranded in the parked queue mid-turn. A
         periodic getConfig per active peer rolls the token when iLink supports it; failures are
-        debug-only so the loop adds no load when iLink is rate-limiting or the session is down."""
+        debug-only so the loop adds no load when iLink is rate-limiting or the session is down.
+        Peers refresh concurrently (a serial per-peer loop would exceed the window with ~8+
+        peers, each getConfig costing up to 10s), the tick defers while the rate-limit circuit
+        is open, and every tick is exception-guarded: a dead keepalive task also stops the only
+        cleanup of ``_peer_last_inbound``, so dying silently is a memory leak too."""
+        idle_roll_ticks = 0
         while self._running:
             await asyncio.sleep(self._keepalive_interval_seconds)
             if not self._poll_session or not self._token:
                 continue
-            now = time.monotonic()
-            for user_id, ts in list(self._peer_last_inbound.items()):
-                if now - ts > self._keepalive_peer_active_seconds:
-                    self._peer_last_inbound.pop(user_id, None)
+            if self._rate_limit_cooldown_remaining() > 0:
+                continue
+            try:
+                now = time.monotonic()
+                active: list[str] = []
+                for user_id, ts in list(self._peer_last_inbound.items()):
+                    if now - ts > self._keepalive_peer_active_seconds:
+                        self._peer_last_inbound.pop(user_id, None)
+                        continue
+                    if self._token_store.get(self._account_id, user_id):
+                        active.append(user_id)
+                if not active:
                     continue
-                token = self._token_store.get(self._account_id, user_id)
-                if not token:
-                    continue
-                try:
-                    resp = await _get_config(self._poll_session, base_url=self._base_url, token=self._token,
-                                             user_id=user_id, context_token=token)
-                except Exception as exc:
-                    logger.debug("[%s] keepalive getConfig failed for %s: %s", self.name, _safe_id(user_id), exc)
-                    continue
-                self._maybe_roll_token(user_id, resp)
+
+                async def _refresh(user_id: str) -> bool:
+                    try:
+                        resp = await _get_config(self._poll_session, base_url=self._base_url, token=self._token,
+                                                 user_id=user_id, context_token=self._token_store.get(self._account_id, user_id))
+                    except Exception as exc:
+                        logger.debug("[%s] keepalive getConfig failed for %s: %s", self.name, _safe_id(user_id), exc)
+                        return False
+                    before = self._token_store.get(self._account_id, user_id)
+                    await self._roll_token_now(user_id, resp)
+                    return self._token_store.get(self._account_id, user_id) != before
+
+                rolled_any = any(await asyncio.gather(*(_refresh(u) for u in active)))
+                # Observability: if iLink responses never carry a rolled token, the whole
+                # keepalive is a no-op and the only symptom would be the user's outage report.
+                idle_roll_ticks = 0 if rolled_any else idle_roll_ticks + 1
+                if idle_roll_ticks == 4:
+                    logger.warning("[%s] keepalive: %d tick(s) with no rolled context_token for %d active "
+                                   "peer(s) — iLink may not support token rolling; outbound window stays inbound-bound",
+                                   self.name, idle_roll_ticks, len(active))
+            except Exception as exc:
+                logger.warning("[%s] keepalive tick failed (loop continues): %s", self.name, exc)
 
 
     def _split_text(self, content: str) -> list[str]:
@@ -1154,7 +1200,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                         errmsg = resp.get("errmsg") or resp.get("msg")
                         if _is_session_expired(resp, ret, errcode) and not retried_without_token and context_token:
                             retried_without_token, context_token = True, None
-                            self._token_store._cache.pop(self._token_store._key(self._account_id, chat_id), None)
+                            self._token_store.invalidate(self._account_id, chat_id)
                             logger.warning("[%s] session expired for %s; retrying without context_token", self.name, _safe_id(chat_id))
                             continue
                         if _is_stale_session_ret(ret, errcode, errmsg):
@@ -1179,7 +1225,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                         continue
                     self._rate_limit_events.clear()
                     self._rate_limit_circuit_until = 0.0
-                    self._maybe_roll_token(chat_id, resp)
+                    await self._roll_token_now(chat_id, resp)
                     return
                 except Exception as exc:
                     last_error = exc
@@ -1194,10 +1240,10 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             assert last_error is not None
             raise last_error
 
-    async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
+    async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
+                   *, park_on_not_ready: bool = True) -> SendResult:
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
-        context_token = self._token_store.get(self._account_id, chat_id)
         last_message_id: Optional[str] = None
         # Extract MEDIA: tags and bare local file paths before text delivery, under the routed
         # profile's scope: Docker MEDIA translation infers the sandbox from the active profile (#109024).
@@ -1217,16 +1263,21 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             chunks = [c for c in self._split_text(self.format_message(final_content)) if c and c.strip()]
             for idx, chunk in enumerate(chunks):
                 client_id = f"hermes-weixin-{uuid.uuid4().hex}"
-                await self._send_text_chunk(chat_id=chat_id, chunk=chunk, context_token=context_token, client_id=client_id)
+                # Re-read per chunk: an earlier chunk's response may have rolled the token, and a
+                # multi-chunk message must not keep echoing the stale pre-turn snapshot.
+                await self._send_text_chunk(chat_id=chat_id, chunk=chunk,
+                                            context_token=self._token_store.get(self._account_id, chat_id), client_id=client_id)
                 last_message_id = client_id
                 if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
                     await asyncio.sleep(self._send_chunk_delay_seconds)
             return SendResult(success=True, message_id=last_message_id)
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
-            if str(exc).startswith("iLink sendmessage session not ready") and final_content.strip():
+            if park_on_not_ready and str(exc).startswith("iLink sendmessage session not ready") and final_content.strip():
                 # Deterministic protocol rejection (the peer's session expired and iLink refuses
                 # bot-initiated sends): park the text; the peer's next inbound message flushes it.
+                # The flush path itself passes park_on_not_ready=False — it owns requeueing via
+                # ``requeue_failed``, so a park here would double-enqueue the same text.
                 parked = await self._pending_store.enqueue(self._account_id, chat_id, final_content.strip())
                 logger.warning("[%s] session not ready; parked text for %s for inbound flush (queue_ok=%s)",
                                self.name, _safe_id(chat_id), parked)
@@ -1252,9 +1303,18 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                         self.name, len(texts), _safe_id(user_id))
             failed: list[tuple[str, int]] = []
             for text, attempts in texts:
-                result = await self.send(user_id, text)
+                # A burst of parked sends trips iLink's rate limit (threshold=1 opens a 30s circuit
+                # that also blocks the peer's fresh replies), so pace the flush and bail out into
+                # requeue the moment the circuit opens. park_on_not_ready=False keeps this loop the
+                # single requeue owner — send() must not double-enqueue the same text.
+                if self._rate_limit_cooldown_remaining() > 0:
+                    failed.append((text, attempts))
+                    continue
+                result = await self.send(user_id, text, park_on_not_ready=False)
                 if not result.success:
                     failed.append((text, attempts))
+                if self._send_chunk_delay_seconds > 0:
+                    await asyncio.sleep(self._send_chunk_delay_seconds)
             if failed:
                 logger.warning("[%s] %d parked text(s) still failing for %s; requeueing once",
                                self.name, len(failed), _safe_id(user_id))
