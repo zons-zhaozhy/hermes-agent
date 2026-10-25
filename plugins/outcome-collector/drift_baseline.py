@@ -11,14 +11,17 @@ steps(total_calls) / tools(distinct tool_name) / error_rate / avg_duration_ms。
     python drift_baseline.py --check                 # 快照后新增会话 vs 基线对照
     python drift_baseline.py --self-test             # 判定器负例自测
 
-判定（中位数对照，宽阈值防会话长短方差误报）：
-    steps/tools 中位数 > 基线 1.5x，或 error_rate > 基线 2x 且绝对值 ≥ 0.2
-    → 对应键标记 drifted；任一键 drifted → rc=1
+判定 v2（两层，反方审查推翻纯中位数倍率方案后的重设计）：
+    第一层 中位数对照：steps/tools > 基线 1.5x、error_rate > 2x 且绝对值 ≥ 0.2、
+    avg_duration_ms > 2x → 对应键 drifted
+    第二层 会话级离群：窗口内单会话 steps 超基线 steps_p95 的会话占比 > 20%
+    → steps 键 drifted（附离群会话证据）——消除短窗口中位数抽样波动误报
+    最小样本门：窗口 < 20 会话 → rc=3「样本不足」，与 rc=0「无漂移」显式区分
 
 Contract:
     Preconditions: outcomes.db 存在且 session_summaries 有数据（空库显式报错）
-    Postconditions: --snapshot 写 baseline 文件；--check 只读对照不改库；
-        基线文件缺失时 --check 显式报错（禁静默当无漂移）
+    Postconditions: --snapshot 写 v2 基线文件；--check 只读对照不改库；
+        基线缺失/损坏/格式过旧时 --check 显式报错（禁静默当无漂移）
 """
 
 from __future__ import annotations
@@ -31,14 +34,19 @@ import sqlite3
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from statistics import median
+from statistics import median, quantiles
 
 logger = logging.getLogger(__name__)
 
+FORMAT_VERSION = 2
 STEPS_RATIO = 1.5
 TOOLS_RATIO = 1.5
 ERROR_RATE_RATIO = 2.0
 ERROR_RATE_ABS = 0.2
+DURATION_RATIO = 2.0
+MIN_WINDOW_SESSIONS = 20
+OUTLIER_FRAC = 0.2
+KEY_ORDER = ("steps_median", "tools_median", "error_rate_median", "avg_duration_ms_median")
 
 
 def _db_path() -> Path:
@@ -76,21 +84,38 @@ def _median_round(values: list[float]) -> float:
     return round(median(values), 2) if values else 0.0
 
 
-def _keys_from_rows(rows: list[tuple]) -> dict[str, float]:
-    """把 session_summaries 行集合算成四键中位数结构。
+def _steps_percentile(steps: list[float], pct: int) -> float:
+    """会话 steps 分位数（基线分布刻画，会话级离群判定输入）。
+
+    Contract:
+        Preconditions: pct in (95, 99)
+        Postconditions: 样本 ≥2 时返回分位值；样本不足时退化为 max（保守上界）
+    """
+    if len(steps) < 2:
+        return round(max(steps), 2) if steps else 0.0
+    qs = quantiles(steps, n=100)
+    idx = min(pct, 99) - 1  # quantiles(n=100) 产出 99 个切点，p95→idx94
+    return round(qs[idx], 2)
+
+
+def _keys_from_rows(rows: list[tuple]) -> dict:
+    """把 session_summaries 行集合算成四键结构（含逐会话 steps 与解析失败数）。
 
     Contract:
         Preconditions: rows 元素为 (total_calls, error_count, tool_breakdown, avg_ms 可空)
-        Postconditions: 返回四键 dict；空 rows 返回全 0（调用方先显式报错）
+        Postconditions: 返回含四键中位数/steps 序列/parse_failures 的 dict；
+            tool_breakdown 解析失败计数并记 warning（禁静默按 0）
     """
     steps = [float(r[0]) for r in rows if r[0]]
-    tools = []
+    tools: list[float] = []
+    parse_failures = 0
     for r in rows:
         try:
             breakdown = json.loads(r[2]) if r[2] else {}
             tools.append(float(len(breakdown)))
         except (json.JSONDecodeError, TypeError):
-            tools.append(0.0)
+            parse_failures += 1
+            logger.warning("tool_breakdown 解析失败按缺失计: %r", r[2])
     err_rates = [float(r[1]) / float(r[0]) for r in rows if r[0]]
     durations = [float(r[3]) for r in rows if r[3]]
     return {
@@ -99,6 +124,8 @@ def _keys_from_rows(rows: list[tuple]) -> dict[str, float]:
         "tools_median": _median_round(tools),
         "error_rate_median": _median_round(err_rates),
         "avg_duration_ms_median": _median_round(durations),
+        "steps_series": steps,
+        "parse_failures": parse_failures,
     }
 
 
@@ -122,11 +149,12 @@ def _fetch_sessions(conn: sqlite3.Connection, after_iso: str | None) -> list[tup
 
 
 def _snapshot(baseline_path: Path, db: Path) -> int:
-    """固化当前全部会话为基线快照。
+    """固化当前全部会话为 v2 基线快照（含 steps 分位数）。
 
     Contract:
         Preconditions: db 存在且有会话数据
-        Postconditions: 基线文件写入（含 generated_at 与四键）；空数据 rc=1
+        Postconditions: 基线文件写入（format_version=2 + 四键 + p95/p99 + 会话数）；
+            空数据 rc=1；parse_failures>0 打印警示行
     """
     if not db.exists():
         print(f"[drift] db 不存在: {db}", file=sys.stderr)
@@ -139,60 +167,144 @@ def _snapshot(baseline_path: Path, db: Path) -> int:
     if not rows:
         print("[drift] session_summaries 无数据——先跑一段时间再快照", file=sys.stderr)
         return 1
-    payload = {"generated_at": datetime.now(UTC).isoformat(), "keys": _keys_from_rows(rows)}
+    keys = _keys_from_rows(rows)
+    steps = keys.pop("steps_series")
+    parse_failures = keys.pop("parse_failures")
+    payload = {
+        "format_version": FORMAT_VERSION,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "keys": keys,
+        "steps_p95": _steps_percentile(steps, 95),
+        "steps_p99": _steps_percentile(steps, 99),
+        "baseline_sessions": len(rows),
+    }
     baseline_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"[drift] 基线已固化: {baseline_path}")
-    print(json.dumps(payload["keys"], ensure_ascii=False))
+    print(f"[drift] 基线已固化: {baseline_path}（v2，会话 {len(rows)}）")
+    print(json.dumps({k: payload[k] for k in ("keys", "steps_p95", "steps_p99")}, ensure_ascii=False))
+    if parse_failures:
+        print(f"[drift] 警示: {parse_failures} 个会话 tool_breakdown 解析失败按缺失计", file=sys.stderr)
     return 0
 
 
-def _check(baseline_path: Path, db: Path) -> int:
-    """快照后新增会话 vs 基线对照，输出各键判定。
+def _load_baseline(baseline_path: Path) -> dict | None:
+    """读基线并做格式版本守卫（v1/损坏文件显式报错禁静默）。
 
     Contract:
-        Preconditions: 基线文件存在且可解析；db 存在
-        Postconditions: 任一键 drifted 返回 1，否则 0；无新增会话 rc=2 提示
+        Preconditions: baseline_path 存在
+        Postconditions: 合法 v2 返回 dict；否则打印原因返回 None
     """
-    if not baseline_path.exists():
-        print(f"[drift] 基线缺失——先 --snapshot（{baseline_path}）", file=sys.stderr)
-        return 1
     try:
         baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
         print(f"[drift] 基线文件损坏: {exc}", file=sys.stderr)
+        return None
+    if baseline.get("format_version") != FORMAT_VERSION:
+        print(
+            f"[drift] 基线格式过旧（v{baseline.get('format_version', 1)}≠v{FORMAT_VERSION}）"
+            f"——重跑 --snapshot 生成 v2（含分位数），禁沿用旧格式静默对照",
+            file=sys.stderr,
+        )
+        return None
+    return baseline
+
+
+def _outlier_evidence(steps_series: list[float], steps_p95: float) -> tuple[float, int]:
+    """会话级离群：窗口内 steps 超基线 p95 的会话数与占比。
+
+    Contract:
+        Preconditions: steps_p95 ≥ 0
+        Postconditions: 返回 (占比, 离群会话数)；p95=0（基线退化）时占比 0（不判）
+    """
+    if steps_p95 <= 0:
+        return 0.0, 0
+    outliers = sum(1 for s in steps_series if s > steps_p95)
+    frac = outliers / len(steps_series) if steps_series else 0.0
+    return frac, outliers
+
+
+def _report(base_keys: dict, new_keys: dict, drifted: list[str], frac: float, outliers: int, n: int) -> int:
+    """打印四键对照结果并返回 rc。
+
+    Contract:
+        Preconditions: drifted ⊆ KEY_ORDER；n ≥ MIN_WINDOW_SESSIONS
+        Postconditions: drifted 非空返回 1，否则 0
+    """
+    session_level = (
+        f"（会话级证据: {outliers}/{n}={frac:.0%} 超基线 p95，占比>{OUTLIER_FRAC:.0%}）"
+        if "steps_median" in drifted and frac > OUTLIER_FRAC
+        else ""
+    )
+    for key in KEY_ORDER:
+        mark = "DRIFTED" if key in drifted else "ok"
+        extra = session_level if key == "steps_median" and session_level else ""
+        print(f"  {key}: 基线 {base_keys.get(key)} → 新窗口 {new_keys[key]}  [{mark}]{extra}")
+    if drifted:
+        print(f"[drift] 行为漂移键: {sorted(drifted)}——检查上游同步/模型切换/提示词改动")
         return 1
-    since = str(baseline.get("generated_at", ""))
-    base_keys = baseline.get("keys", {})
+    print(f"[drift] 无漂移（离群会话 {outliers}/{n}={frac:.0%}，阈 {OUTLIER_FRAC:.0%}）")
+    return 0
+
+
+def _check(baseline_path: Path, db: Path) -> int:
+    """快照后新增会话 vs 基线两层对照。
+
+    Contract:
+        Preconditions: 基线文件存在且为 v2；db 存在
+        Postconditions: 任一键 drifted 返回 1；无新增 rc=2；
+            窗口 < MIN_WINDOW_SESSIONS rc=3（样本不足与无漂移显式区分）
+    """
+    if not baseline_path.exists():
+        print(f"[drift] 基线缺失——先 --snapshot（{baseline_path}）", file=sys.stderr)
+        return 1
+    baseline = _load_baseline(baseline_path)
+    if baseline is None:
+        return 1
+    base_keys = dict(baseline.get("keys", {}))
+    steps_p95 = float(baseline.get("steps_p95", 0) or 0)
+    if not db.exists():
+        print(f"[drift] db 不存在: {db}", file=sys.stderr)
+        return 1
     conn = sqlite3.connect(str(db))
     try:
-        rows = _fetch_sessions(conn, since)
+        rows = _fetch_sessions(conn, str(baseline.get("generated_at", "")))
     finally:
         _close_logged(conn, db)
     if not rows:
         print("[drift] 快照后无新增会话，无对照对象（rc=2）")
         return 2
     new_keys = _keys_from_rows(rows)
+    steps_series = new_keys.pop("steps_series")
+    parse_failures = new_keys.pop("parse_failures")
+    n = int(new_keys["sessions"])
+    print(f"[drift] 对照会话数 {n}（基线 {int(baseline.get('baseline_sessions', 0))}）")
+    if parse_failures:
+        print(f"[drift] 警示: {parse_failures} 个会话 tool_breakdown 解析失败按缺失计", file=sys.stderr)
+    if n < MIN_WINDOW_SESSIONS:
+        print(
+            f"[drift] 样本不足（n={n}<{MIN_WINDOW_SESSIONS}）——短窗口中位数抽样波动大，"
+            f"禁据此刻判漂移或宣称无漂移（rc=3）"
+        )
+        return 3
     drifted = _verdict(base_keys, new_keys)
-    print(f"[drift] 对照会话数 {int(new_keys['sessions'])}（基线 {int(base_keys.get('sessions', 0))}）")
-    for key in ("steps_median", "tools_median", "error_rate_median", "avg_duration_ms_median"):
-        mark = "DRIFTED" if key in drifted else "ok"
-        print(f"  {key}: 基线 {base_keys.get(key)} → 新窗口 {new_keys[key]}  [{mark}]")
-    if drifted:
-        print(f"[drift] 行为漂移键: {sorted(drifted)}——检查上游同步/模型切换/提示词改动")
-        return 1
-    print("[drift] 无漂移")
-    return 0
+    frac, outliers = _outlier_evidence(steps_series, steps_p95)
+    if frac > OUTLIER_FRAC:
+        drifted.append("steps_median")
+    return _report(base_keys, new_keys, drifted, frac, outliers, n)
 
 
 def _verdict(base: dict, new: dict) -> list[str]:
-    """判定漂移键集合（中位数倍率阈值）。
+    """判定漂移键集合（中位数倍率阈值 + duration 第四键）。
 
     Contract:
         Preconditions: base/new 为四键 dict
         Postconditions: 返回 drifted 键名列表（可为空）；基线值为 0 的键跳过
     """
     out: list[str] = []
-    for key, ratio in (("steps_median", STEPS_RATIO), ("tools_median", TOOLS_RATIO)):
+    for key, ratio in (
+        ("steps_median", STEPS_RATIO),
+        ("tools_median", TOOLS_RATIO),
+        ("avg_duration_ms_median", DURATION_RATIO),
+    ):
         b = float(base.get(key, 0) or 0)
         n = float(new.get(key, 0) or 0)
         if b > 0 and n > b * ratio:
@@ -204,37 +316,45 @@ def _verdict(base: dict, new: dict) -> list[str]:
     return out
 
 
+def _assert_verdict_cases() -> None:
+    """中位数判定层负例（漂移命中/阈值内/零基线三形态）。"""
+    base = {"steps_median": 10.0, "tools_median": 4.0, "error_rate_median": 0.1, "avg_duration_ms_median": 500.0}
+    assert _verdict(base, dict(base)) == []  # 期望: 无偏移不判漂移
+    assert _verdict(base, dict(base, steps_median=20.0)) == ["steps_median"]  # 期望: steps 超 1.5x 命中
+    assert _verdict(base, dict(base, error_rate_median=0.5)) == ["error_rate_median"]  # 期望: 错误率双条件命中
+    assert _verdict(base, dict(base, error_rate_median=0.15)) == []  # 期望: 0.15<0.2 绝对阈值挡住误报
+    assert _verdict(base, dict(base, avg_duration_ms_median=1200.0)) == ["avg_duration_ms_median"]  # 期望: 第四键命中
+    assert _verdict(base, dict(base, avg_duration_ms_median=900.0)) == []  # 期望: 900<1000 阈内不判
+    zero = {"steps_median": 0.0, "tools_median": 0.0, "error_rate_median": 0.0, "avg_duration_ms_median": 0.0}
+    assert _verdict(zero, dict(base, steps_median=100.0)) == []  # 期望: 基线为 0 无可比性
+
+
+def _assert_outlier_cases() -> None:
+    """会话级离群与分位数层负例（长尾/退化/正常三形态）。"""
+    assert _steps_percentile([1.0, 2.0, 3.0, 100.0], 95) > 90  # 期望: 长尾单会话抬高 p95
+    frac, n_out = _outlier_evidence([5.0, 6.0, 5.5, 200.0], 10.0)
+    assert n_out == 1 and frac == 0.25  # 期望: 单离群会话 1/4 占比正确
+    assert _outlier_evidence([5.0, 200.0], 0.0) == (0.0, 0)  # 期望: 基线 p95=0 退化时不判
+    assert _outlier_evidence([5.0] * 8, 10.0) == (0.0, 0)  # 期望: 全正常零离群
+
+
 def _negative_self_check() -> int:
-    """负例自测：判定器对漂移/正常两形态必须正确分类。
+    """负例自测：判定器对漂移/正常/样本不足三形态必须正确分类。
 
     Contract:
         Preconditions: 无
         Postconditions: 全部断言通过返回 0
     """
-    base = {"steps_median": 10.0, "tools_median": 4.0, "error_rate_median": 0.1, "avg_duration_ms_median": 500.0}
-    same = dict(base)
-    # 期望: 相同四键零漂移
-    assert _verdict(base, same) == []  # 期望: 无偏移不判漂移
-    hot = dict(base, steps_median=20.0)
-    # 期望: steps 超基线 1.5x(20>15) 判漂移
-    assert _verdict(base, hot) == ["steps_median"]  # 期望: 倍率越限命中
-    err_spike = dict(base, error_rate_median=0.5)
-    # 期望: error_rate 绝对值≥0.2 且 >0.1*2 判漂移
-    assert _verdict(base, err_spike) == ["error_rate_median"]  # 期望: 错误率双条件命中
-    tiny = dict(base, error_rate_median=0.15)
-    # 期望: 0.15<0.2 绝对阈值不判(防低基线误报)
-    assert _verdict(base, tiny) == []  # 期望: 绝对阈值挡住低量级误报
-    zero_base = {"steps_median": 0.0, "tools_median": 0.0, "error_rate_median": 0.0, "avg_duration_ms_median": 0.0}
-    # 期望: 零基线键跳过不判
-    assert _verdict(zero_base, dict(base, steps_median=100.0)) == []  # 期望: 基线为0无可比性
+    _assert_verdict_cases()
+    _assert_outlier_cases()
     print("[drift] self-test 全部通过")
     return 0
 
 
 def run_cli(argv: list[str] | None = None) -> int:
     """CLI 入口：快照/对照/负例自测三模式。"""
-    parser = argparse.ArgumentParser(description="agent 行为漂移基线（会话四键对照）")
-    parser.add_argument("--snapshot", action="store_true", help="固化当前窗口为基线")
+    parser = argparse.ArgumentParser(description="agent 行为漂移基线（会话四键两层对照 v2）")
+    parser.add_argument("--snapshot", action="store_true", help="固化当前窗口为 v2 基线")
     parser.add_argument("--check", action="store_true", help="快照后新增会话 vs 基线")
     parser.add_argument("--db", type=Path, default=_db_path())
     parser.add_argument("--baseline", type=Path, default=_baseline_path())
