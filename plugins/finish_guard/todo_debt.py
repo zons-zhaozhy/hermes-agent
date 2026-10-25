@@ -194,16 +194,6 @@ def _format_age(updated_at: int) -> str:
     return f"{seconds // 86400} 天"
 
 
-def _is_session_first_turn(history: list[Any]) -> bool:
-    """首轮判定：历史中尚无 assistant 消息。
-
-    Contract: Postconditions: history 非 list 或无 assistant 项时 True。
-    """
-    if not isinstance(history, list):
-        return True
-    return not any(isinstance(m, dict) and m.get("role") == "assistant" for m in history)
-
-
 def _render_debt_context(rows: list[dict[str, Any]]) -> str:
     """把未清账行渲染为注入文本。
 
@@ -247,17 +237,21 @@ def on_todo_write(**kwargs: Any) -> None:
 
 
 def on_session_open(**kwargs: Any) -> dict[str, Any] | None:
-    """pre_llm_call 注入器：会话首轮注入跨会话未清账（一次/会话）。
+    """pre_llm_call 注入器：会话进程内首见时注入跨会话未清账（一次/进程会话）。
 
-    Contract: Preconditions: kwargs 含 conversation_history/session_id/task_id；
-    Postconditions: 首轮且存在他账时返回 {"context": 提醒文本} 并置 injected
+    首轮判定=debt_injected 标记缺失（进程内该会话首次 pre_llm_call），不按
+    历史推断——续开会话（恢复的 conversation_history 已含 assistant 消息）
+    同样命中注入，修复「按历史推断把续开首轮误判非首轮、永不注入」的缺口；
+    进程重启后同会话重注入一次属幂等无害（账单文本只读提示）。
+
+    Contract: Preconditions: kwargs 含 session_id/task_id（is_first_turn/
+    conversation_history 不再参与判定）；
+    Postconditions: 首见且存在他账时返回 {"context": 提醒文本} 并置 injected
     标记；否则 None；永不 raise。
     """
     try:
         from plugins._shared_state import get_session_state
 
-        if not _is_session_first_turn(kwargs.get("conversation_history") or []):
-            return None
         sid = str(kwargs.get("session_id") or kwargs.get("task_id") or "__default__")
         state = get_session_state(sid, _NAMESPACE)
         if state.get("debt_injected"):

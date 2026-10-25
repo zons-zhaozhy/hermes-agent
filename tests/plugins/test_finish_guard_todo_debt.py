@@ -67,21 +67,22 @@ def test_cross_slot_settlement_clears_foreign():
 
 
 def test_session_open_injects_foreign_debt_once():
-    """T4：首轮注入他账一次；同会话不重复；非首轮不注入；本会话槽位排除。"""
+    """T4：进程内首见注入他账一次；同会话不重复；续开会话（历史含 assistant）同样注入；本会话槽位排除。"""
     _write_snapshot("s_owner", [{"id": "5", "content": "跨会话未清事项X", "status": "pending"}])
     first = todo_debt.on_session_open(conversation_history=[{"role": "user", "content": "hi"}],
                                       session_id="s_fresh")
-    assert first is not None and "todo_debt" in first["context"]  # 期望: 首轮注入
+    assert first is not None and "todo_debt" in first["context"]  # 期望: 进程内首见注入
     assert "跨会话未清事项X" in first["context"]  # 期望: 清单含他账内容
     again = todo_debt.on_session_open(conversation_history=[{"role": "user", "content": "hi"}],
                                       session_id="s_fresh")
-    assert again is None  # 期望: 同会话只注入一次
+    assert again is None  # 期望: 同会话只注入一次（debt_injected 标记）
     own = todo_debt.on_session_open(conversation_history=[], session_id="s_owner")
     assert own is None  # 期望: 本会话自己的在途任务不算他账
-    mid = todo_debt.on_session_open(
-        conversation_history=[{"role": "assistant", "content": "已开工"}],
-        session_id="s_other")
-    assert mid is None  # 期望: 非首轮不注入
+    resumed = todo_debt.on_session_open(
+        conversation_history=[{"role": "user", "content": "早"},
+                              {"role": "assistant", "content": "已开工"}],
+        session_id="s_resume")
+    assert resumed is not None and "跨会话未清事项X" in resumed["context"]  # 期望: 续开会话进程内首见同样注入
 
 
 def test_non_todo_tool_no_side_effect():
