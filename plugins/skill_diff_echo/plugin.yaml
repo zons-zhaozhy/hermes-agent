@@ -4,5 +4,6 @@ version: 1.0.0
 author: stan
 hooks:
   - transform_tool_result
+  - pre_tool_call
 tags:
   - guard
