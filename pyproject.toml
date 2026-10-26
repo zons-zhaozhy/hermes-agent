@@ -467,6 +467,10 @@ dingtalk = [
   "dingtalk-stream==0.24.3",
   "alibabacloud-dingtalk==2.2.65",
   "qrcode==7.4.2",
+  # websockets (via dingtalk-stream) needs python-socks when the OS has a SOCKS
+  # system proxy configured (macOS scutil SOCKSEnable=1); without it the Stream
+  # loop dies on ImportError every 3s.
+  "python-socks>=2.4,<3",
 ]
 feishu = ["lark-oapi==1.7.5", "qrcode==7.4.2"]
 google = [
