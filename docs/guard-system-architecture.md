@@ -9,7 +9,7 @@
 | 层 | 套件 / 插件 | 职责 | 子守卫 |
 |---|---|---|---|
 | L0 | `guards.tool_blacklist` | 必败调用机械黑名单——拦的不是「错」，而是「注定失败」 | — |
-| L2 | `guards` | 写入质量护栏：写前功课 + 写动作合规 | pre_write / four_axis / duplicate_check / source_write / coding_standards / diff_debt / casebook_gate / batch_write / scope_gate / groundbreaking_gate |
+| L2 | `guards` | 写入质量护栏：写前功课 + 写动作合规 | pre_write / four_axis / duplicate_check / source_write / coding_standards / diff_debt / casebook_gate / batch_write / scope_gate / groundbreaking_gate / slow_search / db_target_audit / plain_vocab / experience_gate（2026-10-26 实测共 17 子模块） |
 | L3 | `discipline` | 执行纪律护栏：怎么跑命令、怎么面对错误 | no_guessing / db_safety / error_discipline / curl_safety / log_first / tool_safety / no_bypass / no_pushback / test_discipline + 注入通道 rule_reinjection / section_reinjection |
 | 独立 | scientific-programming-guard；terminology-guard；enterprise-quality-gate；requirement-interview | 专项规范（写码预算、用词一致、企业级对表、需求歧义） | — |
 
@@ -48,10 +48,10 @@
 - 段库：`prompt_sections/sections.json`，形如 `{"<id>": "<段文本>"}`；键即注册 id（1:1，禁另立映射表）。
 - 读取与对账：`plugins/prompt_sections.py`（`load_section` / `fingerprint` / `section_ids` / `render_all`）。
   渲染器每次调用读盘——段修改对新会话立即生效。
-- 现有段（2026-10-14 实测共 9 段渲染，其中文件型段 6 个）：
-  `guards_preflight` 773 / `tool_blacklist` 404 / `db_safety` 222 / `test_discipline` 272 /
-  `scientific_programming` 396 / `diff_debt` 216 字符；连同 terminology_consistency、
-  enterprise_quality_gate、requirement_interview，段总量约 3868 字符（上限 8000）。
+- 现有段（2026-10-26 实测更新，其中文件型段 6 个）：
+  `guards_preflight` 1177 / `tool_blacklist` 404 / `db_safety` 451 / `test_discipline` 272 /
+  `scientific_programming` 396 / `diff_debt` 249 字符；连同 terminology_consistency、
+  enterprise_quality_gate、requirement_interview，段总量约 4600 字符（上限 8000）。
 - 段库缺失或键名不符：`load_section` 告警一次并返回空串（该段本轮不注入）；
   指纹为空时重注入通道整体跳过（不注入半份内容）。
 
