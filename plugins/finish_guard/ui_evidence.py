@@ -30,7 +30,7 @@ _UI_SUFFIXES = (".vue", ".tsx", ".jsx", ".html", ".css", ".scss")
 # 根因即 router/index.ts 路由修改, 不识别则路由类改动整体漏拦。
 # 范围限定前端目录特征, 避免把任意工具脚本 .ts 算进 UI 源。
 _FRONTEND_TS_SEGMENTS = ("/src/", "/frontend/")
-_NON_SOURCE_SEGMENTS = ("/dist/", "/node_modules/", "/build/")
+_NON_SOURCE_SEGMENTS = ("/dist/", "/node_modules/", "/build/", "/.hermes/cache/")
 _EVIDENCE_NAME = "ui_walkthrough.json"
 
 
@@ -201,7 +201,8 @@ def _validate_evidence(data: Any, min_checked_at: float,
                        root: Path | None = None,
                        ui_file: str = "") -> str | None:
     """Contract: Preconditions: data 为 json.loads 产物;
-    Postconditions: 全部 walkthrough 结构校验通过且角色覆盖达标返回 None,
+    Postconditions: 存在至少一条结构校验全过的 walkthrough 且角色覆盖达标返回 None
+    (账本累积语义: 历史段早于本次改动 mtime 属正常, 不得因旧段缺陷否定新证据),
     否则返回首条缺陷说明。
     """
     if not isinstance(data, dict):
@@ -209,11 +210,17 @@ def _validate_evidence(data: Any, min_checked_at: float,
     walkthroughs = data.get("walkthroughs")
     if not isinstance(walkthroughs, list) or not walkthroughs:
         return "缺 walkthroughs 数组（至少 1 条走查记录）"
+    first_defect = None
+    valid: list = []
     for idx, w in enumerate(walkthroughs):
         defect = _validate_walkthrough(idx, w, min_checked_at, root, ui_file)
         if defect:
-            return defect
-    return _validate_role_coverage(data, walkthroughs)
+            first_defect = first_defect or defect
+        else:
+            valid.append(w)
+    if not valid:
+        return first_defect or "全部 walkthrough 校验失败"
+    return _validate_role_coverage(data, valid)
 
 
 def _check_evidence(ui_files: list[str]) -> str | None:
