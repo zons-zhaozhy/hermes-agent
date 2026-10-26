@@ -134,6 +134,50 @@ class TestSend:
         assert payload["markdown"]["text"] == "Hello!"
 
     @pytest.mark.asyncio
+    async def test_send_final_reply_at_mentions_questioner(self):
+        """最终回复(reply_to 锚定提问人消息)payload 携带 at.atUserIds=提问人 staff_id。"""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._reply_targets["mid-1"] = ("staff-9", "赵治勇")  # 期望: reply_to=mid-1 → at staff-9
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "OK"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+
+        result = await adapter.send(
+            "chat-123", "答案正文", reply_to="mid-1",
+            metadata={"session_webhook": "https://dingtalk.example/webhook"},
+        )
+        assert result.success is True
+        payload = mock_client.post.call_args[1]["json"]
+        assert payload["at"] == {"atUserIds": ["staff-9"]}  # 期望: at 精确指向提问人
+
+    @pytest.mark.asyncio
+    async def test_send_intermediate_reply_has_no_at(self):
+        """中间消息(reply_to=None)不得携带 at——未锚定提问人,@任何人都是错。"""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._reply_targets["mid-2"] = ("staff-8", "别人")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "OK"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+
+        result = await adapter.send(
+            "chat-123", "进度提示", reply_to=None,
+            metadata={"session_webhook": "https://dingtalk.example/webhook"},
+        )
+        assert result.success is True
+        payload = mock_client.post.call_args[1]["json"]
+        assert "at" not in payload  # 期望: 未锚定提问人的消息不带 at
+
+    @pytest.mark.asyncio
     async def test_send_image_renders_markdown_image(self):
         from plugins.platforms.dingtalk.adapter import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))

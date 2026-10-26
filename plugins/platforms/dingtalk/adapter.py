@@ -121,6 +121,7 @@ class _SdkLogGuard(logging.Filter):
             pass  # a logging filter must never break the caller
         return True
 _SESSION_WEBHOOKS_MAX = 500
+_REPLY_TARGETS_MAX = 1000
 _DINGTALK_WEBHOOK_RE = re.compile(r'^https://(?:api|oapi)\.dingtalk\.com/')
 _TRUTHY = {"true", "1", "yes", "on"}
 _EMOTION_ID = "2659900"
@@ -215,6 +216,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator(max_size=1000)
         self._session_webhooks: dict[str, tuple[str, int]] = {}  # chat_id -> (webhook, expired_time_ms)
         self._message_contexts: dict[str, Any] = {}  # chat_id -> last inbound ChatbotMessage (per-chat: no clobber)
+        self._reply_targets: dict[str, tuple[str, str]] = {}  # message_id -> (sender_staff_id, sender_nick) for @-mentions
         self._card_template_id: Optional[str] = extra.get("card_template_id")
         self._done_emoji_fired: set[str] = set()  # chats whose Done reaction fired this turn; reset per inbound
         # Open streaming cards: chat_id -> {out_track_id: last_content}. ``edit_message(finalize=False)``
@@ -372,7 +374,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         if self._http_client:
             await self._http_client.aclose()
         self._http_client = self._stream_client = None
-        for store in (self._session_webhooks, self._message_contexts, self._streaming_cards, self._done_emoji_fired, self._dedup, self._bg_tasks):
+        for store in (self._session_webhooks, self._message_contexts, self._reply_targets, self._streaming_cards, self._done_emoji_fired, self._dedup, self._bg_tasks):
             store.clear()
         logger.info("[%s] Disconnected", self.name)
 
@@ -473,6 +475,10 @@ class DingTalkAdapter(BasePlatformAdapter):
         if chat_id:
             self._message_contexts[chat_id] = message
             self._done_emoji_fired.discard(chat_id)
+        if msg_id and sender_staff_id:
+            if len(self._reply_targets) >= _REPLY_TARGETS_MAX:
+                self._reply_targets.pop(next(iter(self._reply_targets)))
+            self._reply_targets[msg_id] = (sender_staff_id, sender_nick)
         session_webhook = getattr(message, "session_webhook", None) or ""
         if session_webhook and chat_id and _DINGTALK_WEBHOOK_RE.match(session_webhook):
             if len(self._session_webhooks) >= _SESSION_WEBHOOKS_MAX:
@@ -527,6 +533,9 @@ class DingTalkAdapter(BasePlatformAdapter):
             logger.warning("[%s] AI Card send failed, falling back to webhook", self.name)
         logger.debug("[%s] Sending via webhook", self.name)
         payload = {"msgtype": "markdown", "markdown": {"title": self._preview_title(content), "text": self._normalize_markdown(content[: self.MAX_MESSAGE_LENGTH])}}
+        target = self._reply_targets.get(reply_to) if reply_to else None
+        if target and target[0]:
+            payload["at"] = {"atUserIds": [target[0]]}  # @提问人: reply_to 锚定其入站消息,多人连问不 @ 错人
         try:
             resp = await self._http_client.post(session_webhook, json=payload, timeout=15.0)
             if resp.status_code < 300:
