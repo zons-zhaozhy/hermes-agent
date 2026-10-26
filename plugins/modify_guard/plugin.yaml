@@ -1,0 +1,5 @@
+name: modify_guard
+version: "1.0.0"
+description: "Serialize project modifications across concurrent sessions — per-repo write mutex (TTL) for write_file/patch, and ban git add -A / git add . / git commit -a in terminal"
+hooks:
+  - pre_tool_call
