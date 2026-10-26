@@ -185,10 +185,11 @@ class CLIStreamMixin:
             f" [dim]{datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}[/]"
             if getattr(self, "show_timestamps", False) else "")
         lines = user_input.split("\n")
-        from hermes_cli.cli_modern_layout import is_modern, prompt_glyph
+        from hermes_cli.cli_modern_layout import is_modern, prompt_glyph, user_text_span
         mark = _escape(prompt_glyph()) if is_modern(self) else "●"
+        hl = getattr(self, "user_message_preview_highlight", "none")
         if len(lines) <= 1:
-            return f"[bold {_accent_hex()}]{mark}[/] [bold]{_escape(user_input)}[/]{ts_suffix}"
+            return f"[bold {_accent_hex()}]{mark}[/] {user_text_span(user_input, _accent_hex(), hl)}{ts_suffix}"
 
         first_lines = max(1, int(getattr(self, "user_message_preview_first_lines", 2)))
         last_lines = max(0, int(getattr(self, "user_message_preview_last_lines", 2)))
@@ -200,12 +201,12 @@ class CLIStreamMixin:
             hidden_middle_count = 0
             tail = []
 
-        preview_lines = [f"[bold {_accent_hex()}]{mark}[/] [bold]{_escape(head[0])}[/]{ts_suffix}"]
-        preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in head[1:])
+        preview_lines = [f"[bold {_accent_hex()}]{mark}[/] {user_text_span(head[0], _accent_hex(), hl)}{ts_suffix}"]
+        preview_lines.extend(user_text_span(line, _accent_hex(), hl) for line in head[1:])
         if hidden_middle_count > 0:
             key = "cli.stream.preview_more_lines_one" if hidden_middle_count == 1 else "cli.stream.preview_more_lines_other"
             preview_lines.append(f"[dim]{_escape(t(key, count=hidden_middle_count))}[/]")
-        preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in tail)
+        preview_lines.extend(user_text_span(line, _accent_hex(), hl) for line in tail)
         return "\n".join(preview_lines)
 
     def _expand_paste_references(self, text: str | None) -> str:
@@ -249,9 +250,14 @@ class CLIStreamMixin:
             ChatConsole().print(self._format_submitted_user_message_preview(text), soft_wrap=modern)
         elif modern:
             from hermes_cli.cli_modern_layout import user_echo_markup
-            ChatConsole().print(user_echo_markup(text, _accent_hex()), soft_wrap=True)
+            ChatConsole().print(
+                user_echo_markup(text, _accent_hex(),
+                                 highlight=getattr(self, "user_message_preview_highlight", "none")),
+                soft_wrap=True)
         else:
-            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
+            from hermes_cli.cli_modern_layout import user_text_span
+            ChatConsole().print(f"[bold {_accent_hex()}]●[/] "
+                                f"{user_text_span(text, _accent_hex(), getattr(self, 'user_message_preview_highlight', 'none'))}")
         if modern:
             from hermes_cli.cli_modern_layout import closing_separator
             _cprint(closing_separator(True))

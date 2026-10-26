@@ -175,6 +175,14 @@ class CLIInitMixin:
         _ump = _ump if isinstance(_ump, dict) else {}
         self.user_message_preview_first_lines = max(1, _int_or(_ump.get("first_lines", 2), 2))
         self.user_message_preview_last_lines = max(0, _int_or(_ump.get("last_lines", 2), 2))
+        _hl = str(_ump.get("highlight", "color") or "color").strip().lower()
+        if _hl not in {"none", "color", "background"}:
+            logger.warning(
+                "display.user_message_preview.highlight=%r is invalid (want none|color|background); using 'color'",
+                _ump.get("highlight"),
+            )
+            _hl = "color"
+        self.user_message_preview_highlight = _hl
 
         # Streaming display state
         self._stream_buf = ""  # partial line buffer

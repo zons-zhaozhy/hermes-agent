@@ -1,4 +1,5 @@
 import importlib
+import re
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -74,3 +75,43 @@ class TestSubmittedUserMessagePreview:
         assert "line5" not in rendered
         assert "line6" not in rendered
         assert "(+4 more lines)" in rendered
+
+
+class TestUserMessageHighlight:
+    def test_highlight_color_marks_echoed_text_with_accent_fg(self):
+        cli = _make_cli({"first_lines": 2, "last_lines": 2, "highlight": "color"})
+
+        rendered = cli._format_submitted_user_message_preview(
+            "line1\nline2\nline3\nline4\nline5\nline6"
+        )
+
+        # 期望: every echoed text line carries bold + an explicit hex fg (the skin accent)
+        assert re.search(r"\[bold #[0-9A-Fa-f]{6}\]line1", rendered)
+        assert re.search(r"\[bold #[0-9A-Fa-f]{6}\]line2", rendered)
+        assert re.search(r"\[bold #[0-9A-Fa-f]{6}\]line5", rendered)
+        assert re.search(r"\[bold #[0-9A-Fa-f]{6}\]line6", rendered)
+
+    def test_highlight_none_keeps_plain_bold(self):
+        cli = _make_cli({"first_lines": 2, "last_lines": 2, "highlight": "none"})
+
+        rendered = cli._format_submitted_user_message_preview(
+            "line1\nline2\nline3\nline4\nline5\nline6"
+        )
+
+        # 期望: echoed text is bold with no color/background span (the classic look);
+        # the leading glyph keeps its accent color by design
+        assert "[bold]line2" in rendered
+        assert "[bold]line5" in rendered
+        assert " on " not in rendered
+        assert not re.search(r"\[bold #[0-9A-Fa-f]{6}\]line\d", rendered)
+
+    def test_highlight_background_uses_on_marker(self):
+        cli = _make_cli({"first_lines": 2, "last_lines": 2, "highlight": "background"})
+
+        rendered = cli._format_submitted_user_message_preview(
+            "line1\nline2\nline3\nline4\nline5\nline6"
+        )
+
+        # 期望: echoed text is black bold on an accent background span
+        assert re.search(r"\[bold #000000 on #[0-9A-Fa-f]{6}\]line1", rendered)
+        assert re.search(r"\[bold #000000 on #[0-9A-Fa-f]{6}\]line6", rendered)

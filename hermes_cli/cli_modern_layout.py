@@ -99,10 +99,25 @@ def _take_gap() -> str:
     return gap
 
 
-def user_echo_markup(text: str, accent_hex: str, ts_suffix: str = "") -> str:
+def user_text_span(text: str, accent_hex: str, highlight: str = "none") -> str:
+    """Rich markup for the TEXT of an echoed user message (single source for all echo sites).
+
+    highlight: ``none`` = bold only (the classic look); ``color`` = bold + accent fg;
+    ``background`` = bold black on accent bg (chat-bubble emphasis). The leading glyph
+    stays accent in every mode, so the two highlight modes remain skin-consistent.
+    """
+    from rich.markup import escape
+    if highlight == "color":
+        return f"[bold {accent_hex}]{escape(text)}[/]"
+    if highlight == "background":
+        return f"[bold #000000 on {accent_hex}]{escape(text)}[/]"
+    return f"[bold]{escape(text)}[/]"
+
+
+def user_echo_markup(text: str, accent_hex: str, ts_suffix: str = "", highlight: str = "none") -> str:
     """Rich markup for a submitted single-line user message: ``❯ text``."""
     from rich.markup import escape
-    return f"[bold {accent_hex}]{escape(prompt_glyph())}[/] [bold]{escape(text)}[/]{ts_suffix}"
+    return f"[bold {accent_hex}]{escape(prompt_glyph())}[/] {user_text_span(text, accent_hex, highlight)}{ts_suffix}"
 
 
 def answer_label(timestamp: str = "") -> str:

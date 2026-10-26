@@ -912,6 +912,9 @@ DEFAULT_CONFIG = {
         "user_message_preview": {  # CLI: submitted user-message lines echoed to scrollback
             "first_lines": 2,
             "last_lines": 2,
+            # How echoed user text stands out: none (bold only) | color (accent fg) |
+            # background (black text on accent bg). Glyph stays accent in all modes.
+            "highlight": "color",
         },
         # Gateway: natural mid-turn assistant status messages. Desktop: keep mid-turn narration
         # between tool calls instead of collapsing to the final message.
