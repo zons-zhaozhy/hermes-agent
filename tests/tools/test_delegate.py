@@ -321,8 +321,9 @@ class TestDelegateTask(unittest.TestCase):
                 child_db = kwargs["session_db"]
                 self.assertIsInstance(child_db, SessionDB)
                 self.assertIsNot(child_db, parent_db)
+                # skill-pruned-ok: delegate db-path test fix, unrelated to any skill body
                 self.assertEqual(
-                    str(child_db.db_path), str(parent_db.db_path)
+                    child_db.db_path.resolve(), parent_db.db_path.resolve()  # 期望: 同一数据库文件——registry.acquire 会 resolve 路径(macOS /var→/private/var 符号链接),字符串表示不同但文件相同
                 )
             finally:
                 if child_db is not None:
