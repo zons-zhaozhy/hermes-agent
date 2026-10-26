@@ -814,29 +814,35 @@ class ReadThinkGate:
         # 前段写好的四轴证据顶出窗口造成误拦——子串匹配 O(n) 无回溯，
         # 30 关键词 × 100KB 亚毫秒级，无 CPU 顾虑）。
         scan_text = content
+        progressed = False
         for axis, keywords in _FOUR_AXIS_KEYWORDS.items():
             if axis in self._four_axis_found:
                 continue
             for kw in keywords:
                 if kw in scan_text:
                     self._four_axis_found.add(axis)
+                    progressed = True
                     logger.info(
                         "read-think gate: four-axis '%s' detected — %d/4 axes found",
                         axis, len(self._four_axis_found),
                     )
                     break
-        # 四轴全部到位 → 写入 marker 文件
-        if len(self._four_axis_found) == 4:
+        # 有新轴命中 → 落盘进度 marker（verified=是否已齐 4 轴）。
+        # verified=False 的记录只供副防线拦截消息诊断缺失轴（four_axis.py
+        # _read_marker 的放行判定仍只认 verified=True+4 轴，本写入不改变
+        # 放行语义）；仅在真实新增命中时写，避免每条消息刷新 TTL。
+        if progressed:
             try:
                 _marker = _four_axis_marker_path(self._session_id)
                 _marker.parent.mkdir(parents=True, exist_ok=True)
                 _marker.write_text(json.dumps({
-                    "verified": True,
+                    "verified": len(self._four_axis_found) == 4,
                     "source": "content_scan",
                     "timestamp": time.time(),
                     "axes": sorted(self._four_axis_found),
                 }))
-                logger.info("read-think gate: four-axis complete via content scan — marker written")
+                if len(self._four_axis_found) == 4:
+                    logger.info("read-think gate: four-axis complete via content scan — marker written")
             except Exception:
                 logger.warning("read-think gate: failed to write four-axis marker", exc_info=True)
 

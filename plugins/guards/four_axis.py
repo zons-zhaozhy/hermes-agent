@@ -45,7 +45,7 @@ def _marker_file(session_id: str) -> Path:
     Returns:
         Path: hermes_home/cache/four_axis_gate_{pid}_{session}.json
     """
-    from plugins.read_think_gate_host import _four_axis_marker_path
+    from plugins.read_think_gate_host import _FOUR_AXIS_LABELS, _four_axis_marker_path
 
     # 路径解析与 slug 规则唯一实现在写端 gate 模块（经 read_think_gate_host
     # 唯一 import 面 re-export）——本插件直接复用，杜绝写读两端各写一份
@@ -140,8 +140,35 @@ def _read_marker(session_id: str) -> Optional[dict]:
     return None
 
 
-def _block_message(tool_name: str) -> Optional[dict[str, Any]]:
-    """生成阻断消息。"""
+def _read_progress(session_id: str) -> Optional[dict]:
+    """读取本会话 marker 的原始进度（不过滤 verified），供拦截消息诊断缺失轴。
+
+    写端在每有新轴命中时落盘（verified=是否已齐 4 轴），本函数只做时效
+    检查；放行判定仍走 _read_marker（verified=True + 4 轴）。
+    """
+    try:
+        _marker = _marker_file(session_id)
+        if not _marker.exists():
+            return None
+        data = json.loads(_marker.read_text(encoding="utf-8"))
+        age = time.time() - data.get("timestamp", 0)
+        if age > _MARKER_MAX_AGE_SECONDS:
+            return None
+        return data
+    except Exception:
+        logger.warning("four-axis progress read failed (treated as no progress)", exc_info=True)
+        return None
+
+
+def _block_message(tool_name: str, missing_axes: Optional[list[str]] = None) -> Optional[dict[str, Any]]:
+    """生成阻断消息；missing_axes 非空时附缺失轴诊断，避免全列四项的盲目循环。"""
+    hint = ""
+    if missing_axes:
+        hint = (
+            f"\n\n诊断：本 turn 四轴证据已部分命中，还缺 {len(missing_axes)} 轴——"
+            f"{'、'.join(missing_axes)}。在回复正文中补齐缺失轴的证据后重试，"
+            "已命中的轴无需重复。"
+        )
     return {
         "action": "block",
         "message": (
@@ -152,6 +179,7 @@ def _block_message(tool_name: str) -> Optional[dict[str, Any]]:
             "  3. 根因定位：症状位置 vs 根因位置（文件+行号）\n"
             "  4. 风险矩阵：最坏场景（触发条件+影响范围+可恢复性）\n\n"
             "四轴就是 commit message 的 body。不用另写。"
+            f"{hint}"
         ),
     }
 
@@ -189,7 +217,13 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
         logger.info(
             "four-axis guard: blocking %s — marker missing or expired", tool_name,
         )
-        return _block_message(tool_name)
+        missing_axes = None
+        progress = _read_progress(session_id)
+        if progress:
+            from plugins.read_think_gate_host import _FOUR_AXIS_LABELS  # 唯一 import 面，懒加载与 _marker_file 同风格
+            hit = set(progress.get("axes") or [])
+            missing_axes = [a for a in _FOUR_AXIS_LABELS if a not in hit]
+        return _block_message(tool_name, missing_axes)
 
     logger.debug(
         "four-axis guard: allowing %s — marker valid (axes=%s)",

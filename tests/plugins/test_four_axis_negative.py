@@ -54,3 +54,33 @@ def test_negative_read_tool_not_gated(monkeypatch):
     out = guard.on_pre_tool_call(tool_name="read_file", args={"path": "x"},
                                  session_id="sess-fa-3")
     assert out is None  # 期望: None=读工具不经四轴闸门
+
+
+def test_partial_progress_blocked_with_missing_axes_diagnosis(monkeypatch, tmp_path: Path):
+    """进度 marker（verified=False）不改变放行语义，拦截消息须诊断缺失轴。"""
+    import time as _time
+
+    guard = _load_guard()
+    monkeypatch.setattr(guard, "_read_marker", lambda sid: None)  # 放行判定恒不过
+    monkeypatch.setattr(guard, "_read_progress", lambda sid: {
+        "verified": False, "axes": ["影响面", "根因", "风险"],
+        "timestamp": _time.time(),
+    })
+    target = str(tmp_path / "partial.py")
+    out = guard.on_pre_tool_call(tool_name="patch", args={"path": target},
+                                 session_id="sess-fa-4")
+    assert out is not None and out.get("action") == "block"  # 期望: 3/4 轴仍拦——放行语义零变化
+    msg = out["message"]
+    assert "原意图" in msg and "影响面" not in msg.split("——")[-1]  # 期望: 只诊断缺失轴（原意图），已命中的轴不进诊断段
+    assert "还缺 1 轴" in msg  # 期望: 缺轴计数
+
+
+def test_no_progress_falls_back_to_plain_block(monkeypatch, tmp_path: Path):
+    """无进度记录时拦截消息保持原四项引导（无诊断段）。"""
+    guard = _load_guard()
+    monkeypatch.setattr(guard, "_read_marker", lambda sid: None)
+    monkeypatch.setattr(guard, "_read_progress", lambda sid: None)
+    target = str(tmp_path / "cold.py")
+    out = guard.on_pre_tool_call(tool_name="patch", args={"path": target},
+                                 session_id="sess-fa-5")
+    assert out is not None and "诊断" not in out["message"]  # 期望: 冷启动无诊断段

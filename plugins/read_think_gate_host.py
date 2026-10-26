@@ -37,6 +37,7 @@ ReadThinkGateConfig = _gate.ReadThinkGateConfig
 GATED_TOOL_NAMES = _gate.GATED_TOOL_NAMES
 READ_ONLY_INVESTIGATION_TOOLS = _gate.READ_ONLY_INVESTIGATION_TOOLS
 _four_axis_marker_path = _gate._four_axis_marker_path
+_FOUR_AXIS_LABELS = _gate._FOUR_AXIS_LABELS
 _build_history_summary = _gate._build_history_summary
 _judge_investigation = _gate._judge_investigation
 _terminal_writes_file = _gate._terminal_writes_file
