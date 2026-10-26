@@ -25,6 +25,12 @@ f799fd8578 在官方 Linux CI "Python tests / Run tests" = success。
   test_cross_vm_fs_wal_refusal(virtiofs/9p)/test_bot_desktop_resources(runtime.py:450
   内存读取被 is_supported_host() 仅 Linux 门控)/test_cua_no_overlay(CuaDriver.app)
 - 本机缺二进制/凭据类: test_wake_word(需 pip install ai-edge-litert) 等。
+  test_vault_key_storage(1027 定性): 无条件 import keyring(pyproject:304 keychain extra,
+  CI tests.yml:75 的 9-extras 矩阵含 keychain; 本地默认 test-env=DEFAULT_TEST_EXTRAS=["all"]
+  pm/testenv.py:19 不含) → 本地非激活 shell 跑 run_tests.sh 每次 hermes_sync 回退 ["all"]
+  (scripts/_activation.sh:86 需 __HERMES_ACTIVATED 才跳过)。已建 CI 同款 9-extras gen
+  (gen-34379eea, ensure_testenv 直连) 17 passed 实证测试本身绿; 需跑时:
+  gen-*/venv/bin/python -m pytest tests/agent/test_vault_key_storage.py。
   ~~test_holographic/test_openrouter/image_gen~~ → 0926 已翻案: 此前 13 失败非
   环境限制, 是 sync 05cb467300 误回退官方修复(占位符/剥离层/secret scope),
   8027e3ef2d 已恢复官方实现, image_gen+memory+photon 625/625 绿
