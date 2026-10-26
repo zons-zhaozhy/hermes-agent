@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from pathlib import Path
 
 from plugins.finish_guard import ui_evidence as ue
@@ -75,15 +76,18 @@ def test_check_full_evidence_passes(tmp_path: Path) -> None:
     ui = root / "src" / "App.vue"
     ui.parent.mkdir()
     ui.write_text("<template/>", encoding="utf-8")
+    shot = tmp_path / "walk.png"
+    shot.write_bytes(b"\x89PNG")  # 与 checked_at 同时刻的新截图(截图锚)
     ev = root / ".hermes" / "ui_walkthrough.json"
     ev.parent.mkdir()
     ev.write_text(json.dumps({
         "roles": ["public"],
         "walkthroughs": [{"url": "http://x/", "role": "public",
-                          "checked_at": 9e18,
+                          "checked_at": int(time.time()),
+                          "screenshots": [str(shot)],
                           "assertions": [{"claim": "全部导航可达", "result": "pass"}]}],
     }), encoding="utf-8")
-    assert ue._check_evidence([str(ui)]) is None  # 期望: 合法证据放行
+    assert ue._check_evidence([str(ui)]) is None  # 期望: 合法证据放行（tmp 仓无 dist, dom 锚降级）
 
 
 def test_check_stale_evidence_blocked(tmp_path: Path) -> None:

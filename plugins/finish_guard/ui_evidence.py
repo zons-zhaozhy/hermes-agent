@@ -23,6 +23,8 @@ from typing import Any
 logger = logging.getLogger("hermes.plugins.finish_guard.ui_evidence")
 
 _TIME_TOLERANCE_S = 5  # 文件系统 mtime 精度容差
+_FUTURE_TOLERANCE_S = 120  # checked_at 上界容差——未来时间戳=永真伪证, 必拒
+_SCREENSHOT_WINDOW_S = 120  # 截图文件 mtime 与 checked_at 的允许偏差
 _UI_SUFFIXES = (".vue", ".tsx", ".jsx", ".html", ".css", ".scss")
 # 前端 .ts（router/i18n/store 等）同属用户可感知界面源——skb /compare 断链
 # 根因即 router/index.ts 路由修改, 不识别则路由类改动整体漏拦。
@@ -72,9 +74,12 @@ def _validate_assertions(idx: int, w: dict) -> str | None:
     return None
 
 
-def _validate_walkthrough(idx: int, w: Any, min_checked_at: float) -> str | None:
-    """Contract: Preconditions: w 为 walkthroughs[idx], min_checked_at 为 epoch 秒;
-    Postconditions: 单条记录结构合法且时间达标返回 None, 否则返回缺陷说明。
+def _validate_walkthrough(idx: int, w: Any, min_checked_at: float,
+                          root: Path | None = None,
+                          ui_file: str = "") -> str | None:
+    """Contract: Preconditions: w 为 walkthroughs[idx], min_checked_at 为 epoch 秒,
+    root 为仓库根(可空——空则跳过 dom_assets 锚), ui_file 为首个 UI 源文件路径;
+    Postconditions: 结构/时间上下界/截图锚/dom 锚全过返回 None, 否则返回缺陷说明。
     """
     if not isinstance(w, dict) or not w.get("url"):
         return f"walkthroughs[{idx}] 缺 url"
@@ -84,6 +89,16 @@ def _validate_walkthrough(idx: int, w: Any, min_checked_at: float) -> str | None
     if checked_at < min_checked_at - _TIME_TOLERANCE_S:
         return (f"walkthroughs[{idx}] 的 checked_at({checked_at}) 早于 UI 改动文件"
                 f" mtime({min_checked_at:.0f})——证据须在最后一次界面改动之后取得")
+    if checked_at > time.time() + _FUTURE_TOLERANCE_S:
+        return (f"walkthroughs[{idx}] 的 checked_at({checked_at}) 是未来时间"
+                f"(now={time.time():.0f})——自报时间戳只查结构不防伪, 上界必拒")
+    shot_defect = _validate_screenshots(idx, w, checked_at)
+    if shot_defect:
+        return shot_defect
+    if root is not None:
+        dom_defect = _validate_dom_assets(idx, w, Path(ui_file), min_checked_at)
+        if dom_defect:
+            return dom_defect
     return _validate_assertions(idx, w)
 
 
@@ -104,7 +119,87 @@ def _validate_role_coverage(data: dict, walkthroughs: list) -> str | None:
     return None
 
 
-def _validate_evidence(data: Any, min_checked_at: float) -> str | None:
+def _validate_screenshots(idx: int, w: dict, checked_at: float) -> str | None:
+    """Contract: Preconditions: w 为单条 walkthrough, checked_at 为其时间戳;
+    Postconditions: screenshots 非空且每个为存在的绝对路径文件、mtime 与
+    checked_at 偏差在窗口内返回 None, 否则返回缺陷说明。
+    """
+    shots = w.get("screenshots")
+    if not isinstance(shots, list) or not shots:
+        return (f"walkthroughs[{idx}] 缺 screenshots（至少 1 张走查截图绝对路径, "
+                "dpr≥3——截图与走查同时刻产生）")
+    for s in shots:
+        p = Path(str(s))
+        if not p.is_absolute():
+            return f"walkthroughs[{idx}].screenshots 须绝对路径: {s}"
+        if not p.exists():
+            return f"截图不存在: {s}"
+        if abs(p.stat().st_mtime - checked_at) > _SCREENSHOT_WINDOW_S:
+            return (f"截图 {s} 的 mtime 与 checked_at 偏差超 {_SCREENSHOT_WINDOW_S}s"
+                    "——截图须与走查同时刻产生, 禁挪用旧图")
+    return None
+
+
+def _load_asset_refs(ui_file: Path) -> tuple[set[str], float] | None:
+    """Contract: Preconditions: ui_file 为 UI 源文件路径(其祖先链含仓库根);
+    Postconditions: 由近及远在每级祖先探测 dist*/build 下的 index.html,
+    首个含 JS 引用者返回 (引用文件名集合, 其 mtime); 未探测到返回 None(降级)。
+    monorepo 应用产物形如 apps/<app>/dist/lab-ui/index.html, 由祖先链遍历覆盖。
+    """
+    for base in [ui_file.parent, *ui_file.parents]:
+        candidates = [
+            base / "dist" / "index.html",
+            base / "build" / "index.html",
+            *base.glob("dist*/index.html"),
+            *base.glob("dist*/*/index.html"),
+        ]
+        for idx_html in candidates:
+            if not idx_html.exists():
+                continue
+            try:
+                text = idx_html.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            refs = set()
+            for seg in text.split('src="')[1:]:
+                name = seg.split('"', 1)[0]
+                if name.endswith((".js", ".mjs")):
+                    refs.add(name.rsplit("/", 1)[-1])
+            if refs:
+                return refs, idx_html.stat().st_mtime
+        if (base / ".git").exists():
+            break  # 仓库根层已探测, 不越仓库边界
+    logger.info("ui_journey: 未探测到构建产物 index.html, dom_assets 锚降级")
+    return None
+
+
+def _validate_dom_assets(idx: int, w: dict, ui_file: Path, min_checked_at: float) -> str | None:
+    """Contract: Preconditions: ui_file 为首个 UI 源文件路径, min_checked_at 为
+    UI 源文件最大 mtime;
+    Postconditions: 构建产物新鲜且 dom_assets 与产物引用有交集返回 None,
+    否则返回缺陷说明; 无构建产物时返回 None(降级)。
+    """
+    refs = _load_asset_refs(ui_file)
+    if refs is None:
+        return None
+    asset_names, bundle_mtime = refs
+    if bundle_mtime < min_checked_at - _TIME_TOLERANCE_S:
+        return (f"构建产物 index.html mtime({bundle_mtime:.0f}) 早于 UI 源文件"
+                f"({min_checked_at:.0f})——改码后未重建, 页面跑的是旧产物")
+    declared = w.get("dom_assets")
+    if not isinstance(declared, list) or not declared:
+        return (f"walkthroughs[{idx}] 缺 dom_assets（走查时页面实际加载的 JS 文件名"
+                "列表, 浏览器执行 [...document.scripts].map(s=>s.src.split('/').pop()) 取值）")
+    if not asset_names & {str(d) for d in declared}:
+        return (f"walkthroughs[{idx}].dom_assets 与当前构建产物引用零交集"
+                f"（产物引用 {sorted(asset_names)[:5]}）——须从真实加载页面读取, "
+                "证明走查发生在当前构建版本上")
+    return None
+
+
+def _validate_evidence(data: Any, min_checked_at: float,
+                       root: Path | None = None,
+                       ui_file: str = "") -> str | None:
     """Contract: Preconditions: data 为 json.loads 产物;
     Postconditions: 全部 walkthrough 结构校验通过且角色覆盖达标返回 None,
     否则返回首条缺陷说明。
@@ -115,7 +210,7 @@ def _validate_evidence(data: Any, min_checked_at: float) -> str | None:
     if not isinstance(walkthroughs, list) or not walkthroughs:
         return "缺 walkthroughs 数组（至少 1 条走查记录）"
     for idx, w in enumerate(walkthroughs):
-        defect = _validate_walkthrough(idx, w, min_checked_at)
+        defect = _validate_walkthrough(idx, w, min_checked_at, root, ui_file)
         if defect:
             return defect
     return _validate_role_coverage(data, walkthroughs)
@@ -139,7 +234,7 @@ def _check_evidence(ui_files: list[str]) -> str | None:
     except (OSError, json.JSONDecodeError) as e:
         logger.warning("ui_journey 证据文件读取失败: %s", e)
         return f"证据文件不可读/非 JSON: {e}"
-    return _validate_evidence(data, min_checked_at)
+    return _validate_evidence(data, min_checked_at, root, ui_files[0])
 
 
 def nudge_message(ui_files: list[str], defect: str) -> str:
@@ -158,8 +253,15 @@ def nudge_message(ui_files: list[str], defect: str) -> str:
         "走一遍（逐导航真点→全页滚动→多语言/多角色各走一遍→手机宽度复走）。\n"
         '证据格式: {"roles": ["public", "staff"], "walkthroughs": '
         '[{"url": "<实际访问地址>", "role": "<角色>", "checked_at": '
-        f'{int(time.time())}, "assertions": [{{"claim": "<界面某处显示什么/全部导航可达>", '
+        f'{int(time.time())}, "screenshots": ["<走查截图绝对路径(dpr≥3)>"], '
+        '"dom_assets": ["<页面实际加载的 JS 文件名, 取 '
+        "[...document.scripts].map(s=>s.src.split('/').pop())>\"], "
+        '"assertions": [{"claim": "<界面某处显示什么/全部导航可达>", '
         '"result": "pass"}]}]}\n'
+        "防伪三锚(缺一即拦): checked_at 须在 [最后改动 mtime, now+120s] 区间(未来时间"
+        "=伪证); screenshots 截图须存在且 mtime 与 checked_at 偏差≤120s(禁挪旧图); "
+        "dom_assets 须与当前构建产物引用有交集且产物 mtime 晚于源码(改码必须重建+从"
+        "真实页面取值)。\n"
         "断言须覆盖: 首屏第一眼能看懂这是什么、不知道内部术语的用户能否找到下一步动作、"
         "须身份的操作有友好获取指引、本次改动点在真实页面上生效、全站链接可达。"
         "多角色项目（公开访客/登录用户/管理端等）须在顶层 roles 声明并逐角色覆盖。"
