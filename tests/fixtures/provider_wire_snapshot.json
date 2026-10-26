@@ -12261,6 +12261,7 @@
   "off": {
    "extra_body": {
     "thinking": {
+     "clear_thinking": false,
      "type": "enabled"
     }
    },
