@@ -68,6 +68,12 @@ def _extract_skill_name(result: str, args: dict[str, Any]) -> Optional[str]:
         return None
 
 
+# skill-pruned-ok: repairing this gate's own false-positive deadlock — unrelated to skill criteria
+# 占位符标记固定出现在结果头部状态行（"[skill_view] name='X' (N chars) [SKILL_PRUNED: ..."）。
+# 头部窗口外的命中是技能正文引用标记字样（如 engineering-lessons 的压缩丢失教学案例），不算占位符。
+_PRUNED_HEAD_WINDOW = 400
+
+
 def on_post_tool_call(**kwargs: Any) -> None:
     """post: 记录/解除待重载技能。observer-only，永不阻断。"""
     tool_name = str(kwargs.get("tool_name") or "")
@@ -79,7 +85,8 @@ def on_post_tool_call(**kwargs: Any) -> None:
     name = _extract_skill_name(result, args)
     if not name:
         return
-    if _PRUNED_MARKER in result:
+    # skill-pruned-ok: gate self-repair — head-window check (see _PRUNED_HEAD_WINDOW above)
+    if _PRUNED_MARKER in result[:_PRUNED_HEAD_WINDOW]:
         _pending(sid).add(name)
         logger.info("skill_pruned_gate: %s 处于剪枝待重载状态", name)
     else:

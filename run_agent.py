@@ -920,8 +920,10 @@ class AIAgent(
             # Sibling of the build_turn_context() prefetch gate: don't key recall on zero-signal prompts.
             if not is_trivial_prompt(user_text):
                 self._memory_manager.queue_prefetch_all(user_text, session_id=self.session_id or "")
-        except Exception:
-            pass
+        except Exception as e:
+            # skill-pruned-ok: unrelated to any skill — memory-sync logging fix
+            logger.warning(
+                "Memory sync after turn failed (session_id=%s): %s", self.session_id, e, exc_info=True)
 
     def release_clients(self) -> None:
         """Release LLM clients, child agents and memory providers WITHOUT tearing down session tool state (gateway

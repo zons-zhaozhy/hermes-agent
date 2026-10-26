@@ -147,7 +147,9 @@ _CONTEXT_FILES_INTRO = (
 )
 _COMPLETION_INSTRUCTIONS = (
     "\nComplete this task using the tools available to you. When finished, provide a clear, concise summary of:\n"
-    "- What you did\n- What you found or accomplished\n- Any files you created or modified\n- Any issues encountered\n\n"
+    "- What you did\n- What you found or accomplished\n- Any files you created or modified\n- Any issues encountered\n"
+    # skill-pruned-ok: unrelated to any skill — subagent verifiable-handle instruction
+    "- Any external side effects (uploads, remote writes, publishing): attach a verifiable handle (URL, ID, or absolute path) for each\n\n"
     "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path "
     "unless the task/context explicitly gives that path. If no exact local path is provided, discover it first before "
     "issuing git/workdir-specific commands.\n\n"
