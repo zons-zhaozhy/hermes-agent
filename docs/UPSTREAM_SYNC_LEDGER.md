@@ -76,6 +76,9 @@ f799fd8578 在官方 Linux CI "Python tests / Run tests" = success。
 | scripts/paradigm_triage.py | cba41a4730: 范式级信号分诊件——信号词预筛+Ollama qwen2.5:0.5b 打分(0-9)→top 队列供日学习优先消化;判断题走小模型(SystemOne 纪律) | 低（scripts/ 追加式） | 长期保留（每日 12:40 cron 范式分诊·日跑消费） |
 | .hermes-rules.md | fork 根纪律文件（官方无此文件） | 零 | 长期保留；md5 与 HEAD 对齐由三问审计第4条核验 |
 | apps/desktop/src/plugins/hermes-bots/cron-detail.test.tsx + apps/desktop/src/store/voice-prefs.test.ts (3811501b22) | locale/spy 修正（中文环境特有） | 零 | 值得提 upstream PR |
+| lefthook.yml | lint python 钩子去 `--config ./ruff.pre-commit.toml`（1c571cc47f, 门禁唯一真相=ruff.toml, 官方 hook 自带该参数会在下次 merge 复活第二份真相） | 中（上游改 lefthook 时撞） | merge 时保留去 --config 形态; 若上游也收敛则清零 |
+| ruff.pre-commit.toml | 已删除（1c571cc47f, 上游自述"duplicate required subset"的复制版, 与 ruff.toml 漂移致 pre-commit 报未触碰行错误） | 高（上游文件删除, 每次 merge 必现 deleted-theirs） | merge 时维持删除; 上游若修 hook 再评估 |
+| pyproject.toml [tool.ruff] 段 | 已删除 L748-818 死段（1c571cc47f, ruff.toml 优先级完全遮蔽该段=死配置） | 中（上游改 [tool.ruff] 时撞） | merge 时若上游段有实质变更需回评; [tool.ty.rules] 保持上游 |
 | .gitignore (+.codegraph/) / docs/review/ (6 文件 fork 专有审查文档) | 追加式 | 零 | 长期保留 |
 | batch_runner.py + hermes_cli/cli_commands_mixin.py + plugins/platforms/feishu/feishu_comment.py + tui_gateway/methods_prompt.py + tests/test_agent_close_lifecycle.py (aabc8f6427, 0926 cherry-pick) | 官方 94f3dbec9b one-shot AIAgent close() 泄漏修复（-x 保留官方作者; cherry-pick 前基线后→已同步件） | 低（与官方同源, 下次 merge 自动对齐） | 已同步件 |
 | hermes_cli/goals.py + hermes_cli/goal_command.py + gateway/run_goals.py + hermes_cli/cli_loops_mixin.py + evals/postmortem/review_probes/goal_scope_probe.py + tests/hermes_cli/test_goals.py + tests/gateway/test_goal_continuation_drain.py (0926 补记) | goals/judge 定制线: judge 对话语义注入(recent_history 摘要 24 条/2400 字上限)+contract verification draft 六字段+一键 gate add 桥+goal_command 三通道吞异常根治 | 中（官方改 goals/judge 框架时撞） | 官方 goals 若提供等价 judge 上下文注入则外迁 |
