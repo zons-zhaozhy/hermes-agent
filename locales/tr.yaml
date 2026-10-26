@@ -1996,6 +1996,7 @@ cli:
     saved_global: "config.yaml dosyasına kaydedildi (--global)"
     next_turn_only: "(yalnızca sonraki tur — bir yanıttan sonra eski haline döner)"
     session_only: "(yalnızca bu oturum — kalıcı yapmak için --global ekleyin)"
+    persist_failed: "! Değişiklik bu süreçte uygulandı, ancak oturum satırına kaydedilemedi — bu oturum devam ettirildiğinde önceki modele dönülecek (günlüklere bakın)."
     effort_none: "yok (akıl yürütmeyi devre dışı bırak)"
     effort_keep_current: "Geçerli düzeyi koru"
     no_authenticated_providers: "Kimliği doğrulanmış sağlayıcı bulunamadı."

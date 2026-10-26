@@ -1996,6 +1996,7 @@ cli:
     saved_global: "Sábháilte i config.yaml (--global)"
     next_turn_only: "(an chéad seal eile amháin — filleann sé tar éis freagra amháin)"
     session_only: "(seisiún amháin — cuir --global leis chun é a choinneáil)"
+    persist_failed: "! Cuireadh an malartú i bhfeidhm sa phróiseas seo, ach theip ar a shábháil i ró na seisiún — athshlánófar an tsamhail roimhe seo agus an seisiún seo á atosú (féach na logaí)."
     effort_none: "none (díchumasaigh réasúnaíocht)"
     effort_keep_current: "Coinnigh an iarracht reatha"
     no_authenticated_providers: "Níor aimsíodh aon soláthraí fíordheimhnithe."

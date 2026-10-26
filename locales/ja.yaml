@@ -1996,6 +1996,7 @@ cli:
     saved_global: "config.yaml に保存しました (--global)"
     next_turn_only: "（次のターンのみ — 1 回応答した後に元に戻ります）"
     session_only: "（このセッションのみ — 永続化するには --global を追加してください）"
+    persist_failed: "！切り替えはこのプロセス内で適用されましたが、セッション行への保存に失敗しました——このセッションを再開すると以前のモデルに戻ります（ログを参照）。"
     effort_none: "なし（推論を無効化）"
     effort_keep_current: "現在の強度を維持"
     no_authenticated_providers: "認証済みのプロバイダーが見つかりません。"

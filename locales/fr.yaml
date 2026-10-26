@@ -2248,6 +2248,7 @@ cli:
     saved_global: "Enregistré dans config.yaml (--global)"
     next_turn_only: "(prochain tour uniquement — rétabli après une réponse)"
     session_only: "(cette session uniquement — ajoutez --global pour conserver)"
+    persist_failed: "! Le changement a été appliqué dans ce processus, mais son enregistrement dans la ligne de session a échoué — la reprise de cette session restaurera le modèle précédent (voir les journaux)."
     effort_none: "none (désactiver le raisonnement)"
     effort_keep_current: "Conserver l'effort actuel"
     no_authenticated_providers: "Aucun fournisseur authentifié trouvé."

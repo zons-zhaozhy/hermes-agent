@@ -1996,6 +1996,7 @@ cli:
     saved_global: "config.yaml에 저장됨 (--global)"
     next_turn_only: "(다음 턴에만 적용 — 응답 한 번 후 복원돼요)"
     session_only: "(이 세션에만 적용 — 유지하려면 --global을 추가하세요)"
+    persist_failed: "! 전환이 이 프로세스에 적용되었지만 세션 행에 저장하지 못했습니다 — 이 세션을 재개하면 이전 모델로 돌아갑니다(로그 참조)."
     effort_none: "none (추론 비활성화)"
     effort_keep_current: "현재 추론 강도 유지"
     no_authenticated_providers: "인증된 제공자를 찾을 수 없어요."

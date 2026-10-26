@@ -1996,6 +1996,7 @@ cli:
     saved_global: "In config.yaml gespeichert (--global)"
     next_turn_only: "(nur nächster Zug — wird nach einer Antwort zurückgesetzt)"
     session_only: "(nur diese Sitzung — --global hinzufügen, um dauerhaft zu speichern)"
+    persist_failed: "! Wechsel wurde in diesem Prozess angewandt, aber das Speichern in der Sitzungszeile schlug fehl — beim Fortsetzen dieser Sitzung wird das vorherige Modell wiederhergestellt (siehe Logs)."
     effort_none: "none (Reasoning deaktivieren)"
     effort_keep_current: "Aktuelle Stärke beibehalten"
     no_authenticated_providers: "Keine authentifizierten Anbieter gefunden."

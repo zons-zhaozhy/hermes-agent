@@ -2013,6 +2013,7 @@ cli:
     saved_global: "Mentve a config.yaml fájlba (--global)"
     next_turn_only: "(csak a következő körre — egy válasz után visszaáll)"
     session_only: "(csak erre a munkamenetre — tartós mentéshez: --global)"
+    persist_failed: "! A váltás ebben a folyamatban életbe lépett, de a munkamenet-sorba mentése nem sikerült — a munkamenet folytatásakor a korábbi modell áll vissza (lásd a naplókat)."
     effort_none: "nincs (gondolkodás kikapcsolása)"
     effort_keep_current: "Jelenlegi szint megtartása"
     no_authenticated_providers: "Nem található hitelesített szolgáltató."

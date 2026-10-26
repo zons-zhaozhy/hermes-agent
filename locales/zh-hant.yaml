@@ -1996,6 +1996,7 @@ cli:
     saved_global: "已儲存至 config.yaml（--global）"
     next_turn_only: "（僅下一輪有效 — 一次回應後即還原）"
     session_only: "（僅本次工作階段有效 — 加上 --global 可永久儲存）"
+    persist_failed: "！切換已在本程序生效，但儲存到工作階段記錄失敗——恢復本工作階段時會回到之前的模型（詳見日誌）。"
     effort_none: "none（停用推理）"
     effort_keep_current: "保持目前強度"
     no_authenticated_providers: "找不到已驗證的提供方。"

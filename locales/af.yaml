@@ -1996,6 +1996,7 @@ cli:
     saved_global: "Gestoor in config.yaml (--global)"
     next_turn_only: "(slegs volgende beurt — herstel na een antwoord)"
     session_only: "(slegs sessie — voeg --global by om permanent te stoor)"
+    persist_failed: "! Wisseling is in hierdie proses toegepas, maar stoor na die sessiereël het misluk — by hervatting van hierdie sessie word die vorige model herstel (sien logboek)."
     effort_none: "none (deaktiveer redenering)"
     effort_keep_current: "Behou huidige inspanning"
     no_authenticated_providers: "Geen geverifieerde verskaffers gevind nie."

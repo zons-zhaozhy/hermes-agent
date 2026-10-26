@@ -1996,6 +1996,7 @@ cli:
     saved_global: "Guardado en config.yaml (--global)"
     next_turn_only: "(solo el próximo turno; se restaura tras una respuesta)"
     session_only: "(solo esta sesión; añade --global para hacerlo permanente)"
+    persist_failed: "¡El cambio se aplicó en este proceso, pero falló el guardado en la fila de sesión — al reanudar esta sesión se restaurará el modelo anterior (ver registros)."
     effort_none: "none (desactivar el razonamiento)"
     effort_keep_current: "Mantener el esfuerzo actual"
     no_authenticated_providers: "No se encontraron proveedores autenticados."
