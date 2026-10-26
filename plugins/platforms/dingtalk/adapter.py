@@ -526,7 +526,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                 return result
             logger.warning("[%s] AI Card send failed, falling back to webhook", self.name)
         logger.debug("[%s] Sending via webhook", self.name)
-        payload = {"msgtype": "markdown", "markdown": {"title": "Hermes", "text": self._normalize_markdown(content[: self.MAX_MESSAGE_LENGTH])}}
+        payload = {"msgtype": "markdown", "markdown": {"title": self._preview_title(content), "text": self._normalize_markdown(content[: self.MAX_MESSAGE_LENGTH])}}
         try:
             resp = await self._http_client.post(session_webhook, json=payload, timeout=15.0)
             if resp.status_code < 300:
@@ -706,6 +706,23 @@ class DingTalkAdapter(BasePlatformAdapter):
                 out.append("")
             out.append(line.lstrip() if line.strip().startswith("```") else line)
         return "\n".join(out)
+
+    @staticmethod
+    def _preview_title(content: str, *, limit: int = 40, fallback: str = "Hermes") -> str:
+        """Derive a plain-text webhook title from the reply's first line.
+
+        DingTalk shows the markdown ``title`` (not ``text``) in notifications and
+        conversation-list previews, so it must preview the reply itself. Markdown
+        emphasis/heading markers are stripped because the title renders as plain text.
+
+        Contract: returns a non-empty string of at most ``limit`` characters for any
+        input, including empty/whitespace-only content (falls back to ``fallback``).
+        """
+        first_line = content.strip().split("\n", 1)[0]
+        for marker in ("**", "#", "`", ">", "- "):
+            first_line = first_line.replace(marker, "")
+        first_line = " ".join(first_line.split())
+        return (first_line[:limit] or fallback).strip() or fallback
 
 
 class _IncomingHandler(dingtalk_stream.ChatbotHandler if DINGTALK_STREAM_AVAILABLE else object):
