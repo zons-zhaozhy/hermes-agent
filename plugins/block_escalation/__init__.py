@@ -398,15 +398,16 @@ def register(ctx):
     logger.info("block-escalation plugin registered (post_tool_call + transform_llm_output, sqlite-persisted)")
 
 
-def _on_transform_llm_output(response_text: str = "", **kwargs) -> str:
+def _on_transform_llm_output(response_text: str = "", **kwargs) -> "str | None":
     """Contract: Preconditions: response_text 为本回合 LLM 输出（核心键名）；
     Postconditions: 存在已升级指纹（说明被拦后仍在尝试或继续输出）时追加
     带用户可见终止提示（ESCALATION_MARKER 前缀，cron scheduler 据此按
-    失败记账），否则原样返回。"""
+    失败记账），否则返回 None（核心契约：first non-None wins——不改写
+    必须返回 None，返回原文会抢占槽位短路其后全部 transform 插件）。"""
     output = response_text or ""
     sid = str(kwargs.get("session_id") or "")
     if not _escalated.get(sid):
-        return output
+        return None
     logger.warning("block_escalation: 升级指纹仍活跃，追加用户可见终止提示")
     _escalated.pop(sid, None)  # 单次提示，避免重复堆叠
     return output + (

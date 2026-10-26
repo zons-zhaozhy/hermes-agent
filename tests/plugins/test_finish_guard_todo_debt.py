@@ -41,7 +41,7 @@ def test_done_negation_not_flagged():
     for phrase in ("无待办，全部缺口已落地并验证。", "待办清零，无未清事项。", "没有待办，工作状态不变。"):
         assert fg._is_defer_pushout(phrase) is False  # 期望: 否定形态放行
     out = fg._transform_llm_output(response_text="无待办，全部完成。")
-    assert "[finish_guard]" not in out  # 期望: 完成态不打标
+    assert out is None  # 期望: 完成态不打标（契约：不改写返回 None）
 
 
 def test_ledger_persists_only_active_items():

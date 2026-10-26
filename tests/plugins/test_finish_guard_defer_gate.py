@@ -50,7 +50,7 @@ def test_done_close_not_deferred():
     """D3：完成态收尾（含「另行指示」边界话术）不误伤。"""
     assert fg._is_defer_pushout(_DONE_CLOSE) is False  # 期望: 「另行指示」不在推迟词表
     out = fg._transform_llm_output(response_text=_DONE_CLOSE)
-    assert "[finish_guard]" not in out  # 期望: 完成态不打标
+    assert out is None  # 期望: 完成态不打标（契约：不改写返回 None）
 
 
 def test_l3_marker_covers_defer():

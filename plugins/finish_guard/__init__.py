@@ -389,13 +389,15 @@ def _on_pre_verify(**kwargs) -> dict:
 
 # ------------------------------------------------- L3: 用户可见标记（签名对齐核心）
 
-def _transform_llm_output(response_text: str = "", **kwargs) -> str:
+def _transform_llm_output(response_text: str = "", **kwargs) -> "str | None":
     """Contract: Preconditions: response_text 为本回合 LLM 输出（核心键名）；
-    Postconditions: L1/L2 未兜住且尾部命中请示式、或全文根因宣称无证据时
-    返回打标文本（用户可见留痕），否则原样返回。"""
+    Postconditions: L1/L2 未兜住且尾部命中请示式、或全文根因宣称无证据、
+    或拍板请求不自包含时返回打标文本（用户可见留痕），否则返回 None
+    （核心契约 first non-None wins：不改写必须返回 None，返回原文会
+    占据槽位短路其后 transform 插件）。"""
     output = response_text or ""
     if not output.strip():
-        return output
+        return None
     tail = _tail_text(output)
     if _is_rootcause_hidden(output):
         logger.warning("finish_guard: 根因宣称无根因陈述漏网（L1/L2 未覆盖），打用户可见标记")
@@ -414,7 +416,7 @@ def _transform_llm_output(response_text: str = "", **kwargs) -> str:
             "要求重述每个选项的具体做法、建议与默认动作后再拍板。"
         )
     if not (_is_pushback(tail) or _is_false_continue(tail) or _is_defer_pushout(tail)):
-        return output
+        return None
     logger.warning("finish_guard: 请示式/宣言式/推迟式收尾漏网（L1/L2 未覆盖），打用户可见标记")
     return (
         output

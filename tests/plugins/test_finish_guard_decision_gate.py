@@ -40,21 +40,21 @@ def test_bare_ab_ask_flagged() -> None:
 
 
 def test_selfcontained_ask_not_flagged() -> None:
-    """同轮复述选项内容（定义形态存在）→ 不打标。"""
+    """同轮复述选项内容（定义形态存在）→ 不改写（返回 None，契约要求）。"""
     out = fg._transform_llm_output(
         response_text="需要你拍板：方案 A：单机器人多群共享 profile，零配置改动，"
         "但跨群记忆互通；方案 B：每项目一个 profile，彻底隔离，须逐群配置。"
         "建议选 B；默认动作=不回复则维持现状。"
     )
-    assert "[finish_guard]" not in out  # 期望: 自包含拍板不打标
+    assert out is None  # 期望: None（first non-None wins 契约：不改写返回 None）
 
 
 def test_execution_report_not_flagged() -> None:
-    """执行汇报含「方案 A」字样但无拍板请求信号 → 不触发。"""
+    """执行汇报含「方案 A」字样但无拍板请求信号 → 不触发（返回 None）。"""
     out = fg._transform_llm_output(
         response_text="已按方案 A 完成部署并验证，路由命中正确，全链路 200。"
     )
-    assert "[finish_guard]" not in out  # 期望: 无拍板信号不打标
+    assert out is None  # 期望: None（无拍板信号不改写）
 
 
 def test_open_question_without_labels_not_flagged() -> None:
@@ -63,7 +63,7 @@ def test_open_question_without_labels_not_flagged() -> None:
         response_text="必须先确认：当前群绑哪个项目空间？请给项目名与仓库路径。"
         "默认动作=不回复则不绑定。"
     )
-    assert "[finish_guard]" not in out  # 期望: 开放性问题无标签不打标
+    assert out is None  # 期望: None（开放性问题无标签不改写）
 
 
 def test_pre_verify_nudges_bare_ask() -> None:

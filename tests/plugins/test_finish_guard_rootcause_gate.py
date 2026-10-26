@@ -61,14 +61,14 @@ def test_shown_rootcause_not_flagged():
     """R2：宣称+file:line 证据并存的正常收尾不拦。"""
     assert fg._is_rootcause_hidden(_SHOWN_CLOSE) is False  # 期望: 完整交付形态放行
     out = fg._transform_llm_output(response_text=_SHOWN_CLOSE)
-    assert "[finish_guard]" not in out  # 期望: 不打标
+    assert out is None  # 期望: 不打标（契约：不改写返回 None）
 
 
 def test_plain_close_not_flagged():
     """R3：无根因宣称的正常收尾不误伤。"""
     assert fg._is_rootcause_hidden(_PLAIN_CLOSE) is False  # 期望: 无宣称不拦
     out = fg._transform_llm_output(response_text=_PLAIN_CLOSE)
-    assert "[finish_guard]" not in out  # 期望: 不打标
+    assert out is None  # 期望: 不打标（契约：不改写返回 None）
 
 
 def test_l3_marker_covers_hidden_rootcause():

@@ -41,7 +41,7 @@ def test_negative_readonly_block_not_escalated(tmp_path: Path):
     guard._on_post_tool_call(tool_name="terminal", status="blocked",
                              args=args, session_id="be-s2")
     out = guard._on_transform_llm_output(response_text="继续", session_id="be-s2")
-    assert guard.ESCALATION_MARKER not in out  # 期望: 只读命令豁免不升级
+    assert out is None  # 期望: 只读命令豁免不升级（契约：不改写返回 None）
 
 
 def test_negative_single_block_no_escalation(tmp_path: Path):
@@ -50,7 +50,7 @@ def test_negative_single_block_no_escalation(tmp_path: Path):
     guard._on_post_tool_call(tool_name="write_file", status="blocked",
                              args={"path": "/tmp/one.py"}, session_id="be-s3")
     out = guard._on_transform_llm_output(response_text="重试一次", session_id="be-s3")
-    assert guard.ESCALATION_MARKER not in out  # 期望: 单次被拦不升级
+    assert out is None  # 期望: 单次被拦不升级（契约：不改写返回 None）
 
 
 def test_negative_success_clears_streak(tmp_path: Path):
@@ -64,4 +64,4 @@ def test_negative_success_clears_streak(tmp_path: Path):
     guard._on_post_tool_call(tool_name="write_file", status="blocked",
                              args=args, session_id="be-s4")
     out = guard._on_transform_llm_output(response_text="再次尝试", session_id="be-s4")
-    assert guard.ESCALATION_MARKER not in out  # 期望: 成功落地清账后重新计数，不升级
+    assert out is None  # 期望: 成功落地清账后重新计数，不升级（契约：不改写返回 None）

@@ -32,7 +32,7 @@ def _clean_state(
 def _arm_escalation(session_id: str) -> None:
     # 期望: 同 session 两次 blocked 写意图 → 升级标记落本 session 且未消费
     # （复现病案时序：A 置标后没有再输出 turn，标记悬在进程里）
-    args = {"path": "/tmp/victim_%s.py" % session_id, "content": "x"}
+    args = {"path": f"/tmp/victim_{session_id}.py", "content": "x"}
     for _ in range(2):
         block_escalation._on_post_tool_call(
             tool_name="write_file", status="blocked",
@@ -46,8 +46,7 @@ def test_escalated_marker_scoped_to_own_session() -> None:
     _arm_escalation("sess_A")
     b = block_escalation._on_transform_llm_output(
         response_text="B 任务正常收尾", session_id="sess_B")
-    assert block_escalation.ESCALATION_MARKER not in b  # 期望: B 零污染
-    assert b == "B 任务正常收尾"  # 期望: 原文逐字返回
+    assert b is None  # 期望: B 零污染且不改写（契约：first non-None wins，不改写返回 None）
     # A 自己的消费不受影响
     a = block_escalation._on_transform_llm_output(
         response_text="A 会话收尾", session_id="sess_A")
@@ -60,7 +59,7 @@ def test_unknown_session_defaults_isolated() -> None:
     _arm_escalation("sess_A")
     plain = block_escalation._on_transform_llm_output(
         response_text="无会话身份的输出")
-    assert block_escalation.ESCALATION_MARKER not in plain  # 期望: 空桶零污染
+    assert plain is None  # 期望: 空桶零污染（契约：不改写返回 None）
 
 
 def test_marker_single_consumption_per_session() -> None:
@@ -72,4 +71,4 @@ def test_marker_single_consumption_per_session() -> None:
     assert block_escalation.ESCALATION_MARKER in first  # 期望: 首次消费生效
     second = block_escalation._on_transform_llm_output(
         response_text="A 会话第二个 turn 的输出", session_id="sess_A")
-    assert block_escalation.ESCALATION_MARKER not in second  # 期望: 单次消费
+    assert second is None  # 期望: 单次消费（契约：不改写返回 None）
