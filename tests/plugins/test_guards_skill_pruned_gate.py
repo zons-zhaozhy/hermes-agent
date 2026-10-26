@@ -99,12 +99,11 @@ def test_status_line_all_loaded_and_missing() -> None:
 
 def test_suite_registers_new_subguard() -> None:
     assert "skill_pruned_gate" in guards_init._SUB_GUARD_NAMES  # 期望: 套件常量含新守卫
-    names = [n for n, _ in guards_init._SUB_GUARDS]  # skill-pruned-ok: revert to exact 2-tuple shape
+    names = [n for n, _ in guards_init._SUB_GUARDS]
     assert "skill_pruned_gate" in names  # 期望: 实际 import 成功进入注册列表
 
 
 def test_reload_with_marker_in_body_releases() -> None:
-    # skill-pruned-ok: gate self-repair regression test
     """回归：技能正文引用 [SKILL_PRUNED 字样（engineering-lessons 教学案例）不得误判为占位符。"""
     sid = f"t-{next(_sid)}"
     _post(sid, PRUNED_RESULT)
@@ -114,7 +113,6 @@ def test_reload_with_marker_in_body_releases() -> None:
 
 
 def test_head_window_still_catches_real_placeholder() -> None:
-    # skill-pruned-ok: gate self-repair regression test
     """回归：真实占位符（标记在头部状态行）仍须入集合拦截。"""
     sid = f"t-{next(_sid)}"
     _post(sid, PRUNED_RESULT)

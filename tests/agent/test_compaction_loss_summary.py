@@ -29,6 +29,5 @@ def test_counts_pruned_skills_and_demoted_outputs() -> None:
 
 
 def test_none_and_mixed_input_never_raises() -> None:
-    # skill-pruned-ok: new contract test, unrelated to any skill body
     assert _compaction_loss_summary(None) == ""  # 期望: None 视为零丢弃
     assert _compaction_loss_summary(["bare string", 42, None]) == ""  # 期望: 非 dict 混合不抛

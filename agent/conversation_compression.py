@@ -128,7 +128,6 @@ def _emit_compaction_done(agent: Any) -> None:
     status_callback = getattr(agent, "status_callback", None)
     if not status_callback:
         return
-    # skill-pruned-ok: unrelated to any skill — compaction loss-count disclosure
     message = COMPACTION_DONE_STATUS
     loss = _compaction_loss_summary(getattr(agent, "messages", None))
     if loss:
@@ -174,7 +173,6 @@ CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE = (
 # Formatted from the same constants the emission sites use, so noise-filter tests exercise the ACTUAL wording.
 ROUTINE_COMPRESSION_STATUS_SAMPLES = (
     COMPACTION_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_DONE_STATUS,
-    # skill-pruned-ok: sample of the loss-suffix variant emitted by _emit_compaction_done
     f"{COMPACTION_DONE_STATUS} — Compaction dropped: 2 skill body(ies) pruned, "
     "1 tool output(s) demoted — recover with session_search.",
     PRE_API_COMPRESSION_STATUS_TEMPLATE.format(tokens=123456),
@@ -197,7 +195,6 @@ def is_compaction_progress_status(text: str | None) -> bool:
         return False
     if COMPACTION_STATUS_MARKER in body:
         return True
-    # skill-pruned-ok: done edge may carry a compaction-loss suffix; still the done edge
     if body.startswith(COMPACTION_DONE_STATUS):
         return False
     lowered = body.lower()

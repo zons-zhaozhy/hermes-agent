@@ -258,7 +258,6 @@ def _load_segments_config() -> dict[str, Any]:
         except (TypeError, ValueError):
             max_turns = 0
     except Exception as e:
-        # skill-pruned-ok: unrelated to any skill — segments-config logging fix
         logger.warning(
             "session_segments config load failed; telemetry stays default-off: %s", e, exc_info=True)
     return {"on_compaction": on_compaction, "max_turns": max_turns}

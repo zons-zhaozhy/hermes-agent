@@ -120,7 +120,6 @@ def test_is_compaction_progress_status_covers_routine_in_progress_lines():
     )
 
     for message in ROUTINE_COMPRESSION_STATUS_SAMPLES:
-        # skill-pruned-ok: loss-suffix variant shares the done prefix and edge semantics
         if message.startswith(COMPACTION_DONE_STATUS):
             assert is_compaction_progress_status(message) is False
         else:
