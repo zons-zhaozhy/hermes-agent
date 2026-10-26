@@ -272,6 +272,10 @@ def _on_pre_verify(**kwargs) -> dict:
     final_response = kwargs.get("final_response") or ""
     tail = _tail_text(final_response)
     changed_paths = list(kwargs.get("changed_paths") or [])
+    from . import ui_evidence
+    l4 = ui_evidence.check(changed_paths, attempt, _MAX_PRE_VERIFY_NUDGES)
+    if l4:
+        return l4
     code_changed = any(
         not p.endswith((".md", ".txt", ".rst")) for p in changed_paths)
     if (_is_pushback(tail) or _is_false_continue(tail) or _is_defer_pushout(tail)):
