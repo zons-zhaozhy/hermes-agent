@@ -31,7 +31,7 @@ _MAX_RECENT = 10  # max recent tool calls to track per session
 _MAX_CONSECUTIVE_ERRORS = 2  # block after N consecutive errors without diagnosis
 
 
-def _get_recent_calls(sid: str) -> List[Dict[str, Any]]:
+def _get_recent_calls(sid: str) -> list[dict[str, Any]]:
     return get_session_state(sid, _NAMESPACE).setdefault("recent_calls", [])
 
 
@@ -207,7 +207,7 @@ def _is_similar_command(a: str, b: str, threshold: float = 0.7) -> bool:
     return ratio >= threshold
 
 
-def _commands_are_url_enumeration(recent: List[Dict]) -> bool:
+def _commands_are_url_enumeration(recent: list[dict]) -> bool:
     """Detect pattern: multiple curl calls to different URLs.
 
     Threshold: 2+ curl calls with different URLs AND at least one failed.
@@ -279,7 +279,7 @@ def on_post_tool_call(**kwargs) -> None:
 
 # ── pre_tool_call hook ────────────────────────────────────────────────
 
-def on_pre_tool_call(**kwargs) -> Optional[Dict[str, Any]]:
+def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
     """Block trial-and-error patterns."""
     if _plugin_disabled():
         return None

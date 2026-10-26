@@ -32,7 +32,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _JUDGE_FILE = _REPO_ROOT / "plugins" / "_llm_judge.py"
 
 
-def _load_judge() -> "types.ModuleType":
+def _load_judge() -> types.ModuleType:
     """按 PluginManager 命名约定加载 _llm_judge.py。"""
     if "hermes_plugins" not in sys.modules:
         ns = types.ModuleType("hermes_plugins")
@@ -61,7 +61,7 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> dict:
     """拦截 agent.auxiliary_client 导入点：call_llm 替换为记录桩（零网络）。"""
     captured: dict = {}
 
-    def fake_call_llm(**kwargs: object) -> "_Resp":
+    def fake_call_llm(**kwargs: object) -> _Resp:
         captured.update(kwargs)
         return _Resp('{"uncertain": false, "needs_audit": false, '
                      '"done_claim": true, "has_boundary": true}')
@@ -121,7 +121,7 @@ def test_no_network_no_raise_on_import_error(
     """call_llm 抛异常 → 全键 None fail-open，不 raise（既有语义）。"""
     mod = _load_judge()
 
-    def boom(**kwargs: object) -> "_Resp":
+    def boom(**kwargs: object) -> _Resp:
         raise ImportError("agent.auxiliary_client unavailable")
 
     monkeypatch.setitem(sys.modules, "agent.auxiliary_client",

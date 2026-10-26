@@ -24,7 +24,7 @@ import time
 
 import pytest
 
-from hermes_cli import kanban_db as kb  # noqa: F401  -- kbd re-exports its constants
+from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_dispatch as kbd
 
 pytestmark = pytest.mark.skipif(

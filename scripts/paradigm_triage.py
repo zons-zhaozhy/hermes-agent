@@ -64,7 +64,7 @@ _PROMPT_TEMPLATE = """你是技术雷达分诊员。给下面论文打范式级�
 只输出一个 0-9 的数字，不要任何其他文字。"""
 
 
-def _load_recent(papers_dir: Path, days: int) -> List[Dict[str, Any]]:
+def _load_recent(papers_dir: Path, days: int) -> list[dict[str, Any]]:
     """加载近 N 天新增论文（按 mtime），提取标题/摘要/路径。
 
     Contract:
@@ -72,7 +72,7 @@ def _load_recent(papers_dir: Path, days: int) -> List[Dict[str, Any]]:
       Postconditions: 返回 [{file,title,abstract,age_hours}]，永不 raise
     """
     cutoff = time.time() - days * 86400
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for p in papers_dir.glob("*.md"):
         mtime = p.stat().st_mtime
         if mtime < cutoff:
@@ -102,7 +102,7 @@ def _extract_section(text: str, header: str, max_chars: int) -> str:
     """取「## 摘要」段落到下一个标题（str 方法）。"""
     lines = text.splitlines()
     capture = False
-    buf: List[str] = []
+    buf: list[str] = []
     for line in lines:
         if line.strip().startswith("## ") and header in line:
             capture = True
@@ -117,7 +117,7 @@ def _extract_section(text: str, header: str, max_chars: int) -> str:
     return joined
 
 
-def _pretriage(paper: Dict[str, Any]) -> int:
+def _pretriage(paper: dict[str, Any]) -> int:
     """信号词粗筛计数（零成本预分诊层）。"""
     text = (paper["title"] + " " + paper["abstract"]).lower()
     return sum(1 for s in _PARADIGM_SIGNALS if s in text)
@@ -141,7 +141,7 @@ def _ollama_score(title: str, abstract: str, timeout: int = 60) -> Optional[int]
         proc = subprocess.run(
             ["curl", "-sS", "--max-time", str(timeout), "-H", "Content-Type: application/json",
              "-d", payload, OLLAMA_URL],
-            capture_output=True, timeout=timeout + 10)
+            capture_output=True, timeout=timeout + 10, check=False)
     except FileNotFoundError as e:
         raise RuntimeError("curl 不可用——分诊件依赖 curl 调 Ollama") from e
     if proc.returncode != 0 or not proc.stdout:
@@ -161,7 +161,7 @@ def _ollama_score(title: str, abstract: str, timeout: int = 60) -> Optional[int]
     return None
 
 
-def triage(papers_dir: Path, days: int, top: int, quiet: bool = False) -> Dict[str, Any]:
+def triage(papers_dir: Path, days: int, top: int, quiet: bool = False) -> dict[str, Any]:
     """主分诊：预筛 → 小模型打分 → 排序输出。
 
     Contract:
@@ -171,7 +171,7 @@ def triage(papers_dir: Path, days: int, top: int, quiet: bool = False) -> Dict[s
     papers = _load_recent(papers_dir, days)
     candidates = [p for p in papers if _pretriage(p) >= 1] or papers[:20]
     degraded = False
-    scored: List[Dict[str, Any]] = []
+    scored: list[dict[str, Any]] = []
     for p in candidates[:60]:  # 预算上限:60 篇/轮，超出留给下一轮
         score = _ollama_score(p["title"], p["abstract"])
         if score is None:

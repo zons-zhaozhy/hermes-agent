@@ -52,7 +52,7 @@ def _plugin_disabled() -> bool:
     }
 
 
-def _iter_tool_call_ids(msg: Dict[str, Any]) -> List[str]:
+def _iter_tool_call_ids(msg: dict[str, Any]) -> list[str]:
     """提取 assistant 消息的 tool_call id 列表（OpenAI 格式）。
 
     Contract:
@@ -62,7 +62,7 @@ def _iter_tool_call_ids(msg: Dict[str, Any]) -> List[str]:
     calls = msg.get("tool_calls") or []
     if not isinstance(calls, list):
         return []
-    ids: List[str] = []
+    ids: list[str] = []
     for c in calls:
         if isinstance(c, dict):
             cid = c.get("id")
@@ -71,7 +71,7 @@ def _iter_tool_call_ids(msg: Dict[str, Any]) -> List[str]:
     return ids
 
 
-def check_tool_pairing(messages: List[Dict[str, Any]]) -> List[str]:
+def check_tool_pairing(messages: list[dict[str, Any]]) -> list[str]:
     """不变量 1+3：工具配对完整性。
 
     Contract:
@@ -82,8 +82,8 @@ def check_tool_pairing(messages: List[Dict[str, Any]]) -> List[str]:
     - 每个 assistant 声明的 tool_call 在历史内必须有对应 tool 结果
       （历史是完成轮快照，悬挂 call = 配对断裂）
     """
-    violations: List[str] = []
-    declared: Dict[str, int] = {}  # tool_call_id -> index of assistant msg
+    violations: list[str] = []
+    declared: dict[str, int] = {}  # tool_call_id -> index of assistant msg
     answered: set = set()
     for i, m in enumerate(messages):
         if not isinstance(m, dict):
@@ -110,14 +110,14 @@ def check_tool_pairing(messages: List[Dict[str, Any]]) -> List[str]:
     return violations
 
 
-def check_role_alternation(messages: List[Dict[str, Any]]) -> List[str]:
+def check_role_alternation(messages: list[dict[str, Any]]) -> list[str]:
     """不变量 2：角色交替合法性（连续同角色裸消息 = 违反）。
 
     Contract:
       Preconditions: messages 为 List[dict]（空列表合法）
       Postconditions: 返回违反描述列表；绝不 raise
     """
-    violations: List[str] = []
+    violations: list[str] = []
     last_role: Optional[str] = None
     for i, m in enumerate(messages):
         if not isinstance(m, dict):
@@ -133,20 +133,20 @@ def check_role_alternation(messages: List[Dict[str, Any]]) -> List[str]:
 
 
 # 不变量注册表：(名称, 检查函数)。新增引擎不变量时在此追加。
-INVARIANTS: Dict[str, Any] = {
+INVARIANTS: dict[str, Any] = {
     "tool_pairing": check_tool_pairing,
     "role_alternation": check_role_alternation,
 }
 
 
-def run_all_invariants(messages: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+def run_all_invariants(messages: list[dict[str, Any]]) -> dict[str, list[str]]:
     """跑全部注册的不变量，返回 {name: violations}（含空列表）。
 
     Contract:
       Preconditions: messages 为 list（元素可为任意，非 dict 跳过）
       Postconditions: 每个注册名必有条目；单项检查异常不影响其他项
     """
-    results: Dict[str, List[str]] = {}
+    results: dict[str, list[str]] = {}
     for name, fn in INVARIANTS.items():
         try:
             results[name] = fn(messages)

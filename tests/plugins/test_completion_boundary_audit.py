@@ -61,12 +61,12 @@ def _mk(mod, judge_result, sid):
     """装配插件：monkeypatch judge 返回固定结果，返回 (audit, inject, state)。"""
     ctx = _FakeCtx()
     mod.register(ctx)
-    mod._judge_reply_side = lambda text: judge_result  # noqa: SLF001 测试桩
-    mod.llm_judge_bool = lambda **kw: None  # noqa: SLF001 独立回退通道也不发真调用
-    mod.llm_judge_multi = lambda **kw: {k: None for k in kw["keys"]}  # noqa: SLF001
+    mod._judge_reply_side = lambda text: judge_result
+    mod.llm_judge_bool = lambda **kw: None
+    mod.llm_judge_multi = lambda **kw: {k: None for k in kw["keys"]}
     audit = ctx.hooks["transform_llm_output"]
     inject = ctx.hooks["pre_llm_call"]
-    state = mod._state(sid)  # noqa: SLF001
+    state = mod._state(sid)
     state.clear()
     return audit, inject, state
 
@@ -105,7 +105,7 @@ def test_stale_escalates():
     mod = _load_plugin()
     judge = {"uncertain": False, "needs_audit": False,
              "done_claim": True, "has_boundary": True}
-    audit, inject, state = _mk(mod, judge, "cba-test")
+    audit, inject, _ = _mk(mod, judge, "cba-test")
     audit(_LONG_TEXT, session_id="cba-test")  # 第 1 轮
     inject(session_id="cba-test")
     audit(_LONG_TEXT2, session_id="cba-test")  # 第 2 轮：换了措辞仍原样披露未消项
@@ -126,7 +126,7 @@ def test_resolved_boundary_clears_pending():
     )
     audit(_LONG_TEXT, session_id="cba-test")
     # 下一轮：全部消项，回复只报结果无边界清单（换措辞避开同文去重）
-    mod._judge_reply_side = lambda text: {  # noqa: SLF001
+    mod._judge_reply_side = lambda text: {
         "uncertain": False, "needs_audit": False,
         "done_claim": True, "has_boundary": False}
     audit(_LONG_TEXT2, session_id="cba-test")
@@ -161,7 +161,7 @@ def test_judge_fail_open_leaves_state():
 def test_no_done_claim_no_pending():
     """无完成声明的进度汇报（列了待办边界）→ 不记 pending。"""
     mod = _load_plugin()
-    audit, inject, state = _mk(
+    audit, _, state = _mk(
         mod,
         {"uncertain": False, "needs_audit": False,
          "done_claim": False, "has_boundary": True},

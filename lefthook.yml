@@ -2,7 +2,11 @@ pre-commit:
   jobs:
     - name: lint python
       glob: "*.py" # glob filter
-      run: ruff check --config ./ruff.pre-commit.toml {staged_files}
+      # 唯一 lint 真相 = 仓库根 ruff.toml（ruff 无 --config 时自动读取，与 CI
+      # scripts/check 同源同文件）。此前的 ruff.pre-commit.toml 是它的复制版，
+      # 两真相漂移导致规则集不同步（2026-10-26 实测拦住无关提交）——已删除，
+      # 禁再复制第二份。
+      run: ruff check {staged_files}
 
     - name: lint web
       root: web/

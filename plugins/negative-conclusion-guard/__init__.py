@@ -112,9 +112,7 @@ def on_post_tool_call(**kwargs) -> None:
     # search_files returning zero matches on a content/files search.
     if tool_name in _ZERO_HIT_TOOLS:
         total = result.get("total_count") if isinstance(result, dict) else None
-        if total == 0:
-            _mark_probe(sid, tool_name)
-        elif total is None and status == "error":
+        if total == 0 or total is None and status == "error":
             _mark_probe(sid, tool_name)
 
 
@@ -134,7 +132,7 @@ _REMINDER = (
 )
 
 
-def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
+def on_pre_llm_call(**kwargs) -> Optional[dict[str, Any]]:
     """Inject a reminder when probes accumulated without authority verification."""
     if _plugin_disabled():
         return None

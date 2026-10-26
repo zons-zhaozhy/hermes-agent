@@ -170,8 +170,9 @@ class TestMarkerPathProfileAware:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         from plugins.read_think_gate_host import _four_axis_marker_path
 
-        p = _four_axis_marker_path()
-        assert p == tmp_path / "cache" / f"four_axis_gate_{os.getpid()}.json"
+        p = _four_axis_marker_path("sess-A")
+        # 期望: 会话桶 slug 追加在 PID 之后——同进程多会话隔离
+        assert p == tmp_path / "cache" / f"four_axis_gate_{os.getpid()}_sess-A.json"
 
     def test_plugin_marker_path_matches_gate_path(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -179,7 +180,29 @@ class TestMarkerPathProfileAware:
 
         four_axis_guard = _load_four_axis_guard()
 
-        assert four_axis_guard._marker_file() == _four_axis_marker_path()
+        assert four_axis_guard._marker_file("sess-A") == _four_axis_marker_path("sess-A")
+
+    def test_marker_buckets_isolate_sessions(self, tmp_path, monkeypatch):
+        # 行为契约：会话 B 的 turn-start 不得清掉会话 A 已验证的 marker——
+        # 网关单进程服务多会话，此前共享单文件时任一会话新 turn 即作废他
+        # 会话的四轴证据（hongtai 会话被副防线反复拦截 6 次的根因）。
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from plugins.read_think_gate_host import (
+            ReadThinkGate,
+            _four_axis_marker_path,
+        )
+
+        gate_a = ReadThinkGate(session_id="sess-A")
+        gate_a.mark_four_axis_complete()
+        marker_a = _four_axis_marker_path("sess-A")
+        assert marker_a.exists()  # 期望: A 凑齐四轴后 marker 落在本会话桶
+
+        gate_b = ReadThinkGate(session_id="sess-B")
+        gate_b.reset_for_turn(user_message="other session turn")
+        assert marker_a.exists()  # 期望: B 的 turn-start 不影响 A 的 marker
+
+        gate_a.reset_for_turn(user_message="next turn")
+        assert not marker_a.exists()  # 期望: A 自己的新 turn 清掉 A 的 marker
 
     def test_agent_owned_exemptions_follow_hermes_home(self, tmp_path, monkeypatch):
         # Path.home 钉到沙盒假家目录：负例路径的 resolve() 不得触碰真实
@@ -291,7 +314,7 @@ class TestSequentialGateWiring:
         agent = _make_agent("write_file")
         # Real gate, enabled, zero investigation → must block write_file.
         # Mounted through the plugin registry + live hook chain (externalized wiring).
-        spy = _spy_on_agent(agent)
+        _spy_on_agent(agent)
         tc = _mock_tool_call("write_file", {"path": "/tmp/a.py", "content": "x"})
         assistant_message = SimpleNamespace(content="", tool_calls=[tc])
         messages = []

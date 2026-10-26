@@ -51,6 +51,7 @@ def git_sha(file_path: Path) -> Optional[str]:
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
         sha = result.stdout.strip().split("\n")[0]
         # Must be a valid 40-char hex SHA (git rev-parse outputs error
@@ -123,7 +124,7 @@ def _is_in_skills_dir(file_path: Path) -> bool:
         return False
 
 
-def extract_file_refs(content: str, skill_dir: Path) -> List[Path]:
+def extract_file_refs(content: str, skill_dir: Path) -> list[Path]:
     """Extract file references from skill content, resolve to absolute paths."""
     refs = set(_FILE_REF_PATTERN.findall(content))
     resolved = []
@@ -134,7 +135,7 @@ def extract_file_refs(content: str, skill_dir: Path) -> List[Path]:
     return resolved
 
 
-def load_cache() -> Dict[str, Dict[str, str]]:
+def load_cache() -> dict[str, dict[str, str]]:
     """Load the SHA baseline cache."""
     if CACHE_FILE.exists():
         try:
@@ -144,7 +145,7 @@ def load_cache() -> Dict[str, Dict[str, str]]:
     return {}
 
 
-def save_cache(cache: Dict[str, Dict[str, str]]) -> None:
+def save_cache(cache: dict[str, dict[str, str]]) -> None:
     """Save the SHA baseline cache."""
     CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
     CACHE_FILE.write_text(
@@ -155,8 +156,8 @@ def save_cache(cache: Dict[str, Dict[str, str]]) -> None:
 
 def check_skill(
     skill_dir: Path,
-    baseline: Dict[str, Dict[str, str]],
-) -> Tuple[List[str], List[str], List[str]]:
+    baseline: dict[str, dict[str, str]],
+) -> tuple[list[str], list[str], list[str]]:
     """Check one skill for drift. Returns (new_files, changed_files, deleted_files)."""
     skill_md = skill_dir / "SKILL.md"
     if not skill_md.exists():
@@ -180,7 +181,7 @@ def check_skill(
     changed_files = []
     deleted_files = []
 
-    current_shas: Dict[str, str] = {}
+    current_shas: dict[str, str] = {}
 
     for f in current_files:
         f_str = str(f)
@@ -206,7 +207,7 @@ def check_skill(
     return new_files, changed_files, deleted_files
 
 
-def check_all_skills(baseline: Dict[str, Dict[str, str]]) -> int:
+def check_all_skills(baseline: dict[str, dict[str, str]]) -> int:
     """Check all skills for drift. Returns count of skills with changes."""
     total_changes = 0
 
@@ -218,10 +219,10 @@ def check_all_skills(baseline: Dict[str, Dict[str, str]]) -> int:
 
     skill_dirs.sort()
 
-    report_new: List[Tuple[str, str]] = []
-    report_changed: List[Tuple[str, str, str, str]] = []
-    report_deleted: List[Tuple[str, str]] = []
-    stale_skills: List[str] = []
+    report_new: list[tuple[str, str]] = []
+    report_changed: list[tuple[str, str, str, str]] = []
+    report_deleted: list[tuple[str, str]] = []
+    stale_skills: list[str] = []
 
     for sd in skill_dirs:
         new_f, changed_f, deleted_f = check_skill(sd, baseline)
@@ -274,7 +275,7 @@ def check_all_skills(baseline: Dict[str, Dict[str, str]]) -> int:
     return total_changes
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Check if source files referenced by skills have changed (SHA drift detection).",
     )
@@ -328,7 +329,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             save_cache(baseline)
             print(f"\n  Baseline updated: {CACHE_FILE} ({len(baseline)} skills, {total_changes} drift)")
         elif total_changes > 0:
-            print(f"\n  Run with --update to save the new baseline.")
+            print("\n  Run with --update to save the new baseline.")
             return 1
 
     return 0

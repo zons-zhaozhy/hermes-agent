@@ -35,7 +35,7 @@ TOOL_CHECK = "world_model_check"
 # Tool schemas
 # ---------------------------------------------------------------------------
 
-INIT_SCHEMA: Dict[str, Any] = {
+INIT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "task_summary": {
@@ -51,7 +51,7 @@ INIT_SCHEMA: Dict[str, Any] = {
     "required": ["task_summary"],
 }
 
-VIEW_SCHEMA: Dict[str, Any] = {
+VIEW_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "mode": {
@@ -62,7 +62,7 @@ VIEW_SCHEMA: Dict[str, Any] = {
     },
 }
 
-UPDATE_SCHEMA: Dict[str, Any] = {
+UPDATE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "action": {
@@ -141,7 +141,7 @@ UPDATE_SCHEMA: Dict[str, Any] = {
     "required": ["action"],
 }
 
-CHECK_SCHEMA: Dict[str, Any] = {
+CHECK_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "node_id": {
@@ -161,7 +161,7 @@ CHECK_SCHEMA: Dict[str, Any] = {
 # Handler functions
 # ---------------------------------------------------------------------------
 
-def _get_session_id(context: Dict[str, Any]) -> Optional[str]:
+def _get_session_id(context: dict[str, Any]) -> Optional[str]:
     """Best-effort extract of session id from invocation context."""
     for key in ("session_id", "session_key", "conversation_id", "task_name"):
         val = context.get(key)
@@ -170,7 +170,7 @@ def _get_session_id(context: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _get_wm_or_none(context: Dict[str, Any]) -> Optional[WorldModel]:
+def _get_wm_or_none(context: dict[str, Any]) -> Optional[WorldModel]:
     """Get the WorldModel for the current session, only if already initialized.
     
     Does NOT auto-create. Returns None if no tree file exists.
@@ -189,7 +189,7 @@ def _get_wm_or_none(context: Dict[str, Any]) -> Optional[WorldModel]:
 # ---- world_model_init ------------------------------------------------------
 
 
-def handle_init(context: Dict[str, Any], params: Dict[str, Any]) -> dict:
+def handle_init(context: dict[str, Any], params: dict[str, Any]) -> dict:
     """Create a new decision tree. Overwrites any existing tree for this session."""
     session_id = _get_session_id(context) or "default"
     wm = WorldModel(task_name=session_id)
@@ -205,7 +205,7 @@ def handle_init(context: Dict[str, Any], params: Dict[str, Any]) -> dict:
 # ---- world_model_view ------------------------------------------------------
 
 
-def handle_view(context: Dict[str, Any], params: Dict[str, Any]) -> dict:
+def handle_view(context: dict[str, Any], params: dict[str, Any]) -> dict:
     """View the current decision tree state."""
     wm = _get_wm_or_none(context)
     if wm is None or not wm._loaded:
@@ -241,7 +241,7 @@ def handle_view(context: Dict[str, Any], params: Dict[str, Any]) -> dict:
 # ---- world_model_update ----------------------------------------------------
 
 
-def handle_update(context: Dict[str, Any], params: Dict[str, Any]) -> dict:
+def handle_update(context: dict[str, Any], params: dict[str, Any]) -> dict:
     """Update the decision tree with new action or result."""
     wm = _get_wm_or_none(context)
     if wm is None or not wm._loaded:
@@ -317,7 +317,7 @@ def handle_update(context: Dict[str, Any], params: Dict[str, Any]) -> dict:
 # ---- world_model_check -----------------------------------------------------
 
 
-def handle_check(context: Dict[str, Any], params: Dict[str, Any]) -> dict:
+def handle_check(context: dict[str, Any], params: dict[str, Any]) -> dict:
     """Run anti-self-deception checks on a node."""
     wm = _get_wm_or_none(context)
     if wm is None or not wm._loaded:

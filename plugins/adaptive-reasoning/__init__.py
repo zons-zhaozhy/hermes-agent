@@ -88,7 +88,7 @@ logger = logging.getLogger(__name__)
 
 # ── Effort scale (mirrors hermes_constants.VALID_REASONING_EFFORTS) ──────
 
-EFFORT_SCALE: List[str] = [
+EFFORT_SCALE: list[str] = [
     "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 ]
 
@@ -144,11 +144,11 @@ def _clamp(level: str, floor: str, ceiling: str) -> str:
 # ── Config resolution ────────────────────────────────────────────────────
 
 _CONFIG_LOCK = threading.Lock()
-_CONFIG_CACHE: Optional[Dict[str, Any]] = None
+_CONFIG_CACHE: Optional[dict[str, Any]] = None
 _CONFIG_CACHE_KEY: Optional[tuple] = None
 
 
-def _default_config() -> Dict[str, Any]:
+def _default_config() -> dict[str, Any]:
     return {
         "low_max_chars": 120,
         "high_min_chars": 600,
@@ -157,7 +157,7 @@ def _default_config() -> Dict[str, Any]:
     }
 
 
-def _resolve_config() -> Dict[str, Any]:
+def _resolve_config() -> dict[str, Any]:
     """Load tuning config from config.yaml ``agent.adaptive_reasoning``.
 
     Cached on (mtime_ns, size) of config.yaml — same pattern the core uses,
@@ -233,9 +233,9 @@ def _plugin_enabled() -> bool:
 # them; the middleware reads them per API call and drops stale turns.
 
 _STATE_LOCK = threading.Lock()
-_TURN_ERRORS: Dict[str, int] = {}
+_TURN_ERRORS: dict[str, int] = {}
 # Closed-loop feedback state (v4): session_id → last response stats.
-_LAST_RESPONSE_STATS: Dict[str, Dict[str, Any]] = {}
+_LAST_RESPONSE_STATS: dict[str, dict[str, Any]] = {}
 
 
 def _resp_field(response: Any, name: str) -> Any:
@@ -350,8 +350,8 @@ def adaptive_llm_execution_middleware(**kwargs: Any) -> Any:
     return response
 
 
-def _feedback_level(stats: Optional[Dict[str, Any]],
-                    tool_errors: int, cfg: Dict[str, Any]) -> Optional[str]:
+def _feedback_level(stats: Optional[dict[str, Any]],
+                    tool_errors: int, cfg: dict[str, Any]) -> Optional[str]:
     """Derive a closed-loop effort correction from the last response.
 
     Measured distribution (glm-5.3, coding endpoint, 2026-08-17) shapes
@@ -436,7 +436,7 @@ def _forget_stale_turns(session_id: str, turn_id: str) -> None:
 
 # ── Complexity classification ────────────────────────────────────────────
 
-def _session_work_depth(messages: Optional[List[Dict[str, Any]]]) -> int:
+def _session_work_depth(messages: Optional[list[dict[str, Any]]]) -> int:
     """Count work signals in the conversation history visible to this call.
 
     ``request["messages"]`` is the full API-bound history: assistant
@@ -474,7 +474,7 @@ def _session_work_depth(messages: Optional[List[Dict[str, Any]]]) -> int:
     return depth
 
 def classify_effort(user_message: str, *, tool_errors: int = 0,
-                    cfg: Optional[Dict[str, Any]] = None,
+                    cfg: Optional[dict[str, Any]] = None,
                     work_depth: int = 0) -> str:
     """Return the adaptive effort level for this API call.
 
@@ -593,8 +593,8 @@ def _translate_effort(level: str, provider: str, model: str) -> Optional[str]:
 
 
 def _effort_targets(
-    request: Dict[str, Any], level: str, provider: str, model: str,
-) -> Dict[str, str]:
+    request: dict[str, Any], level: str, provider: str, model: str,
+) -> dict[str, str]:
     """Compute which wire fields this plugin may rewrite, and their targets.
 
     Shapes handled (mirroring what the transports emit):
@@ -613,7 +613,7 @@ def _effort_targets(
     Returns:
         Mapping of dotted field path → target value; empty = no-op.
     """
-    targets: Dict[str, str] = {}
+    targets: dict[str, str] = {}
     extra_body = request.get("extra_body")
     if isinstance(extra_body, dict):
         reasoning = extra_body.get("reasoning")
@@ -630,8 +630,8 @@ def _effort_targets(
 
 
 def _rewrite_reasoning(
-    request: Dict[str, Any], level: str, provider: str, model: str,
-) -> Optional[Dict[str, Any]]:
+    request: dict[str, Any], level: str, provider: str, model: str,
+) -> Optional[dict[str, Any]]:
     """Return rewritten request with the adapted effort applied, or None.
 
     Returns:
@@ -668,7 +668,7 @@ def _rewrite_reasoning(
     return None
 
 
-def adaptive_llm_request_middleware(**kwargs: Any) -> Optional[Dict[str, Any]]:
+def adaptive_llm_request_middleware(**kwargs: Any) -> Optional[dict[str, Any]]:
     """llm_request middleware: rewrite reasoning effort for this call.
 
     Returns:
@@ -738,7 +738,7 @@ def adaptive_llm_request_middleware(**kwargs: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _last_user_message(request: Dict[str, Any]) -> str:
+def _last_user_message(request: dict[str, Any]) -> str:
     """Extract the turn's user message text from the request payload.
 
     The middleware call site doesn't pass ``user_message`` as a kwarg, but
@@ -769,7 +769,7 @@ def _last_user_message(request: Dict[str, Any]) -> str:
     return ""
 
 
-def register(ctx) -> None:  # noqa: ANN001 — PluginContext from loader
+def register(ctx) -> None:
     """Plugin entry point: register middleware + observer hook."""
     ctx.register_middleware("llm_request", adaptive_llm_request_middleware)
     ctx.register_middleware("llm_execution", adaptive_llm_execution_middleware)

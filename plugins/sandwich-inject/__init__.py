@@ -52,18 +52,18 @@ logger = logging.getLogger(__name__)
 
 # ── 会话级违规计数（进程内，不落盘）───────────────────────────
 # key: session_id, value: {scene_name: {"violations": int, "active": bool}}
-_VIOLATION_TRACKER: Dict[str, Dict[str, Dict[str, Any]]] = {}
+_VIOLATION_TRACKER: dict[str, dict[str, dict[str, Any]]] = {}
 _TRACKER_LOCK = threading.Lock()
 
-_CONFIG_CACHE: Dict[str, tuple[float, Optional[dict]]] = {}  # path -> (mtime, data)
+_CONFIG_CACHE: dict[str, tuple[float, Optional[dict]]] = {}  # path -> (mtime, data)
 _CONFIG_LOCK = threading.Lock()
 
 # knowledge_files 内容缓存: path -> (mtime, content)
-_KB_CACHE: Dict[str, tuple[float, str]] = {}
+_KB_CACHE: dict[str, tuple[float, str]] = {}
 _KB_LOCK = threading.Lock()
 
 # 会话级场景锁定: session_id -> scene dict (首个命中后锁定, 防多轮失活)
-_SESSION_SCENES: Dict[str, dict] = {}
+_SESSION_SCENES: dict[str, dict] = {}
 _SESSION_LOCK = threading.Lock()
 
 _MAX_RETRIES_DEFAULT = 3
@@ -72,7 +72,7 @@ _MAX_RETRIES_DEFAULT = 3
 _MAX_TRACKED_SESSIONS = 512
 
 
-def _bounded_insert(d: Dict[str, Any], key: str, value: Any) -> None:
+def _bounded_insert(d: dict[str, Any], key: str, value: Any) -> None:
     """Insert into a session-keyed dict, evicting oldest when over capacity.
 
     Contract:
@@ -132,7 +132,7 @@ def _load_config() -> Optional[dict]:
         return None
 
 
-def _load_knowledge_files(files: Optional[List[str]]) -> str:
+def _load_knowledge_files(files: Optional[list[str]]) -> str:
     """Read knowledge files with mtime cache, join contents.
 
     Contract:
@@ -143,7 +143,7 @@ def _load_knowledge_files(files: Optional[List[str]]) -> str:
     """
     if not files:
         return ""
-    parts: List[str] = []
+    parts: list[str] = []
     for f in files:
         try:
             p = Path(f).expanduser()
@@ -186,7 +186,7 @@ def _match_scene(cfg: Optional[dict], user_message: str) -> Optional[dict]:
     return None
 
 
-def _last_turn_tool_calls(conversation_history: List[dict]) -> List[str]:
+def _last_turn_tool_calls(conversation_history: list[dict]) -> list[str]:
     """Tool names called in the most recent assistant turn.
 
     Walks the tail of conversation_history; returns the tool names of the
@@ -232,7 +232,7 @@ def _render_injection(scene: dict, violations: int, max_retries: int) -> str:
     required = scene.get("required_tools") or []
     req_list = "\n".join(f"- {t}" for t in required)
 
-    parts: List[str] = []
+    parts: list[str] = []
     if sop:
         parts.append(f"【强制SOP - 必须严格遵循】\n{sop}")
     kb_all = "\n\n".join(p for p in (knowledge, kb_files) if p)
@@ -257,7 +257,7 @@ def _render_injection(scene: dict, violations: int, max_retries: int) -> str:
     return "\n\n".join(parts)
 
 
-def on_pre_llm_call(**kwargs) -> Optional[Dict[str, Any]]:
+def on_pre_llm_call(**kwargs) -> Optional[dict[str, Any]]:
     """Sandwich gate: inject SOP/knowledge + verify required-tool contract.
 
     Returns {"context": ...} consumed by the framework (injected into the

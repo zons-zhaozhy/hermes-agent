@@ -48,19 +48,33 @@ logger = logging.getLogger(__name__)
 # class of bugs).
 
 
-def _four_axis_marker_path() -> Path:
+def _marker_session_slug(session_id: str) -> str:
+    """会话桶 slug——写读两端唯一实现（plugins/guards/four_axis.py import 本函数）。
+
+    文件名安全：仅保留字母数字与 -_.，其余字符替换为 _；空值归桶 ``nosession``。
+    """
+    slug = "".join(c if c.isalnum() or c in "-_." else "_" for c in session_id)
+    return slug or "nosession"
+
+
+def _four_axis_marker_path(session_id: str = "") -> Path:
     """解析四轴 marker 文件路径（profile-aware，每次调用现算）。
 
     Returns:
-        Path: hermes_home/cache/four_axis_gate_{pid}.json
+        Path: hermes_home/cache/four_axis_gate_{pid}_{session}.json
     """
     from hermes_constants import get_hermes_home
 
-    # 文件名带 PID：多 hermes 进程并发时（CLI 多会话/桌面端/cron 同机），共享单例
-    # marker 会被兄弟进程的 turn-start 清除（begin_turn unlink），导致证据齐备仍被
-    # 副防线拦截。写读两端（本模块 + plugins/guards/four_axis.py）同进程内解析出
-    # 同一路径，跨进程天然隔离。
-    return get_hermes_home() / "cache" / f"four_axis_gate_{os.getpid()}.json"
+    # 文件名带 PID + session_id：PID 隔离跨进程；session_id 隔离同进程多会话——
+    # 网关单进程服务多会话（含 cron），此前按 PID 共享单文件时，任一会话的
+    # turn-start（reset_for_turn → _clear_four_axis_marker）会清掉其他会话已
+    # 凑齐的四轴 marker，导致证据齐备仍被副防线反复拦截（与 diff_debt 按
+    # session 分桶同类）。写读两端（本模块 + plugins/guards/four_axis.py）经
+    # 同一 slug 函数解析路径，同会话内必然一致。
+    return (
+        get_hermes_home() / "cache"
+        / f"four_axis_gate_{os.getpid()}_{_marker_session_slug(session_id)}.json"
+    )
 
 # 四轴关键词表（2026-08-26 恢复：e12e46fd3 删除后 use_llm_judge=false 时四轴无解锁路径）。
 # 子串匹配 O(n) 无回溯（历史上 re.search 曾致灾难性回溯 CPU 100%，禁用正则）。
@@ -113,14 +127,15 @@ _FOUR_AXIS_REQUIRED_TOOLS: frozenset[str] = frozenset(
 )
 
 
-def _clear_four_axis_marker() -> None:
-    """清除四轴 marker 文件——每个 turn 开始时调用。
+def _clear_four_axis_marker(session_id: str = "") -> None:
+    """清除四轴 marker 文件——每个 turn 开始时调用（只清本会话的桶）。
 
-    同时清扫陈旧的跨进程 marker（four_axis_gate_*.json）：进程退出后其 PID 命名
-    的 marker 不再被任何 turn-start 清除，避免长期运行后 cache 目录堆积。
+    同时清扫陈旧的跨进程/跨会话 marker（four_axis_gate_*.json）：进程退出或
+    会话结束后其命名的 marker 不再被任何 turn-start 清除，避免长期运行后
+    cache 目录堆积。
     """
     try:
-        _marker = _four_axis_marker_path()
+        _marker = _four_axis_marker_path(session_id)
         if _marker.exists():
             _marker.unlink()
     except Exception:
@@ -244,7 +259,6 @@ def _terminal_writes_file(command: str) -> bool:
         if pos == -1:
             continue
         # 确保不是在引号内（grep 'cp ...'）
-        before = command[:pos + 1]  # 包含 "cp " 的 "cp" 部分
         # 简单检查：如果 cp/mv 前面是引号或不是命令边界，跳过
         # 实际 cp/mv 作为命令时前面通常是行首、管道、分号、&& 或 ||
         preceding = command[:pos].rstrip()
@@ -634,7 +648,7 @@ class ReadThinkGateConfig:
     gated_tools: tuple[str, ...] = ()
 
     @classmethod
-    def from_mapping(cls, data: Mapping[str, Any] | None) -> "ReadThinkGateConfig":
+    def from_mapping(cls, data: Mapping[str, Any] | None) -> ReadThinkGateConfig:
         if not isinstance(data, Mapping):
             return cls()
         profiles_raw = data.get("complexity_profiles")
@@ -686,8 +700,11 @@ class ReadThinkGate:
       3. 解锁后 → 本 turn 后续全部放行
     """
 
-    def __init__(self, config: ReadThinkGateConfig | None = None):
+    def __init__(self, config: ReadThinkGateConfig | None = None, session_id: str = ""):
         self.config = config or ReadThinkGateConfig()
+        # marker 桶维度——写/清 marker 均以此会话身份解析路径（见
+        # _four_axis_marker_path：同进程多会话隔离）。
+        self._session_id = session_id
         # 合并默认门控工具 + 用户自定义扩展，形成实例级集合。
         # check_batch 用这个 set 而不是直接引用全局 GATED_TOOL_NAMES。
         self._gated_tools: set[str] = set(GATED_TOOL_NAMES)
@@ -725,8 +742,8 @@ class ReadThinkGate:
         self._judge_fail_count: int = 0
         # 四轴闸门——每 turn 重新计数
         self._four_axis_found: set[str] = set()
-        # 清除上一 turn 的四轴 marker 文件
-        _clear_four_axis_marker()
+        # 清除本会话上一 turn 的四轴 marker 文件（不触碰其他会话的桶）
+        _clear_four_axis_marker(self._session_id)
         # 漏洞修复：记录 turn 开始时间——墙钟逃逸阀防止用户感知的"卡死"
         self._turn_start_time = time.time()
         self._total_tool_calls = 0
@@ -811,7 +828,7 @@ class ReadThinkGate:
         # 四轴全部到位 → 写入 marker 文件
         if len(self._four_axis_found) == 4:
             try:
-                _marker = _four_axis_marker_path()
+                _marker = _four_axis_marker_path(self._session_id)
                 _marker.parent.mkdir(parents=True, exist_ok=True)
                 _marker.write_text(json.dumps({
                     "verified": True,
@@ -833,7 +850,7 @@ class ReadThinkGate:
         self._four_axis_found = set(_FOUR_AXIS_LABELS)
         assert self._four_axis_complete(), "mark_four_axis_complete failed to set all axes"
         try:
-            _marker = _four_axis_marker_path()
+            _marker = _four_axis_marker_path(self._session_id)
             _marker.parent.mkdir(parents=True, exist_ok=True)
             _marker.write_text(json.dumps({
                 "verified": True,
@@ -1184,22 +1201,20 @@ class ReadThinkGate:
                 fb = self._last_judge_feedback
                 self._last_judge_feedback = ""  # 消费后清空
                 return (
-                    "[ReadThink Gate — 推理阶段 · 标准任务] 工具 '%s' 暂时不可用。\n\n"
-                    "LLM 评审不通过。评审意见：%s\n\n"
+                    f"[ReadThink Gate — 推理阶段 · 标准任务] 工具 '{tool_name}' 暂时不可用。\n\n"
+                    f"LLM 评审不通过。评审意见：{fb}\n\n"
                     "你的分析需要覆盖：\n"
                     "  A. 目标代码当前逻辑（引用具体函数/行号/数据流）\n"
                     "  B. 与它有关系的既有程序（调用方、被依赖方、同类实现）\n"
                     "  C. 既有程序是怎么做这件事的（等价实现/可复用的模式）\n"
                     "  D. 你的方案为什么是最优的（对比过的替代方案）\n\n"
-                    "（推理轮数：%d/%d）"
-                    % (tool_name, fb,
-                       self._reasoning_rounds, profile.max_reasoning_rounds)
+                    f"（推理轮数：{self._reasoning_rounds}/{profile.max_reasoning_rounds}）"
                 )
             if done < needed:
                 # ── 漏洞 6 修复：推理轮数用 self._reasoning_rounds 而非硬编码 1 ──
                 remaining_reads = needed - done
                 return (
-                    "[ReadThink Gate — 推理阶段 · 标准任务] 工具 '%s' 暂时不可用。\n\n"
+                    f"[ReadThink Gate — 推理阶段 · 标准任务] 工具 '{tool_name}' 暂时不可用。\n\n"
                     "动手前必须搞清楚：\n"
                     "  1. 要改的代码当前怎么写的？逻辑是什么？（读源码，引用行号）\n"
                     "  2. 跟它有关系的既有程序有哪些？调用方在哪？被谁依赖？\n"
@@ -1207,62 +1222,54 @@ class ReadThinkGate:
                     "  4. 你打算怎么改？这是最优方案吗？有没有更稳妥的做法？\n\n"
                     "用 search_files 搜调用方和同类实现，用 read_file 读目标文件全貌，\n"
                     "用 codegraph/gitnexus 追依赖链。搞清楚再动手。\n\n"
-                    "【通过诊断】还需要 %d 次只读调查（当前 %d/%d）+ 至少 %d 字分析。\n"
-                    "（推理轮数：%d/%d）"
-                    % (tool_name, remaining_reads, done, needed,
-                       profile.min_reasoning_chars,
-                       self._reasoning_rounds, profile.max_reasoning_rounds)
+                    f"【通过诊断】还需要 {remaining_reads} 次只读调查（当前 {done}/{needed}）"
+                    f"+ 至少 {profile.min_reasoning_chars} 字分析。\n"
+                    f"（推理轮数：{self._reasoning_rounds}/{profile.max_reasoning_rounds}）"
                 )
             # 调查次数达标但缺少搜索类工具——不是 read_file 堆数量就够的
             if not self._has_diverse_investigation(profile):
                 return (
-                    "[ReadThink Gate — 推理阶段 · 标准任务] 工具 '%s' 暂时不可用。\n\n"
-                    "已做 %d 次只读调查（read_file），但还没用搜索类工具。\n"
+                    f"[ReadThink Gate — 推理阶段 · 标准任务] 工具 '{tool_name}' 暂时不可用。\n\n"
+                    f"已做 {done} 次只读调查（read_file），但还没用搜索类工具。\n"
                     "用 search_files 搜调用方和同类实现，或用 web_search 查外部文档——\n"
                     "搞清楚全局关系，不能只盯着单个文件。\n\n"
                     "【通过诊断】再做 1 次搜索类工具调用（search_files/web_search）即可通过此关。\n"
-                    "（调查次数：%d/%d，推理轮数：%d/%d）"
-                    % (tool_name, done, done, needed,
-                       self._reasoning_rounds, profile.max_reasoning_rounds)
+                    f"（调查次数：{done}/{needed}，推理轮数：{self._reasoning_rounds}/{profile.max_reasoning_rounds}）"
                 )
             # 四轴闸门未通过——调查做了但四轴输出不齐
             if not self._four_axis_complete():
-                missing = self._missing_axes()
+                missing = "、".join(self._missing_axes())
                 return (
-                    "[ReadThink Gate — 推理阶段 · 四轴闸门] 工具 '%s' 暂时不可用。\n\n"
-                    "调查已完成，但四轴闸门未通过。缺少：%s\n\n"
+                    f"[ReadThink Gate — 推理阶段 · 四轴闸门] 工具 '{tool_name}' 暂时不可用。\n\n"
+                    f"调查已完成，但四轴闸门未通过。缺少：{missing}\n\n"
                     "在前面的回复中逐项输出以下四轴内容，缺一不可：\n"
                     "  1. 影响面清单：列出每一个受影响调用方（绝对路径+函数名+行号）\n"
                     "  2. 原意图溯源：git log -p 追溯到最初 commit + 不变量清单（逐条标注保持/修改/破坏）\n"
                     "  3. 根因定位：区分症状位置与根因位置（文件+行号），修复目标必须是根因\n"
                     "  4. 风险矩阵：枚举最坏场景（触发条件+影响范围+可恢复性），覆盖六类风险\n\n"
                     "四轴的输出就是 commit message 的 body。即写即用。\n\n"
-                    "【通过诊断】补齐缺轴「%s」的输出即可通过——在接下来的回复中直接写出对应段落。\n"
-                    "（推理轮数：%d/%d）"
-                    % (tool_name, "、".join(missing), "、".join(missing),
-                       self._reasoning_rounds, profile.max_reasoning_rounds)
+                    f"【通过诊断】补齐缺轴「{missing}」的输出即可通过——在接下来的回复中直接写出对应段落。\n"
+                    f"（推理轮数：{self._reasoning_rounds}/{profile.max_reasoning_rounds}）"
                 )
             return (
-                "[ReadThink Gate — 推理阶段 · 标准任务] 工具 '%s' 暂时不可用。\n\n"
-                "已做 %d 次只读调查，但还没有输出分析结论。在回复中明确回答：\n\n"
+                f"[ReadThink Gate — 推理阶段 · 标准任务] 工具 '{tool_name}' 暂时不可用。\n\n"
+                f"已做 {done} 次只读调查，但还没有输出分析结论。在回复中明确回答：\n\n"
                 "  ▸ 要改的代码当前逻辑是什么？（引用具体行号和代码）\n"
                 "  ▸ 哪些既有程序与它有关系？它们是怎么做的？\n"
                 "  ▹ 你的改动方案是什么？为什么是最优的？（对比过的替代方案）\n\n"
                 "用充分的分析填满回复——这不是走流程，是确保改对。\n\n"
-                "【通过诊断】调查次数已达标（%d/%d），但推理量不足（当前 %d 字 < 需要 %d 字）。\n"
-                "在回复中写出上述分析，达到 %d 字即可通过。\n"
-                "（推理轮数：%d/%d）"
-                % (tool_name, done, done, needed, content_len,
-                   profile.min_reasoning_chars, profile.min_reasoning_chars,
-                   self._reasoning_rounds, profile.max_reasoning_rounds)
+                f"【通过诊断】调查次数已达标（{done}/{needed}），"
+                f"但推理量不足（当前 {content_len} 字 < 需要 {profile.min_reasoning_chars} 字）。\n"
+                f"在回复中写出上述分析，达到 {profile.min_reasoning_chars} 字即可通过。\n"
+                f"（推理轮数：{self._reasoning_rounds}/{profile.max_reasoning_rounds}）"
             )
 
         if done == 0:
-            return "[ReadThink] 先用 search_files/read_file 调查再动手。（轮 %d/%d）" % (
-                self._reasoning_rounds, profile.max_reasoning_rounds,
+            return (
+                f"[ReadThink] 先用 search_files/read_file 调查再动手。（轮 {self._reasoning_rounds}/{profile.max_reasoning_rounds}）"
             )
-        return "[ReadThink] 读过了但你要改的文件还没读。先 read_file 目标文件。（轮 %d/%d）" % (
-            self._reasoning_rounds, profile.max_reasoning_rounds,
+        return (
+            f"[ReadThink] 读过了但你要改的文件还没读。先 read_file 目标文件。（轮 {self._reasoning_rounds}/{profile.max_reasoning_rounds}）"
         )
 
 

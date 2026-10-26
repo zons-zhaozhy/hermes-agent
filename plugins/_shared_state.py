@@ -34,7 +34,7 @@ from typing import Any, Dict
 logger = logging.getLogger(__name__)
 
 # session_id -> {namespace -> value}
-_sessions: Dict[str, Dict[str, Any]] = {}
+_sessions: dict[str, dict[str, Any]] = {}
 _lock = threading.Lock()
 
 # Maximum idle time (seconds) before a session's state is pruned.
@@ -42,10 +42,10 @@ _MAX_SESSION_IDLE = 3600  # 1 hour
 
 # Global counter: incremented every time any state is accessed, used for
 # idle detection.
-_last_access: Dict[str, float] = {}
+_last_access: dict[str, float] = {}
 
 
-def get_session_state(session_id: str, namespace: str = "") -> Dict[str, Any]:
+def get_session_state(session_id: str, namespace: str = "") -> dict[str, Any]:
     """Get or create the state dict for a session+namespace.
 
     Args:

@@ -28,7 +28,7 @@ import os
 import sqlite3
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -331,7 +331,7 @@ def _update_session_summary(sid: str) -> None:
                         json.dumps(breakdown, ensure_ascii=False),
                         first_at,
                         last_at,
-                        datetime.now(timezone.utc).isoformat(),
+                        datetime.now(UTC).isoformat(),
                     ),
                 )
                 conn.commit()
@@ -447,7 +447,7 @@ def _persist_turn_outcome(sid: str, turn_data: dict[str, Any]) -> None:
                             "error_count": turn_data.get("error_count", 0),
                             "tools": turn_data.get("tools", []),
                         }, ensure_ascii=False),
-                        datetime.now(timezone.utc).isoformat(),
+                        datetime.now(UTC).isoformat(),
                     ),
                 )
                 conn.commit()
@@ -673,7 +673,7 @@ def on_post_tool_call(**kwargs) -> None:
         "error_message": err_msg,
         "duration_ms": kwargs.get("duration_ms", 0) or 0,
         "args_summary": _extract_diagnostic_args(tool_name, args),
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
 
     _write_outcome(record)
@@ -704,7 +704,7 @@ def _parse_discipline_tags(text: str) -> dict[str, str]:
                       MMDD 晚于今天属上一年
     """
     found: dict[str, str] = {}
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for part in text.split("§"):
         part = part.strip()
         if not part.startswith("R"):

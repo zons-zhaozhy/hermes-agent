@@ -21,7 +21,7 @@ def _load_guard() -> ModuleType:
 
 def test_negative_write_blocked_without_marker(monkeypatch, tmp_path: Path):
     guard = _load_guard()
-    monkeypatch.setattr(guard, "_read_marker", lambda: None)
+    monkeypatch.setattr(guard, "_read_marker", lambda sid: None)
     target = str(tmp_path / "victim.py")
     out = guard.on_pre_tool_call(tool_name="patch", args={"path": target},
                                  session_id="sess-fa-1")
@@ -30,16 +30,18 @@ def test_negative_write_blocked_without_marker(monkeypatch, tmp_path: Path):
 
 def test_negative_write_allowed_with_valid_marker(monkeypatch, tmp_path: Path):
     guard = _load_guard()
-    monkeypatch.setattr(guard, "_read_marker", lambda: {"axes": 4, "ts": 0})
+    seen = []
+    monkeypatch.setattr(guard, "_read_marker", lambda sid: seen.append(sid) or {"axes": 4, "ts": 0})
     target = str(tmp_path / "ok.py")
     out = guard.on_pre_tool_call(tool_name="patch", args={"path": target},
                                  session_id="sess-fa-2")
     assert out is None  # 期望: None=四轴 marker 有效放行
+    assert seen == ["sess-fa-2"]  # 期望: 读端以本会话 ID 查自己的 marker 桶
 
 
 def test_negative_cron_session_exempt(monkeypatch, tmp_path: Path):
     guard = _load_guard()
-    monkeypatch.setattr(guard, "_read_marker", lambda: None)
+    monkeypatch.setattr(guard, "_read_marker", lambda sid: None)
     target = str(tmp_path / "cron.py")
     out = guard.on_pre_tool_call(tool_name="patch", args={"path": target},
                                  session_id="cron_job9_20261025")
@@ -48,7 +50,7 @@ def test_negative_cron_session_exempt(monkeypatch, tmp_path: Path):
 
 def test_negative_read_tool_not_gated(monkeypatch):
     guard = _load_guard()
-    monkeypatch.setattr(guard, "_read_marker", lambda: None)
+    monkeypatch.setattr(guard, "_read_marker", lambda sid: None)
     out = guard.on_pre_tool_call(tool_name="read_file", args={"path": "x"},
                                  session_id="sess-fa-3")
     assert out is None  # 期望: None=读工具不经四轴闸门

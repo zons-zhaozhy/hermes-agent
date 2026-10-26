@@ -46,7 +46,6 @@ def test_swap_retries_transient_permission_error_then_promotes(tmp_path, monkeyp
     # not the executable itself: on darwin exe.parent is …/Contents/MacOS, so derive the root
     # the same way the product does instead of assuming a flat win layout.
     live_root = main_desktop._desktop_unpacked_root(live_exe, desktop_dir / 'release')
-    staged_root = staging / live_root.name
 
     def scanner_locked_rename(src: str, dst: str) -> None:
         if Path(dst) == live_root and locked["n"] < 2:

@@ -361,7 +361,7 @@ def get_last_audit_feedback(session_id: str = "") -> Optional[str]:
     return None
 
 
-def _format_audit_feedback(entry: Dict[str, Any]) -> Optional[str]:
+def _format_audit_feedback(entry: dict[str, Any]) -> Optional[str]:
     """Format a single audit entry as a concise feedback string.
 
     Contract:

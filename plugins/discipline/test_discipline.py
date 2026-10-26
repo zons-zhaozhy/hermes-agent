@@ -61,7 +61,7 @@ def _repo_has_wrapper(start_dir: str) -> bool:
         return True
 
 
-def _target_dir_from_command(tokens: List[str]) -> str:
+def _target_dir_from_command(tokens: list[str]) -> str:
     """从命令令牌提取目标目录：最后一个 cd 参数；无 cd 时返回进程 cwd。
 
     pytest 在 cd 之后执行，故 cd 目标才是判定基准。
@@ -76,7 +76,7 @@ def _target_dir_from_command(tokens: List[str]) -> str:
     return os.getcwd()
 
 
-def _is_module_invocation(tokens: List[str]) -> bool:
+def _is_module_invocation(tokens: list[str]) -> bool:
     """命令令牌中是否含 python -m pytest 序列（模块方式调 pytest）。
 
     解释器令牌按前缀判（python/python3/python3.11 等都算），
@@ -116,7 +116,7 @@ def _is_bare_pytest(command: str) -> bool:
     return True
 
 
-def on_pre_tool_call(**kwargs: Any) -> Optional[Dict[str, Any]]:
+def on_pre_tool_call(**kwargs: Any) -> Optional[dict[str, Any]]:
     """裸 pytest terminal 命令 → block，指明 run_tests.sh 正门。fail-open。"""
     try:
         if str(kwargs.get("tool_name", "")) != "terminal":
@@ -151,7 +151,7 @@ def _plugin_disabled() -> bool:
 def register(ctx: Any) -> None:
     wrapped = on_pre_tool_call
 
-    def _gated(**kwargs: Any) -> Optional[Dict[str, Any]]:
+    def _gated(**kwargs: Any) -> Optional[dict[str, Any]]:
         if _plugin_disabled():
             return None
         return wrapped(**kwargs)

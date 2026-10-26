@@ -83,7 +83,6 @@ def analyze_tool_error_rates(conn: sqlite3.Connection, days: int) -> list[dict]:
         errors = r["errors"]
         rate = errors / total if total else 0
         blocked = r["blocked"] or 0
-        block_rate = blocked / total if total else 0
         rejected = r["rejected"] or 0
         guard_total = blocked + rejected
         guard_rate = guard_total / total if total else 0

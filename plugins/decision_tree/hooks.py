@@ -37,7 +37,7 @@ _EVIDENCE_TOOLS = frozenset({
 })
 
 
-def _get_session_id(kwargs: Dict[str, Any]) -> Optional[str]:
+def _get_session_id(kwargs: dict[str, Any]) -> Optional[str]:
     """Extract session id from hook kwargs. Best-effort across call sites.
 
     Single source of truth for session_id extraction across tools.py
@@ -50,7 +50,7 @@ def _get_session_id(kwargs: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _get_wm_or_none(kwargs: Dict[str, Any]) -> Optional[WorldModel]:
+def _get_wm_or_none(kwargs: dict[str, Any]) -> Optional[WorldModel]:
     """Get WorldModel for this session, only if already initialized.
 
     Does NOT auto-create. Returns None if no tree file exists.
@@ -145,7 +145,7 @@ def _derive_status(tool_name: str, result: Any) -> Optional[str]:
             return "FAILED"
         if "exit_code" in result:
             return "PASSED" if result.get("exit_code") == 0 else "FAILED"
-        if "content" in result and result["content"]:
+        if result.get("content"):
             return "PASSED"
     if result is not None:
         return "PASSED"
@@ -156,7 +156,7 @@ def _derive_status(tool_name: str, result: Any) -> Optional[str]:
 # pre_verify — anti-self-deception gate
 # ---------------------------------------------------------------------------
 
-def on_pre_verify(**kwargs: Any) -> Optional[Dict[str, str]]:
+def on_pre_verify(**kwargs: Any) -> Optional[dict[str, str]]:
     """Check for stagnation before the agent claims completion.
 
     Runs automatically when the agent is about to verify/finish a task.

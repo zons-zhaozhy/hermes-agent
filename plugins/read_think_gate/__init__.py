@@ -31,11 +31,11 @@ logger = logging.getLogger("plugins.read-think-gate")
 
 # session_id -> gate instance. Cron sessions get an instance with enabled=False,
 # mirroring the agent_init exemption the core wiring used to apply.
-_GATES: Dict[str, ReadThinkGate] = {}
+_GATES: dict[str, ReadThinkGate] = {}
 _ACTIVE_SESSION_ID: Optional[str] = None
 
 
-def _config_section() -> Dict[str, Any]:
+def _config_section() -> dict[str, Any]:
     """Read the ``read_think_gate`` config section; ``{}`` on any failure."""
     try:
         from hermes_cli.config import load_config_readonly
@@ -67,7 +67,7 @@ def _gate_for(session_id: str, platform: str) -> ReadThinkGate:
         import dataclasses as _dc
 
         cfg = _dc.replace(cfg, enabled=False)
-    gate = ReadThinkGate(cfg)
+    gate = ReadThinkGate(cfg, session_id=session_id)
     _GATES[session_id] = gate
     return gate
 
@@ -130,7 +130,7 @@ def pre_tool_batch(
     session_id: str = "",
     platform: str = "",
     **_kwargs: Any,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[dict[str, Any]]:
     """Batch-level gate check; return ``{"action": "block", "message": ...}`` or None.
 
     Contract:

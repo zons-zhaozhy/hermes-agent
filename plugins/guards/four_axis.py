@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -35,17 +34,23 @@ _MARKER_MAX_AGE_SECONDS = 1800  # marker 有效期 30 分钟——600s 实测小
                               # 时效防跨任务沿用，且 gate 每 turn 重写刷新覆盖。
 
 
-def _marker_file() -> Path:
+def _marker_file(session_id: str) -> Path:
     """解析 marker 文件路径（与 ReadThinkGate 写入端同一解析方式）。
 
-    Returns:
-        Path: hermes_home/cache/four_axis_gate_{pid}.json
-    """
-    from hermes_constants import get_hermes_home
+    Args:
+        session_id: 当前会话 ID——marker 按会话分桶。网关单进程服务多会话，
+            写端（read_think_gate.gate）的 turn-start 只清本会话的桶，故读端
+            必须以同一会话身份读，否则永远读不到写端刚写入的 marker。
 
-    # 带 PID 与写端 read_think_gate._four_axis_marker_path 对齐——同进程同路径，
-    # 跨进程隔离，防并发会话互踩（详见写端注释）。
-    return get_hermes_home() / "cache" / f"four_axis_gate_{os.getpid()}.json"
+    Returns:
+        Path: hermes_home/cache/four_axis_gate_{pid}_{session}.json
+    """
+    from plugins.read_think_gate_host import _four_axis_marker_path
+
+    # 路径解析与 slug 规则唯一实现在写端 gate 模块（经 read_think_gate_host
+    # 唯一 import 面 re-export）——本插件直接复用，杜绝写读两端各写一份
+    # 命名逻辑造成漂移。
+    return _four_axis_marker_path(session_id)
 
 # 2026-08-15 修复：agent 自维护产物（日报/指标/state/cron 输出/缓存/记忆）不是
 # "核心代码编辑"，无调用方无编译影响，属闸门设计范围外（escape-valve-runbook
@@ -117,10 +122,10 @@ def _is_agent_owned_path(path_str: str) -> bool:
     return result
 
 
-def _read_marker() -> Optional[dict]:
-    """读取 marker 文件，验证时效性。"""
+def _read_marker(session_id: str) -> Optional[dict]:
+    """读取本会话的 marker 文件，验证时效性。"""
     try:
-        _marker = _marker_file()
+        _marker = _marker_file(session_id)
         if not _marker.exists():
             return None
         data = json.loads(_marker.read_text(encoding="utf-8"))
@@ -179,7 +184,7 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
         )
         return None
 
-    marker = _read_marker()
+    marker = _read_marker(session_id)
     if marker is None:
         logger.info(
             "four-axis guard: blocking %s — marker missing or expired", tool_name,

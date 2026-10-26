@@ -28,7 +28,7 @@ def _get_schema_confirmed(sid: str) -> bool:
     return bool(get_session_state(sid, _NAMESPACE).get("schema_confirmed", False))
 
 
-def _get_confirmed_tables(sid: str) -> Set[str]:
+def _get_confirmed_tables(sid: str) -> set[str]:
     """Set of table names whose columns have been confirmed."""
     return get_session_state(sid, _NAMESPACE).setdefault("confirmed_tables", set())
 
@@ -98,7 +98,7 @@ def _plugin_disabled() -> bool:
     }
 
 
-def _extract_tables_from_sql(sql: str) -> Set[str]:
+def _extract_tables_from_sql(sql: str) -> set[str]:
     """Extract table names from SQL (FROM/INTO/UPDATE/JOIN clauses)."""
     # FROM/JOIN table_name
     from_pattern = re.findall(
@@ -171,7 +171,7 @@ def on_post_tool_call(**kwargs) -> None:
 
 # ── pre_tool_call hook ────────────────────────────────────────────────
 
-def on_pre_tool_call(**kwargs) -> Optional[Dict[str, Any]]:
+def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
     """Block SQL queries when schema hasn't been confirmed."""
     if _plugin_disabled():
         return None

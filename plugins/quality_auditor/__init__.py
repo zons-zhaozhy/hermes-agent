@@ -166,7 +166,7 @@ def on_pre_llm_call(**kwargs):
     return {"context": feedback}
 
 
-def register(ctx) -> None:  # noqa: ANN001 — PluginContext from loader
+def register(ctx) -> None:
     ctx.register_hook("post_llm_call", on_post_llm_call)
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
     logger.info("quality-auditor plugin registered")

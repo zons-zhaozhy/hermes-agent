@@ -36,7 +36,7 @@ logger = logging.getLogger("hermes.plugin.tool-output-trim")
 _TRIM_MARKER = "[tool-output-trim "
 
 
-def _default_config() -> Dict[str, Any]:
+def _default_config() -> dict[str, Any]:
     return {
         "max_chars": 3000,
         "keep_recent": 3,
@@ -48,11 +48,11 @@ def _default_config() -> Dict[str, Any]:
 # ── config (mtime-cached; same contract as adaptive-reasoning) ────────────
 
 _CONFIG_LOCK = threading.Lock()
-_CONFIG_CACHE: Optional[Dict[str, Any]] = None
+_CONFIG_CACHE: Optional[dict[str, Any]] = None
 _CONFIG_CACHE_KEY: Optional[tuple] = None
 
 
-def _resolve_config() -> Dict[str, Any]:
+def _resolve_config() -> dict[str, Any]:
     """Load tuning config from ``agent.tool_output_trim``.
 
     Cached on (mtime_ns, size) of config.yaml; an on-disk edit takes
@@ -137,7 +137,7 @@ def _content_text(content: Any) -> str:
     return ""
 
 
-def _trim_text(text: str, cfg: Dict[str, Any]) -> str:
+def _trim_text(text: str, cfg: dict[str, Any]) -> str:
     """Head+tail window with a size marker.
 
     Args:
@@ -157,7 +157,7 @@ def _trim_text(text: str, cfg: Dict[str, Any]) -> str:
     )
 
 
-def trim_outputs_middleware(request: Dict[str, Any], **context: Any) -> Optional[Dict[str, Any]]:
+def trim_outputs_middleware(request: dict[str, Any], **context: Any) -> Optional[dict[str, Any]]:
     """llm_request middleware: bound historical tool-result size.
 
     Returns:
@@ -204,7 +204,7 @@ def trim_outputs_middleware(request: Dict[str, Any], **context: Any) -> Optional
         return None
 
 
-def register(ctx) -> None:  # noqa: ANN001 — PluginContext from loader
+def register(ctx) -> None:
     """Plugin entry point: register the send-side trimming middleware."""
     ctx.register_middleware("llm_request", trim_outputs_middleware)
     logger.info("tool-output-trim registered")

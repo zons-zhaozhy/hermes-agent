@@ -111,10 +111,10 @@ def _on_pre_tool_call(**kwargs) -> dict:
             return {
                 "action": "block",
                 "message": (
-                    "[NO-BYPASS BLOCK] {} 调用被拦截：内容包含绕过模式（{}）。"
+                    f"[NO-BYPASS BLOCK] {tool_name} 调用被拦截：内容包含绕过模式（{reason}）。"
                     "你发现了 bug 就必须修复根因，不允许绕过或描述替代路径。"
                     "去掉绕过建议，回到问题本身，修复它。"
-                ).format(tool_name, reason),
+                ),
             }
     return {}
 

@@ -53,7 +53,6 @@ class TestPreToolBatchFailClosed:
 
         def gate_hung(**_kwargs):
             hold.wait(timeout=10.0)
-            return None
 
         mgr._hooks["pre_tool_batch"] = [gate_hung]
 

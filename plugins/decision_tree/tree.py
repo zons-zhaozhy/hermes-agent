@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # Impact dimensions (same as K-Search's BASE_DIMENSIONS)
-IMPACT_DIMENSIONS: Tuple[str, ...] = ("task_outcome",)
+IMPACT_DIMENSIONS: tuple[str, ...] = ("task_outcome",)
 
 # Default stagnation window: rounds without improvement before forcing branch switch
 DEFAULT_STAGNATION_WINDOW = 3
@@ -73,7 +73,7 @@ class Impact:
         return {"rating_0_to_10": self.rating, "risk": self.risk, "notes": self.notes}
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Impact":
+    def from_dict(cls, d: dict) -> Impact:
         return cls(
             rating=_clamp(float(d.get("rating_0_to_10", 0)), 0, 10),
             risk=str(d.get("risk", "")),
@@ -106,7 +106,7 @@ class SolutionRef:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "SolutionRef":
+    def from_dict(cls, d: dict) -> SolutionRef:
         ev = d.get("eval", {}) if isinstance(d.get("eval"), dict) else {}
         return cls(
             solution_id=d.get("solution_id"),
@@ -140,7 +140,7 @@ class Action:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Action":
+    def from_dict(cls, d: dict) -> Action:
         diff = int(d.get("difficulty_1_to_5", d.get("difficulty_0_to_3", 3)))
         # Legacy 0..3 → 1..4 mapping
         if "difficulty_0_to_3" in d and "difficulty_1_to_5" not in d:
@@ -165,7 +165,7 @@ class TreeNode:
     choice: Optional[str] = None            # Which option was chosen
     rating: float = 0.0                     # 0..10
     confidence: float = 0.0                 # 0..1
-    impacts: Dict[str, Impact] = field(default_factory=dict)
+    impacts: dict[str, Impact] = field(default_factory=dict)
     solution: Optional[SolutionRef] = None
     action: Optional[Action] = None
     notes: str = ""
@@ -212,7 +212,7 @@ class TreeNode:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "TreeNode":
+    def from_dict(cls, d: dict) -> TreeNode:
         imp = {}
         for k in IMPACT_DIMENSIONS:
             raw = d.get("impacts", {}).get(k, {})
@@ -245,8 +245,8 @@ class SelfDeceptionReport:
     follow_through_detail: str = ""
     performance_gap: Optional[float] = None  # expected vs observed delta
     performance_gap_detail: str = ""
-    sibling_conflicts: List[str] = field(default_factory=list)
-    zero_confidence_nodes: List[str] = field(default_factory=list)
+    sibling_conflicts: list[str] = field(default_factory=list)
+    zero_confidence_nodes: list[str] = field(default_factory=list)
     stagnation_alert: bool = False
     stagnation_detail: str = ""
 
@@ -283,12 +283,12 @@ class WorldModel:
 
         # Internal state
         self.kernel_summary: str = ""
-        self.open_questions: List[str] = []
-        self.nodes: Dict[str, TreeNode] = {}      # node_id → node
+        self.open_questions: list[str] = []
+        self.nodes: dict[str, TreeNode] = {}      # node_id → node
         self.root_id: str = "root"
         self.active_leaf_id: str = "root"
         self.round_index: int = 0
-        self.round_results: List[str] = []        # last N results for stagnation detection
+        self.round_results: list[str] = []        # last N results for stagnation detection
         self._next_node_counter: int = 1
         self._loaded: bool = False
 
@@ -323,7 +323,7 @@ class WorldModel:
 
     # ---- Initialization ----------------------------------------------------
 
-    def init_tree(self, kernel_summary: str = "", open_questions: List[str] | None = None) -> None:
+    def init_tree(self, kernel_summary: str = "", open_questions: list[str] | None = None) -> None:
         """Create a fresh decision tree with root node."""
         self.kernel_summary = kernel_summary
         self.open_questions = open_questions or []
@@ -601,11 +601,11 @@ class WorldModel:
 
     # ---- Query -------------------------------------------------------------
 
-    def get_children(self, node_id: str) -> List[TreeNode]:
+    def get_children(self, node_id: str) -> list[TreeNode]:
         """Get direct children of a node."""
         return [n for n in self.nodes.values() if n.parent_id == node_id]
 
-    def get_active_path(self) -> List[TreeNode]:
+    def get_active_path(self) -> list[TreeNode]:
         """Get nodes from root to active_leaf."""
         path = []
         node_id = self.active_leaf_id
@@ -618,7 +618,7 @@ class WorldModel:
         path.reverse()
         return path
 
-    def get_open_actions(self, max_items: int = 10) -> List[TreeNode]:
+    def get_open_actions(self, max_items: int = 10) -> list[TreeNode]:
         """Get open action nodes (action planned, no solution attached yet)."""
         candidates = []
         for n in self.nodes.values():
@@ -779,7 +779,7 @@ def _default_storage_dir() -> Path:
     return Path(home) / "decision_tree"
 
 
-def _resolve_parent_solution_id(nodes: Dict[str, TreeNode], parent_id: Optional[str]) -> Optional[str]:
+def _resolve_parent_solution_id(nodes: dict[str, TreeNode], parent_id: Optional[str]) -> Optional[str]:
     """Safely get parent node's solution_id."""
     if not parent_id or parent_id not in nodes:
         return None

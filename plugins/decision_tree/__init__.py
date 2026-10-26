@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 # Shared: session_id extraction (single source of truth)
 # ---------------------------------------------------------------------------
 
-def _extract_session_id(kwargs: Dict[str, Any]) -> Optional[str]:
+def _extract_session_id(kwargs: dict[str, Any]) -> Optional[str]:
     """Extract session id from any context dict (tools or hooks).
 
     Kept in one place so tools.py and hooks.py never diverge on key names.

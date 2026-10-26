@@ -899,7 +899,6 @@ def _check_regex_usage(tree: ast.AST, lines: list[str]) -> list[Violation]:
                 snippet=_snippet(lines, node.lineno),
             ))
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            mod = ""
             if isinstance(node, ast.Import):
                 imported_re = any(alias.name == "re" for alias in node.names)
             else:

@@ -40,7 +40,7 @@ import json
 import os
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -192,7 +192,7 @@ def check_rule(conn: sqlite3.Connection, rule: str, effective: str,
 
 def run_regression_check(db_path: Path, dates_path: Path) -> dict[str, Any]:
     dates = load_discipline_dates(dates_path)
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
     results: list[dict[str, Any]] = []
     if not db_path.exists():
         return {"error": f"db not found: {db_path}"}
