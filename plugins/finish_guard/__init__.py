@@ -139,6 +139,50 @@ def _is_rootcause_hidden(text: str) -> bool:
                 and not _ROOT_CAUSE_EVIDENCE_RE.search(text))
 
 
+# ── 第六类失效收尾：拍板请求不自包含（2026-10-26 用户点名「A 怎么做 B 怎么做
+# 我在你回复的消息里都看不到」）——请拍板消息引用选项标签（方案A/B、两方案、
+# A还是B）但全文无定义形态，选项内容只存在于早前轮次（可能已被上下文压缩卷走），
+# 用户单看本条无从拍板。与既有五类不同：这是合法请示（_LEGIT_ASK_RE 豁免本体
+# 不变），缺的是选项内容本体，判定面=全文。
+_DECISION_ASK_RE = re.compile(
+    r"(请拍板|拍板一下|拍板后|等你拍板|待拍板|你拍板(?!的)|拍板[？?。]"
+    r"|请你定|你决定|选哪个|要哪个|还是选|请确认|必须先确认|等你确认|需要你确认)"
+)  # re-ok: 中文请示句式模糊匹配无 str 等价
+_OPTION_LABEL_RE = re.compile(
+    r"(方案\s*[AB12]|[AB]\s*方案|选项\s*[AB12]"
+    r"|(两|三|四|[234])\s*个?\s*(候选)?方案|[AB]\s*还是\s*[AB])"
+)  # re-ok: 标签/计数引用形态无 str 等价
+# 定义形态：标签后接定义标点，或标签（含一个分隔逗号）后接≥6连续实义字符
+_OPTION_DEFINED_RE = re.compile(
+    r"(方案|选项)\s*[AB12]\s*[：:—\-＝=（(]"
+    r"|(方案|选项)\s*[AB12]\s*[，,]?\s*[\w\u4e00-\u9fff]{6,}"
+)  # re-ok: 标签定义形态无 str 等价
+_BARE_LETTER_DEF_RE = re.compile(
+    r"(?<![A-Za-z0-9])([AB])(?![A-Za-z0-9])\s*[：:—]\s*[\w\u4e00-\u9fff]{4,}"
+)  # re-ok: 裸字母定义形态无 str 等价
+
+
+def _has_option_definitions(text: str) -> bool:
+    """Contract: Preconditions: text 为 str（可空）；Postconditions: 存在
+    任一选项标签定义形态（标签+定义标点/≥6实义字符，或 A、B 裸字母定义
+    并存）返回 True，否则 False。"""
+    if _OPTION_DEFINED_RE.search(text):
+        return True
+    defs = _BARE_LETTER_DEF_RE.findall(text)  # re-ok: 提取裸字母定义标签，str 无等价
+    return "A" in defs and "B" in defs
+
+
+def _is_bare_decision_ask(text: str) -> bool:
+    """Contract: Preconditions: text 为 str（可空）；Postconditions: 拍板请求
+    信号与引用式选项标签共存、且标签在全文无定义形态时返回 True，否则
+    False。执行汇报（无拍板信号）与自包含拍板（有定义形态）不触发。"""
+    if not text:
+        return False
+    return bool(_DECISION_ASK_RE.search(text)
+                and _OPTION_LABEL_RE.search(text)
+                and not _has_option_definitions(text))
+
+
 def _is_pushback(text: str) -> bool:
     """Contract: Preconditions: text 为 str（可空）；Postconditions: 命中请示句式
     且不命中合法豁免时返回 True，否则 False。"""
@@ -311,6 +355,20 @@ def _on_pre_verify(**kwargs) -> dict:
                 "重写收尾：补上根因陈述段，再结束回合。"
             ),
         }
+    if _is_bare_decision_ask(final_response):
+        logger.warning(
+            "finish_guard: pre_verify 检测到拍板请求不自包含（attempt=%d），强制重写", attempt
+        )
+        return {
+            "action": "continue",
+            "message": (
+                "[finish_guard] 拍板请求不自包含：回复引用了选项标签（方案A/B、两方案、"
+                "A还是B），但本条消息内没有这些选项的内容定义。选项内容若只在早前轮次"
+                "（或已被上下文压缩卷走），用户单看这一条无从拍板。重写收尾：在**同一条"
+                "消息内**复述每个选项的具体内容（怎么做/成本/风险）+ 你的建议 + 不回复时"
+                "的默认动作，再请拍板；用户只看这一条消息就必须能拍板。"
+            ),
+        }
     # 收尾纪律动作化：改了代码文件但回复无 commit 证据 → 强制先提交再收尾
     if code_changed and not _has_commit_evidence(final_response):
         logger.warning(
@@ -346,6 +404,14 @@ def _transform_llm_output(response_text: str = "", **kwargs) -> str:
             + "\n\n[finish_guard] 上面宣称已定位/根治问题，但未在回复中展示根因内容"
             "（根因是什么、证据是什么、症状与根因的位置关系）。根因必答：补述根因后，"
             "该结论才算交付。"
+        )
+    if _is_bare_decision_ask(output):
+        logger.warning("finish_guard: 拍板请求不自包含漏网（L1/L2 未覆盖），打用户可见标记")
+        return (
+            output
+            + "\n\n[finish_guard] 上面的拍板请求引用了选项标签（方案A/B、两方案、A还是B），"
+            "但未在同一条消息内复述选项内容——只看本条无从拍板。可回复「补选项内容」"
+            "要求重述每个选项的具体做法、建议与默认动作后再拍板。"
         )
     if not (_is_pushback(tail) or _is_false_continue(tail) or _is_defer_pushout(tail)):
         return output
