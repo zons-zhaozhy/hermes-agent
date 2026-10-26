@@ -923,18 +923,24 @@ def _make_live_adapter(monkeypatch, reply_fn=None):
     return adapter, f"http://127.0.0.1:{port}"
 
 
-def _get_json(url, headers=None):
+def _no_proxy_opener() -> urllib.request.OpenerDirector:
+    # 测试服务器全部绑定 loopback——禁用系统代理（本机代理对 [::1] 回 502，
+    # 127.0.0.1 常在 no_proxy 故此前未暴露）
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _get_json(url: str, headers: dict[str, str] | None = None) -> dict:
     req = urllib.request.Request(url, headers=headers or {})
-    with urllib.request.urlopen(req, timeout=10) as r:
+    with _no_proxy_opener().open(req, timeout=10) as r:
         return json.loads(r.read().decode())
 
 
-def _post_json(url, body, headers=None):
+def _post_json(url: str, body: dict, headers: dict[str, str] | None = None) -> dict:
     req = urllib.request.Request(
         url, data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json", **(headers or {})}, method="POST",
     )
-    with urllib.request.urlopen(req, timeout=15) as r:
+    with _no_proxy_opener().open(req, timeout=15) as r:
         return json.loads(r.read().decode())
 
 
