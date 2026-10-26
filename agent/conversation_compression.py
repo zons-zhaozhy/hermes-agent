@@ -90,13 +90,51 @@ def _strip_marker_for_comparison(msgs: Any) -> Any:
     return [{k: v for k, v in m.items() if k != _DB_PERSISTED_MARKER} if isinstance(m, dict) else m for m in msgs]
 
 
+def _compaction_loss_summary(messages: Any) -> str:
+    """Human-readable loss line for what the last compaction dropped, or ``""``.
+
+    Counts ``[SKILL_PRUNED`` markers (skill bodies replaced by placeholders) and
+    ``output demoted at compaction`` stubs (tail tool results reduced to recovery
+    pointers) across the post-compaction message list. Zero drops -> empty string
+    (the plain COMPACTION_DONE_STATUS goes out unchanged).
+
+    Contract:
+      Preconditions: messages is the post-compaction list (or None).
+      Postconditions: returns "" or a one-line English summary; never raises.
+    """
+    try:
+        texts = [
+            m.get("content") if isinstance(m, dict) else m
+            for m in (messages or [])
+        ]
+        joined = "\n".join(str(t) for t in texts if t)
+        skills = joined.count("[SKILL_PRUNED")
+        demoted = joined.count("output demoted at compaction")
+    except Exception:
+        logger.warning("compaction loss summary failed", exc_info=True)
+        return ""
+    if not skills and not demoted:
+        return ""
+    parts = []
+    if skills:
+        parts.append(f"{skills} skill body(ies) pruned")
+    if demoted:
+        parts.append(f"{demoted} tool output(s) demoted")
+    return "Compaction dropped: " + ", ".join(parts) + " — recover with session_search."
+
+
 def _emit_compaction_done(agent: Any) -> None:
     """Emit the structured terminal edge for a started compaction."""
     status_callback = getattr(agent, "status_callback", None)
     if not status_callback:
         return
+    # skill-pruned-ok: unrelated to any skill — compaction loss-count disclosure
+    message = COMPACTION_DONE_STATUS
+    loss = _compaction_loss_summary(getattr(agent, "messages", None))
+    if loss:
+        message = f"{COMPACTION_DONE_STATUS} — {loss}"
     with _swallow('status_callback error in compaction completion', exc_info=True):
-        status_callback("compacted", COMPACTION_DONE_STATUS)
+        status_callback("compacted", message)
 
 
 # Every ROUTINE compression status line lives here: suppressed on chat platforms
@@ -136,6 +174,9 @@ CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE = (
 # Formatted from the same constants the emission sites use, so noise-filter tests exercise the ACTUAL wording.
 ROUTINE_COMPRESSION_STATUS_SAMPLES = (
     COMPACTION_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_DONE_STATUS,
+    # skill-pruned-ok: sample of the loss-suffix variant emitted by _emit_compaction_done
+    f"{COMPACTION_DONE_STATUS} — Compaction dropped: 2 skill body(ies) pruned, "
+    "1 tool output(s) demoted — recover with session_search.",
     PRE_API_COMPRESSION_STATUS_TEMPLATE.format(tokens=123456),
     PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(tokens=120000, threshold=100000),
     IDLE_COMPACTION_STATUS_TEMPLATE.format(idle_seconds=3600, tokens=120000),
@@ -156,7 +197,8 @@ def is_compaction_progress_status(text: str | None) -> bool:
         return False
     if COMPACTION_STATUS_MARKER in body:
         return True
-    if body == COMPACTION_DONE_STATUS:
+    # skill-pruned-ok: done edge may carry a compaction-loss suffix; still the done edge
+    if body.startswith(COMPACTION_DONE_STATUS):
         return False
     lowered = body.lower()
     # The failure-class overflow warning mentions compression but is a blocked notice, not progress.
