@@ -12,6 +12,8 @@ duplicate-check / source_code_write_guard / coding-standards-guard)收拢为
   source_write    terminal 绕过 patch 直写源码拦截(sed -i/cat >/python -c)
   coding_standards AST 编码规范事前拦截(R001~R022) + preflight.py 写前预检
   scope_gate      新增产物授权闸门(仓库内新开目录树须当轮用户原话授权)
+  skill_pruned_gate 技能剪枝机械拦截(skill_view 查得 [SKILL_PRUNED] 占位符
+                  且未重载全文期间拦写通道)+在岗状态行(注入段可见 import 失败名单)
 
 分层依据与裁定规则见 docs/guard-system-architecture.md。
 
@@ -30,11 +32,13 @@ logger = logging.getLogger(__name__)
 
 # 逐个导入: 任一子模块 import 失败仅记录日志并跳过(独立降级,见模块 Contract)——
 # 单条 from-import 会让一个 ImportError 连坐全套 11 守卫(2026-10-21 审计发现)。
+# 常量供导入循环与在岗状态行共用(单一事实源)。
+_SUB_GUARD_NAMES = ("tool_blacklist", "four_axis", "pre_write", "duplicate_check", "source_write",
+                    "coding_standards", "diff_debt", "casebook_gate", "batch_write", "scope_gate",
+                    "groundbreaking_gate", "slow_search", "db_target_audit", "plain_vocab",
+                    "experience_gate", "skill_pruned_gate")
 _LOADED: list[tuple[str, Any]] = []
-for _name in ("tool_blacklist", "four_axis", "pre_write", "duplicate_check", "source_write",
-              "coding_standards", "diff_debt", "casebook_gate", "batch_write", "scope_gate",
-              "groundbreaking_gate", "slow_search", "db_target_audit", "plain_vocab",
-              "experience_gate"):
+for _name in _SUB_GUARD_NAMES:
     try:
         _LOADED.append((_name, importlib.import_module(f"plugins.guards.{_name}")))
     except Exception:
@@ -53,18 +57,41 @@ _SUB_GUARDS = tuple(_LOADED)
 _EXCLUDED_PLATFORMS = frozenset({"subagent", "batch"})
 
 
+def _guards_status_line() -> str:
+    """在岗状态行——子护栏 import 失败从「仅日志」升级为「注入段可见」。
+
+    Contract:
+      Postconditions: 全员在岗返回一行确认；有缺失返回缺失名单+后果提示；
+        渲染异常返回空串(fail-open, 不影响段本体)。
+    """
+    try:
+        loaded = {name for name, _ in _LOADED}
+        missing = [n for n in _SUB_GUARD_NAMES if n not in loaded]
+        if missing:
+            return (
+                f"\n[guards 在岗 {len(loaded)}/{len(_SUB_GUARD_NAMES)}] 缺失子护栏: "
+                f"{', '.join(missing)}（import 失败已独立降级,对应拦截本会话不生效,"
+                f"被问守卫状态时必须如实报告此名单）"
+            )
+        return f"\n[guards 在岗 {len(loaded)}/{len(_SUB_GUARD_NAMES)}] 全部子护栏已加载"
+    except Exception:
+        logger.warning("guards: status line render failed", exc_info=True)
+        return ""
+
+
 def _render_preflight_section(session_info: Mapping[str, Any]) -> str:
     """渲染写前功课段（读段库取最新；排除平台返回空段）。
 
     Contract:
       Preconditions: session_info 为 core 冻结的只读映射,含 platform 键。
-      Postconditions: 常规会话返回段库内 guards_preflight 文本；排除平台返回 ""。
+      Postconditions: 常规会话返回段库内 guards_preflight 文本+在岗状态行；
+        排除平台返回 ""。
     """
     if str(session_info.get("platform") or "") in _EXCLUDED_PLATFORMS:
         return ""
     from plugins.prompt_sections import load_section  # 延迟导入: 仅段渲染路径需要
 
-    return load_section("guards_preflight")
+    return load_section("guards_preflight") + _guards_status_line()
 
 
 def _render_blacklist_section(session_info: Mapping[str, Any]) -> str:
