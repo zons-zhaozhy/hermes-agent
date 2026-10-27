@@ -15,6 +15,9 @@
         error/warning/danger/alive/live/indicator/status 等状态语义；
      U2 队列入场动画——animationDelay 绑定索引乘法（逐项渐入延迟徒增感知延迟，
         排队是表演不是信息）。
+     U3 动效时长超档——transition/animation 时长 >400ms 且无状态语义即拦
+        （Material/Fluent 档位：小位移 150-200ms/大位移 300-400ms；超档感知为
+        迟滞且挤占 Doherty 400ms 反馈预算。进度/骨架等状态动画走白名单）。
 
   设计约束：fail-open（插件异常不阻断会话）；dist/build/min 生成产物跳过；
   行内 ``ux-ok: <≥8字理由>`` 豁免；纯 str 方法逐行检测（零正则）。
@@ -51,7 +54,7 @@ _UX_RULE = """\
 必备>期望>魅力——数据正确/操作不丢/可撤销/报错人话未清零,禁投入动效炫技
 ②五问走查:看(一眼懂)/动(几步/有反馈/可撤销)/错(能自恢复)/记(要记什么)/惯(一致吗)
 ③Cooper六原则:就地直接/留在页面/保持轻量/提供邀请/用过渡解释变化(动效只许澄清状态)/即时响应
-④硬判据:反馈≤400ms;每屏主操作唯一;结果页/异常页投入最高;空态即引导;撤销优于确认
+④硬判据:反馈≤400ms;每屏主操作唯一;结果页/异常页投入最高;空态即引导;撤销优于确认;动效150-400ms超档即迟滞
 理论=~/knowledge-base/ux-design/UX_INTERACTION_METHODOLOGY.md;判据=skill:ux-methodology"""
 
 
@@ -136,6 +139,66 @@ def _check_queue_in(lines: list) -> list:
     return issues
 
 
+_U3_MAX_MS = 400.0
+
+
+def _durations_ms(line: str) -> list:
+    """提取行内 CSS 时间字面量（.3s / 0.3s / 300ms），返回毫秒值有序列表。
+
+    Contract:
+      Postconditions: 每个可解析时间字面量按出现顺序入列；非时间 token 忽略
+    """
+    vals: list = []
+    cleaned = line.replace(",", " ").replace(";", " ").replace("(", " ").replace(")", " ")
+    for tok in cleaned.split():
+        low = tok.lower()
+        num = ""
+        if low.endswith("ms") and len(low) > 2:
+            num = low[:-2]
+        elif low.endswith("s") and len(low) > 1:
+            num = low[:-1]
+        if not num:
+            continue
+        try:
+            vals.append(float(num) * (1.0 if low.endswith("ms") else 1000.0))
+        except ValueError:
+            continue
+    return vals
+
+
+def _check_motion_duration(lines: list) -> list:
+    """U3 动效时长超档检测——时长 >400ms 且无状态语义即拦。
+
+    CSS shorthand（transition/animation）首个时间值是时长、其后才是延迟，
+    故只取首个时间值判定；纯延迟属性行（*-delay）属 U2 域不检。
+
+    Contract:
+      Postconditions: 返回违规消息列表（空=合规）
+    """
+    issues: list = []
+    for lineno, line in enumerate(lines, start=1):
+        low = line.lower()
+        if "transition" not in low and "animation" not in low:
+            continue
+        if _has_exempt(line):
+            continue
+        head = low.split(":", 1)[0]
+        if "delay" in head and "duration" not in head:
+            continue
+        durations = _durations_ms(line)
+        if not durations or durations[0] <= _U3_MAX_MS:
+            continue
+        if _line_state_semantic(lines, lineno - 1):
+            continue
+        issues.append(
+            f"U3 动效时长超档: line {lineno} '{line.strip()[:60]}' —"
+            "Material/Fluent 档位:小位移 150-200ms/大位移 300-400ms,>400ms 感知为"
+            "迟滞且挤占 400ms 反馈预算。状态语义写进类名或声明行(loading/progress/"
+            "skeleton 等)走白名单;确有叙事必要则行内注释 ux-ok: <理由> 豁免。"
+        )
+    return issues
+
+
 def _ux_section(session_info: Mapping) -> str:
     """渲染稳定段（subagent/batch 无界面写场景，返回空被 core 跳过）。
 
@@ -166,7 +229,11 @@ def on_pre_tool_call(**kwargs: Any) -> dict:
             return {}
         text = args.get("content") or args.get("new_string") or ""
         lines = text.splitlines()
-        issues = _check_decorative_infinite(lines) + _check_queue_in(lines)
+        issues = (
+            _check_decorative_infinite(lines)
+            + _check_queue_in(lines)
+            + _check_motion_duration(lines)
+        )
         if issues:
             return {
                 "action": "block",

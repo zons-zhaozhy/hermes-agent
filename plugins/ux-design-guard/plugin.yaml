@@ -1,5 +1,5 @@
 name: ux-design-guard
-version: 1.0.0
-description: "UX设计纪律守卫——UI文件写入拦截装饰性无限动效与队列入场动画(动效只许澄清状态);理论SSOT=knowledge-base/ux-design,判据=skill:ux-methodology"
+version: 1.1.0
+description: "UX设计纪律守卫——UI文件写入拦截装饰性无限动效/队列入场动画/动效时长超档>400ms(动效只许澄清状态);理论SSOT=knowledge-base/ux-design,判据=skill:ux-methodology"
 hooks:
   - pre_tool_call
