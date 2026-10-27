@@ -6,11 +6,13 @@ Requires ``pip install "dingtalk-stream>=0.20" httpx``. config.yaml ``platforms.
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 import traceback
 import uuid
 from datetime import datetime, timezone, UTC
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 # Optional SDKs: catch broad Exception, not just ImportError — their transitive cryptography
@@ -131,6 +133,38 @@ _EMOTION_SDK = {recall: (f"Robot{v}EmotionRequestTextEmotion", f"Robot{v}Emotion
                 for recall, v in ((True, "Recall"), (False, "Reply"))}
 _NUMBERED_RE = re.compile(r"^\d+\.\s")
 _NO_LOCAL_UPLOAD = "DingTalk session webhook replies do not support local %s. Only markdown/text replies are supported without OpenAPI %s."
+
+_INLINE_TEXT_MAX_BYTES = 262_144  # >256KB 的大文件贴进群聊没有阅读价值,维持失败提示
+_INLINE_TEXT_MAX_CHARS = 18_000   # 单条消息预算,给 header/围栏留余量(adapter MAX_MESSAGE_LENGTH=20000)
+_FENCE_LANGS = {".xml": "xml", ".json": "json", ".yaml": "yaml", ".yml": "yaml", ".md": "markdown",
+                ".csv": "text", ".tsv": "text", ".txt": "text", ".html": "html", ".htm": "html",
+                ".py": "python", ".java": "java", ".sql": "sql", ".js": "javascript", ".ts": "typescript",
+                ".sh": "bash", ".css": "css", ".log": "text"}
+
+
+def _read_inline_text(path: str) -> Optional[tuple[str, bool]]:
+    """Read a local file as inline-deliverable text: (text, truncated) or None when the
+    file is absent, oversized, or not text-decodable (binary keeps the capability failure).
+    utf-8 first, gb18030 fallback for Chinese-origin sources."""
+    try:
+        if os.path.getsize(path) > _INLINE_TEXT_MAX_BYTES:
+            return None
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError as e:
+        logger.warning("[dingtalk] inline document read failed for %s: %s", path, e)
+        return None
+    for encoding in ("utf-8", "gb18030"):
+        try:
+            text = raw.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        return None
+    if len(text) > _INLINE_TEXT_MAX_CHARS:
+        return text[:_INLINE_TEXT_MAX_CHARS], True
+    return text, False
 
 
 def _csv_set(raw: Any) -> set[str]:
@@ -563,8 +597,20 @@ class DingTalkAdapter(BasePlatformAdapter):
         return SendResult(success=False, error=_NO_LOCAL_UPLOAD % ("image uploads", "media upload"))
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None, reply_to=None, metadata=None, **kwargs) -> SendResult:
-        """Webhook replies cannot upload local files."""
-        return SendResult(success=False, error=_NO_LOCAL_UPLOAD % ("file attachments", "message send"))
+        """Deliver text-readable files inline as a fenced code block; binaries keep the
+        webhook-capability failure (session webhook cannot upload local files)."""
+        payload = _read_inline_text(file_path)
+        if payload is None:
+            return SendResult(success=False, error=_NO_LOCAL_UPLOAD % ("file attachments", "message send"))
+        text, truncated = payload
+        display = file_name or os.path.basename(file_path)
+        lang = _FENCE_LANGS.get(Path(file_path).suffix.lower(), "")
+        note = "\n\n*（内容超长已截断）*" if truncated else ""
+        body = f"{caption}\n\n" if caption else ""
+        return await self.send(
+            chat_id=chat_id,
+            content=f"{body}📄 **{display}**\n\n```{lang}\n{text}\n```{note}",
+            reply_to=reply_to, metadata=metadata)
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Return basic info about a DingTalk conversation."""

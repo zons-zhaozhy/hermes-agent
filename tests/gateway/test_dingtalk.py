@@ -202,6 +202,71 @@ class TestSend:
         assert payload["msgtype"] == "markdown"
         assert payload["markdown"]["text"] == "Screenshot\n\n![image](https://example.com/demo.png)"
 
+    @pytest.mark.asyncio
+    async def test_send_document_text_file_renders_code_block(self, tmp_path):
+        """文本类文件(xml 等)降级为围栏代码块发送,内容直达群聊——session webhook 无法上传附件。"""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        target = tmp_path / "mapper.xml"
+        target.write_text("<select id=\"alert\">\n  SELECT 1\n</select>\n", encoding="utf-8")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "OK"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+
+        result = await adapter.send_document(
+            "chat-123", str(target),
+            metadata={"session_webhook": "https://dingtalk.example/webhook"})
+
+        assert result.success is True  # 期望: 文本文件降级发送成功,不再是恒失败桩
+        payload = mock_client.post.call_args.kwargs["json"]
+        text = payload["markdown"]["text"]
+        assert "```xml" in text  # 期望: xml 围栏语言标注
+        assert "<select id=\"alert\">" in text  # 期望: 文件原文进入消息体
+        assert "mapper.xml" in text  # 期望: 文件名可见
+
+    @pytest.mark.asyncio
+    async def test_send_document_binary_file_keeps_failure(self, tmp_path):
+        """二进制文件无降级通道,维持能力缺失失败(协议无法上传本地附件)。"""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        target = tmp_path / "blob.xlsx"
+        target.write_bytes(b"\x00\x01\x02PK\xff\xfe\xfd" * 64)
+
+        result = await adapter.send_document(
+            "chat-123", str(target),
+            metadata={"session_webhook": "https://dingtalk.example/webhook"})
+
+        assert result.success is False  # 期望: 二进制不可文本解码,保持原失败语义
+        assert result.error and "file attachments" in result.error
+
+    @pytest.mark.asyncio
+    async def test_send_document_truncates_long_text(self, tmp_path):
+        """超长文本截断到单条预算内并显式注明,不静默丢尾。"""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter, _INLINE_TEXT_MAX_CHARS
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        target = tmp_path / "big.txt"
+        target.write_text("x" * (_INLINE_TEXT_MAX_CHARS + 5000), encoding="utf-8")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "OK"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+
+        result = await adapter.send_document(
+            "chat-123", str(target),
+            metadata={"session_webhook": "https://dingtalk.example/webhook"})
+
+        assert result.success is True
+        text = mock_client.post.call_args.kwargs["json"]["markdown"]["text"]
+        assert "内容超长已截断" in text  # 期望: 截断显式注明
+        assert "x" * _INLINE_TEXT_MAX_CHARS in text  # 期望: 恰好保留预算内全文
+
 # ---------------------------------------------------------------------------
 # Connect / disconnect
 # ---------------------------------------------------------------------------
