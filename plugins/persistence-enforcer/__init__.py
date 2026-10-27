@@ -45,7 +45,7 @@ def _coerce_threshold(raw: object, default: int, name: str) -> int:
 
 # write_file 是可持久化工具，但在无 TODO 时会被拦截
 # PERSIST_TRACK 用于 post_tool_call 追踪——包含 write_file
-PERSIST_TRACK = frozenset({"write_file", "skill_manage", "memory"})
+PERSIST_TRACK = frozenset({"write_file", "skill_manage", "memory"})  # tools-ok: 追踪记账面（含 memory 非 guard 写拦截语义）
 # 框架工具名 todo → todo_list 曾更名；两个名字都认，防止解锁条件随更名永假
 TODO_TOOLS = frozenset({"todo", "todo_list"})
 # 死锁降级阈值：连续 N 次拦截仍无解锁凭据 → 判定解锁工具在本会话
@@ -55,7 +55,7 @@ DEBLOCK_AFTER = 2
 
 # 拦截目标：只挡代码编辑工具（write_file, patch）
 # terminal/delegate/browser/read 等全部放行——agent 需要它们做调查
-BLOCKED_TOOLS = frozenset({"write_file", "patch"})
+from plugins.guards.tool_classification import FILE_WRITE_TOOLS as BLOCKED_TOOLS
 
 COMPLEX_TASK_KEYWORDS = frozenset({
     "审计", "审查", "全量", "全面", "深度", "重构", "架构",

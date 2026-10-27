@@ -72,12 +72,17 @@
 1. scope_gate 判定模型：当日 51 次判定、9 次本地判定超时回退主模型（每次 ≈20s 超时 + 一次 glm-5.3 调用）——成本项未修，量级远小于已修项。
 2. CodingStandardsGuard 正则铁律误伤一次性只读探针（反方子代理实测命中一次）——枚举式判定漂移的新证据，待定性。
 3. 装载依赖：全部修复需进程重启装载。网关已于 17:31 重启（pid 70881/70883/70884，晚于当时全部 commit）；e11c50dd72 之后的会话需再次重启装载。CLI 长会话若早于 commit 启动仍按旧代码执法。
-4. C2 结构债（未修，反方定性「病灶结构全库复制」）：≥5 份互不一致的只读工具枚举 + ≥8 份互不一致的写工具枚举散布各插件，无单一 owner。本轮五处修复仍是在各插件就地补枚举——与「枚举必然漂移」的结构矛盾未解。收敛方案：新建 plugins/guards/tool_classification.py 单一 owner（只读家族/写语义/落地通道三类判定集中），全库消费方 import 使用 + AST 门禁声明语义归属（违单一事实源纪律须门禁配套）。涉及 8+ 插件改造，属方向级工程。
-5. 风险接受项（反方定性，不修）：B3 nosession 共享桶（既有行为）；B4/B5 可观测性轻微损失；A7 landing 子串保守误拦方向；C4 block_escalation 未列只读命令计写（2 次窗口）；C5 SlowSearchGuard 有界只读探针误拦（有豁免通道）；C6 字面量枚举漂移风险现后果轻微。
+4. C2 结构债（**已修，2026-10-27 本轮落地**）：反方定性「病灶结构全库复制」——AST 全库扫描实测 24 处写工具名字面量（超反方手工测绘的 ≥8 份）。收敛产物：
+   - 单一 owner `plugins/guards/tool_classification.py`：FILE_WRITE_TOOLS（write_file/patch）/ CODE_WRITE_TOOLS（execute_code）/ SKILL_WRITE_TOOLS（skill_manage）/ STANDARD_WRITE_TOOLS（文件写+代码写）/ FILE_AND_SKILL_WRITE_TOOLS / MAYBE_WRITE_TOOLS（含 terminal 壳，仅供「宁可多做」类消费方）；terminal 不入任何拦截面——按命令形态动态判定。
+   - 13 处 guard 拦截面消费方迁移 import owner 常量（four_axis/pre_write/coding_standards/casebook_gate/skill_pruned_gate/experience_gate/plain_vocab/diff_debt/pipeline-guard/persistence-enforcer/indexer-sync/gate.py 两处），恒等对拍 13/13 [实测]。
+   - 11 处语义确属别类（进度证据/统计口径/显示映射/沙箱白名单/路径域调度/skill diff 动作/沉淀产出/追踪记账）加行内 `# tools-ok:` 豁免标记，豁免理由逐处注明。
+   - AST 门禁 `scripts/check_tool_classification.py`（含 --self-test 负例注入自测）已注册 scripts/check `tool-classification` 条目；迁移前红 24 处→迁移后绿。
+   - 顺带修复：pipeline-guard `_ALWAYS_ALLOWED` 六个 browser_* 旧工具名锈死条目（C1 同款第三处）替换为现役 browser_exec/vision_analyze。
+5. 风险接受项（反方定性，不修）：B3 nosession 共享桶（既有行为）；B4/B5 可观测性轻微损失；A7 landing 子串保守误拦方向；C4 block_escalation 未列只读命令计写（2 次窗口）；C5 SlowSearchGuard 有界只读探针误拦（有豁免通道）。原 C6「字面量枚举漂移风险」已由 C2 收敛+AST 门禁根治，移出风险清单。
 
 ## 六、复现与验证命令
 
 - 拦截全量：`sqlite3 ~/.hermes/state.db "select ... from messages where content like '%four-axis guard: blocking%'"`（先 .schema 确认列名）
 - 装载判定：`ps -eo pid,lstart,command | grep hermes` 对照 commit 时刻
 - 回归：`scripts/run_tests.sh tests/plugins/`（四轴 + devil-advocate 共 58 用例）
-- 同款结构扫描：`grep -rn "_READONLY\|allowlist\|默认拒绝" plugins/`
+- 同款结构扫描（C2 后）：`python3 scripts/check_tool_classification.py`（AST 门禁，含 `--self-test` 负例自测）

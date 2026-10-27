@@ -28,10 +28,7 @@ _SYNC_TIMEOUT_SMALL = 60   # < 500 files
 _SYNC_TIMEOUT_LARGE = 300  # >= 500 files (ontoX 3522 files needs ~3-4 min)
 _MIN_RESYNC_INTERVAL = 120  # don't re-sync same repo within 2 min
 # Tools that MODIFY files → trigger index sync
-_WRITE_TOOL_NAMES = frozenset({
-    "patch", "write_file",
-    "terminal", "execute_code",  # can write via shell/python
-})
+from plugins.guards.tool_classification import MAYBE_WRITE_TOOLS as _WRITE_TOOL_NAMES
 # Tools that only READ → never trigger sync
 # (read_file, search_files, etc. don't change the index)
 

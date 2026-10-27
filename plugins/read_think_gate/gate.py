@@ -119,11 +119,9 @@ _FOUR_AXIS_LABELS = ["影响面", "原意图", "根因", "风险"]
 # execute_code 不在此列——它可以是纯只读（审计/查询/分析），
 # 也可以通过 write_file/patch 间接写文件（后者已被四轴覆盖）。
 # terminal（即使动态 gated）不需要四轴——运维操作不产出"风险矩阵"。
-_FOUR_AXIS_REQUIRED_TOOLS: frozenset[str] = frozenset(
-    {
-        "write_file",
-        "patch",
-    }
+# 写工具语义 owner=plugins/guards/tool_classification（C2 收敛）。
+from plugins.guards.tool_classification import (
+    FILE_WRITE_TOOLS as _FOUR_AXIS_REQUIRED_TOOLS,
 )
 
 
@@ -156,12 +154,9 @@ def _clear_four_axis_marker(session_id: str = "") -> None:
 # terminal/browser/delegate_task/cronjob/process 等运维交互工具不在默认门控范围——
 # 它们不是代码编辑，拦截它们会把 MySQL 运维、docker、git、测试等操作误伤。
 # 用户可通过 config.yaml → read_think_gate.gated_tools 扩展列表。
-GATED_TOOL_NAMES: frozenset[str] = frozenset(
-    {
-        "write_file",
-        "patch",
-        "execute_code",
-    }
+# 写工具语义 owner=plugins/guards/tool_classification（C2 收敛）。
+from plugins.guards.tool_classification import (
+    STANDARD_WRITE_TOOLS as GATED_TOOL_NAMES,
 )
 
 # 只读调查工具白名单——只有这些工具的调用才算真正的"调查"。

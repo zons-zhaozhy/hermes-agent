@@ -34,14 +34,13 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-_WRITE_TOOLS = frozenset({"write_file", "patch"})
+from plugins.guards.tool_classification import FILE_WRITE_TOOLS as _WRITE_TOOLS
 
-_ALWAYS_ALLOWED = frozenset({
+_ALWAYS_ALLOWED = frozenset({  # tools-ok: pipeline 恒放行白名单（含只读+委派，非写拦截面）
     "read_file", "search_files", "web_search", "web_extract",
-    "browser_navigate", "browser_snapshot", "browser_console",
-    "browser_vision", "browser_get_images", "browser_scroll",
+    "browser_exec", "vision_analyze",
     "skill_view", "skills_list", "session_search", "todo",
-    "vision_analyze", "clarify", "delegate_task",
+    "clarify", "delegate_task",
     "mcp__codegraph__codegraph_search", "mcp__codegraph__codegraph_node",
     "mcp__codegraph__codegraph_context", "mcp__codegraph__codegraph_explore",
     "mcp__codegraph__codegraph_files", "mcp__codegraph__codegraph_status",
