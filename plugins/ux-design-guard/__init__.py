@@ -55,7 +55,7 @@ _UX_RULE = """\
 必备>期望>魅力——数据正确/操作不丢/可撤销/报错人话未清零,禁投入动效炫技
 ②五问走查:看(一眼懂)/动(几步/有反馈/可撤销)/错(能自恢复)/记(要记什么)/惯(一致吗)
 ③Cooper六原则:就地直接/留在页面/保持轻量/提供邀请/用过渡解释变化(动效只许澄清状态)/即时响应
-④硬判据:反馈≤400ms;每屏主操作唯一;结果页/异常页投入最高;空态即引导;撤销优于确认;动效150-400ms超档即迟滞;操作按钮字号≥13px
+④硬判据:反馈≤400ms;每屏主操作唯一;结果页/异常页投入最高;空态即引导;撤销优于确认;动效150-400ms超档即迟滞;操作按钮字号≥13px;正文行高比值∈[1.4,1.9]
 理论=~/knowledge-base/ux-design/UX_INTERACTION_METHODOLOGY.md;判据=skill:ux-methodology"""
 
 
@@ -146,6 +146,12 @@ _U3_MAX_MS = 400.0
 _U4_MIN_BTN_PX = 13.0
 _BTN_SELECTOR_TOKENS = ("button", "btn", "cta", ".go", "-go", ".act", "-act", ".ops", ".pager")
 
+# U5 正文行高窗口——中文排印正文(13-16px)行高比值须落 [1.4, 1.9]
+_U5_BODY_FS_MIN = 13.0
+_U5_BODY_FS_MAX = 16.0
+_U5_LH_MIN = 1.4
+_U5_LH_MAX = 1.9
+
 
 def _font_size_px(line: str) -> float | None:
     """提取行内 font-size 的 px 字面量；非字面量（var/clamp/em/inherit）返回 None。
@@ -203,6 +209,101 @@ def _check_btn_font_size(lines: list) -> list:
             "有文本的操作按钮 <13px 不可读(多模型交叉审查三家一致判缺陷;"
             "Element Plus 默认 14px 达标)。非按钮文本不受此限;纯图标按钮或"
             "确有空间约束则行内注释 ux-ok: <理由> 豁免。"
+        )
+    return issues
+
+
+def _lh_value(line: str) -> tuple[float, bool] | None:
+    """提取行内 line-height 字面量。
+
+    Contract:
+      Postconditions: ``line-height: <n>px`` → (px 值, True)；
+        ``line-height: <n>``(无单位, 即比值) → (比值, False)；非字面量 → None
+    """
+    low = line.lower()
+    idx = low.find("line-height")
+    if idx < 0:
+        return None
+    rest = line[idx:].split(":", 1)[-1]
+    rest = rest.split(";")[0].split("}")[0].strip()
+    is_px = rest.endswith("px")
+    body = rest[:-2].strip() if is_px else rest
+    try:
+        val = float(body)
+    except ValueError:
+        return None
+    return (val, is_px)
+
+
+def _block_font_size_px(lines: list, idx: int) -> float | None:
+    """命中行所在规则块(向上至最近 '{')内的 font-size px 字面量。
+
+    Contract:
+      Preconditions: 0 <= idx < len(lines)
+      Postconditions: 块内有 font-size:<n>px → 最近一处 float；无 → None
+    """
+    start = idx
+    while start > 0 and "{" not in lines[start]:
+        start -= 1
+    found: float | None = None
+    # 单行规则(.x{font-size:13px;line-height:1.1})声明与命中行同处一行:
+    # 命中行 '{' 之后的片段也纳入探测,font-size 在 line-height 之前即命中
+    probes = list(lines[start: idx])
+    hit = lines[idx]
+    if "{" in hit:
+        probes.append(hit.split("{", 1)[-1] + ";}")
+    for probe in probes:
+        if "font-size" in probe.lower():
+            found = _font_size_px(probe)
+    return found
+
+
+def _heading_selector(lines: list, idx: int) -> bool:
+    """规则块选择器是否为标题元素(h1-h6)——标题压缩行高是排印惯例,豁免。
+
+    Contract:
+      Preconditions: 0 <= idx < len(lines)
+      Postconditions: 块首选择器含 h1..h6 → True
+    """
+    start = idx
+    while start > 0 and "{" not in lines[start]:
+        start -= 1
+    sel = lines[start].lower() if start < idx else lines[idx].lower()
+    return any(f"h{i}" in sel for i in range(1, 7))
+
+
+def _check_body_line_height(lines: list) -> list:
+    """U5 正文行高窗口——正文字号(13-16px)下显式行高比值落 [1.4, 1.9]。
+
+    Contract:
+      Postconditions: 返回违规消息列表(空=合规); 无 font-size 上下文/
+        非字面量/标题选择器均 fail-open; 豁免行(ux-ok:)跳过
+    """
+    issues: list = []
+    for lineno, line in enumerate(lines, start=1):
+        if "line-height" not in line.lower():
+            continue
+        if _has_exempt(line):
+            continue
+        lh = _lh_value(line)
+        if lh is None:
+            continue
+        idx = lineno - 1
+        if _heading_selector(lines, idx):
+            continue
+        fs = _block_font_size_px(lines, idx)
+        if fs is None or not (_U5_BODY_FS_MIN <= fs <= _U5_BODY_FS_MAX):
+            continue
+        val, is_px = lh
+        ratio = val / fs if is_px else val
+        if _U5_LH_MIN <= ratio <= _U5_LH_MAX:
+            continue
+        issues.append(
+            f"U5 正文行高越界: line {lineno} '{line.strip()[:60]}' —"
+            f"正文 {fs:g}px 行高比值 {ratio:.2f} 须落 [{_U5_LH_MIN:g}, {_U5_LH_MAX:g}]"
+            "(中文排印挤压<1.4 行间透不过气, >1.9 松散断行阅读节奏;"
+            "巡检层判据 aesthetics_audit bodyLineHeights 同源)。标题 h1-h6 豁免;"
+            "表格单元格等确有约束则行内注释 ux-ok: <理由> 豁免。"
         )
     return issues
 
@@ -302,6 +403,7 @@ def on_pre_tool_call(**kwargs: Any) -> dict:
             + _check_queue_in(lines)
             + _check_motion_duration(lines)
             + _check_btn_font_size(lines)
+            + _check_body_line_height(lines)
         )
         if issues:
             return {

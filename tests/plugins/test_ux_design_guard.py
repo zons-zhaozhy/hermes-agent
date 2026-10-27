@@ -132,3 +132,35 @@ def test_u4_allows_non_literal_font_size():
 def test_u4_exemption_channel():
     css = ".icon-only-btn {\n  font-size: 12px; /* ux-ok: 纯图标按钮无文本,尺寸由点击目标24px判据约束 */\n}\n"
     assert _call("/tmp/app/src/icon.css", css) == {}  # 期望: 行内豁免(≥8字理由)放行
+
+
+def test_u5_blocks_squeezed_body_line_height():
+    css = ".article-body {\n  font-size: 14px;\n  line-height: 15.4px;\n}\n"
+    verdict = _call("/tmp/app/src/body.css", css)
+    assert verdict.get("action") == "block" and "U5" in verdict["message"]  # 期望: 正文14px行高1.1被拦
+
+
+def test_u5_blocks_unitless_ratio_out_of_window():
+    css = ".desc { font-size: 13px; line-height: 1.1; }\n"
+    verdict = _call("/tmp/app/src/desc.css", css)
+    assert verdict.get("action") == "block" and "U5" in verdict["message"]  # 期望: 无单位比值1.1越下限被拦
+
+
+def test_u5_allows_healthy_ratio():
+    css = ".article-body {\n  font-size: 14px;\n  line-height: 22px;\n}\n"
+    assert _call("/tmp/app/src/ok.css", css) == {}  # 期望: 比值1.57在[1.4,1.9]内放行
+
+
+def test_u5_allows_heading_squeeze():
+    css = "h2.title {\n  font-size: 16px;\n  line-height: 18px;\n}\n"
+    assert _call("/tmp/app/src/h2.css", css) == {}  # 期望: 标题压缩行高是排印惯例,豁免
+
+
+def test_u5_allows_non_body_font_size():
+    css = ".hero-big {\n  font-size: 24px;\n  line-height: 26px;\n}\n"
+    assert _call("/tmp/app/src/hero.css", css) == {}  # 期望: 24px 非正文字号窗口,fail-open
+
+
+def test_u5_allows_no_font_size_context():
+    css = ".dense {\n  line-height: 15px;\n}\n"
+    assert _call("/tmp/app/src/dense.css", css) == {}  # 期望: 无 font-size 上下文静态不可判,fail-open
