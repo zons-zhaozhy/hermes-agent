@@ -167,10 +167,12 @@ def _durations_ms(line: str) -> list:
 
 
 def _check_motion_duration(lines: list) -> list:
-    """U3 动效时长超档检测——时长 >400ms 且无状态语义即拦。
+    """U3 动效时长超档检测——CSS 固定时长 >400ms 且无状态语义即拦。
 
-    CSS shorthand（transition/animation）首个时间值是时长、其后才是延迟，
-    故只取首个时间值判定；纯延迟属性行（*-delay）属 U2 域不检。
+    现行标准=M3 Expressive 动效物理体系（弹簧取代固定时长+缓动，2025-05 起）；
+    CSS transition/animation 表达不了弹簧，按归档档位执行：小位移 150-200ms/
+    大位移 300-400ms。CSS shorthand（transition/animation）首个时间值是时长、
+    其后才是延迟，故只取首个时间值判定；纯延迟属性行（*-delay）属 U2 域不检。
 
     Contract:
       Postconditions: 返回违规消息列表（空=合规）
@@ -192,9 +194,10 @@ def _check_motion_duration(lines: list) -> list:
             continue
         issues.append(
             f"U3 动效时长超档: line {lineno} '{line.strip()[:60]}' —"
-            "Material/Fluent 档位:小位移 150-200ms/大位移 300-400ms,>400ms 感知为"
-            "迟滞且挤占 400ms 反馈预算。状态语义写进类名或声明行(loading/progress/"
-            "skeleton 等)走白名单;确有叙事必要则行内注释 ux-ok: <理由> 豁免。"
+            "M3 现行体系为弹簧动效(固定时长+缓动已被取代);CSS 固定时长按归档档位:"
+            "小位移 150-200ms/大位移 300-400ms,>400ms 感知为迟滞且挤占 400ms 反馈"
+            "预算。状态语义写进类名或声明行(loading/progress/skeleton 等)走白名单;"
+            "大位移转场或弹簧实现则行内注释 ux-ok: <理由> 豁免。"
         )
     return issues
 
