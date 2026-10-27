@@ -305,6 +305,13 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
             if active_sid and active_sid != marker_sid:
                 active_marker = _read_marker(active_sid)
                 if active_marker is not None:
+                    logger.warning(
+                        "four-axis guard: marker bucket drift — allowing via active "
+                        "session bucket (called_with=%s, active=%s); if these are "
+                        "different concurrent sessions this is a cross-session "
+                        "borrow, audit this line",
+                        marker_sid, active_sid,
+                    )
                     marker = active_marker
                     marker_sid = active_sid
         except Exception:
