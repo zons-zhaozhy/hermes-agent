@@ -6,7 +6,8 @@ Contract:
 """
 import importlib.util
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
+from typing import Any
 
 
 def _load_guard() -> ModuleType:
@@ -16,6 +17,11 @@ def _load_guard() -> ModuleType:
     assert spec is not None and spec.loader is not None  # 期望: 插件文件可定位
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    # 本文件主题=marker 契约负例，前提固定为主防线在场（探测三态契约见
+    # test_four_axis_gate_presence.py）。config 读取在测试临时 home 下返回
+    # 空节（enabled 默认 True=active），无环境漂移。
+    guard: Any = mod
+    guard._gate_ctx = SimpleNamespace(has_plugin=lambda pid: True)
     return mod
 
 

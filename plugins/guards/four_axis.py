@@ -184,6 +184,66 @@ def _block_message(tool_name: str, missing_axes: Optional[list[str]] = None) -> 
     }
 
 
+# ---------------------------------------------------------------------------
+# 主防线在场探测（三态）——死锁防护。
+#
+# 实测事故（2026-10-26~27 hongtai-aml 网关）：网关进程启动时主防线插件
+# read-think-gate 未注册（启用配置晚于进程启动），本副防线按 marker 缺失
+# 拦截全部写操作约 19 小时，会话输出四轮四轴证据无效——marker 由主防线
+# 写入，主防线缺席则拦截永远无法被满足。cron 豁免（on_pre_tool_call 内）
+# 防的是主闸门按平台禁用，本探测防的是主防线插件整个缺席/被禁用：确认
+# 缺席时放行（副防线是纵深防御第二层，主防线不在则四轴执法整体不在此
+# 进程——与 cron 会话同等姿态），探测基础设施异常时保持拦截——
+# unknown 态不得与确认缺席折叠：检测失效 ≠ 主防线缺席。
+# 残留形态（在场判据必要非充分，待主防线加心跳声明后收口）：某表面向
+# pre_tool_batch 传空 session_id 时主防线不扫描（_current_gate 返回
+# None）、marker 仍不写，此时探测报在场、副防线照拦——该形态本探测
+# 不覆盖，须修主防线装配面，勿在此处猜测。
+_GATE_PLUGIN_ID = "read-think-gate"
+_gate_ctx: Any = None  # register() 捕获：主防线在场探测的唯一句柄（公共 API has_plugin）
+_absence_warned: set[str] = set()  # 已打缺席告警的会话（每会话一次；恢复在场即重置）
+
+
+def _probe_main_gate() -> str:
+    """主防线在场探测。
+
+    Returns:
+        str: ``active``（read-think-gate 已加载启用且 config 段未显式禁用）/
+          ``absent``（探测成功且确认主防线不会写 marker：未加载/被禁用/
+          加载失败/config 段 enabled=false）/ ``unknown``（探测基础设施
+          异常——ctx 未捕获或 has_plugin 抛错，须保持拦截）。
+
+    Contract:
+      Postconditions: 不抛异常出界；unknown 与 absent 永不混淆。
+    """
+    if _gate_ctx is None:
+        logger.error("four-axis guard: main-gate probe has no ctx (guard not registered?) — unknown")
+        return "unknown"
+    try:
+        present = bool(_gate_ctx.has_plugin(_GATE_PLUGIN_ID))
+    except Exception:
+        logger.error(
+            "four-axis guard: main-gate probe failed — unknown, keep blocking", exc_info=True,
+        )
+        return "unknown"
+    if not present:
+        return "absent"
+    # 插件在场但 config 段显式禁用：主防线 check_batch 恒 early-return、
+    # marker 永不写——与缺席等价。读法镜像 read_think_gate/__init__.py
+    # _config_section（异常按默认 enabled=True，在场侧容错）。
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        section = (load_config_readonly() or {}).get("read_think_gate")
+        if isinstance(section, dict) and section.get("enabled") is False:
+            return "absent"
+    except Exception:
+        logger.warning(
+            "four-axis guard: read_think_gate config read failed — treated active", exc_info=True,
+        )
+    return "active"
+
+
 def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
     """pre_tool_call hook：写工具执行前检查四轴 marker。"""
     tool_name = kwargs.get("tool_name", "")
@@ -214,9 +274,33 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
 
     marker = _read_marker(session_id)
     if marker is None:
-        logger.info(
-            "four-axis guard: blocking %s — marker missing or expired", tool_name,
-        )
+        verdict = _probe_main_gate()
+        if verdict == "absent":
+            # 确认缺席：放行（死锁防护）。每会话告警一次，恢复在场即重置。
+            if session_id not in _absence_warned:
+                _absence_warned.add(session_id)
+                logger.warning(
+                    "four-axis guard: main gate (read-think-gate) absent/disabled in this "
+                    "process — secondary line fail-open for session %s (deadlock guard); "
+                    "four-axis enforcement is NOT active here",
+                    session_id,
+                )
+            else:
+                logger.debug(
+                    "four-axis guard: main gate absent — allowing %s (session %s already warned)",
+                    tool_name, session_id,
+                )
+            return None
+        if verdict == "unknown":
+            logger.error(
+                "four-axis guard: main-gate state unknown — keep blocking %s (fail-closed)",
+                tool_name,
+            )
+        else:
+            _absence_warned.discard(session_id)
+            logger.info(
+                "four-axis guard: blocking %s — marker missing or expired", tool_name,
+            )
         missing_axes = None
         progress = _read_progress(session_id)
         if progress:
@@ -232,6 +316,8 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
     return None
 
 
-def register(ctx) -> None:
+def register(ctx: Any) -> None:
+    global _gate_ctx
+    _gate_ctx = ctx  # 主防线在场探测句柄：公共探针 has_plugin（force reload 复用同一 manager）
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     logger.info("guards.four_axis registered")
