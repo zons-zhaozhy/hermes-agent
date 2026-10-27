@@ -26,7 +26,7 @@ IDEMPOTENT_TOOL_NAMES = frozenset({
     "mcp_filesystem_search_files",
 })
 
-MUTATING_TOOL_NAMES = frozenset({
+MUTATING_TOOL_NAMES = frozenset({  # tools-ok: 会话状态变更语义（含 todo/memory/browser 动作等，非 guard 写拦截面）
     "terminal", "execute_code", "write_file", "patch", "todo_list", "memory", "skill_manage",
     "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_navigate",
     "send_message", "cronjob_manage", "delegate_task", "process_manage",
@@ -60,7 +60,7 @@ FAILURE_TOLERANT_TOOL_NAMES = frozenset({
 
 # A successful call to one of these marks progress for every failing signature still counted
 # this turn: the next retry is a new experiment (edit -> re-run), not a replay.
-PROGRESS_RESET_TOOL_NAMES = frozenset({
+PROGRESS_RESET_TOOL_NAMES = frozenset({  # tools-ok: 重试进度复位语义（含 browser 旧名动作，非 guard 写拦截面）
     "write_file", "patch", "terminal", "execute_code", "browser_click", "browser_type", "browser_press",
     "browser_navigate", "process_manage", "process", "delegate_task", "send_message", "cronjob",
     "cronjob_manage", "todo", "todo_list", "memory", "skill_manage",

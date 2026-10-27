@@ -523,7 +523,7 @@ def prepare_tool_preview(tool_name: str, args: dict | None, *, fallback: str, ma
 
 # Tools with a curated verb; the text itself lives in the catalog (``display.verb.<tool>``) and is
 # resolved at call time by ``get_tool_verb`` so a ``display.language`` change applies immediately.
-_TOOL_VERB_TOOLS: frozenset[str] = frozenset({
+_TOOL_VERB_TOOLS: frozenset[str] = frozenset({  # tools-ok: UI 动词显示映射目录（显示语义非 guard 写拦截面）
     "web_search", "web_extract", "browser_navigate", "browser_click", "browser_type",
     "read_file", "write_file", "patch", "search_files", "terminal", "execute_code",
     "image_generate", "video_generate", "text_to_speech", "vision_analyze", "session_search",

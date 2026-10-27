@@ -12,7 +12,7 @@ from pathlib import Path
 
 logger = logging.getLogger("tools.skill_manager_tool")
 
-_BATCH_OP_ACTIONS = {"create", "patch", "write_file", "remove_file"}
+_BATCH_OP_ACTIONS = {"create", "patch", "write_file", "remove_file"}  # tools-ok: 批量操作动作名（动作语义非 guard 工具拦截面）
 _BATCH_MAX_OPS = 20
 
 # --- Per-op argument shape (checked before any effect) ---------------------------------

@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 SANDBOX_AVAILABLE = True
 
 # Tools allowed inside the sandbox; ∩ the session's enabled tools decides which stubs are generated.
-SANDBOX_ALLOWED_TOOLS = frozenset([
+SANDBOX_ALLOWED_TOOLS = frozenset([  # tools-ok: 沙箱内可用工具白名单（沙箱语义非 guard 写拦截面）
     "web_search", "web_extract", "read_file", "write_file", "search_files", "patch", "terminal",
 ])
 

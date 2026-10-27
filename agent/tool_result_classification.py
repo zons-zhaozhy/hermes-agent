@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 
-FILE_MUTATING_TOOL_NAMES = frozenset({"write_file", "patch"})
+FILE_MUTATING_TOOL_NAMES = frozenset({"write_file", "patch"})  # tools-ok: 结果统计口径（工具结果是否含文件变更信号，非 guard 写拦截面）
 
 
 # Tools whose interrupted/dangling execution is safe to discard because they

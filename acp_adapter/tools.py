@@ -33,7 +33,7 @@ TOOL_KIND_MAP: dict[str, ToolKind] = {
 
 # Tools whose results render through the curated formatters below (raw JSON is
 # suppressed for these); unknown/plugin tools stay conservative.
-_POLISHED_TOOLS = {
+_POLISHED_TOOLS = {  # tools-ok: ACP 结果展示分类（显示语义非 guard 写拦截面）
     # Core operator loop
     "todo", "memory", "session_search", "delegate_task",
     # Files / execution

@@ -46,7 +46,7 @@ _PARALLEL_SAFE_TOOLS = frozenset({
 # Filesystem tools admitted by path overlap: readers may share a subtree, a writer conflicts
 # with ANY overlapping reservation (so a batched read never observes pre-mutation state).
 _PATH_SCOPED_READERS = frozenset({"read_file", "search_files"})
-_PATH_SCOPED_WRITERS = frozenset({"write_file", "patch"})
+_PATH_SCOPED_WRITERS = frozenset({"write_file", "patch"})  # tools-ok: 路径域读写在途跟踪语义（只收带路径参数的工具，非 guard 写拦截面）
 _PATH_SCOPED_TOOLS = _PATH_SCOPED_READERS | _PATH_SCOPED_WRITERS
 
 # Terminal commands that may modify/delete files.
