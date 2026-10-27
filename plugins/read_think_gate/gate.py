@@ -217,18 +217,22 @@ def _terminal_writes_file(command: str) -> bool:
     if not command:
         return False
 
-    # 0. 解释器执行任意代码 = 写通道。判定 = 命令边界（首 token 或跟在
-    #    ;/&&/||/|/( 后的首 token）是解释器，或解释器 token 携带 -c/-e
-    #    内联代码/<<heredoc。原 heredoc 豁免（「吃 stdin 不写文件」）不
-    #    成立：stdin 里的代码执行时可写任意文件。
-    _INTERPRETER_TOKENS = ("python3", "python", "bash", "sh", "zsh",
-                           "node", "perl", "ruby")
-    low = command.lower()
-    for tok in _INTERPRETER_TOKENS:
-        # 解释器 + 内联代码/heredoc/管道喂码 → 写通道
-        if tok in low.split() and (" -c" in low or " -e" in low or "<<" in low
-                                   or f"| {tok}" in low):
-            return True
+    # 0. 解释器 heredoc（python3 <<'PY'）吃 stdin——形态级不判写。解释器
+    #    载荷的写检测由四处内容级判定负责（tools/approval 结构性 -c 扫描/
+    #    cron lifecycle inert-heredoc/ guards source_write 内联写/ guards
+    #    duplicate_check heredoc 正文），本函数与其重复执法=误拦回归
+    #    （2026-10-19 source_write 修复的外层 heredoc 载荷形态）。
+    #    armed 冻结面的保守解释器判定在 devil-advocate-audit 侧
+    #    （_terminal_passes），不共用本函数语义。
+    if "<<" in command:
+        pre_heredoc = command.split("<<", 1)[0]
+        last_seg = pre_heredoc.rstrip().rsplit("|", 1)[-1].strip()
+        # 整 token 匹配——后缀匹配会撞 .sh 文件名(cat > f.sh <<EOF 被误判解释器)
+        _INTERPRETER_TOKENS = ("python3", "python", "bash", "sh", "zsh",
+                               "node", "perl", "ruby", "ssh", "sudo")
+        seg_words = last_seg.split()
+        if seg_words and seg_words[-1] in _INTERPRETER_TOKENS:
+            return False
 
     # 1. 高置信度模式
     for pat in _TERMINAL_WRITE_PATTERNS_HIGH:

@@ -511,10 +511,23 @@ def _process_manage_passes(args: Any) -> bool:
 
 
 def _terminal_passes(args: Any) -> bool:
-    """terminal armed 期放行判定（只读命令放行，写/落地仍冻结）。"""
+    """terminal armed 期放行判定（只读命令放行，写/落地/解释器仍冻结）。
+
+    解释器内联/heredoc/管道喂码在本层判冻结（fail-closed）：载荷代码不可
+    静态证明只读，armed 期短（派出反方审查即解除），粗判定误伤代价仅为
+    数轮延迟。主防线（gate.py）不共用此语义——其 heredoc 豁免保护只读
+    探测形态，内容级写检测由 approval/source_write 等四处负责。
+    """
     command = str(args.get("command") or "") if isinstance(args, dict) else ""
     if not command:
         return False
+    low = command.lower()
+    interpreter_tokens = ("python3", "python", "bash", "sh", "zsh",
+                          "node", "perl", "ruby")
+    if any(tok in low.split() for tok in interpreter_tokens) and (
+        " -c" in low or " -e" in low or "<<" in low
+    ):
+        return False  # 解释器执行任意代码 → 冻结
     from plugins.read_think_gate_host import _terminal_writes_file
 
     return not _terminal_writes_file(command) and not _terminal_lands_decision(
