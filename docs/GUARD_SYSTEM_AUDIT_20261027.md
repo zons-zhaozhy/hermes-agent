@@ -50,14 +50,30 @@
 - 当日计数定性：finish_guard 112 次命中 = 31 提醒注入 + 15 强制续跑 + 14 L4 走查（提醒型，健康）；source_write 76 次多数为 escape hatch 放行记录（豁免通道正常）。
 - 其余拦截型插件（modify_guard/decision_tree/patch-first/pipeline-guard/discipline 系列）：零同步 LLM 判定成本，豁免面在位。
 
-## 四、遗留观察项
+## 四、反方审查轮（deleg_231c7b7f，20 次 API 调用 570s）与第五批修复 e11c50dd72
+
+反方子代理独立审查三个修复后输出 20 项发现（A1-A8/B1-B6/C1-C6），定性：8 项真缺陷（A1-A6/B1/B2）+C1/C3 同类病已修（commit e11c50dd72，8 文件 +287/-83，tests/plugins 全量 1,963 通过 0 失败）；并行会话同窗再修 2 项（1ef9936d3a 桶漂移回退、54ad90e39f 跨会话借用可观测性 WARNING）。修法要点：
+
+| 项 | 修法 |
+|---|---|
+| A1 browser_exec 整工具放行=armed 旁路 | 移出只读表（code 参数=任意 Python，能力等价 execute_code） |
+| A2 `python3 -c`/heredoc/管道喂码绕过写检测 | _terminal_writes_file 增解释器执行形态判写（heredoc 豁免撤销） |
+| A3/A4 git 子串无 token 边界+非 git 落地通道缺失 | git 子命令 token 化（-C 全局选项跳过）+crontab/defaults/osascript/npm publish/DB DML 落地表 |
+| A5 gitnexus 前缀族含写语义工具 | _PREFIX_FAMILY_WRITE_EXCEPTIONS（cypher/rename/group_sync） |
+| A6 armed 判定 fail-open | fail-closed；正门（delegate_task）前置 try 外保证异常路径可达，豁免通道不经此函数 |
+| B1 _ACTIVE_SESSION_ID 单全局多会话抢占 | ContextVar 化（写读两端+four_axis 配套），asyncio task/线程隔离 |
+| C1 调查表 browser_* 旧工具名锈化 | 换 browser_exec/vision_analyze/session_search |
+| C3 沉淀表漏 execute_code/browser_exec | 补齐（代码写文件旁路沉淀判定） |
+
+## 五、遗留观察项与结构债
 
 1. scope_gate 判定模型：当日 51 次判定、9 次本地判定超时回退主模型（每次 ≈20s 超时 + 一次 glm-5.3 调用）——成本项未修，量级远小于已修项。
 2. CodingStandardsGuard 正则铁律误伤一次性只读探针（反方子代理实测命中一次）——枚举式判定漂移的新证据，待定性。
-3. 装载依赖：全部修复需进程重启装载。网关已于 17:31 重启（pid 70881/70883/70884，晚于全部 commit）；CLI 长会话若早于 commit 启动仍按旧代码执法。
-4. 反方审查（deleg_231c7b7f）进行中：复核 A 漏放绕过 / B 多会话桶错配 / C 全库同款漂移结构。
+3. 装载依赖：全部修复需进程重启装载。网关已于 17:31 重启（pid 70881/70883/70884，晚于当时全部 commit）；e11c50dd72 之后的会话需再次重启装载。CLI 长会话若早于 commit 启动仍按旧代码执法。
+4. C2 结构债（未修，反方定性「病灶结构全库复制」）：≥5 份互不一致的只读工具枚举 + ≥8 份互不一致的写工具枚举散布各插件，无单一 owner。本轮五处修复仍是在各插件就地补枚举——与「枚举必然漂移」的结构矛盾未解。收敛方案：新建 plugins/guards/tool_classification.py 单一 owner（只读家族/写语义/落地通道三类判定集中），全库消费方 import 使用 + AST 门禁声明语义归属（违单一事实源纪律须门禁配套）。涉及 8+ 插件改造，属方向级工程。
+5. 风险接受项（反方定性，不修）：B3 nosession 共享桶（既有行为）；B4/B5 可观测性轻微损失；A7 landing 子串保守误拦方向；C4 block_escalation 未列只读命令计写（2 次窗口）；C5 SlowSearchGuard 有界只读探针误拦（有豁免通道）；C6 字面量枚举漂移风险现后果轻微。
 
-## 五、复现与验证命令
+## 六、复现与验证命令
 
 - 拦截全量：`sqlite3 ~/.hermes/state.db "select ... from messages where content like '%four-axis guard: blocking%'"`（先 .schema 确认列名）
 - 装载判定：`ps -eo pid,lstart,command | grep hermes` 对照 commit 时刻
