@@ -12,6 +12,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 _MOD_PATH = REPO / "plugins" / "ux-design-guard" / "__init__.py"
 _spec = importlib.util.spec_from_file_location("ux_design_guard_under_test", _MOD_PATH)
+assert _spec is not None and _spec.loader is not None  # 期望: 测试文件加载失败立即显式报错
 guard = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(guard)
 
@@ -164,3 +165,45 @@ def test_u5_allows_non_body_font_size():
 def test_u5_allows_no_font_size_context():
     css = ".dense {\n  line-height: 15px;\n}\n"
     assert _call("/tmp/app/src/dense.css", css) == {}  # 期望: 无 font-size 上下文静态不可判,fail-open
+
+
+def _call_patch(path: str, old: str, new: str) -> dict:
+    return guard.on_pre_tool_call(tool_name="patch", args={"path": path, "old_string": old, "new_string": new})
+
+
+def test_u4_patch_single_line_shrink_blocked(tmp_path):
+    """patch 单行改小(new_string 无选择器)是最高频写入形态——回读文件拼上下文后必须拦。"""
+    target = tmp_path / "btn.css"
+    target.write_text(".task .t-go {\n  font-size: 14px;\n}\n")
+    verdict = _call_patch(str(target), "  font-size: 14px;", "  font-size: 12px;")
+    assert verdict.get("action") == "block" and "U4" in verdict["message"]  # 期望: 回读上下文后单行改小被拦
+
+
+def test_u4_important_suffix_blocked():
+    css = ".btn-primary {\n  font-size: 12px !important;\n}\n"
+    verdict = _call("/tmp/app/src/imp.css", css)
+    assert verdict.get("action") == "block" and "U4" in verdict["message"]  # 期望: !important 对抗写法被拦
+
+
+def test_u4_font_shorthand_blocked():
+    css = ".btn-cta {\n  font: 500 12px/1.4 system-ui;\n}\n"
+    verdict = _call("/tmp/app/src/shorthand.css", css)
+    assert verdict.get("action") == "block" and "U4" in verdict["message"]  # 期望: font 缩写 12px 被拦
+
+
+def test_u4_active_state_class_not_misjudged():
+    css = ".tab.active {\n  font-size: 12px;\n}\n"
+    assert _call("/tmp/app/src/tab.css", css) == {}  # 期望: .active 状态类是字母相连,词界排除非按钮
+
+
+def test_u4_hyphen_prefix_button_still_blocked():
+    css = ".row .ops-btn {\n  font-size: 12px;\n}\n"
+    verdict = _call("/tmp/app/src/ops.css", css)
+    assert verdict.get("action") == "block" and "U4" in verdict["message"]  # 期望: ops-btn 连字符前缀是按钮语义,仍拦
+
+
+def test_u4_declared_boundary_tailwind_fail_open_inline_now_blocked():
+    """边界声明: tailwind 类映射静态不可判(放行); 内联 style 与 button 标签同行可判(被拦)。"""
+    assert _call("/tmp/app/src/tw.html", '<button class="text-xs">go</button>') == {}  # 期望: 类系统映射静态不可判,放行
+    verdict = _call("/tmp/app/src/inline.html", '<button style="font-size:12px">go</button>')
+    assert verdict.get("action") == "block" and "U4" in verdict["message"]  # 期望: button 标签+内联 font-size 同行可判,拦

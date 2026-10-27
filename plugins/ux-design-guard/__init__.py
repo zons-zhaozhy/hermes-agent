@@ -144,7 +144,10 @@ _U3_MAX_MS = 400.0
 
 # U4 操作按钮字号下限——多模型交叉审查实锤(12px 操作按钮三家一致判缺陷)
 _U4_MIN_BTN_PX = 13.0
-_BTN_SELECTOR_TOKENS = ("button", "btn", "cta", ".go", "-go", ".act", "-act", ".ops", ".pager")
+# token 分两类: 后缀类('-go'/'-act'/'-ops' 允许字母前缀相连,匹配 t-go/ops-btn 型);
+# 完整词类(prev+next 非字母)。点前缀 '.act'/'.ops' 已删——'.active'/'.activity-feed'/'.ops-log'
+# 字母/连字符相连即误拦(反方审查实测),其后缀场景由 '-act'/'-ops'/'-btn'(btn 完整词)覆盖。
+_BTN_SELECTOR_TOKENS = ("button", "btn", ".go", ".cta", ".pager", "-go", "-act", "-ops")
 
 # U5 正文行高窗口——中文排印正文(13-16px)行高比值须落 [1.4, 1.9]
 _U5_BODY_FS_MIN = 13.0
@@ -157,34 +160,73 @@ def _font_size_px(line: str) -> float | None:
     """提取行内 font-size 的 px 字面量；非字面量（var/clamp/em/inherit）返回 None。
 
     Contract:
-      Postconditions: 可解析的 ``font-size: <n>px`` → float；其余 → None（fail-open）
+      Postconditions: 可解析的 ``font-size: <n>px``（含 !important 后缀）→ float；
+        font 缩写 ``font: 500 12px/1.4`` 的字号段 → float；其余 → None（fail-open）
     """
     low = line.lower()
     idx = low.find("font-size")
     if idx < 0:
-        return None
+        idx = low.find("font:")
+        if idx < 0:
+            return None
     rest = line[idx:].split(":", 1)[-1]
     rest = rest.split(";")[0].split("}")[0].strip()
-    if not rest.endswith("px"):
+    # !important 是压过框架默认值的对抗写法,恰是高优先级拦截目标
+    rest = rest.replace("!important", "").strip()
+    # var/clamp/calc 是运行时合成值,静态不可判 fail-open
+    if "var(" in rest or "clamp(" in rest or "calc(" in rest:
         return None
+    px = rest.find("px")
+    if px < 0:
+        return None
+    # font 缩写(font: 500 12px/1.4)取首个 px 前的数字段(=字号);
+    # line-height 在 '/' 之后不干扰; weight 前置段无 px 不命中
+    i = px - 1
+    while i >= 0 and (rest[i].isdigit() or rest[i] == "."):
+        i -= 1
     try:
-        return float(rest[:-2].strip())
+        return float(rest[i + 1: px])
     except ValueError:
         return None
 
 
+def _btn_token_boundary_hit(blob: str, token: str) -> bool:
+    """token 在 blob 中以词边界命中。
+
+    Contract:
+      Postconditions: 后缀类 token('-go'/'-act'/'-ops')允许字母前缀相连
+        (匹配 t-go/ops-btn 型),仅要求 next 非字母;其余 token 要求
+        prev+next 均非字母——'.active' 对 'act' 族不命中('ive'字母相连)
+    """
+    start = 0
+    suffix = token.startswith("-")
+    while True:
+        i = blob.find(token, start)
+        if i < 0:
+            return False
+        after = i + len(token)
+        next_ch = blob[after] if after < len(blob) else "\n"
+        if not next_ch.isalpha():
+            if suffix:
+                return True
+            prev_ch = blob[i - 1] if i > 0 else "\n"
+            if not prev_ch.isalpha():
+                return True
+        start = i + 1
+
+
 def _btn_selector_context(lines: list, idx: int) -> bool:
-    """命中行向上至最近 '{' 的选择器窗口内是否含按钮语义 token。
+    """命中行向上至最近 '{' 的选择器窗口内是否含按钮语义 token（词界命中）。
 
     Contract:
       Preconditions: 0 <= idx < len(lines)
-      Postconditions: 窗口含任一按钮 token → True（纯函数无副作用）
+      Postconditions: 窗口含任一按钮 token(词界) → True（纯函数无副作用）
     """
     start = idx
-    while start > 0 and "{" not in lines[start] and start > idx - 8:
+    while start > 0 and "{" not in lines[start] and start > idx - 40:
         start -= 1
     blob = "\n".join(lines[start: idx + 1]).lower()
-    return any(tok in blob for tok in _BTN_SELECTOR_TOKENS)
+    return any(_btn_token_boundary_hit(blob, tok) for tok in _BTN_SELECTOR_TOKENS)
 
 
 def _check_btn_font_size(lines: list) -> list:
@@ -195,7 +237,8 @@ def _check_btn_font_size(lines: list) -> list:
     """
     issues: list = []
     for lineno, line in enumerate(lines, start=1):
-        if "font-size" not in line.lower():
+        low = line.lower()
+        if "font-size" not in low and "font:" not in low:
             continue
         if _has_exempt(line):
             continue
@@ -207,8 +250,8 @@ def _check_btn_font_size(lines: list) -> list:
         issues.append(
             f"U4 操作按钮字号过小: line {lineno} '{line.strip()[:60]}' —"
             "有文本的操作按钮 <13px 不可读(多模型交叉审查三家一致判缺陷;"
-            "Element Plus 默认 14px 达标)。非按钮文本不受此限;纯图标按钮或"
-            "确有空间约束则行内注释 ux-ok: <理由> 豁免。"
+            "Element Plus 默认按钮 14px 达标,small 变体 12px 须全局覆写 13px)。"
+            "非按钮文本不受此限;纯图标按钮或确有空间约束则行内注释 ux-ok: <理由> 豁免。"
         )
     return issues
 
@@ -397,6 +440,14 @@ def on_pre_tool_call(**kwargs: Any) -> dict:
         if not _is_ui_target(path):
             return {}
         text = args.get("content") or args.get("new_string") or ""
+        # patch 单行改小(new_string 无选择器上下文)是最高频写入形态——回读目标文件
+        # 做一次替换模拟,让检测器看到改动后的完整文件而非孤立片段
+        if tool_name == "patch" and args.get("old_string") and args.get("new_string"):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    text = fh.read().replace(str(args["old_string"]), str(args["new_string"]), 1)
+            except OSError:
+                text = str(args["new_string"])
         lines = text.splitlines()
         issues = (
             _check_decorative_infinite(lines)
