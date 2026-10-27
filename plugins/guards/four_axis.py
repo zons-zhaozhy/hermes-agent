@@ -207,6 +207,39 @@ _absence_warned: set[str] = set()  # 已打缺席告警的会话（每会话一�
 _LAST_BLOCK: dict[str, tuple[float, str, str]] = {}  # 桶会话 -> (ts, tool, target) 最近一次拦截
 _REPEAT_WINDOW_SECONDS = 60  # 同会话+工具+目标在此窗口内二次拦截 → 升级提示禁原样重试
 
+# 会话 -> platform 映射：cron 豁免判据的数据源。主防线按 platform=="cron"
+# 禁用（plugins/read_think_gate/__init__.py:72），网关受理的 cron 会话
+# session_id 为 unified runtime 铸造的 local-<sha256>
+# （hermes_state_keys.local_identity，文档明言不得变更），旧 cron_ 前缀
+# 判据对其永不命中——主防线按平台禁用不写 marker + 副防线照拦的结构性
+# 死锁（2026-10-27 反方审查 F2）。豁免必须读与主防线逐字相同的 platform
+# 字段：pre_llm_call 载荷携带 platform（hermes_cli/hooks.py 契约），每 turn
+# 必先于工具调用触发。前缀判据保留为映射缺失时的回退（legacy 平面 cron
+# 进程的 session_id 仍为 cron_{job}_{ts} 形态）。
+_SESSION_PLATFORMS: dict[str, str] = {}
+
+
+def on_pre_llm_call(session_id: str = "", platform: str = "", **_kwargs: Any) -> None:
+    """Record the session's platform — the field the cron exemption keys on.
+
+    Contract:
+      Postconditions: never raises; empty session_id records nothing; bounded
+        map (oldest half dropped past 512 entries — survives live sessions,
+        dropped keys only fall back to the prefix exemption).
+    """
+    sid = str(session_id or "")
+    if not sid:
+        return
+    _SESSION_PLATFORMS[sid] = str(platform or "")
+    if len(_SESSION_PLATFORMS) > 512:
+        for stale in list(_SESSION_PLATFORMS)[: len(_SESSION_PLATFORMS) // 2]:
+            del _SESSION_PLATFORMS[stale]
+
+
+def _forget_session_platform(session_id: str = "", **_kwargs: Any) -> None:
+    """Drop the session's platform entry (on_session_end / on_session_reset)."""
+    _SESSION_PLATFORMS.pop(str(session_id or ""), None)
+
 
 def _probe_main_gate() -> str:
     """主防线在场探测。
@@ -254,14 +287,15 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
     if tool_name not in _WRITE_TOOLS:
         return None
 
-    # cron 会话豁免：主闸门（agent_init.py ReadThinkGate 装配处）对 platform=="cron"
-    # 显式 enabled=False——无人值守会话无法回答 gate 提示。主闸门 disabled 意味着
+    # cron 会话豁免：主闸门（read-think-gate）对 platform=="cron" 显式
+    # enabled=False——无人值守会话无法回答 gate 提示。主闸门 disabled 意味着
     # check_batch 恒 early-return，四轴 marker 永不写入；副防线若仍按 marker 缺失
     # 拦截，cron 会话的 write_file/patch 会结构性死锁（输出再多四轴证据也无效）。
-    # 与主闸门同一设计意图：cron 会话 ID 恒为 cron_{job_id}_{timestamp} 前缀
-    # （hermes_state_portability.list_cron_job_runs 的扫描契约）。
+    # 判据单一事实源=platform 字段（与主闸门逐字相同）：网关受理的 cron 会话
+    # session_id=local-<sha256>（unified runtime），cron_ 前缀只是 legacy 平面
+    # 形态的回退判据。
     session_id = str(kwargs.get("session_id") or "")
-    if session_id.startswith("cron_"):
+    if _SESSION_PLATFORMS.get(session_id) == "cron" or session_id.startswith("cron_"):
         logger.debug(
             "four-axis guard: skipping %s — cron session (main gate exempt) %s",
             tool_name, session_id,
@@ -380,6 +414,11 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
             )
         return block
 
+    # marker 有效=主防线在场且刚写过 marker=缺席已恢复的事实——重置该会话
+    # 的缺席告警记忆，此后若再缺席须重新告警（2026-10-27 反方审查 F3：探测
+    # 仅在 marker 缺失时运行，恢复期若不在此处重置，下次缺席将被
+    # 「already warned」吞掉，缺席复发不可见）。
+    _absence_warned.discard(marker_sid)
     logger.debug(
         "four-axis guard: allowing %s — marker valid (axes=%s)",
         tool_name, marker.get("axes"),
@@ -391,4 +430,7 @@ def register(ctx: Any) -> None:
     global _gate_ctx
     _gate_ctx = ctx  # 主防线在场探测句柄：公共探针 has_plugin（force reload 复用同一 manager）
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
+    ctx.register_hook("pre_llm_call", on_pre_llm_call)
+    ctx.register_hook("on_session_end", _forget_session_platform)
+    ctx.register_hook("on_session_reset", _forget_session_platform)
     logger.info("guards.four_axis registered")
