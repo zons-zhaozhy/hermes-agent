@@ -55,7 +55,7 @@ _UX_RULE = """\
 必备>期望>魅力——数据正确/操作不丢/可撤销/报错人话未清零,禁投入动效炫技
 ②五问走查:看(一眼懂)/动(几步/有反馈/可撤销)/错(能自恢复)/记(要记什么)/惯(一致吗)
 ③Cooper六原则:就地直接/留在页面/保持轻量/提供邀请/用过渡解释变化(动效只许澄清状态)/即时响应
-④硬判据:反馈≤400ms;每屏主操作唯一;结果页/异常页投入最高;空态即引导;撤销优于确认;动效150-400ms超档即迟滞
+④硬判据:反馈≤400ms;每屏主操作唯一;结果页/异常页投入最高;空态即引导;撤销优于确认;动效150-400ms超档即迟滞;操作按钮字号≥13px
 理论=~/knowledge-base/ux-design/UX_INTERACTION_METHODOLOGY.md;判据=skill:ux-methodology"""
 
 
@@ -141,6 +141,70 @@ def _check_queue_in(lines: list) -> list:
 
 
 _U3_MAX_MS = 400.0
+
+# U4 操作按钮字号下限——多模型交叉审查实锤(12px 操作按钮三家一致判缺陷)
+_U4_MIN_BTN_PX = 13.0
+_BTN_SELECTOR_TOKENS = ("button", "btn", "cta", ".go", "-go", ".act", "-act", ".ops", ".pager")
+
+
+def _font_size_px(line: str) -> float | None:
+    """提取行内 font-size 的 px 字面量；非字面量（var/clamp/em/inherit）返回 None。
+
+    Contract:
+      Postconditions: 可解析的 ``font-size: <n>px`` → float；其余 → None（fail-open）
+    """
+    low = line.lower()
+    idx = low.find("font-size")
+    if idx < 0:
+        return None
+    rest = line[idx:].split(":", 1)[-1]
+    rest = rest.split(";")[0].split("}")[0].strip()
+    if not rest.endswith("px"):
+        return None
+    try:
+        return float(rest[:-2].strip())
+    except ValueError:
+        return None
+
+
+def _btn_selector_context(lines: list, idx: int) -> bool:
+    """命中行向上至最近 '{' 的选择器窗口内是否含按钮语义 token。
+
+    Contract:
+      Preconditions: 0 <= idx < len(lines)
+      Postconditions: 窗口含任一按钮 token → True（纯函数无副作用）
+    """
+    start = idx
+    while start > 0 and "{" not in lines[start] and start > idx - 8:
+        start -= 1
+    blob = "\n".join(lines[start: idx + 1]).lower()
+    return any(tok in blob for tok in _BTN_SELECTOR_TOKENS)
+
+
+def _check_btn_font_size(lines: list) -> list:
+    """U4 操作按钮字号下限——按钮语义选择器下 font-size <13px 即拦。
+
+    Contract:
+      Postconditions: 返回违规消息列表（空=合规）；豁免行(ux-ok:)跳过
+    """
+    issues: list = []
+    for lineno, line in enumerate(lines, start=1):
+        if "font-size" not in line.lower():
+            continue
+        if _has_exempt(line):
+            continue
+        px = _font_size_px(line)
+        if px is None or px >= _U4_MIN_BTN_PX:
+            continue
+        if not _btn_selector_context(lines, lineno - 1):
+            continue
+        issues.append(
+            f"U4 操作按钮字号过小: line {lineno} '{line.strip()[:60]}' —"
+            "有文本的操作按钮 <13px 不可读(多模型交叉审查三家一致判缺陷;"
+            "Element Plus 默认 14px 达标)。非按钮文本不受此限;纯图标按钮或"
+            "确有空间约束则行内注释 ux-ok: <理由> 豁免。"
+        )
+    return issues
 
 
 def _durations_ms(line: str) -> list:
@@ -237,6 +301,7 @@ def on_pre_tool_call(**kwargs: Any) -> dict:
             _check_decorative_infinite(lines)
             + _check_queue_in(lines)
             + _check_motion_duration(lines)
+            + _check_btn_font_size(lines)
         )
         if issues:
             return {

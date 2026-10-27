@@ -100,3 +100,35 @@ def test_u3_blocks_ms_unit_duration():
     css = ".drawer {\n  animation-duration: 600ms;\n}\n"
     verdict = _call("/tmp/app/src/drawer.css", css)
     assert verdict.get("action") == "block" and "U3" in verdict["message"]  # 期望: 600ms 毫秒单位同样超档被拦
+
+
+def test_u4_blocks_small_button_font():
+    css = ".task .t-go {\n  font-size: 12px;\n}\n"
+    verdict = _call("/tmp/app/src/go.css", css)
+    assert verdict.get("action") == "block" and "U4" in verdict["message"]  # 期望: 按钮语义选择器下 12px 被拦
+
+
+def test_u4_blocks_inline_small_button_font():
+    css = "button.mini { font-size: 12px; }\n"
+    verdict = _call("/tmp/app/src/mini.css", css)
+    assert verdict.get("action") == "block" and "U4" in verdict["message"]  # 期望: 单行 CSS 同样命中
+
+
+def test_u4_allows_non_button_small_font():
+    css = ".sub-label {\n  font-size: 12px;\n}\n"
+    assert _call("/tmp/app/src/sub.css", css) == {}  # 期望: 无按钮语义的辅助文本不受限
+
+
+def test_u4_allows_qualified_button_font():
+    css = ".pager .pgbtn {\n  font-size: 13px;\n}\n"
+    assert _call("/tmp/app/src/pg.css", css) == {}  # 期望: 达 13px 下限放行
+
+
+def test_u4_allows_non_literal_font_size():
+    css = ".btn {\n  font-size: var(--el-font-size-base);\n}\n"
+    assert _call("/tmp/app/src/varbtn.css", css) == {}  # 期望: 非字面量(var)静态不可判,fail-open
+
+
+def test_u4_exemption_channel():
+    css = ".icon-only-btn {\n  font-size: 12px; /* ux-ok: 纯图标按钮无文本,尺寸由点击目标24px判据约束 */\n}\n"
+    assert _call("/tmp/app/src/icon.css", css) == {}  # 期望: 行内豁免(≥8字理由)放行
