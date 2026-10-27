@@ -374,9 +374,41 @@ class TestArmedReadonlyInvestigationPass:
         finally:
             st.clear()
 
-    def test_armed_browser_exec_passes(self, plugin):
+    def test_armed_browser_exec_blocked(self, plugin):
         r = self._armed_call(plugin, "browser_exec", {"code": "print(page_info())"})
-        assert r is None  # 期望: None——浏览器取证放行(armed立法=拦落地不拦取证)
+        # 期望: block——browser_exec 的 code 参数跑完整 Python(可写文件/起
+        # 子进程跑 git push)，能力等价 execute_code，armed 放行=冻结旁路
+        # (2026-10-27 反方审查 A1)；取证走 glm_web_reader/glm_vision 前缀工具
+        assert r is not None and r.get("action") == "block"
+
+    def test_armed_gitnexus_write_semantic_blocked(self, plugin):
+        r = self._armed_call(plugin, "mcp__gitnexus__cypher", {"query": "CREATE (n)"})
+        # 期望: block——cypher 可 CREATE/DELETE 图数据，前缀家族内写语义
+        # 成员不放行(2026-10-27 反方审查 A5)；同族 query 仍放行(见上)
+        assert r is not None and r.get("action") == "block"
+
+    def test_armed_terminal_git_dash_c_landing_blocked(self, plugin):
+        r = self._armed_call(plugin, "terminal", {"command": "git -C /repo push"})
+        # 期望: block——`git -C <dir> push` 无 "git push" 子串，旧子串匹配
+        # 漏放；token 化子命令判定须命中(2026-10-27 反方审查 A3)
+        assert r is not None and r.get("action") == "block"
+
+    def test_armed_terminal_inline_python_blocked(self, plugin):
+        r = self._armed_call(plugin, "terminal", {"command": 'python3 -c "open(\'f\',\'w\').write(\'x\')"'})
+        # 期望: block——解释器内联代码=任意代码执行=写通道(2026-10-27 反方
+        # 审查 A2：此前 _terminal_writes_file 无 -c 形态检测)
+        assert r is not None and r.get("action") == "block"
+
+    def test_armed_terminal_non_git_landing_blocked(self, plugin):
+        r = self._armed_call(plugin, "terminal", {"command": "crontab -l | crontab -"})
+        # 期望: block——crontab 改定时任务=落地通道(2026-10-27 反方审查 A4)
+        assert r is not None and r.get("action") == "block"
+
+    def test_armed_terminal_missing_args_blocked(self, plugin):
+        r = self._armed_call(plugin, "terminal", None)
+        # 期望: block——args 形态异常按保守冻结(2026-10-27 反方审查 A6：
+        # 原 args 非 dict 时 command="" 判只读放行=fail-open)
+        assert r is not None and r.get("action") == "block"
 
     def test_armed_mcp_vision_passes(self, plugin):
         r = self._armed_call(plugin, "mcp__glm_vision__analyze_image", {})

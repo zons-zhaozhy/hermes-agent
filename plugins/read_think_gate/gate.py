@@ -166,17 +166,18 @@ GATED_TOOL_NAMES: frozenset[str] = frozenset(
 
 # 只读调查工具白名单——只有这些工具的调用才算真正的"调查"。
 # 其他非 gated 工具（如 memory、process、cronjob 等）不算调查行为。
+# browser_exec 于 2026-10-27 替换旧 browser_* 分体工具名（旧名已不存在，
+# 锈化=四轴证据凑齐更慢→更多误拦）；session_search/vision_analyze 同属
+# 纯读取证。
 READ_ONLY_INVESTIGATION_TOOLS: frozenset[str] = frozenset(
     {
         "read_file",
         "search_files",
         "web_search",
         "web_extract",
-        "browser_navigate",
-        "browser_snapshot",
-        "browser_console",
-        "browser_vision",
-        "browser_get_images",
+        "browser_exec",
+        "vision_analyze",
+        "session_search",
         "skill_view",
     }
 )
@@ -202,26 +203,32 @@ def _terminal_writes_file(command: str) -> bool:
     """检测 terminal 命令是否包含文件写入操作。
 
     策略：
-    1. 高置信度模式（sed -i/dd of=/rsync/tee+路径）直接匹配
-    2. shell 重定向（> >>）后跟文件路径特征——排除 /dev/null/2>&1
-    3. cp/mv 目标是文件路径——要求前导空格 + 路径特征（排除 grep/docker/git 中的字符串）
+    1. 解释器内联/heredoc/管道代码 = 任意代码执行 = 写通道（2026-10-27
+       反方审查 A2：`python3 -c`/heredoc 可 open().write()/起子进程跑 git
+       push，此前无检测）
+    2. 高置信度模式（sed -i/dd of=/rsync/tee+路径）直接匹配
+    3. shell 重定向（> >>）后跟文件路径特征——排除 /dev/null/2>&1
+    4. cp/mv 目标是文件路径——要求前导空格 + 路径特征（排除 grep/docker/git 中的字符串）
+
+    Contract:
+      Preconditions: command 为 str（可为空）
+      Postconditions: 纯形态判定；解释器执行形态保守返回 True（fail-closed）
     """
     if not command:
         return False
 
-    # 0. 解释器 heredoc（python3 <<'PY'）吃 stdin 不写文件——放行。
-    #    但 `cat > f <<'EOF'` / `tee f <<EOF` 是写文件：重定向/写模式
-    #    检测必须先于 heredoc 豁免执行，否则构成绕过口。
-    #    解释器判定 = heredoc 标记前的最后一段命令以已知解释器结尾。
-    if "<<" in command:
-        pre_heredoc = command.split("<<", 1)[0]
-        last_seg = pre_heredoc.rstrip().rsplit("|", 1)[-1].strip()
-        # 整 token 匹配——后缀匹配会撞 .sh 文件名(cat > f.sh <<EOF 被误判解释器)
-        _INTERPRETER_TOKENS = ("python3", "python", "bash", "sh", "zsh",
-                               "node", "perl", "ruby", "ssh", "sudo")
-        seg_words = last_seg.split()
-        if seg_words and seg_words[-1] in _INTERPRETER_TOKENS:
-            return False
+    # 0. 解释器执行任意代码 = 写通道。判定 = 命令边界（首 token 或跟在
+    #    ;/&&/||/|/( 后的首 token）是解释器，或解释器 token 携带 -c/-e
+    #    内联代码/<<heredoc。原 heredoc 豁免（「吃 stdin 不写文件」）不
+    #    成立：stdin 里的代码执行时可写任意文件。
+    _INTERPRETER_TOKENS = ("python3", "python", "bash", "sh", "zsh",
+                           "node", "perl", "ruby")
+    low = command.lower()
+    for tok in _INTERPRETER_TOKENS:
+        # 解释器 + 内联代码/heredoc/管道喂码 → 写通道
+        if tok in low.split() and (" -c" in low or " -e" in low or "<<" in low
+                                   or f"| {tok}" in low):
+            return True
 
     # 1. 高置信度模式
     for pat in _TERMINAL_WRITE_PATTERNS_HIGH:

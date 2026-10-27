@@ -68,12 +68,14 @@ _MAX_JUDGE_CALLS = 200
 # armed 时仍放行的只读工具：冻结的立法本意是「定稿前先审」，只读调查正是
 # 把决策审清楚的前提，拦只读 = 阻止取证（2026-10-22 实录：armed 拦 grep；
 # 2026-10-27 实录：armed 拦 terminal×2/browser_exec/glm_vision，取证全断，
-# 审本身无法进行）。仅收纯只读；tool_call/memory/manage_connections 等
+# 审本身无法进行）。仅收纯只读；能力等价 execute_code 的不收——browser_exec
+# 的 code 参数跑完整 Python（可写文件/起子进程），armed 放行=冻结旁路
+# （2026-10-27 反方审查 A1）；tool_call/memory/manage_connections 等
 # 可触写通道不放。
 _READONLY_TOOLS = frozenset({
     "read_file", "search_files", "session_search", "web_search", "web_extract",
     "tool_search", "tool_describe", "skills_list", "skill_view", "todo_list",
-    "clarify", "browser_exec", "vision_analyze",
+    "clarify", "vision_analyze",
 })
 
 # 只读 MCP 工具家族按前缀放行——逐一枚举成员会随后端工具增减漂移，前缀
@@ -81,21 +83,110 @@ _READONLY_TOOLS = frozenset({
 # 抓取均不落地任何决策。带写语义的 MCP 工具不得入此表。
 _READONLY_TOOL_PREFIXES = (
     "mcp__glm_vision__",       # 图像/图表/截图分析（纯推理）
-    "mcp__gitnexus__",         # 代码知识图谱查询（query/context/impact 等全只读）
+    "mcp__gitnexus__",         # 代码知识图谱查询（query/context/impact 等只读）
     "mcp__glm_zread__",        # GitHub 仓库结构与文件读取
     "mcp__glm_web_search__",   # 网页搜索
     "mcp__glm_web_reader__",   # 网页抓取
 )
 
-# terminal 按命令细分（与 process_manage 同模式）：只读取证放行，决策落地
-# 通道（git 写命令/部署/服务变更）仍冻结；文件写检测复用 read_think_gate
-# 的 _terminal_writes_file（单一实现，禁本插件再写一份模式表）。
-_TERMINAL_LANDING_PATTERNS = (
-    "git push", "git commit", "git tag", "git apply", "git rebase",
-    "git reset", "git revert", "git checkout --", "git restore",
-    "deploy", "systemctl", "launchctl", "docker compose", "docker run",
-    "docker stop", "docker rm", "kubectl", "terraform apply",
+# 前缀家族中带写语义的成员例外——前缀放行按「家族纯读」假设收编，但家族内
+# 个别成员本身落地变更（图谱写/改名/同步），armed 仍冻结（2026-10-27 反方
+# 审查 A5：cypher 可 CREATE/DELETE、rename 改名、group_sync 同步写）。
+_PREFIX_FAMILY_WRITE_EXCEPTIONS = frozenset({
+    "mcp__gitnexus__cypher",
+    "mcp__gitnexus__rename",
+    "mcp__gitnexus__group_sync",
+})
+
+# git 落地子命令用 token 化判定（子串匹配会漏 `git -C <dir> push` 且无词
+# 边界，2026-10-27 反方审查 A3）；文件写检测复用 read_think_gate 的
+# _terminal_writes_file（单一实现，禁本插件再写一份模式表）。
+_GIT_LANDING_SUBCOMMANDS = frozenset({
+    "push", "commit", "tag", "apply", "rebase", "reset", "revert", "merge",
+    "checkout", "restore", "switch", "cherry-pick", "stash", "clean", "rm",
+    "swap",
+})
+# git 全局选项及其取值形态——跳过它们才能取到真子命令（-C <dir> / -c k=v /
+# --git-dir=<p> / --work-tree=<p> / --no-pager 等无值开关）。
+_GIT_GLOBAL_FLAG_WITH_VALUE = ("-C", "-c", "--git-dir", "--work-tree",
+                               "--namespace", "--exec-path")
+# gh 落地子串（嵌套子命令形态多变，直接子串）：pr merge / release create /
+# repo delete / repo edit 均落地。
+_GH_LANDING_SUBSTRINGS = ("pr merge", "pr create", "release create",
+                          "release delete", "repo delete", "repo edit")
+# 非 git 落地通道：定时任务/macOS 系统配置/自动化脚本/包发布/包安装/容器编排。
+_LANDING_SUBSTRINGS = (
+    "crontab", "defaults write", "osascript", "npm publish", "pip install",
+    "pip3 install", "uv pip install", "docker push", "docker compose",
+    "docker run", "docker stop", "docker rm", "kubectl", "helm install",
+    "helm upgrade", "systemctl", "launchctl", "terraform apply",
+    "cargo publish", "gem push",
 )
+# DB 客户端 + DML/DDL 同现 = 落地（psql -c / sqlite3 db "UPDATE ..."）。
+_DB_CLIENT_TOKENS = ("psql", "sqlite3", "mysql", "sqlplus")
+_DB_LANDING_SQL = ("insert ", "update ", "delete ", "drop ", "create ",
+                   "alter ", "truncate ")
+
+
+def _git_subcommand_lands(tokens: list[str]) -> bool:
+    """token 序列中 git 子命令是否属于落地动作。
+
+    Contract:
+      Preconditions: tokens 为空白切分后的命令片段
+      Postconditions: 仅当 git 子命令（跳过全局选项后）命中落地集合返回
+        True；无 git 或子命令只读返回 False
+    """
+    for i, tok in enumerate(tokens):
+        if tok != "git":
+            continue
+        j = i + 1
+        # 跳过 git 全局选项（带值选项吃掉下一个 token）
+        while j < len(tokens):
+            t = tokens[j]
+            if t in _GIT_GLOBAL_FLAG_WITH_VALUE:
+                j += 2
+                continue
+            if t.startswith(("--git-dir=", "--work-tree=", "--namespace=")):
+                j += 1
+                continue
+            if t.startswith("-"):
+                j += 1
+                continue
+            break
+        if j < len(tokens) and tokens[j] in _GIT_LANDING_SUBCOMMANDS:
+            return True
+    return False
+
+
+def _substring_lands(low: str) -> bool:
+    """小写命令文本是否命中非 git 落地通道（gh/部署/DB 写）。
+
+    Contract:
+      Preconditions: low 为小写命令文本（可为空）
+      Postconditions: 纯形态判定，无副作用
+    """
+    if "gh " in low and any(s in low for s in _GH_LANDING_SUBSTRINGS):
+        return True
+    if any(s in low for s in _LANDING_SUBSTRINGS):
+        return True
+    if any(t in low.split() for t in _DB_CLIENT_TOKENS) and any(
+        sql in low for sql in _DB_LANDING_SQL
+    ):
+        return True
+    return False
+
+
+def _terminal_lands_decision(command: str) -> bool:
+    """terminal 命令是否落地决策动作（armed 冻结面）。
+
+    Contract:
+      Preconditions: command 为 str（可为空）
+      Postconditions: 判定只依赖命令形态；空命令返回 False
+    """
+    if not command:
+        return False
+    low = command.lower()
+    return _git_subcommand_lands(low.split()) or _substring_lands(low)
 
 # process_manage 按动作细分：list/poll/log/wait 为纯读取证（取后台输出核对
 # 执行结果），kill/write/submit/close/handoff 触写通道，armed 时仍冻结。
@@ -412,6 +503,80 @@ def _user_waived(text: str) -> Optional[bool]:
     )
 
 
+def _process_manage_passes(args: Any) -> bool:
+    """process_manage armed 期放行判定（只读动作放行）。"""
+    if not isinstance(args, dict):
+        return False
+    return str(args.get("action") or "") in _PROCESS_MANAGE_READONLY_ACTIONS
+
+
+def _terminal_passes(args: Any) -> bool:
+    """terminal armed 期放行判定（只读命令放行，写/落地仍冻结）。"""
+    command = str(args.get("command") or "") if isinstance(args, dict) else ""
+    if not command:
+        return False
+    from plugins.read_think_gate_host import _terminal_writes_file
+
+    return not _terminal_writes_file(command) and not _terminal_lands_decision(
+        command
+    )
+
+
+def _armed_tool_passes(tool_name: str, args: Any) -> bool:
+    """armed 期单工具放行判定（只读取证放行，落地通道冻结）。
+
+    Contract:
+      Preconditions: armed 状态已确认且未 reviewed/waived
+      Postconditions: 纯形态判定；args 形态异常按 False（保守冻结）
+    """
+    if tool_name in _READONLY_TOOLS:
+        return True  # 只读调查放行：armed 是「定稿前先审」，不拦审查取证
+    if tool_name.startswith(_READONLY_TOOL_PREFIXES) and (
+        tool_name not in _PREFIX_FAMILY_WRITE_EXCEPTIONS
+    ):
+        return True  # 只读 MCP 家族放行；家族内写语义成员仍拦
+    if tool_name == "process_manage":
+        return _process_manage_passes(args)
+    if tool_name == "terminal":
+        return _terminal_passes(args)
+    return False
+
+
+def _armed_gate_state(kwargs: dict) -> Optional[dict]:
+    """读取 armed 且未解除的会话状态；未 armed/已解除/插件停用返回 None。"""
+    if _plugin_disabled():
+        return None
+    sid = kwargs.get("session_id", "") or kwargs.get("task_id", "")
+    if not sid:
+        return None
+    st = get_session_state(sid, _NAMESPACE)
+    if not st.get("armed") or st.get("reviewed") or st.get("waived"):
+        return None
+    return st
+
+
+def _disarm_on_review_dispatch(kwargs: dict) -> None:
+    """delegate_task 派发时刻即解除武装（正门回执，不依赖 post 回灌）。
+
+    Contract:
+      Postconditions: goal 含审查标记时写 reviewed；任何异常仅告警不抛
+        （正门路径本身已在调用方放行）
+    """
+    try:
+        sid = kwargs.get("session_id", "") or kwargs.get("task_id", "")
+        if not sid:
+            return
+        st = get_session_state(sid, _NAMESPACE)
+        # 后台委派完成于本回合之后，status/session 任一环节失配都会让
+        # reviewed 永不写入 = armed 无解（2026-10-09 实录）。
+        if _goal_has_review_marker(_extract_delegate_goals(kwargs.get("args"))):
+            st["reviewed"] = True
+    except Exception:
+        logger.warning(
+            "devil-advocate-audit disarm-on-dispatch failed", exc_info=True,
+        )
+
+
 def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
     """armed（重大决策未审）时对非 delegate 工具发 block 强制先过反方审查。
 
@@ -419,51 +584,33 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
       Postconditions: 仅当 armed=True 且未 reviewed/waived 且工具不属于
       {delegate_task, delegate} 时返回 block 指令；其余一律返回 None
       (放行)。judge 不在此路径——armed 状态由 pre_llm_call 预先语义判定
-      写入，此处纯状态读取，零 LLM 延迟。
+      写入，此处纯状态读取，零 LLM 延迟。正门放行在 try 之外：任何内部
+      异常走 fail-closed 拦截时 delegate_task 仍可达，不产生死锁
+      （豁免通道走 pre_llm_call 解除 armed，不经过本函数）。
     """
+    tool_name = str(kwargs.get("tool_name", ""))
+    if tool_name in {"delegate_task", "delegate"}:
+        _disarm_on_review_dispatch(kwargs)
+        return None  # 正门：反方审查委派本身放行（异常路径也保持可达）
     try:
-        if _plugin_disabled():
+        st = _armed_gate_state(kwargs)
+        if st is None:
             return None
-        sid = kwargs.get("session_id", "") or kwargs.get("task_id", "")
-        if not sid:
+        if _armed_tool_passes(tool_name, kwargs.get("args")):
             return None
-        st = get_session_state(sid, _NAMESPACE)
-        if not st.get("armed") or st.get("reviewed") or st.get("waived"):
-            return None
-        tool_name = str(kwargs.get("tool_name", ""))
-        if tool_name in {"delegate_task", "delegate"}:
-            # 派发时刻即解除武装：正门已走，不再依赖 post_tool_call 的回灌——
-            # 后台委派完成于本回合之后，status/session 任一环节失配都会让
-            # reviewed 永不写入 = armed 无解（2026-10-09 实录）。
-            if _goal_has_review_marker(_extract_delegate_goals(kwargs.get("args"))):
-                st["reviewed"] = True
-            return None  # 正门：反方审查委派本身放行
-        if tool_name in _READONLY_TOOLS:
-            return None  # 只读调查放行：armed 是「定稿前先审」，不拦审查取证
-        if tool_name.startswith(_READONLY_TOOL_PREFIXES):
-            return None  # 只读 MCP 家族（视觉分析/图谱查询/网页搜索抓取）放行
-        if tool_name == "process_manage":
-            args = kwargs.get("args")
-            action = str(args.get("action") or "") if isinstance(args, dict) else ""
-            if action in _PROCESS_MANAGE_READONLY_ACTIONS:
-                return None  # 只读动作放行（取后台输出核对）；写动作仍拦
-        if tool_name == "terminal":
-            args = kwargs.get("args")
-            command = str(args.get("command") or "") if isinstance(args, dict) else ""
-            from plugins.read_think_gate_host import _terminal_writes_file
-
-            if not _terminal_writes_file(command) and not any(
-                pat in command for pat in _TERMINAL_LANDING_PATTERNS
-            ):
-                return None  # 只读命令放行（git log/ls/grep 等取证）；写文件与落地通道仍拦
         return {
             "action": "block",
             "message": _BLOCK_MSG_TEMPLATE.format(tool_name=tool_name),
         }
     except Exception as e:
+        # fail-closed：冻结插件异常时保持冻结（2026-10-27 反方审查 A6——
+        # 静默解冻=武装失效）；正门已在 try 外放行，无死锁。
         logger.warning("devil-advocate-audit pre_tool_call failed: %s", e,
                        exc_info=True)
-        return None
+        return {
+            "action": "block",
+            "message": _BLOCK_MSG_TEMPLATE.format(tool_name=tool_name),
+        }
 
 
 def register(ctx) -> None:

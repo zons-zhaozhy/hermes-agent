@@ -57,7 +57,12 @@ _ERROR_CLASSES = [
 ]
 
 # 沉淀动作：规则/skill/脚本已产出 → 清零
-_CODIFICATION_TOOLS = {"write_file", "patch", "skill_manage", "terminal"}
+# execute_code/browser_exec 的 code 参数可写文件产出沉淀物（2026-10-27
+# 反方审查 C3：漏收=代码写文件旁路沉淀判定，计数只增不减）。
+_CODIFICATION_TOOLS = {
+    "write_file", "patch", "skill_manage", "terminal",
+    "execute_code", "browser_exec",
+}
 _CODIFICATION_TERMINAL = re.compile(
     r"(\bgit\s+commit\b|>.*\.sh\b|hermes\s+(config|skill|cron)\b)", re.IGNORECASE
 )

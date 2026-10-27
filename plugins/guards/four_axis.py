@@ -301,7 +301,7 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
         try:
             from plugins.read_think_gate import _ACTIVE_SESSION_ID
 
-            active_sid = _ACTIVE_SESSION_ID or ""
+            active_sid = _ACTIVE_SESSION_ID.get() or ""
             if active_sid and active_sid != marker_sid:
                 active_marker = _read_marker(active_sid)
                 if active_marker is not None:

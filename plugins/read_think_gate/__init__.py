@@ -22,6 +22,7 @@ config.yaml — the same section the former core init read.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 from typing import Any, Dict, Optional
 
@@ -32,7 +33,12 @@ logger = logging.getLogger("plugins.read-think-gate")
 # session_id -> gate instance. Cron sessions get an instance with enabled=False,
 # mirroring the agent_init exemption the core wiring used to apply.
 _GATES: dict[str, ReadThinkGate] = {}
-_ACTIVE_SESSION_ID: Optional[str] = None
+# 网关单进程服务多会话（HX002）：模块级单值会被后启动会话抢占，先启动
+# 会话的空 sid 批次落错桶（2026-10-27 反方审查 B1）。ContextVar 按执行
+# 上下文隔离——asyncio task/线程各持各的会话 id，互不覆盖。
+_ACTIVE_SESSION_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "rtg_active_session_id", default=None,
+)
 
 
 def _config_section() -> dict[str, Any]:
@@ -91,29 +97,26 @@ def effective_session_id(session_id: str = "") -> str:
       Postconditions: 恒返回 str；无活跃会话时返回空串（桶归 nosession，
         与既有行为一致）。
     """
-    return session_id or _ACTIVE_SESSION_ID or ""
+    return session_id or _ACTIVE_SESSION_ID.get() or ""
 
 
 def on_session_start(session_id: str = "", **_kwargs: Any) -> None:
     """Key the active session (turn-scoped state restarts per session)."""
-    global _ACTIVE_SESSION_ID
-    _ACTIVE_SESSION_ID = session_id or None
+    _ACTIVE_SESSION_ID.set(session_id or None)
 
 
 def on_session_reset(session_id: str = "", **_kwargs: Any) -> None:
     """Drop the session's gate — next batch builds a fresh one."""
     _GATES.pop(session_id, None)
-    global _ACTIVE_SESSION_ID
-    if _ACTIVE_SESSION_ID == (session_id or None):
-        _ACTIVE_SESSION_ID = None
+    if _ACTIVE_SESSION_ID.get() == (session_id or None):
+        _ACTIVE_SESSION_ID.set(None)
 
 
 def on_session_end(session_id: str = "", **_kwargs: Any) -> None:
     """Drop the session's gate (mirror of reset; either name may fire)."""
     _GATES.pop(session_id, None)
-    global _ACTIVE_SESSION_ID
-    if _ACTIVE_SESSION_ID == (session_id or None):
-        _ACTIVE_SESSION_ID = None
+    if _ACTIVE_SESSION_ID.get() == (session_id or None):
+        _ACTIVE_SESSION_ID.set(None)
 
 
 def pre_llm_call(
@@ -130,7 +133,7 @@ def pre_llm_call(
     so the gate sees exactly one reset per turn, before the first LLM call fires.
     """
     try:
-        gate = _current_gate(session_id or _ACTIVE_SESSION_ID or "", platform)
+        gate = _current_gate(session_id or _ACTIVE_SESSION_ID.get() or "", platform)
         if gate is None:
             return
         message = user_message if isinstance(user_message, str) else str(user_message or "")

@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import importlib.util
 import json
 import time
@@ -41,7 +42,11 @@ four_axis = _load_four_axis()
 def _clean_gate_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
     """隔离 gate 注册表与活跃会话指针，测试间零泄漏。"""
     monkeypatch.setattr(rtg, "_GATES", {})
-    monkeypatch.setattr(rtg, "_ACTIVE_SESSION_ID", None)
+    # _ACTIVE_SESSION_ID 已 ContextVar 化（多会话隔离）——测试用全新
+    # ContextVar(default=None) 整体替换模块属性，等价于「无活跃会话」。
+    monkeypatch.setattr(
+        rtg, "_ACTIVE_SESSION_ID", contextvars.ContextVar("test_sid", default=None),
+    )
     yield
 
 
