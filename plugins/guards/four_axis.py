@@ -292,6 +292,26 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
 
     marker = _read_marker(marker_sid)
     if marker is None:
+        # 会话 id 漂移回退：上下文压缩后 pre_tool_batch（写端）与 pre_tool_call
+        # （读端）拿到的 session_id 可能不一致（写端登记新 id、读端仍收旧 id），
+        # marker 落在活跃会话桶而读端按传入 id 找不到 → 回退活跃桶再读一次。
+        # 语义不变：只认「写端刚验证过」的活跃桶，不做全桶扫描（防跨会话借用）。
+        # 2026-10-27 实测形态：写端 17:09 写新桶 verified，读端读旧桶 16:17 过期，
+        # 四轴证据三轮无效拦截。
+        try:
+            from plugins.read_think_gate import _ACTIVE_SESSION_ID
+
+            active_sid = _ACTIVE_SESSION_ID or ""
+            if active_sid and active_sid != marker_sid:
+                active_marker = _read_marker(active_sid)
+                if active_marker is not None:
+                    marker = active_marker
+                    marker_sid = active_sid
+        except Exception:
+            logger.warning(
+                "four-axis guard: active-bucket fallback failed", exc_info=True,
+            )
+    if marker is None:
         verdict = _probe_main_gate()
         missing_axes = None
         progress = _read_progress(marker_sid)
