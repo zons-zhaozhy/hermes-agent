@@ -54,6 +54,8 @@
 
 反方子代理独立审查三个修复后输出 20 项发现（A1-A8/B1-B6/C1-C6），定性：8 项真缺陷（A1-A6/B1/B2）+C1/C3 同类病已修（commit e11c50dd72，8 文件 +287/-83，tests/plugins 全量 1,963 通过 0 失败）；并行会话同窗再修 2 项（1ef9936d3a 桶漂移回退、54ad90e39f 跨会话借用可观测性 WARNING）。修法要点：
 
+**二轮自查补修（279eda39e3）**：e11c50dd72 的 A2 修法存在方案级缺陷——解释器判定加进 `_terminal_writes_file` 后，主防线（gate.py:988）把外层解释器 heredoc 只读探测动态门控，与 guards/source_write 2026-10-19 已修复的「载荷字符串数据」误拦形态冲突（两会话同命令一放一拦）。修正=分层：gate.py 恢复形态级定位（heredoc 豁免，与 approval/source_write/cron-lifecycle/duplicate-check 四处内容级判定互补）；解释器保守判定移入 devil-advocate-audit 专属 `_terminal_passes`（armed fail-closed，冻结期短误伤代价=数轮）。10 文件 80 用例全绿。
+
 | 项 | 修法 |
 |---|---|
 | A1 browser_exec 整工具放行=armed 旁路 | 移出只读表（code 参数=任意 Python，能力等价 execute_code） |
