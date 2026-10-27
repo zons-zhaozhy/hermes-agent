@@ -54,7 +54,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-_WRITE_TOOLS = frozenset({"write_file", "patch", "execute_code"})
+from plugins.guards.tool_classification import STANDARD_WRITE_TOOLS as _WRITE_TOOLS
 
 
 def _plugin_disabled() -> bool:

@@ -42,7 +42,7 @@ _ONTOX_ROOT = os.path.expanduser(os.environ.get("CASEBOOK_ONTOX_ROOT", ""))
 # 病例库 SSOT 目录（同上，仅 env 提供）
 _CASEBOOK_DIR = os.path.expanduser(os.environ.get("CASEBOOK_DIR", ""))
 
-_WRITE_TOOLS = frozenset({"write_file", "patch", "execute_code"})
+from plugins.guards.tool_classification import STANDARD_WRITE_TOOLS as _WRITE_TOOLS
 
 # terminal 写目标解析（角色感知）。2026-10-17 第三轮误拦根修：旧实现
 # 用「写命令前缀表 + 全 token 扫描」判定，不区分 token 在命令中的角色，

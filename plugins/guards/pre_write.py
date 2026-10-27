@@ -92,7 +92,7 @@ def _get_schema_confirmed(sid: str) -> set[str]:
 
 # ── Configuration ────────────────────────────────────────────────────
 
-_WRITE_TOOLS = frozenset({"write_file", "patch", "execute_code"})
+from plugins.guards.tool_classification import STANDARD_WRITE_TOOLS as _WRITE_TOOLS
 _READ_TOOLS = frozenset({"read_file", "search_files"})
 
 

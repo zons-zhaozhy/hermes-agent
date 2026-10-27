@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 _VOCAB_FILENAME = ".hermes/plain_terms.yaml"
 _WAIVER_MARK = "vocab-ok"
 _USER_FACING_EXT = frozenset({".vue", ".ts", ".tsx", ".js", ".jsx", ".py", ".md"})
-_TOOLS = frozenset({"write_file", "patch"})
+from plugins.guards.tool_classification import FILE_WRITE_TOOLS as _TOOLS
 
 # 词表缓存: (mtime_ns, size) -> parsed terms。进程内生效,词表变更下次写入可见
 # (同 mtime+size 的原地改写理论上可漏,词表是低频人工编辑文件,可接受)。

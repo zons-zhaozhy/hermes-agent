@@ -43,11 +43,9 @@ logger = logging.getLogger(__name__)
 # patch 工具自带 diff 回显——但义务是「贴进回复正文」，回显≠履行，
 # 统一记账统一判证据。execute_code/terminal 写入由 source_write 按
 # 命令特征另管，本防线不按工具名拦只读分析。
-_WRITE_TOOLS: frozenset[str] = frozenset({
-    "write_file",
-    "patch",
-    "skill_manage",
-})
+from plugins.guards.tool_classification import (
+    FILE_AND_SKILL_WRITE_TOOLS as _WRITE_TOOLS,
+)
 
 # 欠账账本与会话证据位：按 session_id 分桶。state 只在进程内（三钩子同进程
 # 派发，无需四轴的跨进程 marker 文件），但键必须带会话——网关单进程服务多

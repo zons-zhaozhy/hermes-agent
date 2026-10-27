@@ -39,9 +39,9 @@ _PRUNED_MARKER = "[SKILL_PRUNED"
 _EXEMPT_MARKER = "# skill-pruned-ok"
 _NAME_ANCHOR = "skill_view(name='"
 
-_WRITE_TOOLS = frozenset({"write_file", "patch", "execute_code"})
-
-# 与 pre_write._contains_write 同口径的写形态判定（独立持有，避免跨守卫耦合）
+# 写工具集语义 owner=plugins/guards/tool_classification（C2 收敛）；
+# 本守卫拦截面=通用写层。写形态判定仍见 _contains_write 同口径实现。
+from plugins.guards.tool_classification import STANDARD_WRITE_TOOLS as _WRITE_TOOLS
 _WRITE_INDICATORS = (
     "write_file(", "patch(", ".write(", "open(",
     "pathlib.path(", ".write_text(", ".write_bytes(",

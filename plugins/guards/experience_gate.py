@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 _CONFIG_FILENAME = ".hermes/experience_gate.yaml"
 _WAIVER_MARK = "exp-ok"
 _FRONTEND_EXT = frozenset({".html", ".vue", ".tsx", ".jsx"})
-_TOOLS = frozenset({"write_file", "patch"})
+from plugins.guards.tool_classification import FILE_WRITE_TOOLS as _TOOLS
 
 _DEFAULT_TABLE_MARKERS = ("renderTable", "el-table", "<tbody", "<table")
 _DEFAULT_PAGINATION_MARKERS = ("pagination", "pager", "PAGE_SIZE", "el-pagination", "分页")
