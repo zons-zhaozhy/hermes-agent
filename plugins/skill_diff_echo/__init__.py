@@ -21,7 +21,7 @@ from typing import Any, Callable
 logger = logging.getLogger("plugins.skill_diff_echo")
 
 _MAX_CHARS_PER_OP = 2000
-_WRITE_ACTIONS = {"patch", "edit", "create", "write_file", "remove_file", "delete"}
+_WRITE_ACTIONS = {"patch", "edit", "create", "write_file", "remove_file", "delete"}  # tools-ok: skill diff 动作名词典（动作语义非 guard 工具拦截面）
 _OP_KEYS = ("action", "name", "content", "file_path", "file_content",
             "old_string", "new_string", "replace_all")
 

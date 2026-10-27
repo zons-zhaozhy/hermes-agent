@@ -59,7 +59,7 @@ _ERROR_CLASSES = [
 # 沉淀动作：规则/skill/脚本已产出 → 清零
 # execute_code/browser_exec 的 code 参数可写文件产出沉淀物（2026-10-27
 # 反方审查 C3：漏收=代码写文件旁路沉淀判定，计数只增不减）。
-_CODIFICATION_TOOLS = {
+_CODIFICATION_TOOLS = {  # tools-ok: 沉淀产出语义（含 terminal/browser_exec 全谱，非 guard 写拦截面）
     "write_file", "patch", "skill_manage", "terminal",
     "execute_code", "browser_exec",
 }

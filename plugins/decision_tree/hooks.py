@@ -30,7 +30,7 @@ _AUTO_CAPTURE_TOOLS = frozenset({
 })
 
 # Tools whose success we treat as "evidence of progress"
-_EVIDENCE_TOOLS = frozenset({
+_EVIDENCE_TOOLS = frozenset({  # tools-ok: 进度证据语义（含 terminal 成功即证据，非写拦截面）
     "terminal",
     "write_file",
     "patch",
