@@ -64,6 +64,7 @@ mcp_servers:
 | `lazy` | bool | both | Register the server's tools from the on-disk schema cache at startup and only spawn/connect it on the first tool call (default: `false`). Needs one prior live connect to fill the cache; a missing or stale entry falls back to the normal eager connect. Status surfaces show the server as `lazy` with its cached tool count until first use |
 | `idle_timeout_seconds` | number | stdio | Optional stdio server recycle after idle time (`0` disables). May also live under a `lifecycle:` mapping |
 | `max_lifetime_seconds` | number | stdio | Optional stdio server recycle after age (`0` disables). May also live under a `lifecycle:` mapping |
+| `read_only_tools` | list | both | Tool names (no `mcp_<server>_` prefix) the user asserts are read-only, for servers that ship no `readOnlyHint` annotations. An asserted tool is replayed once after a stdio child dies mid-call or a transport session expires (same policy as a server-declared `readOnlyHint: true`); it never loosens the untrusted-server approval gate. Malformed values (anything but a list of tool-name strings) skip the whole server at load with an error log |
 | `tools` | mapping | both | Filtering and utility-tool policy |
 | `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |

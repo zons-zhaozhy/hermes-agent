@@ -392,11 +392,16 @@ class _StdioChildExited(RuntimeError):
         self.in_flight = in_flight
 
 
-def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry_call, op_description: str):
-    """Respawn a dead stdio child; retry once only when it was dead before dispatch.
+def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry_call, op_description: str,
+                                         call_may_have_side_effects: bool = True):
+    """Respawn a dead stdio child; retry once when it was dead before dispatch, or when the call is
+    positively read-only.
 
     A mid-call exit is ambiguous: the server may have applied a side effect before its
-    response pipe disappeared. Reconnect for future calls but never replay that operation.
+    response pipe disappeared. Reconnect for future calls but never replay that operation —
+    UNLESS the call cannot have side effects (readOnlyHint=True or the user's ``read_only_tools``
+    assertion), where replay is safe and the same respawn-and-retry-once path runs (mirrors
+    ``_handle_session_expired_and_retry``'s ``call_may_have_side_effects``).
     None means this is not our error. This function never spawns itself: it sets
     ``_reconnect_event`` and waits, so spawn frequency stays governed by ``run()``'s rapid-drop
     budget. A pre-dispatch retry whose child dies again reports and stops.
@@ -419,7 +424,7 @@ def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry
                 server_name, srv, op_description=op_description, timeout=_core._STDIO_RESPAWN_WAIT_SEC)
         else:  # No MCP loop to wait on (non-async adapters, tests): still request the respawn.
             _loop._signal_reconnect(srv)
-    if exc.in_flight:
+    if exc.in_flight and call_may_have_side_effects:
         return _strike(
             server_name,
             _STDIO_OUTCOME_UNCERTAIN_MSG.format(s=server_name),
@@ -738,9 +743,10 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
             _core._bump_server_error(server_name)
             logger.error("MCP tool %s/%s call failed: %s", server_name, tool_name, exc)
         session_expired = partial(_handle_session_expired_and_retry, call_may_have_side_effects=not read_only)
+        stdio_child_exited = partial(_handle_stdio_child_exited_and_retry, call_may_have_side_effects=not read_only)
         text = _dispatch(
             server_name, server, op, _call, tool_timeout,
-            (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, session_expired),
+            (stdio_child_exited, _handle_auth_error_and_retry, session_expired),
             _on_failure, record_outcome=True)
         # Off the MCP loop on purpose: image prep is CPU work (bounded vision pool) that must not stall other servers' I/O.
         return _mcp_result_with_native_images(text, image_paths) if native_images and not _result_is_error(text) else text

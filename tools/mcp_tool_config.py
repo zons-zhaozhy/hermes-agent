@@ -654,6 +654,18 @@ def _malformed_cost_table(name: str, cfg: Any) -> Optional[str]:
     return None
 
 
+def _malformed_read_only_tools(cfg: Any) -> Optional[str]:
+    """Why a server's ``read_only_tools`` is unusable, else None. A replay-safety assertion the user
+    declared must never be silently dropped (that would silently re-arm outcome-uncertain blocking),
+    so the server is skipped — same contract as the cost table."""
+    from tools.mcp_tool_registration import _config_read_only_tools
+    try:
+        _config_read_only_tools(cfg if isinstance(cfg, dict) else None)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
 def _filter_suspicious_mcp_servers(servers: dict[str, dict]) -> dict[str, dict]:
     """Drop exfiltration-shaped MCP configs, and servers with a malformed cost table, before any stdio spawn path."""
     try:
@@ -668,6 +680,8 @@ def _filter_suspicious_mcp_servers(servers: dict[str, dict]) -> dict[str, dict]:
         elif (bad_costs := _malformed_cost_table(name, cfg)) is not None:
             logger.error("Skipping MCP server '%s': %s (fix tool_costs/spend_limit/cost_unit in config.yaml)",
                          name, bad_costs)
+        elif (bad_ro := _malformed_read_only_tools(cfg)) is not None:
+            logger.error("Skipping MCP server '%s': %s (fix read_only_tools in config.yaml)", name, bad_ro)
         else:
             safe_servers[name] = cfg
     return safe_servers

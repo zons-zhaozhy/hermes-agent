@@ -73,7 +73,20 @@ def _record_cost_policy(server_name: str, config: dict, key) -> None:
         _core._server_cost_policies[key] = policy
 
 
-def _record_tool_trust_metadata(server_name: str, config: dict, tools: list[Any], key=None) -> None:
+def _config_read_only_tools(config: Any) -> list[str]:
+    """Tool names the user asserted read-only in ``mcp_servers.<name>.read_only_tools`` — for servers
+    that ship no ``readOnlyHint`` annotations. Load-time validation drops a malformed value with the
+    whole server (``_filter_suspicious_mcp_servers``); a direct caller's bad value fails loudly
+    here. Assertions only ever mark a tool read-only (never the reverse)."""
+    raw = (config or {}).get("read_only_tools")
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(t, str) and t for t in raw):
+        raise ValueError(f"read_only_tools must be a list of tool-name strings, got {raw!r}")
+    return raw
+
+
+def _record_tool_trust_metadata(server_name: str, config: dict, tools: list[Any], key: Any = None) -> None:
     """Capture per-server trust and per-tool readOnlyHint at discovery — the security boundary: the call-time gate
     classifies from data we control, never re-read server-supplied state. *key* is the connection (default: the
     registering profile's own); the ``trust`` policy is recorded under it for the profile that owns it — an
@@ -85,6 +98,7 @@ def _record_tool_trust_metadata(server_name: str, config: dict, tools: list[Any]
         _record_cost_policy(server_name, config, key)
         hints = _core._tool_read_only_hints.setdefault(key, {})
         hints.update({t.name: _annotation_read_only_hint(t) for t in tools if getattr(t, "name", None)})
+        hints.update({name: True for name in _config_read_only_tools(config)})
 
 
 def _warn_unknown_cost_keys(server_name: str, key, tool_names: list[str]) -> None:
