@@ -66,13 +66,36 @@ _NAMESPACE = "devil_advocate_audit"
 _MAX_JUDGE_CALLS = 200
 
 # armed 时仍放行的只读工具：冻结的立法本意是「定稿前先审」，只读调查正是
-# 把决策审清楚的前提，拦只读 = 阻止取证（2026-10-22 实录：armed 拦 grep）。
-# 仅收纯只读；tool_call/memory/manage_connections 等可触写通道不放。
+# 把决策审清楚的前提，拦只读 = 阻止取证（2026-10-22 实录：armed 拦 grep；
+# 2026-10-27 实录：armed 拦 terminal×2/browser_exec/glm_vision，取证全断，
+# 审本身无法进行）。仅收纯只读；tool_call/memory/manage_connections 等
+# 可触写通道不放。
 _READONLY_TOOLS = frozenset({
     "read_file", "search_files", "session_search", "web_search", "web_extract",
     "tool_search", "tool_describe", "skills_list", "skill_view", "todo_list",
-    "clarify",
+    "clarify", "browser_exec", "vision_analyze",
 })
+
+# 只读 MCP 工具家族按前缀放行——逐一枚举成员会随后端工具增减漂移，前缀
+# 与「纯读取证」语义同构：视觉分析/代码知识图谱查询/仓库读取/网页搜索与
+# 抓取均不落地任何决策。带写语义的 MCP 工具不得入此表。
+_READONLY_TOOL_PREFIXES = (
+    "mcp__glm_vision__",       # 图像/图表/截图分析（纯推理）
+    "mcp__gitnexus__",         # 代码知识图谱查询（query/context/impact 等全只读）
+    "mcp__glm_zread__",        # GitHub 仓库结构与文件读取
+    "mcp__glm_web_search__",   # 网页搜索
+    "mcp__glm_web_reader__",   # 网页抓取
+)
+
+# terminal 按命令细分（与 process_manage 同模式）：只读取证放行，决策落地
+# 通道（git 写命令/部署/服务变更）仍冻结；文件写检测复用 read_think_gate
+# 的 _terminal_writes_file（单一实现，禁本插件再写一份模式表）。
+_TERMINAL_LANDING_PATTERNS = (
+    "git push", "git commit", "git tag", "git apply", "git rebase",
+    "git reset", "git revert", "git checkout --", "git restore",
+    "deploy", "systemctl", "launchctl", "docker compose", "docker run",
+    "docker stop", "docker rm", "kubectl", "terraform apply",
+)
 
 # process_manage 按动作细分：list/poll/log/wait 为纯读取证（取后台输出核对
 # 执行结果），kill/write/submit/close/handoff 触写通道，armed 时仍冻结。
@@ -417,11 +440,22 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
             return None  # 正门：反方审查委派本身放行
         if tool_name in _READONLY_TOOLS:
             return None  # 只读调查放行：armed 是「定稿前先审」，不拦审查取证
+        if tool_name.startswith(_READONLY_TOOL_PREFIXES):
+            return None  # 只读 MCP 家族（视觉分析/图谱查询/网页搜索抓取）放行
         if tool_name == "process_manage":
             args = kwargs.get("args")
             action = str(args.get("action") or "") if isinstance(args, dict) else ""
             if action in _PROCESS_MANAGE_READONLY_ACTIONS:
                 return None  # 只读动作放行（取后台输出核对）；写动作仍拦
+        if tool_name == "terminal":
+            args = kwargs.get("args")
+            command = str(args.get("command") or "") if isinstance(args, dict) else ""
+            from plugins.read_think_gate_host import _terminal_writes_file
+
+            if not _terminal_writes_file(command) and not any(
+                pat in command for pat in _TERMINAL_LANDING_PATTERNS
+            ):
+                return None  # 只读命令放行（git log/ls/grep 等取证）；写文件与落地通道仍拦
         return {
             "action": "block",
             "message": _BLOCK_MSG_TEMPLATE.format(tool_name=tool_name),

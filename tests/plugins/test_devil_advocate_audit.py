@@ -106,10 +106,11 @@ class TestCronNoDeadlock:
         # 期望: armed 置位（红牌注入由 on_pre_llm_call 返回值承担）
         from plugins._shared_state import get_session_state
 
-        assert get_session_state(sid, plugin._NAMESPACE).get("armed") is True
+        assert get_session_state(sid, plugin._NAMESPACE).get("armed") is True  # 期望: True,依据=cli平台重大决策消息必armed
         directive = plugin.on_pre_tool_call(
-            session_id=sid, tool_name="terminal", args={"command": "date"},
+            session_id=sid, tool_name="execute_code", args={"code": "print(1)"},
         )
+        # 期望: block,依据=execute_code是任意代码执行落地通道;冻结面收敛(2026-10-27)后terminal只读命令放行,载体由terminal date换为execute_code意图不变
         assert directive is not None and directive.get("action") == "block"
 
 
@@ -344,7 +345,59 @@ class TestExitReachability:
         # 期望: 跑腿类委派不免检——armed 仍在，非审查工具继续冻结
         assert get_session_state(sid, plugin._NAMESPACE).get("reviewed") is None
         directive = plugin.on_pre_tool_call(
-            session_id=sid, tool_name="terminal", args={"command": "date"},
+            session_id=sid, tool_name="execute_code", args={"code": "print(1)"},
         )
+        # 期望: 拦——execute_code 是任意代码执行通道,armed 冻结面收敛(2026-10-27)
+        # 后 terminal 只读命令放行,本断言载体由 terminal date 换为 execute_code,
+        # 意图不变: 跑腿类委派不免检,落地通道仍冻结
         assert directive is not None and directive.get("action") == "block"
         get_session_state(sid, plugin._NAMESPACE).clear()
+
+
+class TestArmedReadonlyInvestigationPass:
+    """armed 冻结面只拦「决策落地」，不拦审查取证（2026-10-27 实录回归）。
+
+    16:57-16:58 实录（另一会话）：terminal×2 / browser_exec /
+    mcp__glm_vision__analyze_image 全被 armed 拦——取证通道缺失导致
+    「先审后定」的审本身无法进行，agent 只能空转重试。
+    立法不变量：armed=定稿前先审；取证=把决策审清楚的前提。
+    """
+
+    def _armed_call(self, plugin, tool: str, args: dict | None = None, sid: str = "cli-test-12"):
+        from plugins._shared_state import get_session_state
+        st = get_session_state(sid, plugin._NAMESPACE)
+        st["armed"] = True
+        st.pop("reviewed", None)
+        st.pop("waived", None)
+        try:
+            return plugin.on_pre_tool_call(tool_name=tool, args=args or {}, session_id=sid)
+        finally:
+            st.clear()
+
+    def test_armed_browser_exec_passes(self, plugin):
+        r = self._armed_call(plugin, "browser_exec", {"code": "print(page_info())"})
+        assert r is None  # 期望: None——浏览器取证放行(armed立法=拦落地不拦取证)
+
+    def test_armed_mcp_vision_passes(self, plugin):
+        r = self._armed_call(plugin, "mcp__glm_vision__analyze_image", {})
+        assert r is None  # 期望: None——纯图像分析工具按前缀放行
+
+    def test_armed_gitnexus_query_passes(self, plugin):
+        r = self._armed_call(plugin, "mcp__gitnexus__query", {"query": "login_flow"})
+        assert r is None  # 期望: None——代码知识图谱只读查询按前缀放行
+
+    def test_armed_terminal_readonly_command_passes(self, plugin):
+        r = self._armed_call(plugin, "terminal", {"command": "git log --oneline -5"})
+        assert r is None  # 期望: None——只读命令(git log)放行取证
+
+    def test_armed_terminal_landing_command_blocked(self, plugin):
+        r = self._armed_call(plugin, "terminal", {"command": "git push origin main"})
+        assert r is not None and r.get("action") == "block"  # 期望: block——git push是决策落地通道
+
+    def test_armed_terminal_write_file_blocked(self, plugin):
+        r = self._armed_call(plugin, "terminal", {"command": "sed -i 's/a/b/' src.py"})
+        assert r is not None  # 期望: 拦——terminal 写文件仍是落地(复用_terminal_writes_file)
+
+    def test_armed_write_channel_still_blocked(self, plugin):
+        r = self._armed_call(plugin, "patch", {})
+        assert r is not None  # 期望: 拦——代码修改通道仍冻结
