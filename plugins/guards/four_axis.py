@@ -7,7 +7,8 @@
   - Gate（主）：每 turn 累积四轴证据 → 四轴齐备后写入 marker + 解锁
   - 插件（副）：每次 write_file/patch/execute_code 前读 marker → 不齐即阻断
 
-marker 文件路径：~/.hermes/cache/four_axis_gate.json
+marker 文件路径：~/.hermes/cache/four_axis_gate_{pid}_{session}.json（写读两端
+经 gate 模块同一 slug 函数解析，见 _marker_file）
 格式：{"verified": true, "timestamp": 1234567890.0, "axes": ["影响面","原意图","根因","风险"]}
 """
 
@@ -195,13 +196,16 @@ def _block_message(tool_name: str, missing_axes: Optional[list[str]] = None) -> 
 # 缺席时放行（副防线是纵深防御第二层，主防线不在则四轴执法整体不在此
 # 进程——与 cron 会话同等姿态），探测基础设施异常时保持拦截——
 # unknown 态不得与确认缺席折叠：检测失效 ≠ 主防线缺席。
-# 残留形态（在场判据必要非充分，待主防线加心跳声明后收口）：某表面向
-# pre_tool_batch 传空 session_id 时主防线不扫描（_current_gate 返回
-# None）、marker 仍不写，此时探测报在场、副防线照拦——该形态本探测
-# 不覆盖，须修主防线装配面，勿在此处猜测。
+# 残留形态已收口（2026-10-27）：某表面向 pre_tool_batch 传空 session_id 时
+# 主防线曾不扫描（_current_gate 返回 None）、marker 仍不写，探测报在场、
+# 副防线照拦——现写端 pre_tool_batch 与本读端 marker 桶解析共用
+# effective_session_id 回退（plugins/read_think_gate/__init__.py 单一实现），
+# 空 session_id 两端落同一桶，形态消除（回归：tests/plugins/test_four_axis_empty_session.py）。
 _GATE_PLUGIN_ID = "read-think-gate"
 _gate_ctx: Any = None  # register() 捕获：主防线在场探测的唯一句柄（公共 API has_plugin）
 _absence_warned: set[str] = set()  # 已打缺席告警的会话（每会话一次；恢复在场即重置）
+_LAST_BLOCK: dict[str, tuple[float, str, str]] = {}  # 桶会话 -> (ts, tool, target) 最近一次拦截
+_REPEAT_WINDOW_SECONDS = 60  # 同会话+工具+目标在此窗口内二次拦截 → 升级提示禁原样重试
 
 
 def _probe_main_gate() -> str:
@@ -272,42 +276,82 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
         )
         return None
 
-    marker = _read_marker(session_id)
+    # marker 桶与主防线写端同源解析：空 session_id 时同样回退活跃会话
+    # （effective_session_id 单一实现于 plugins/read_think_gate/__init__.py，
+    # 写读两端共用；任一端单独回退即桶错配 → 永久拦截形态）。
+    try:
+        from plugins.read_think_gate import effective_session_id
+
+        marker_sid = effective_session_id(session_id)
+    except Exception:
+        logger.warning(
+            "four-axis guard: effective_session_id resolution failed — raw session bucket",
+            exc_info=True,
+        )
+        marker_sid = session_id
+
+    marker = _read_marker(marker_sid)
     if marker is None:
         verdict = _probe_main_gate()
-        if verdict == "absent":
-            # 确认缺席：放行（死锁防护）。每会话告警一次，恢复在场即重置。
-            if session_id not in _absence_warned:
-                _absence_warned.add(session_id)
-                logger.warning(
-                    "four-axis guard: main gate (read-think-gate) absent/disabled in this "
-                    "process — secondary line fail-open for session %s (deadlock guard); "
-                    "four-axis enforcement is NOT active here",
-                    session_id,
-                )
-            else:
-                logger.debug(
-                    "four-axis guard: main gate absent — allowing %s (session %s already warned)",
-                    tool_name, session_id,
-                )
-            return None
-        if verdict == "unknown":
-            logger.error(
-                "four-axis guard: main-gate state unknown — keep blocking %s (fail-closed)",
-                tool_name,
-            )
-        else:
-            _absence_warned.discard(session_id)
-            logger.info(
-                "four-axis guard: blocking %s — marker missing or expired", tool_name,
-            )
         missing_axes = None
-        progress = _read_progress(session_id)
+        progress = _read_progress(marker_sid)
         if progress:
             from plugins.read_think_gate_host import _FOUR_AXIS_LABELS  # 唯一 import 面，懒加载与 _marker_file 同风格
             hit = set(progress.get("axes") or [])
             missing_axes = [a for a in _FOUR_AXIS_LABELS if a not in hit]
-        return _block_message(tool_name, missing_axes)
+        if verdict == "absent":
+            # 确认缺席：放行（死锁防护）。每会话告警一次，恢复在场即重置。
+            if marker_sid not in _absence_warned:
+                _absence_warned.add(marker_sid)
+                logger.warning(
+                    "four-axis guard: main gate (read-think-gate) absent/disabled in this "
+                    "process — secondary line fail-open for session %s (deadlock guard); "
+                    "four-axis enforcement is NOT active here",
+                    marker_sid,
+                )
+            else:
+                logger.debug(
+                    "four-axis guard: main gate absent — allowing %s (session %s already warned)",
+                    tool_name, marker_sid,
+                )
+            return None
+        if verdict == "unknown":
+            logger.error(
+                "four-axis guard: main-gate state unknown — keep blocking %s "
+                "(fail-closed, session=%s)",
+                tool_name, marker_sid,
+            )
+        else:
+            _absence_warned.discard(marker_sid)
+            # 日志必须带 session 与已见轴——2026-10-27 审计 77 次拦截无法归属，
+            # 只能查 state.db 取证；此后一条 grep 即可归因。
+            logger.info(
+                "four-axis guard: blocking %s — marker missing or expired "
+                "(session=%s, axes_seen=%s)",
+                tool_name, marker_sid, sorted(set(progress.get("axes") or [])) if progress else None,
+            )
+        # 同会话+工具+目标短窗内重复拦截 = 模型在原样重试，重试不改变判定；
+        # 升级提示直接指路「证据写进回复正文」，省一轮无效 API（2026-10-27
+        # 实测 4 组重复拦截：16:17×2、16:22×2、00:41×2、01:32×2）。
+        now = time.time()
+        prev = _LAST_BLOCK.get(marker_sid)
+        repeat = (
+            prev is not None
+            and now - prev[0] <= _REPEAT_WINDOW_SECONDS
+            and prev[1] == tool_name
+            and prev[2] == target
+        )
+        _LAST_BLOCK[marker_sid] = (now, tool_name, target)
+        if len(_LAST_BLOCK) > 256:
+            _LAST_BLOCK.clear()
+        block = _block_message(tool_name, missing_axes)
+        assert block is not None  # 期望: _block_message恒返回dict(实现无None返回路径)
+        if repeat:
+            block["message"] += (
+                "\n\n注意：同一目标 60 秒内已被拦截两次——原样重试不会改变判定，"
+                "四轴证据（影响面/原意图/根因/风险）必须写进回复正文后再重试本工具。"
+            )
+        return block
 
     logger.debug(
         "four-axis guard: allowing %s — marker valid (axes=%s)",

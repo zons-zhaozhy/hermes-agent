@@ -79,6 +79,21 @@ def _current_gate(session_id: str, platform: str) -> Optional[ReadThinkGate]:
     return _gate_for(session_id, platform)
 
 
+def effective_session_id(session_id: str = "") -> str:
+    """空 session_id 回退到最近 on_session_start 登记的活跃会话。
+
+    写端（pre_tool_batch 扫描→marker 落盘）与读端（guards.four_axis 的
+    marker 桶解析）必须共用本函数——任一端单独回退而另一端不回退，两端
+    marker 桶必然错配：主防线不扫描 + 副防线照拦的永久拦截形态
+    （2026-10-27 审计确认的残留缺陷，four_axis.py 源码注释自认）。
+
+    Contract:
+      Postconditions: 恒返回 str；无活跃会话时返回空串（桶归 nosession，
+        与既有行为一致）。
+    """
+    return session_id or _ACTIVE_SESSION_ID or ""
+
+
 def on_session_start(session_id: str = "", **_kwargs: Any) -> None:
     """Key the active session (turn-scoped state restarts per session)."""
     global _ACTIVE_SESSION_ID
@@ -141,7 +156,7 @@ def pre_tool_batch(
         Only the session-registry lookup itself is guarded (no gate for a
         batch is a legitimate "no decision" state, distinct from a crash).
     """
-    gate = _current_gate(session_id, platform)
+    gate = _current_gate(effective_session_id(session_id), platform)
     if gate is None:
         return None
     names = [str(tc.get("name") or "") for tc in (tool_calls or []) if isinstance(tc, dict)]

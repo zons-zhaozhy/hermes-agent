@@ -848,7 +848,10 @@ class ReadThinkGate:
                     "axes": sorted(self._four_axis_found),
                 }))
                 if len(self._four_axis_found) == 4:
-                    logger.info("read-think gate: four-axis complete via content scan — marker written")
+                    logger.info(
+                        "read-think gate: four-axis complete via content scan — "
+                        "marker written (session=%s)", self._session_id,
+                    )
             except Exception:
                 logger.warning("read-think gate: failed to write four-axis marker", exc_info=True)
 
@@ -870,7 +873,10 @@ class ReadThinkGate:
                 "timestamp": time.time(),
                 "axes": sorted(self._four_axis_found),
             }))
-            logger.info("read-think gate: four-axis complete via LLM judge — marker written")
+            logger.info(
+                "read-think gate: four-axis complete via LLM judge — "
+                "marker written (session=%s)", self._session_id,
+            )
         except Exception:
             logger.warning("read-think gate: failed to write four-axis marker", exc_info=True)
 
