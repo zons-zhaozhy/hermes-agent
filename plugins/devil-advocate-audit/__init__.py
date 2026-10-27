@@ -511,23 +511,27 @@ def _process_manage_passes(args: Any) -> bool:
 
 
 def _terminal_passes(args: Any) -> bool:
-    """terminal armed 期放行判定（只读命令放行，写/落地/解释器仍冻结）。
+    """terminal armed 期放行判定（只读命令放行，写/落地/任意代码执行仍冻结）。
 
-    解释器内联/heredoc/管道喂码在本层判冻结（fail-closed）：载荷代码不可
-    静态证明只读，armed 期短（派出反方审查即解除），粗判定误伤代价仅为
-    数轮延迟。主防线（gate.py）不共用此语义——其 heredoc 豁免保护只读
-    探测形态，内容级写检测由 approval/source_write 等四处负责。
+    任意代码执行形态一律冻结（fail-closed）：解释器 token（含跑既有脚本
+    ——脚本内容可任意写文件/推送）、`./相对路径` 可执行、`.sh` 脚本。
+    审批层（approval_detection）只检 -e/-c/heredoc flag 形态，跑既有脚本
+    属其正常执行域不检——armed 语义=冻结一切不可静态证明只读的执行，
+    比审批层宽是立法本意。armed 期短（派出反方审查即解除），粗判定误伤
+    代价仅为数轮延迟。主防线（gate.py）不共用此语义。
     """
     command = str(args.get("command") or "") if isinstance(args, dict) else ""
     if not command:
         return False
-    low = command.lower()
+    tokens = command.lower().split()
     interpreter_tokens = ("python3", "python", "bash", "sh", "zsh",
                           "node", "perl", "ruby")
-    if any(tok in low.split() for tok in interpreter_tokens) and (
-        " -c" in low or " -e" in low or "<<" in low
-    ):
-        return False  # 解释器执行任意代码 → 冻结
+    if any(tok in tokens for tok in interpreter_tokens):
+        return False  # 解释器执行任意代码（内联/heredoc/跑脚本）→ 冻结
+    if any(tok.startswith("./") for tok in tokens):
+        return False  # 相对路径可执行文件 → 冻结
+    if any(tok.endswith(".sh") for tok in tokens):
+        return False  # shell 脚本 → 冻结
     from plugins.read_think_gate_host import _terminal_writes_file
 
     return not _terminal_writes_file(command) and not _terminal_lands_decision(
