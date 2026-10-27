@@ -827,11 +827,17 @@ class ReadThinkGate:
                         axis, len(self._four_axis_found),
                     )
                     break
-        # 有新轴命中 → 落盘进度 marker（verified=是否已齐 4 轴）。
+        # 有新轴命中 → 落盘进度 marker（verified=是否已齐 4 轮）。
         # verified=False 的记录只供副防线拦截消息诊断缺失轴（four_axis.py
-        # _read_marker 的放行判定仍只认 verified=True+4 轴，本写入不改变
-        # 放行语义）；仅在真实新增命中时写，避免每条消息刷新 TTL。
-        if progressed:
+        # _read_marker 的放行判定仍只认 verified=True+4 轮，本写入不改变
+        # 放行语义）。
+        # 写盘条件=新增命中 或 四轴已齐：仅新增命中时写会在长写链(>30min TTL)
+        # 且四轴早已齐备的场景结构性死锁——_four_axis_found 满后 progressed
+        # 恒 False，marker 永不续期，副防线判过期拦截且重贴证据无效
+        # （2026-10-27 实测：verified=true 四轴齐、timestamp 36 分钟前、
+        # patch 连续 4 次被拦）。未齐状态仍仅新增命中才写（防中间进度刷 TTL）。
+        # 跨任务沿用防线不变：turn-start 清本会话 marker + 会话分桶文件名。
+        if progressed or len(self._four_axis_found) == 4:
             try:
                 _marker = _four_axis_marker_path(self._session_id)
                 _marker.parent.mkdir(parents=True, exist_ok=True)
