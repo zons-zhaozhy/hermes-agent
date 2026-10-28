@@ -320,6 +320,10 @@ def _on_pre_verify(**kwargs) -> dict:
     l4 = ui_evidence.check(changed_paths, attempt, _MAX_PRE_VERIFY_NUDGES)
     if l4:
         return l4
+    from . import roadmap
+    rm = roadmap.check(final_response, changed_paths, attempt, _MAX_PRE_VERIFY_NUDGES)
+    if rm:
+        return rm
     code_changed = any(
         not p.endswith((".md", ".txt", ".rst")) for p in changed_paths)
     if (_is_pushback(tail) or _is_false_continue(tail) or _is_defer_pushout(tail)):
