@@ -343,14 +343,57 @@ def test_injection_compact_and_full_forms() -> None:
 
 def test_consistency_section_registered_and_scoped() -> None:
     mod = _load_plugin()
-    # 主会话：规范段返回规则原文（含同义词/时态双纪律+优先级条款）
+    # 主会话：规范段返回规则原文（含同义词/时态/语体三纪律+优先级条款）
     main_text = mod._consistency_section({"platform": "cli"})
-    assert "同一写法" in main_text and "时态" in main_text  # 期望: 双纪律齐备
+    assert "同一写法" in main_text and "时态" in main_text  # 期望: 用词/时态纪律齐备
     assert "优先于首次确立" in main_text  # 期望: 术语表优先级条款在
-    assert len(main_text) < 320  # 期望: 规范段简短（<320 字符）
+    assert len(main_text) < 400  # 期望: 规范段简短（<400 字符，含新增语体纪律后仍受控）
     # 排除平台：subagent/batch 返回空（core 跳过空段）
     for plat in ("subagent", "batch"):
         assert mod._consistency_section({"platform": plat}) == ""  # 期望: 排除平台空段
+
+
+def test_consistency_section_covers_style_rule() -> None:
+    mod = _load_plugin()
+    main_text = mod._consistency_section({"platform": "cli"})
+    # 期望: 新增语体纪律在 - 禁生造压缩复合词 - 首次使用必带定义
+    assert "语体" in main_text  # 期望: 语体纪律标题在
+    assert "生造压缩复合词" in main_text  # 期望: 压缩复合词禁令在
+    assert "首次使用的术语必须伴随一句定义" in main_text  # 期望: 首现必定义在
+
+
+def test_jargon_coined_loop(monkeypatch: Any) -> None:
+    """生造压缩复合词跨轮闭环：judge jargon_coined=true → 记账 → 下轮注入纠正行。"""
+    mod = _load_plugin()
+    ctx = _FakeCtx()
+    mod.register(ctx)
+    monkeypatch.setattr(mod, "_load_glossary", list)
+
+    def fake_judge(task: str, system: str, text: str, keys: Any, **kw: Any) -> Any:
+        return {k: False for k in keys} | {"jargon_coined": True}
+
+    mod.llm_judge_multi = fake_judge
+    # 期望: 检测路径——judge 判 jargon_coined → st 记账 coined_drift=True
+    ctx.hooks["transform_llm_output"](
+        "32题档标可信下限26分，84题档标可信下限16分。", session_id="sJ"
+    )
+    st = mod._state("sJ")
+    assert st.get("coined_drift") is True  # 期望: 生造压缩词已记账
+    # 期望: 注入路径——消费标记并输出纠正行（含「生造压缩复合词」措辞）
+    injected = ctx.hooks["pre_llm_call"](session_id="sJ")
+    assert injected is not None  # 期望: 有注入
+    assert "生造压缩复合词" in injected["context"]  # 期望: 纠正行含禁令
+    assert "首次使用的术语必须伴随一句定义" in injected["context"]  # 期望: 纠正行含首现必定义
+    # 期望: 消费后标记清零（下轮不再注入同纠正行）
+    again = ctx.hooks["pre_llm_call"](session_id="sJ")
+    assert "生造压缩复合词" not in (again or {}).get("context", "")  # 期望: 标记一次即消费
+
+
+def test_judge_output_quality_empty_short() -> None:
+    """短文本不走 judge（<20 字符早退，None 不触发记账）。"""
+    mod = _load_plugin()
+    got = mod._judge_output_quality("太短")
+    assert got is None  # 期望: 短文本不调 judge
 
 
 def test_ledger_excludes_glossary_covered_terms(monkeypatch: Any) -> None:

@@ -56,14 +56,23 @@ _CONSISTENCY_RULE = """\
 禁同义词互换、禁同物异称；引代码标识符/文件路径/原文引用除外。
 若上下文另有术语表/锚定块，其规范写法优先于首次确立称谓。
 时态与事实一致：已完成用「已/完成」，进行中用「正在」，计划中用「将/计划」；
-同一任务的状态表述前后一致，未获新证据禁翻转。"""
+同一任务的状态表述前后一致，未获新证据禁翻转。
+[输出语体纪律]
+禁生造压缩复合词：不把完整词组硬压成含糊缩写（如「题档位」压成「题档」、
+「可信下限」单独出现但无「上限/范围」语境）。首次使用的术语必须伴随一句定义
+或完整形式；无法自解释的缩写/复合词视为未定义先行词，禁用。先一句直陈结论，
+再展开证据；禁止用比喻/隐语/口语形象词替代字面语义。"""
 
 _JUDGE_SYSTEM = (
-    "你是术语一致性审查员。判定下面这段 AI 回复是否存在'同一概念混用不同"
-    "称谓/不同词形'——同义词互换（如'名单筛查'与'名单扫描'指同一操作）、"
-    "同一对象中英混称、或同一名词形态不一致。以下不算混用：引用代码标识符、"
-    "文件路径、引号内的原文引用、对不同事物的合理区分表述。"
-    '只答 JSON：{"naming_drift": true} 或 {"naming_drift": false}'
+    "你是术语一致性审查员。判定下面这段 AI 回复是否存在两类问题："
+    "(1) '同一概念混用不同称谓/不同词形'——同义词互换（如'名单筛查'与'名单扫描'"
+    "指同一操作）、同一对象中英混称、或同一名词形态不一致；"
+    "(2) '生造压缩复合词/未定义先行词'——把完整词组硬压成含糊缩写（如把'题档位'"
+    "压成'题档'）、首次出现的术语无定义无完整形式直接使用、用自造词替代标准说法"
+    "且读者无法从字面理解。"
+    "以下不算问题：引用代码标识符、文件路径、引号内的原文引用、对不同事物的合理"
+    "区分表述、已在本段定义清楚后继续使用的术语。"
+    '只答 JSON：{"naming_drift": bool, "jargon_coined": bool}'
 )
 
 
@@ -146,22 +155,22 @@ def detect_alias_drift(
     return hits
 
 
-def _judge_naming_drift(text: str) -> Optional[bool]:
-    """judge 判开放集称谓混用（表内别名之外的语义漂移）；None=fail-open。
+def _judge_output_quality(text: str) -> Optional[dict[str, Any]]:
+    """judge 判开放集称谓混用 + 生造压缩复合词；None=fail-open。
 
     Contract:
       Preconditions: text 为非空 str
-      Postconditions: 返回 True/False/None；绝不 raise
+      Postconditions: 返回 {naming_drift, jargon_coined} 或 None；绝不 raise
     """
     if len(text) < 20:
-        return False
+        return None
     result = llm_judge_multi(
         task="terminology_drift",
         system=_JUDGE_SYSTEM,
         text=text,
-        keys=["naming_drift"],
+        keys=["naming_drift", "jargon_coined"],
     )
-    return result.get("naming_drift")
+    return result
 
 
 def _format_entry(entry: dict[str, Any]) -> str:
@@ -186,40 +195,86 @@ def _budgeted_terms(entries: list[dict[str, Any]]) -> list[str]:
     return pieces
 
 
+def _coined_correction_line() -> str:
+    """生造压缩复合词纠正行（语义独立便于单测）。
+
+    Contract: Postconditions: 返回含「生造压缩复合词」与「完整形式」双要求 str。
+    """
+    return (
+        "你上一条回复存在生造压缩复合词/未定义先行词（完整词组被硬压成含糊缩写、"
+        "或首次出现的术语无定义直接使用）。本轮起：首次使用的术语必须伴随一句定义"
+        "或完整形式，禁把完整词组压成读者无法自解释的缩写。"
+    )
+
+
+def _injection_empty(
+    entries: list[dict[str, Any]],
+    drifts: list[tuple[str, str]],
+    open_drift: bool,
+    ledger: Optional[list[str]],
+    coined_drift: bool,
+) -> bool:
+    """五态皆空判定（供 build_injection 空态早退，独立成函数降圈复杂度）。
+
+    Contract: Postconditions: 返回 bool，无副作用。
+    """
+    return not (
+        entries or drifts or open_drift or ledger or coined_drift
+    )
+
+
+def _drift_line(
+    drifts: list[tuple[str, str]], open_drift: bool
+) -> Optional[str]:
+    """称谓漂移纠正行（具体对照对优先；无具体对时泛化行）。
+
+    Contract: Postconditions: 无漂移输入返回 None；否则返回非空 str。
+    """
+    if drifts:
+        detail = "；".join(f"「{a}」→ 用「{c}」" for a, c in drifts[:5])
+        return f"你上一条回复称谓漂移：{detail}。本轮起统一用规范写法。"
+    if open_drift:
+        return "你上一条回复存在同一概念混用不同称谓/词形。本轮统一用词，同一概念前后同一写法。"
+    return None
+
+
 def build_injection(
     entries: list[dict[str, Any]],
     drifts: list[tuple[str, str]],
     open_drift: bool,
     ledger: Optional[list[str]] = None,
+    coined_drift: bool = False,
     compact: bool = False,
 ) -> Optional[str]:
-    """组装注入文本：术语表（预算内） + 漂移纠正行 + 会话账本行 + 时态纪律行。
+    """组装注入文本：术语表（预算内）+ 漂移纠正行 + 会话账本行 + 语体纪律行。
 
     compact=True 为轻锚形态：仅规范词表（无别名映射）——注入块随历史回放
     （api_content sidecar），稳态轮历史里已有全量 alias→canonical 映射，无
     需重复；存在漂移纠偏需求时由调用方传 compact=False 回升全量。
 
+    coined_drift=True 时追加输出语体纠正行（生造压缩复合词/未定义先行词禁令）。
+
     Contract:
-      Preconditions: entries/drifts 为上序产物；open_drift 为 bool；ledger 为账本
-      Postconditions: 四者皆空 → None；否则返回非空 str；compact 形态总长
+      Preconditions: entries/drifts 为上序产物；open_drift/coined_drift 为 bool；
+                      ledger 为账本
+      Postconditions: 五态皆空 → None；否则返回非空 str；compact 形态总长
                       不超全量形态的 1/2（轻锚必须真轻）
     """
-    if not entries and not drifts and not open_drift and not ledger:
+    if _injection_empty(entries, drifts, open_drift, ledger, coined_drift):
         return None
     if compact and entries and not drifts:
         body = "、".join(e["canonical"] for e in entries)
         lines = [_INJECT_HEAD_COMPACT + body]
     else:
         lines = [_INJECT_HEAD] + _budgeted_terms(entries)
-    if drifts:
-        detail = "；".join(f"「{a}」→ 用「{c}」" for a, c in drifts[:5])
-        lines.append(f"你上一条回复称谓漂移：{detail}。本轮起统一用规范写法。")
-    elif open_drift:
-        lines.append("你上一条回复存在同一概念混用不同称谓/词形。本轮统一用词，同一概念前后同一写法。")
+    drift_line = _drift_line(drifts, open_drift)
+    if drift_line:
+        lines.append(drift_line)
+    if coined_drift:
+        lines.append(_coined_correction_line())
     ledger_text = _ledger_line(ledger or [])
     if ledger_text:
         lines.append(ledger_text)
-    # 时态纪律已上移 system prompt 规范段（_CONSISTENCY_RULE），注入层不再重复
     return "\n".join(lines)
 
 
@@ -234,9 +289,16 @@ def _collect_reply(response_text: str, sid: str, st: dict[str, Any]) -> None:
         logger.info("terminology-guard: 别名漂移已标记（下轮注入纠正）: %s", drifts)
     if int(st.get("judge_calls", 0)) < _MAX_JUDGE_CALLS:
         st["judge_calls"] = int(st.get("judge_calls", 0)) + 1
-        if _judge_naming_drift(response_text):
-            st["open_drift"] = True
-            logger.info("terminology-guard: 开放集称谓漂移已标记（下轮注入纠正）")
+        judged = _judge_output_quality(response_text)
+        if judged is not None:
+            if judged.get("naming_drift"):
+                st.setdefault("pending_flags", []).append("naming_drift")
+                st["open_drift"] = True
+                logger.info("terminology-guard: 开放集称谓漂移已标记（下轮注入纠正）")
+            if judged.get("jargon_coined"):
+                st.setdefault("pending_flags", []).append("jargon_coined")
+                st["coined_drift"] = True
+                logger.info("terminology-guard: 生造压缩复合词已标记（下轮注入纠正）")
         _update_ledger(response_text, sid, st)
 
 
@@ -626,12 +688,20 @@ def register(ctx: Any) -> None:
             st = _state(sid)
             drifts = st.pop("pending_drifts", []) or []
             open_drift = bool(st.pop("open_drift", False))
+            coined_drift = bool(st.pop("coined_drift", False))
             ledger = st.get("ledger") or []
             # 阶梯注入：首轮全量（教别名→规范映射），稳态轻锚（历史已含全量
             # 块，仅重锚规范词表）；检测到漂移时回升全量纠偏
-            compact = not (kwargs.get("is_first_turn") or drifts or open_drift)
+            compact = not (
+                kwargs.get("is_first_turn") or drifts or open_drift or coined_drift
+            )
             text = build_injection(
-                _load_glossary(), drifts, open_drift, ledger, compact=compact
+                _load_glossary(),
+                drifts,
+                open_drift,
+                ledger,
+                coined_drift=coined_drift,
+                compact=compact,
             )
             consolidated_text = _consolidated_line(_load_consolidated())
             if consolidated_text and text:
