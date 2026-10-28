@@ -40,12 +40,15 @@ def test_rule_states_the_decision_three_piece_set() -> None:
 def test_rule_states_work_order_exemption() -> None:
     """开工令豁免（用户 2026-10-28 要求「做事不要等不要停不要歇」）锚定。
 
-    根因：澄清门「问完本轮终止」条款与用户节奏指令打架——用户说「连做」时
-    规则仍推向停轮。豁免条款让节奏指令当轮整轮豁免澄清门，全部歧义落「假设：」
-    行连做，仅不可逆/花钱/对外承诺三类仍可停轮。
+    根因：澄清门「问完本轮终止」条款与用户节奏指令打架；首版修复用字样枚举
+    （八措辞列表）被用户当场否决——开放集不可穷举。本版判据=语义意图类别，
+    由主模型按规则自含适用条件判（与插件 2026-09-15 正则前缀表被否决的修法
+    同构：意图分类不属于确定性代码层/字样列表层）。
     """
     assert "开工令豁免" in _INTERVIEW_RULE  # 期望: 豁免条款命名在位
-    assert "连做" in _INTERVIEW_RULE  # 期望: 节奏指令示例词在位
+    assert "语义判意图，禁字样枚举" in _INTERVIEW_RULE  # 期望: 判据形态=语义意图
+    assert "不等确认、不停顿" in _INTERVIEW_RULE  # 期望: 意图类别定义锚定
+    assert "措辞变体不影响识别" in _INTERVIEW_RULE  # 期望: 开放集措辞鲁棒性在位
     assert "禁停轮提问" in _INTERVIEW_RULE  # 期望: 停轮禁令在位
     assert "落「假设：」行后直接连做" in _INTERVIEW_RULE  # 期望: 歧义处置路径=假设行
     assert "三类事项仍可停轮拍板" in _INTERVIEW_RULE  # 期望: 拍板通道保留边界清晰
