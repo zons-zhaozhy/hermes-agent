@@ -335,7 +335,11 @@ class TestProfiles:
         assert cli.is_coding is False  # outside a workspace: coding posture inactive
         compact = cli.compact_skill_categories()
         assert "social-media" in compact and "engineering-methodology" in compact
-        for kept in ("github", "devops", "software-development", "data-science"):
+        # Outside a workspace the coding-adjacent descriptions only pad the index: demote them too.
+        for demoted in ("devops", "software-development", "ontox-ops", "aml", "wechat-ops"):
+            assert demoted in compact
+        # Trivial-gain categories stay full: work is not needed there.
+        for kept in ("github", "data-science"):
             assert kept not in compact
         # Non-coding surface: full index untouched.
         non_coding = cc.resolve_runtime_mode(

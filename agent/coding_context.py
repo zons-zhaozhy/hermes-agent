@@ -143,6 +143,14 @@ _NON_CODING_SKILL_CATEGORIES = (
     "music", "note-taking", "productivity", "shopping", "smart-home", "social-media", "travel", "yuanbao",
     "engineering-methodology", "frontend", "product", "business", "autonomous-ai-agents",
 )
+# Fork customization: additional categories demoted ONLY for explicit focus sessions outside a code
+# workspace (CLI launched from $HOME). In-workspace coding sessions keep these full (devops /
+# software-development descriptions matter while actually coding); outside a workspace they only
+# pad the index. Measured: +devops 3234 chars, +software-development 2347, +ontox-ops 926, +aml 594,
+# +wechat-ops 568 — vs trivial (<80) or negative (gitnexus nested: -79) for the rest.
+_NON_WORKSPACE_EXTRA_DEMOTE = frozenset({
+    "devops", "software-development", "ontox-ops", "aml", "wechat-ops",
+})
 _MODE_ALIASES = {
     **dict.fromkeys(("focus", "strict", "lean"), "focus"),
     **dict.fromkeys(("on", "true", "yes", "1", "always"), "on"),
@@ -379,11 +387,13 @@ class RuntimeMode:
             return frozenset()
         if not self.is_coding:
             # Explicit focus outside a code workspace, on an interactive coding
-            # surface: demote using the coding profile's deny-list — the user opted
-            # into coding context, so the index should follow (names-only, never
-            # hidden). Non-coding surfaces (telegram etc.) keep the full index.
+            # surface: demote the coding profile's deny-list PLUS the extra
+            # non-workspace categories — outside a real workspace the coding-adjacent
+            # descriptions (devops/software-development/ontox-ops/...) only pad the
+            # index, so demote them for max savings (names-only, never hidden).
+            # Non-coding surfaces (telegram etc.) keep the full index.
             if self.surface.strip().lower() in INTERACTIVE_CODING_PLATFORMS:
-                return frozenset(CODING_PROFILE.compact_skill_categories)
+                return frozenset(CODING_PROFILE.compact_skill_categories) | _NON_WORKSPACE_EXTRA_DEMOTE
             return frozenset()
         return frozenset(self.profile.compact_skill_categories)
 
