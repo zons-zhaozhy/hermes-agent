@@ -257,11 +257,12 @@ def _candidate_targets(tool_name: str, args: Any) -> list[str]:
 
 
 def _latest_user_text(history: Any) -> str:
-    """取会话历史中最后一条 user 消息的文本。
+    """取会话历史中最后一条真实 user 消息的文本（跳过网关以 user 角色投递的系统通知）。
 
     Contract:
       Preconditions: history 为 list 或 None 或任意类型。
-      Postconditions: 返回 str（可为空串）；绝不 raise。
+      Postconditions: 返回 str（可为空串）；绝不 raise；系统注入的 user 角色消息
+                      （异步批次/内部通知头）不会被当作用户原话返回。
     """
     if not isinstance(history, list):
         return ""
@@ -270,11 +271,17 @@ def _latest_user_text(history: Any) -> str:
             continue
         content = msg.get("content")
         if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            return "".join(
+            text = content
+        elif isinstance(content, list):
+            text = "".join(
                 part.get("text", "") for part in content if isinstance(part, dict)
             )
+        else:
+            continue
+        # 网关把异步子代理批次/内部通知以 user 角色注入历史，非用户话语，跳过
+        if text.startswith(("[ASYNC DELEGATION", "[INTERNAL NOTIFICATION")):
+            continue
+        return text
     return ""
 
 
