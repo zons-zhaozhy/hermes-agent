@@ -389,6 +389,33 @@ def test_jargon_coined_loop(monkeypatch: Any) -> None:
     assert "生造压缩复合词" not in (again or {}).get("context", "")  # 期望: 标记一次即消费
 
 
+def test_jargon_coined_covers_jargon(monkeypatch: Any) -> None:
+    """行话未定义判据契约：judge 收到扩展后的判据（含行话示例），且打桩句触发记账。"""
+    mod = _load_plugin()
+    ctx = _FakeCtx()
+    mod.register(ctx)
+    monkeypatch.setattr(mod, "_load_glossary", list)
+    received: dict[str, object] = {}
+
+    # 捕获取代品收到的 system/keys（判据文本与键位——行为契约，不读源码）
+    def fake_judge(task: str, system: str, text: str, keys: Any, **kw: Any) -> Any:
+        received["system"] = system
+        received["keys"] = keys
+        return {k: False for k in keys} | {"jargon_coined": True}
+
+    mod.llm_judge_multi = fake_judge
+    ctx.hooks["transform_llm_output"](
+        "测试时给 llm_judge_multi 打桩，替换成固定返回值的假函数。", session_id="sJ"
+    )
+    # 期望: judge 收到扩展判据（覆盖行话类别与示例）
+    assert "行话未定义" in str(received.get("system", ""))  # 期望: 判据含行话类别
+    assert "打桩" in str(received.get("system", ""))  # 期望: 判据含打桩示例
+    assert "jargon_coined" in str(received.get("keys"))  # 期望: 键位含 jargon_coined
+    # 期望: 打桩句触发记账（judge jargon_coined=true → st.coined_drift）
+    st = mod._state("sJ")
+    assert st.get("coined_drift") is True  # 期望: 行话未定义已记账
+
+
 def test_judge_output_quality_empty_short() -> None:
     """短文本不走 judge（<20 字符早退，None 不触发记账）。"""
     mod = _load_plugin()
