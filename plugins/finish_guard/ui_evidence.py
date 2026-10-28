@@ -74,6 +74,43 @@ def _validate_assertions(idx: int, w: dict) -> str | None:
     return None
 
 
+def _hard_assertion_defect(idx: int, w: dict, root: Path) -> str | None:
+    """opt-in 硬断言检测（2026-10-28 新增：走查断言质量执法）.
+
+    Contract:
+        Preconditions: w 为单条 walkthrough 字典; root 为仓库根（证据文件位于
+            root/.hermes/ui_walkthrough.json，声明文件与其同目录）.
+        Postconditions: 声明文件 root/.hermes/ui_hard_assertions.json 形如
+            {"<role>": ["关键词", ...]}——该 role 的条目须至少 1 条 claim 命中
+            任一关键词, 否则返回缺陷说明;
+            声明文件不存在 / 解析失败 / role 未声明 → 返回 None（不执法, 向后兼容）.
+    设计动机: 断言质量此前靠各项目 goal 文本手抄约束, 一次没抄标准即塌
+    （aml_agents UX goal v2.1 实证: 软断言「渲染正常/N 行」走查照样算数）;
+    声明文件把硬断言要求沉到框架层, 声明即执法, 未声明项目零影响.
+    """
+    cfg_file = root / ".hermes" / "ui_hard_assertions.json"
+    if not cfg_file.exists():
+        return None
+    try:
+        cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"[ui_evidence] ui_hard_assertions.json 解析失败, 本次不执法: {exc}")
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    role = str(w.get("role", ""))
+    keywords = cfg.get(role)
+    if not isinstance(keywords, list) or not keywords:
+        return None
+    assertions = w.get("assertions") or []
+    claims = [str(a.get("claim", "")) for a in assertions if isinstance(a, dict)]
+    if not any(any(str(kw) in c for kw in keywords) for c in claims):
+        return (f"walkthroughs[{idx}](role={role}) 走查断言全软——本项目已在 "
+                f"ui_hard_assertions.json 声明硬断言关键词 {keywords}, 至少 1 条 claim "
+                f"须命中（软断言「渲染正常/N 行/样式表加载」只证页面活着, 不证任务完成）")
+    return None
+
+
 def _validate_walkthrough(idx: int, w: Any, min_checked_at: float,
                           root: Path | None = None,
                           ui_file: str = "") -> str | None:
@@ -96,6 +133,9 @@ def _validate_walkthrough(idx: int, w: Any, min_checked_at: float,
     if shot_defect:
         return shot_defect
     if root is not None:
+        hard_defect = _hard_assertion_defect(idx, w, root)
+        if hard_defect:
+            return hard_defect
         dom_defect = _validate_dom_assets(idx, w, Path(ui_file), min_checked_at)
         if dom_defect:
             return dom_defect

@@ -111,3 +111,40 @@ def test_check_attempt_cap_releases(tmp_path: Path) -> None:
     ui.write_text("<template/>", encoding="utf-8")
     verdict = ue.check([str(ui)], attempt=3, max_nudges=3)
     assert verdict == {}  # 期望: attempt 达上限放行防死锁
+
+
+# ── opt-in 硬断言检测（2026-10-28 新增: 断言质量执法, 声明即执法/未声明零影响） ──
+
+def test_hard_assertion_soft_claims_rejected(tmp_path: Path) -> None:
+    d = tmp_path / ".hermes"
+    d.mkdir()
+    (d / "ui_hard_assertions.json").write_text(
+        json.dumps({"staff": ["键盘", "一屏", "理解"]}), encoding="utf-8")
+    w = {"role": "staff", "assertions": [{"claim": "渲染正常 13 行", "result": "pass"}]}
+    out = ue._hard_assertion_defect(0, w, tmp_path)
+    assert out is not None and "全软" in out  # 期望: 声明 role 软断言被拦
+
+
+def test_hard_assertion_hard_claim_accepted(tmp_path: Path) -> None:
+    d = tmp_path / ".hermes"
+    d.mkdir()
+    (d / "ui_hard_assertions.json").write_text(
+        json.dumps({"staff": ["键盘", "一屏", "理解"]}), encoding="utf-8")
+    w = {"role": "staff", "assertions": [
+        {"claim": "全程键盘零鼠标完成一次任务查看", "result": "pass"}]}
+    assert ue._hard_assertion_defect(0, w, tmp_path) is None  # 期望: 硬断言命中关键词放行
+
+
+def test_hard_assertion_no_config_pass_through(tmp_path: Path) -> None:
+    (tmp_path / ".hermes").mkdir()
+    w = {"role": "staff", "assertions": [{"claim": "渲染正常", "result": "pass"}]}
+    assert ue._hard_assertion_defect(0, w, tmp_path) is None  # 期望: 无声明文件不执法
+
+
+def test_hard_assertion_undeclared_role_pass_through(tmp_path: Path) -> None:
+    d = tmp_path / ".hermes"
+    d.mkdir()
+    (d / "ui_hard_assertions.json").write_text(
+        json.dumps({"staff": ["键盘"]}), encoding="utf-8")
+    w = {"role": "public", "assertions": [{"claim": "渲染正常", "result": "pass"}]}
+    assert ue._hard_assertion_defect(0, w, tmp_path) is None  # 期望: 未声明 role 不执法
