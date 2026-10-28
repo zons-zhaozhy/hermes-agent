@@ -37,6 +37,21 @@ def test_rule_states_the_decision_three_piece_set() -> None:
     assert "按拍板项计件" in _INTERVIEW_RULE  # 期望: 计件范围=按拍板项非按整轮
 
 
+def test_rule_states_work_order_exemption() -> None:
+    """开工令豁免（用户 2026-10-28 要求「做事不要等不要停不要歇」）锚定。
+
+    根因：澄清门「问完本轮终止」条款与用户节奏指令打架——用户说「连做」时
+    规则仍推向停轮。豁免条款让节奏指令当轮整轮豁免澄清门，全部歧义落「假设：」
+    行连做，仅不可逆/花钱/对外承诺三类仍可停轮。
+    """
+    assert "开工令豁免" in _INTERVIEW_RULE  # 期望: 豁免条款命名在位
+    assert "连做" in _INTERVIEW_RULE  # 期望: 节奏指令示例词在位
+    assert "禁停轮提问" in _INTERVIEW_RULE  # 期望: 停轮禁令在位
+    assert "落「假设：」行后直接连做" in _INTERVIEW_RULE  # 期望: 歧义处置路径=假设行
+    assert "三类事项仍可停轮拍板" in _INTERVIEW_RULE  # 期望: 拍板通道保留边界清晰
+
+
+
 def test_subagent_and_batch_sessions_receive_no_rule() -> None:
     assert _interview_section({"platform": "subagent"}) == ""  # 期望: 子代理无 clarify 通道
     assert _interview_section({"platform": "batch"}) == ""  # 期望: 批处理同样跳过
