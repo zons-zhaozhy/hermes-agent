@@ -322,6 +322,28 @@ class TestProfiles:
         general = cc.resolve_runtime_mode(platform="telegram", cwd=tmp_path, config={})
         assert general.compact_skill_categories() == frozenset()
 
+    def test_focus_demotes_outside_workspace_on_coding_surface(self, tmp_path):
+        # Fork customization: an explicit focus config expresses coding intent even when
+        # the session cwd is NOT a code workspace (e.g. CLI launched from $HOME), so the
+        # lossless skill-index demotion applies there too — but only on interactive coding
+        # surfaces; telegram-style surfaces keep the full index.
+        home_like = tmp_path  # not a git repo / no project markers
+        cli = cc.resolve_runtime_mode(
+            platform="cli", cwd=home_like,
+            config={"agent": {"coding_context": "focus"}},
+        )
+        assert cli.is_coding is False  # outside a workspace: coding posture inactive
+        compact = cli.compact_skill_categories()
+        assert "social-media" in compact and "engineering-methodology" in compact
+        for kept in ("github", "devops", "software-development", "data-science"):
+            assert kept not in compact
+        # Non-coding surface: full index untouched.
+        non_coding = cc.resolve_runtime_mode(
+            platform="telegram", cwd=home_like,
+            config={"agent": {"coding_context": "focus"}},
+        )
+        assert non_coding.compact_skill_categories() == frozenset()
+
 
 # ── detection signals ───────────────────────────────────────────────────────
 

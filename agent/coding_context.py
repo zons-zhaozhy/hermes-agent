@@ -368,8 +368,22 @@ class RuntimeMode:
     def compact_skill_categories(self) -> frozenset[str]:
         """Skill categories to demote to names-only in the skill index. Gated on ``focus``
         like the toolset collapse (index changes under ``auto`` proved too surprising).
-        Demoted, never hidden: pruning caused silent capability loss."""
-        if not self.is_coding or self.config_mode != "focus":
+        Demoted, never hidden: pruning caused silent capability loss.
+
+        Fork customization: an explicit ``focus`` config expresses coding intent even when
+        the session cwd is not inside a code workspace (e.g. CLI launched from $HOME), so
+        demotion applies on config_mode==focus regardless of the code-workspace probe —
+        the coding profile (brief/workspace/toolsets) still requires is_coding; only the
+        skill-index demotion (lossless: names-only, skill_view recall intact) relaxes."""
+        if self.config_mode != "focus":
+            return frozenset()
+        if not self.is_coding:
+            # Explicit focus outside a code workspace, on an interactive coding
+            # surface: demote using the coding profile's deny-list — the user opted
+            # into coding context, so the index should follow (names-only, never
+            # hidden). Non-coding surfaces (telegram etc.) keep the full index.
+            if self.surface.strip().lower() in INTERACTIVE_CODING_PLATFORMS:
+                return frozenset(CODING_PROFILE.compact_skill_categories)
             return frozenset()
         return frozenset(self.profile.compact_skill_categories)
 
