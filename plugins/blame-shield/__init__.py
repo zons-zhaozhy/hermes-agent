@@ -41,33 +41,38 @@ _SELF_CHECK_RULE = """\
 自检不通过时，不是简单剥离违规划句，而是用正确的认知重写整段内容。
 """
 
-# 判断用户消息是否是任务/提问（而非纯闲聊）
-# 只匹配明确的任务指令和提问，避免误触发
-_TASK_PREFIXES = (
-    "怎么", "为什么", "如何", "帮我", "检查", "修复", "查看",
-    "分析", "测试", "验证", "跑一下", "帮我看看", "帮我查",
-    "你为什么", "你怎么", "你能不能", "你到底",
-)
+# 闲聊豁免集（封闭集）：整句剥离语气词/标点后命中的短应答不注入
+_CHAT_TOKENS = frozenset({
+    "你好", "您好", "早", "早上好", "上午好", "中午好", "下午好", "晚上好",
+    "好", "好的", "嗯", "嗯嗯", "哦", "噢", "哈", "哈哈", "呵呵", "行", "OK", "ok",
+    "收到", "明白", "了解", "知道啦", "知道", "懂了", "可以", "没问题",
+    "谢谢", "谢谢哈", "多谢", "感谢", "辛苦了", "辛苦啦", "麻烦你了",
+    "拜拜", "再见", "晚安", "加油", "牛", "牛逼", "厉害", "赞",
+})
 
 
 def _is_task_message(user_message: str) -> bool:
-    """判断用户消息是否是任务/提问（而非纯闲聊）。
+    """任务消息判定——默认注入，仅整句闲聊（封闭集）豁免。
 
-    匹配规则：
-    - 包含中文或英文问号
-    - 以明确的任务/提问前缀开头（排除"你好"/"你觉得"等闲聊）
+    任务指令是开放集（祈使句/续作/提问形态不可枚举），白名单枚举必然漏——
+    「给这个表加个字段」类无问号祈使句曾零注入。故方向反转：默认注入，
+    只有整句剥离标点/语气词后落在闲聊封闭集内的短消息才豁免。
     """
     if not user_message:
         return False
-    msg = user_message.strip()
-    # 包含问号（中英文）
+    msg = str(user_message).strip()
+    if not msg:
+        return False
+    # 包含问号（中英文）→ 提问，注入
     if "?" in msg or "？" in msg:
         return True
-    # 以任务指令开头
-    for prefix in _TASK_PREFIXES:
-        if msg.startswith(prefix):
-            return True
-    return False
+    # 整句闲聊豁免：剥离标点/空白/常见语气词后仍是闲聊词才豁免
+    stripped = msg.strip("。，！!？?~～ \t\n")
+    for tail in ("哈", "呀", "啦", "呢", "哦", "噢", "喽", "嘛", "吧", "嘿", "诶"):
+        if stripped.endswith(tail) and len(stripped) > 1:
+            stripped = stripped[: -len(tail)]
+    stripped = stripped.strip("。，！!？?~～ \t\n")
+    return stripped not in _CHAT_TOKENS
 
 
 def _on_pre_llm_call(**kwargs) -> dict:
