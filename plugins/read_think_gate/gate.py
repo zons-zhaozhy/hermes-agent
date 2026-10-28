@@ -894,6 +894,63 @@ class ReadThinkGate:
         """返回尚未检测到的轴名称列表。"""
         return [a for a in _FOUR_AXIS_LABELS if a not in self._four_axis_found]
 
+    def _strict_gap_items(
+        self,
+        profile: ComplexityProfile,
+        content_len: int,
+        tool_names: list[str],
+    ) -> list[str]:
+        """严格模式下当前未达标的全部缺口，一次列全。
+
+        与 _try_unlock 的四关一一对应：①调查量 ②搜索类多样性 ③分析
+        字数 ④四轴（仅 FILE_WRITE_TOOLS 批次检查，对齐 _try_unlock 的
+        requesting_core_edit 判定——execute_code/terminal 不查四轴）。
+        调查量/字数未达标时 _try_unlock 不评估后续关——本方法打破该
+        顺序依赖，把后续关缺口一并披露，被拦方一次补齐而非逐层试探。
+
+        Contract:
+          Preconditions: 严格模式（unlock_after_investigation=False）下
+            _try_unlock 返回 False 后由 _build_block_message 调用
+          Postconditions: 返回零或多条缺口描述，每条含当前值/目标值/
+            可执行动作；空列表 = 四关全过（被拦属状态异常，调用方兜底）
+        """
+        items: list[str] = []
+        done = self._read_only_count
+        needed = profile.min_read_only_calls
+        if done < needed:
+            items.append(
+                f"① 只读调查 {done}/{needed}：还差 {needed - done} 次。计数工具："
+                "read_file / search_files / web_search / web_extract / "
+                "browser_exec / vision_analyze / session_search / skill_view"
+                "（terminal 不计数；read_file 失败调用不计数）。"
+            )
+        if not self._has_diverse_investigation(profile):
+            items.append(
+                "② 搜索类多样性未达标：还没用 search_files / web_search / "
+                "web_extract / browser_exec 任一——read_file 堆数量不算，"
+                "至少 1 次搜索类调用（查调用方/同类实现）。"
+            )
+        if content_len < profile.min_reasoning_chars:
+            items.append(
+                f"③ 分析字数 {content_len}/{profile.min_reasoning_chars}：还差 "
+                f"{profile.min_reasoning_chars - content_len} 字。正文回答：目标"
+                "代码当前逻辑（引行号）/相关既有程序与既有做法/方案对比与最优性。"
+            )
+        if (
+            tool_names
+            and any(t in _FOUR_AXIS_REQUIRED_TOOLS for t in tool_names)
+            and not self._four_axis_complete()
+        ):
+            missing = "、".join(self._missing_axes())
+            items.append(
+                f"④ 四轴缺「{missing}」：正文逐轴输出并紧贴写调用——影响面清单"
+                "（受影响调用方 绝对路径+函数名+行号）/原意图溯源（git log 最初"
+                " commit + 不变量逐条标注保持/修改/破坏）/根因定位（症状位置 vs "
+                "根因位置 文件:行号）/风险矩阵（最坏场景+触发条件+影响范围+"
+                "可恢复性）。"
+            )
+        return items
+
     def _has_diverse_investigation(self, profile: ComplexityProfile) -> bool:
         """调查是否包含搜索类工具，而非只有 read_file/skill_view 堆数量。
 
@@ -1052,7 +1109,7 @@ class ReadThinkGate:
         self._reasoning_rounds += 1
 
         first_gated = next(t for t in tool_names if t in self._gated_tools) if any(t in self._gated_tools for t in tool_names) else "terminal"
-        block_msg = self._build_block_message(first_gated, content_len)
+        block_msg = self._build_block_message(first_gated, content_len, tool_names)
         logger.info(
             "read-think gate: blocking %s (round %d/%d, content=%d, investigated=%d, complexity=%s)",
             first_gated,
@@ -1213,11 +1270,12 @@ class ReadThinkGate:
 
         return False
 
-    def _build_block_message(self, tool_name: str, content_len: int) -> str:
-        """生成拦截消息——注入调查框架 + judge 反馈。"""
+    def _build_block_message(
+        self, tool_name: str, content_len: int, tool_names: list[str],
+    ) -> str:
+        """生成拦截消息——注入调查框架 + 全部缺口一次列全。"""
         profile = self._active_profile
         done = self._read_only_count
-        needed = profile.min_read_only_calls
 
         if not self.config.unlock_after_investigation:
             # judge 有反馈 → 优先展示
@@ -1234,57 +1292,26 @@ class ReadThinkGate:
                     "  D. 你的方案为什么是最优的（对比过的替代方案）\n\n"
                     f"（推理轮数：{self._reasoning_rounds}/{profile.max_reasoning_rounds}）"
                 )
-            if done < needed:
-                # ── 漏洞 6 修复：推理轮数用 self._reasoning_rounds 而非硬编码 1 ──
-                remaining_reads = needed - done
-                return (
-                    f"[ReadThink Gate — 推理阶段 · 标准任务] 工具 '{tool_name}' 暂时不可用。\n\n"
-                    "动手前必须搞清楚：\n"
-                    "  1. 要改的代码当前怎么写的？逻辑是什么？（读源码，引用行号）\n"
-                    "  2. 跟它有关系的既有程序有哪些？调用方在哪？被谁依赖？\n"
-                    "  3. 既有程序是怎么做这件事的？是否已有等价实现可以复用或扩展？\n"
-                    "  4. 你打算怎么改？这是最优方案吗？有没有更稳妥的做法？\n\n"
-                    "用 search_files 搜调用方和同类实现，用 read_file 读目标文件全貌，\n"
-                    "用 codegraph/gitnexus 追依赖链。搞清楚再动手。\n\n"
-                    f"【通过诊断】还需要 {remaining_reads} 次只读调查（当前 {done}/{needed}）"
-                    f"+ 至少 {profile.min_reasoning_chars} 字分析。\n"
-                    f"（推理轮数：{self._reasoning_rounds}/{profile.max_reasoning_rounds}）"
-                )
-            # 调查次数达标但缺少搜索类工具——不是 read_file 堆数量就够的
-            if not self._has_diverse_investigation(profile):
-                return (
-                    f"[ReadThink Gate — 推理阶段 · 标准任务] 工具 '{tool_name}' 暂时不可用。\n\n"
-                    f"已做 {done} 次只读调查（read_file），但还没用搜索类工具。\n"
-                    "用 search_files 搜调用方和同类实现，或用 web_search 查外部文档——\n"
-                    "搞清楚全局关系，不能只盯着单个文件。\n\n"
-                    "【通过诊断】再做 1 次搜索类工具调用（search_files/web_search）即可通过此关。\n"
-                    f"（调查次数：{done}/{needed}，推理轮数：{self._reasoning_rounds}/{profile.max_reasoning_rounds}）"
-                )
-            # 四轴闸门未通过——调查做了但四轴输出不齐
-            if not self._four_axis_complete():
-                missing = "、".join(self._missing_axes())
-                return (
-                    f"[ReadThink Gate — 推理阶段 · 四轴闸门] 工具 '{tool_name}' 暂时不可用。\n\n"
-                    f"调查已完成，但四轴闸门未通过。缺少：{missing}\n\n"
-                    "在前面的回复中逐项输出以下四轴内容，缺一不可：\n"
-                    "  1. 影响面清单：列出每一个受影响调用方（绝对路径+函数名+行号）\n"
-                    "  2. 原意图溯源：git log -p 追溯到最初 commit + 不变量清单（逐条标注保持/修改/破坏）\n"
-                    "  3. 根因定位：区分症状位置与根因位置（文件+行号），修复目标必须是根因\n"
-                    "  4. 风险矩阵：枚举最坏场景（触发条件+影响范围+可恢复性），覆盖六类风险\n\n"
-                    "四轴的输出就是 commit message 的 body。即写即用。\n\n"
-                    f"【通过诊断】补齐缺轴「{missing}」的输出即可通过——在接下来的回复中直接写出对应段落。\n"
-                    f"（推理轮数：{self._reasoning_rounds}/{profile.max_reasoning_rounds}）"
-                )
-            return (
+            # 全部缺口一次列全——逐层 if-return 曾让被拦方每轮只知道第一层
+            # 缺口，补一层撞一层（实测同一任务连拦 3 次，每层白烧一轮）。
+            gaps = self._strict_gap_items(profile, content_len, tool_names)
+            header = (
                 f"[ReadThink Gate — 推理阶段 · 标准任务] 工具 '{tool_name}' 暂时不可用。\n\n"
-                f"已做 {done} 次只读调查，但还没有输出分析结论。在回复中明确回答：\n\n"
-                "  ▸ 要改的代码当前逻辑是什么？（引用具体行号和代码）\n"
-                "  ▸ 哪些既有程序与它有关系？它们是怎么做的？\n"
-                "  ▹ 你的改动方案是什么？为什么是最优的？（对比过的替代方案）\n\n"
-                "用充分的分析填满回复——这不是走流程，是确保改对。\n\n"
-                f"【通过诊断】调查次数已达标（{done}/{needed}），"
-                f"但推理量不足（当前 {content_len} 字 < 需要 {profile.min_reasoning_chars} 字）。\n"
-                f"在回复中写出上述分析，达到 {profile.min_reasoning_chars} 字即可通过。\n"
+                "动手前必须搞清楚：\n"
+                "  1. 要改的代码当前怎么写的？逻辑是什么？（读源码，引用行号）\n"
+                "  2. 跟它有关系的既有程序有哪些？调用方在哪？被谁依赖？\n"
+                "  3. 既有程序是怎么做这件事的？是否已有等价实现可以复用或扩展？\n"
+                "  4. 你打算怎么改？这是最优方案吗？有没有更稳妥的做法？\n\n"
+                "用 search_files 搜调用方和同类实现，用 read_file 读目标文件全貌，\n"
+                "用 codegraph/gitnexus 追依赖链。搞清楚再动手。\n\n"
+                "以下为本次拦截的全部缺口清单（一次列全，非逐层揭示——全部补齐后"
+                "在同一条回复正文里紧贴发起写调用即可，无需分多轮试探）：\n"
+            )
+            body = "\n".join(gaps) if gaps else (
+                "（四关全部达标——仍被拦属内部状态异常，检查推理轮数是否已到上限）"
+            )
+            return (
+                f"{header}{body}\n"
                 f"（推理轮数：{self._reasoning_rounds}/{profile.max_reasoning_rounds}）"
             )
 
