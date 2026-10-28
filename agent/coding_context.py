@@ -135,22 +135,16 @@ _TODO_SENTENCE = (
     "`path:line` instead of pasting whole files."
 )
 _NO_TODO_SENTENCE = "- Reference code as `path:line` instead of pasting whole files."
-# Coding-distant or volume-heavy skill categories (deny-list; coding-adjacent and custom ones keep full entries).
-# Fork customization: hermes-agent repo sessions demote these volume-heavy custom categories to names-only —
-# recall via skill_view keeps working, only the per-round description injection is dropped.
+# Coding-distant or volume-heavy skill categories (deny-list; recall via skill_view keeps working).
+# Fork customization: volume-heavy custom + coding-adjacent categories are demoted for focus too —
+# descriptions pad the index with diminishing returns; names-only recall is lossless. Measured
+# savings: devops 3234 chars, software-development 2347, ontox-ops 926, aml 594, wechat-ops 568.
 _NON_CODING_SKILL_CATEGORIES = (
     "apple", "communication", "cooking", "creative", "email", "finance", "gaming", "gifs", "health", "media",
     "music", "note-taking", "productivity", "shopping", "smart-home", "social-media", "travel", "yuanbao",
     "engineering-methodology", "frontend", "product", "business", "autonomous-ai-agents",
-)
-# Fork customization: additional categories demoted ONLY for explicit focus sessions outside a code
-# workspace (CLI launched from $HOME). In-workspace coding sessions keep these full (devops /
-# software-development descriptions matter while actually coding); outside a workspace they only
-# pad the index. Measured: +devops 3234 chars, +software-development 2347, +ontox-ops 926, +aml 594,
-# +wechat-ops 568 — vs trivial (<80) or negative (gitnexus nested: -79) for the rest.
-_NON_WORKSPACE_EXTRA_DEMOTE = frozenset({
     "devops", "software-development", "ontox-ops", "aml", "wechat-ops",
-})
+)
 _MODE_ALIASES = {
     **dict.fromkeys(("focus", "strict", "lean"), "focus"),
     **dict.fromkeys(("on", "true", "yes", "1", "always"), "on"),
@@ -387,13 +381,11 @@ class RuntimeMode:
             return frozenset()
         if not self.is_coding:
             # Explicit focus outside a code workspace, on an interactive coding
-            # surface: demote the coding profile's deny-list PLUS the extra
-            # non-workspace categories — outside a real workspace the coding-adjacent
-            # descriptions (devops/software-development/ontox-ops/...) only pad the
-            # index, so demote them for max savings (names-only, never hidden).
+            # surface: demote using the coding profile's deny-list — the user opted
+            # into coding context, so the index follows (names-only, never hidden).
             # Non-coding surfaces (telegram etc.) keep the full index.
             if self.surface.strip().lower() in INTERACTIVE_CODING_PLATFORMS:
-                return frozenset(CODING_PROFILE.compact_skill_categories) | _NON_WORKSPACE_EXTRA_DEMOTE
+                return frozenset(CODING_PROFILE.compact_skill_categories)
             return frozenset()
         return frozenset(self.profile.compact_skill_categories)
 

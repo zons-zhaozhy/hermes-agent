@@ -316,7 +316,12 @@ class TestProfiles:
         assert focus.is_coding is True
         compact = focus.compact_skill_categories()
         assert "social-media" in compact and "smart-home" in compact
-        for kept in ("github", "devops", "software-development", "data-science"):
+        # Fork customization: coding-adjacent categories with volume-heavy descriptions are
+        # demoted too (names-only recall is lossless; descriptions pad the index with diminishing
+        # returns — devops 3234 chars, software-development 2347). Trivial-gain categories stay.
+        for demoted in ("devops", "software-development"):
+            assert demoted in compact
+        for kept in ("github", "data-science"):
             assert kept not in compact
         # General posture demotes nothing.
         general = cc.resolve_runtime_mode(platform="telegram", cwd=tmp_path, config={})
