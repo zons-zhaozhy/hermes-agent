@@ -93,6 +93,7 @@ f799fd8578 在官方 Linux CI "Python tests / Run tests" = success。
 | tui_gateway/prompt_turn.py (0926 补记) | 3 行: prompt 轮次微调 | 低 | 上游改同参数时让位 |
 | pyproject.toml + uv.lock (0926 补记) | 依赖钉版差异（fork 追加依赖） | 低（追加式） | 每次 pm lock 后重新对账 |
 | tools/browser_tool_lifecycle.py + browser_use_cli.py + browser_tool.py + tests/test_browser_inflight_reaper.py (1023 移除) | f9203bf53a inflight 保护: >120s 长调用被闲置回收器误杀的根治; 官方 68500d9ff9 删除 agent-browser 与旧 lifecycle, 载体消失, 1023 同步时跟随官方删除; 官方新架构 cleanup_inactive_sessions 仍无执行中豁免, 缺口仍在待移植 | 已消除(载体删除) | 移植 inflight 语义到 browser_session_lifecycle janitor 后提 upstream |
+| agent/coding_context.py (1028 新增) | _NON_CODING_SKILL_CATEGORIES deny-list 扩 5 自定义类(engineering-methodology/frontend/product/business/autonomous-ai-agents), fork 定制: 仓库内 coding/focus 会话技能索引降级 names-only, 省 ~5.1K 字符/轮 (26,464→21,397); 官方契约样例 github/devops/software-development/data-science 保持全描述(测试锁定) | 中（官方改 deny-list/技能索引逻辑时撞） | 官方若给自定义类加等级机制则让位; 配套: 24 workspace 副本已同步; test_skill_demotion_gated_on_focus 契约保持 |
 
 ## 二、防冲突铁律（同步操作规程）
 

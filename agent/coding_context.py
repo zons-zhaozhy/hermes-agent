@@ -135,10 +135,13 @@ _TODO_SENTENCE = (
     "`path:line` instead of pasting whole files."
 )
 _NO_TODO_SENTENCE = "- Reference code as `path:line` instead of pasting whole files."
-# Clearly non-coding skill categories (deny-list; coding-adjacent and custom ones keep full entries).
+# Coding-distant or volume-heavy skill categories (deny-list; coding-adjacent and custom ones keep full entries).
+# Fork customization: hermes-agent repo sessions demote these volume-heavy custom categories to names-only —
+# recall via skill_view keeps working, only the per-round description injection is dropped.
 _NON_CODING_SKILL_CATEGORIES = (
     "apple", "communication", "cooking", "creative", "email", "finance", "gaming", "gifs", "health", "media",
     "music", "note-taking", "productivity", "shopping", "smart-home", "social-media", "travel", "yuanbao",
+    "engineering-methodology", "frontend", "product", "business", "autonomous-ai-agents",
 )
 _MODE_ALIASES = {
     **dict.fromkeys(("focus", "strict", "lean"), "focus"),
