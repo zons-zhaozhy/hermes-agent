@@ -80,6 +80,7 @@ CONFIG (~/.hermes/config.yaml)
 from __future__ import annotations
 
 import logging
+import os
 import re
 import threading
 from typing import Any, Dict, List, Optional
@@ -769,9 +770,122 @@ def _last_user_message(request: dict[str, Any]) -> str:
     return ""
 
 
-def register(ctx) -> None:
+# ── Explicit output cap (model.max_tokens) ────────────────────────────────
+#
+# The main agent (CLI REPL / gateway / oneshot) builds AIAgent without
+# ``max_tokens``, so chat_completions requests carry no explicit output cap and
+# the ceiling is each server's default — the yinfeng relay caps glm-5.3 at 8192
+# completion tokens, so a long forced-thinking response hits
+# ``finish_reason=length`` mid-body. This middleware fills ``max_tokens`` from
+# config ``model.max_tokens`` ONLY when the final request carries no explicit
+# cap of its own, so subagent budgets / ephemeral helper caps keep winning.
+# Missing key = no-op (behavior unchanged).
+
+# Providers whose chat dialect uses ``max_completion_tokens`` for reasoning
+# models (OpenAI o-series rejects a top-level ``max_tokens``): absent cap there
+# keeps the server default instead of risking a 400.
+_MAX_COMPLETION_TOKENS_PROVIDERS = frozenset({"openai", "azure"})
+
+_CAP_CACHE_LOCK = threading.Lock()
+_CAP_CACHE: dict[str, Any] = {"fingerprint": None, "value": None, "warned_invalid": False}
+
+
+def _output_cap_fingerprint(path: str) -> Optional[tuple]:
+    """Contract:
+    Preconditions: *path* is the profile-aware config.yaml path.
+    Postconditions: returns (mtime_ns, size) for stat; None (warned) when unreadable.
+    """
+    try:
+        st = os.stat(path)
+    except OSError as exc:
+        logger.warning("explicit-output-cap: cannot stat %s, acting as disabled: %s", path, exc)
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _validate_output_cap(raw: Any) -> Optional[int]:
+    """Contract:
+    Preconditions: *raw* is the value found at model.max_tokens (may be absent → None input).
+    Postconditions: positive int for a valid value; None otherwise, warning once per
+    fingerprint on an invalid value (never silently coerced or defaulted).
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        if not _CAP_CACHE["warned_invalid"]:
+            logger.warning(
+                "explicit-output-cap: model.max_tokens=%r is not a positive int; ignoring it", raw)
+            _CAP_CACHE["warned_invalid"] = True
+        return None
+    return raw
+
+
+def _resolve_output_cap() -> Optional[int]:
+    """Contract:
+    Preconditions: config lives at get_hermes_home()/config.yaml.
+    Postconditions: cached-by-fingerprint positive int from ``model.max_tokens``;
+    None when absent/invalid/unreadable (config load failure is warned, not swallowed).
+    """
+    from hermes_constants import get_hermes_home
+
+    fingerprint = _output_cap_fingerprint(os.path.join(get_hermes_home(), "config.yaml"))
+    if fingerprint is None:
+        return None
+    with _CAP_CACHE_LOCK:
+        if _CAP_CACHE["fingerprint"] == fingerprint:
+            return _CAP_CACHE["value"]
+
+        from hermes_cli.config import load_config
+
+        try:
+            cfg = load_config() or {}
+        except Exception as exc:
+            logger.warning("explicit-output-cap: config load failed, acting as disabled: %s",
+                           exc, exc_info=True)
+            return None
+        model_section = cfg.get("model")
+        raw = model_section.get("max_tokens") if isinstance(model_section, dict) else None
+        value = _validate_output_cap(raw)
+        _CAP_CACHE.update(fingerprint=fingerprint, value=value)
+        if value is not None:
+            _CAP_CACHE["warned_invalid"] = False
+        return value
+
+
+def explicit_output_cap_middleware(**kwargs: Any) -> Optional[dict]:
+    """Contract:
+    Preconditions: ``kwargs['request']`` is the final provider request dict for one API
+    call; a call site omitting ``api_mode`` is treated as chat_completions.
+    Postconditions: returns ``{'request': <copy with max_tokens>, 'source', 'reason'}``
+    only for a chat-completions payload with no explicit output cap and a valid
+    ``model.max_tokens``; else None (request sent untouched).
+    """
+    request = kwargs.get("request")
+    if not isinstance(request, dict) or not isinstance(request.get("messages"), list):
+        return None
+    api_mode = str(kwargs.get("api_mode") or "").strip().lower()
+    if api_mode not in ("", "chat_completions"):
+        return None
+    if any(request.get(k) is not None
+           for k in ("max_tokens", "max_completion_tokens", "max_output_tokens")):
+        return None
+    provider = str(kwargs.get("provider") or "").strip().lower()
+    if provider in _MAX_COMPLETION_TOKENS_PROVIDERS:
+        return None
+    cap = _resolve_output_cap()
+    if cap is None:
+        return None
+    rewritten = dict(request)
+    rewritten["max_tokens"] = cap
+    logger.debug("explicit-output-cap: filled absent output cap with model.max_tokens=%d", cap)
+    return {"request": rewritten, "source": "explicit-output-cap",
+            "reason": f"fill absent output cap from model.max_tokens={cap}"}
+
+
+def register(ctx: Any) -> None:
     """Plugin entry point: register middleware + observer hook."""
     ctx.register_middleware("llm_request", adaptive_llm_request_middleware)
+    ctx.register_middleware("llm_request", explicit_output_cap_middleware)
     ctx.register_middleware("llm_execution", adaptive_llm_execution_middleware)
     ctx.register_hook("post_tool_call", on_post_tool_call)
     logger.info("adaptive-reasoning registered (issues #74725 / #13663)")
