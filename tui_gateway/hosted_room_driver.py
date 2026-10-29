@@ -9,6 +9,7 @@ sessions reuse ``Group: <room_id>`` so a local-to-hosted migration keeps one tra
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
@@ -102,6 +103,21 @@ def _fences(task: Mapping[str, Any]) -> dict[str, int]:
             "expected_cancel_generation": int(task["cancel_generation"])}
 
 
+def _poll_phase_seconds(db_path: Path | str, poll_interval_seconds: float) -> float:
+    """Stable per-store phase offset for multiplexed hosted-room supervisors.
+
+    Gateway startup creates one supervisor per served profile at effectively the same
+    moment. Without an offset their empty-store scans synchronize on one 5s cadence;
+    with more stores than process read permits they then reclaim/open connections as
+    a herd. Hashing the durable store path spreads the first pass across the interval
+    while remaining deterministic for tests and restarts. ``HostedRoomRuntime._wake``
+    remains the latency escape hatch for a newly admitted room.
+    """
+    digest = hashlib.sha256(str(Path(db_path)).encode("utf-8")).digest()
+    fraction = int.from_bytes(digest[:8], "big") / 2**64
+    return fraction * float(poll_interval_seconds)
+
+
 class HostedRoomRuntime:
     """Run queued hosted-room tasks independently of Desktop connections."""
 
@@ -159,6 +175,7 @@ class HostedRoomRuntime:
         self._blocked_rooms: set[str] = set()
         self._status_lock, self._current_tasks = threading.Lock(), {}
         self._room_schedule_cursor, self._cycles = 0, 0
+        self._poll_phase_seconds = _poll_phase_seconds(self.db_path, self.poll_interval_seconds)
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
@@ -437,6 +454,11 @@ class HostedRoomRuntime:
     # ------------------------------------------------------------------ scheduling
     def _worker_loop(self) -> None:
         try:
+            # A wake or stop request cancels the startup phase; otherwise stagger
+            # multiplexed profile scans instead of sending every supervisor into
+            # state.db at the same instant.
+            if self._poll_phase_seconds:
+                self._wake.wait(self._poll_phase_seconds)
             while not self._stop.is_set():
                 # Clear before work so a write racing the cycle forces a follow-up pass.
                 self._wake.clear()

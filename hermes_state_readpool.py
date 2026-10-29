@@ -35,13 +35,15 @@ logger = logging.getLogger("hermes_state")
 _READ_POOL_MAX = 8
 
 # Ceiling ALIVE in this PROCESS across every state.db (a multiplexed gateway
-# opens one per profile); three profiles' worth, then readers degrade likewise.
+# opens one per profile). Modern deployments routinely serve dozens of profiles;
+# three profiles' worth made every periodic profile scan reclaim a peer's idle
+# connection, producing an open/close convoy under sqlite_safe_read._live_lock.
 # _READ_POOL_MAX bounds one file. A multiplexed gateway serves N profiles from one process and each profile
 # has its OWN state.db, so a per-file ceiling still lets the descriptor cost grow with the profile count —
 # the same shape as the per-instance bug, one level out (#98573). Past it, readers on the (N+1)th file
 # degrade to their writer connection instead of opening descriptors, which is the same trade _READ_POOL_MAX
 # makes and for the same reason: a slow read path is recoverable, a process-wide EMFILE is not.
-_READ_POOL_PROCESS_MAX = 24
+_READ_POOL_PROCESS_MAX = 64
 
 # Warn past this many SessionDB handles on one file in one process (diagnostic:
 # writer connections cannot be rationed the way read connections can).
