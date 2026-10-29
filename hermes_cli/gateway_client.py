@@ -20,6 +20,12 @@ DEFAULT_RPC_TIMEOUT = 30
 RESUME_KEY_MISMATCH = ("--api-key on resume must be the key this session was launched with "
                        "(a session launched without --api-key keeps its profile credentials). "
                        "A session never switches keys: start a new one (without --resume) to use a different key.")
+# Single source for the two honest transport-death copies; gateway_connection re-exports them for
+# its callers. Never inline either string again.
+DISCONNECTED = ("Gateway disconnected; turn outcome is unknown. Resume the printed session ID to check "
+                "whether it completed or was interrupted; do not resend the work.")
+# A request refused before it reached any socket: nothing is in doubt, so never the copy above.
+NOT_SENT = "Gateway disconnected before the request was sent; nothing was sent."
 # Canonical ``/compress`` answers only after the summary call(s) and the commit: a long session's
 # summary routinely takes more than 30 s (``auxiliary.compression.timeout`` defaults to 120 s per
 # request, ``compression.context_total_ceiling_seconds`` to 600 s). Same budget as Desktop's
@@ -195,8 +201,7 @@ class GatewayClient:
         except (ConnectionClosed, OSError, ValueError, TimeoutError):
             pass
         finally:
-            error = GatewayClientError("Gateway disconnected; turn outcome is unknown. "
-                "Resume the printed session ID to check whether it completed or was interrupted; do not resend the work.")
+            error = GatewayClientError(DISCONNECTED)
             for future in self.pending.values():
                 if not future.done():
                     future.set_exception(error)
@@ -216,11 +221,21 @@ class GatewayClient:
         self.pending[rid] = future
         self.events.moved.set()  # a reader waiting on the consumer reads on toward this answer
         try:
-            await self.websocket.send(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}))
+            from websockets.exceptions import ConnectionClosed
+            try:
+                await self.websocket.send(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}))
+            except (ConnectionClosed, OSError, TimeoutError) as exc:
+                # Same honest copy as the read side: a caller that catches only GatewayClientError
+                # (the spinner thread's tick) must never see the raw transport error.
+                raise GatewayClientError(DISCONNECTED) from exc
             budget = DEFAULT_RPC_TIMEOUT if _timeout is None else _timeout
             return await asyncio.wait_for(future, None if budget == float("inf") else budget)
         finally:
-            self.pending.pop(rid, None)
+            future = self.pending.pop(rid, None)
+            # The reader may have failed this request before send raised; retrieve that exception
+            # so the GC never logs "exception was never retrieved" for an already-reported error.
+            if future is not None and future.done() and not future.cancelled():
+                future.exception()
 
 
 def private_control_query(home: Path, request: bytes, timeout: float = 5) -> bytes:

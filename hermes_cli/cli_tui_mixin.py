@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import errno
 import json
+import logging
 import os
 import queue
 import shutil
@@ -42,6 +43,8 @@ from typing import Optional
 from hermes_cli.cli_footer_split import FooterSplit
 from hermes_cli.cli_panel import _Panel
 from hermes_cli.cli_tui_wrap import _prefix_wrapped_rows, _wrap_rows
+
+logger = logging.getLogger("cli")
 
 # Rows below an overlay panel taken by spinner/tool-progress, status bar, input, separators and
 # prompt symbol (measured ~6 during live PTY approval prompts) — shared by every panel budget.
@@ -402,22 +405,27 @@ class CLITuiMixin:
             ordered.append(ordered.pop(ordered.index(status_bar)))
         return [item for item in ordered if item is not None]
 
-    def _tui_spinner_loop(self):
+    def _tui_spinner_loop(self) -> None:
         while not self._should_exit:
-            if not self._app:
-                time.sleep(0.1)
-                continue
-            monitor = getattr(self, "_subagent_monitor", None)
-            if monitor is not None:
-                monitor.tick()
-            if self._command_running:
-                self._invalidate(min_interval=0.1)
-                time.sleep(0.1)
-            else:
-                # Never repaint the idle prompt on a timer: in non-full-screen mode background
-                # redraws fight tmux/Ghostty/cmux viewport restoration after focus changes and
-                # visually move the input area. Input/agent events invalidate explicitly.
-                time.sleep(0.2)
+            try:
+                if not self._app:
+                    time.sleep(0.1)
+                    continue
+                monitor = getattr(self, "_subagent_monitor", None)
+                if monitor is not None:
+                    monitor.tick()
+                if self._command_running:
+                    self._invalidate(min_interval=0.1)
+                    time.sleep(0.1)
+                else:
+                    # Never repaint the idle prompt on a timer: in non-full-screen mode background
+                    # redraws fight tmux/Ghostty/cmux viewport restoration after focus changes and
+                    # visually move the input area. Input/agent events invalidate explicitly.
+                    time.sleep(0.2)
+            except Exception as e:
+                # A daemon thread that dies here stops every redraw (the UI freezes) with no
+                # traceback; same contract as _tui_process_loop one file over.
+                logger.warning("spinner_loop unhandled error (frame may be lost): %s", e)
 
     def _get_clarify_display_fragments(self):
         """Batch (multi-question) clarify panel: "N questions" header, one status line per question

@@ -11,6 +11,20 @@ from hermes_cli.gateway_client import GatewayClient, GatewayClientError
 
 
 @pytest.mark.asyncio
+async def test_send_side_death_is_the_same_honest_unknown_not_a_raw_transport_error():
+    """The read side already translates a transport death; the send side must too, or a caller
+    that catches only GatewayClientError (the spinner thread's tick) dies on the raw error."""
+    class SendDied:
+        async def send(self, _data):
+            raise ConnectionClosedError(None, None)
+
+    client = GatewayClient(SendDied())
+    with pytest.raises(GatewayClientError, match="outcome is unknown"):  # 期望: 翻译后的断连错误
+        await client.rpc("subagent.list")
+    assert client.pending == {}  # nothing left behind for the GC to log as never retrieved
+
+
+@pytest.mark.asyncio
 async def test_keepalive_close_releases_waiters_without_unhandled_reader_exception():
     class Disconnected:
         def __aiter__(self):

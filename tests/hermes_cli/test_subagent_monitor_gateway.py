@@ -125,6 +125,26 @@ def test_failing_roster_reads_age_out_the_cached_children(gateway):
     assert len(client.calls) == calls  # and an idle session stops polling
 
 
+def test_tick_survives_a_transport_death_and_recovers(gateway):
+    """A dead socket raises a raw ConnectionClosedError out of the fake's rpc: the spinner
+    thread's tick must survive it and list the roster again once the gateway answers."""
+    from websockets.exceptions import ConnectionClosedError
+
+    from hermes_cli import cli_subagent_monitor
+    agent, client = gateway
+    monitor = cli_subagent_monitor.SubagentMonitor(SimpleNamespace(agent=agent, _agent_running=True,
+                                                                   _invalidate=lambda: None))
+    client.list_error = ConnectionClosedError(None, None)
+    monitor.tick()  # 期望: 不抛出；无守卫时原始传输错误在此杀死 spinner 线程
+    assert monitor.entries == []
+    client.list_error = None
+    view = gateway_tools.process_view()
+    view._subagents_polled = 0.0  # inside the roster poll interval the tick reads the cache
+    monitor.poll_soon()
+    monitor.tick()
+    assert [r["subagent_id"] for r in monitor.entries] == ["sa-0-1"]  # 期望: 恢复后照常列出
+
+
 def test_detail_view_paints_the_cached_tail_and_only_the_tick_asks_the_gateway(gateway):
     """The detail view repaints every frame on the UI loop: it must never block on subagent.tail.
     The spinner thread's tick fetches the tail; a failing gateway is asked once per poll."""

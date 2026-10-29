@@ -14,7 +14,7 @@ from acp.schema import (
     SessionCapabilities, SessionForkCapabilities, SessionListCapabilities, SessionResumeCapabilities,
 )
 
-from hermes_cli.gateway_client import GatewayClientError, connect_gateway
+from hermes_cli.gateway_client import DISCONNECTED, GatewayClientError, connect_gateway
 from hermes_constants import get_hermes_home
 from acp_adapter.gateway_reply import GatewayReplyMixin, _text
 from acp_adapter.session import _translate_acp_cwd, _normalize_cwd_for_compare
@@ -262,9 +262,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             # Every waiter on the old transport wakes to its ambiguous failure, even one that had
             # not yet observed ``_failure`` before it is cleared here.
             self._link += 1
-            self._lost_failure = self._failure or GatewayClientError(
-                "Gateway disconnected; turn outcome is unknown. Resume the session to check whether "
-                "it completed or was interrupted; do not resend the work.")
+            self._lost_failure = self._failure or GatewayClientError(DISCONNECTED)
             self._failure = None
             self._changed.notify_all()
 

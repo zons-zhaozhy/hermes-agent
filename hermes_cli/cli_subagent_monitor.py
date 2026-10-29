@@ -4,6 +4,7 @@ prompts) and scoped controls; no agent-loop state is changed. Process rows come 
 from __future__ import annotations
 
 import json
+import logging
 import time
 
 from prompt_toolkit.utils import get_cwidth
@@ -11,6 +12,8 @@ from prompt_toolkit.utils import get_cwidth
 from agent.i18n import t
 from hermes_cli import cli_process_dock as procs
 from hermes_cli import cli_session_dock as session_rows
+
+logger = logging.getLogger("cli")
 
 
 def _clip(value, width):
@@ -39,6 +42,7 @@ class SubagentMonitor:
         self.selected_id = None
         self._signature = None
         self._last_poll = 0
+        self._poll_failures = 0
         self.app = None
         self.opening = False
         self.collapsed = False
@@ -119,17 +123,29 @@ class SubagentMonitor:
         UI loop on it."""
         self._last_poll = 0
 
-    def tick(self):
+    def tick(self) -> None:
         now = time.monotonic()
         if now - self._last_poll < 1:
             return
         self._last_poll = now
-        changed = self.refresh()
-        if self._poll_tail() or changed:
-            if self.app is not None:
-                self.invalidate()
-            else:
-                self.cli._invalidate()
+        try:
+            # The whole body is guarded: this runs on the spinner thread, and a dead gateway
+            # (or a render-invalidate race at teardown) must never kill that thread — the CLI
+            # would silently stop redrawing. First failure warns (a dead gateway must stay
+            # visible in the log); repeats decay to debug until a poll succeeds again.
+            changed = self.refresh()
+            if self._poll_tail() or changed:
+                if self.app is not None:
+                    self.invalidate()
+                else:
+                    self.cli._invalidate()
+        except Exception as exc:
+            self._poll_failures += 1
+            level = logger.warning if self._poll_failures == 1 else logger.debug
+            level("subagent monitor poll %d failed (gateway unreachable or teardown race): %s",
+                  self._poll_failures, exc)
+        else:
+            self._poll_failures = 0
 
     def _poll_tail(self):
         """Off the render path (the spinner thread's tick): refresh the gateway tail the open detail
