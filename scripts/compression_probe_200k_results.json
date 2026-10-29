@@ -1,0 +1,50 @@
+[
+ {
+  "model": "deepseek-v4.1-flash",
+  "ok": true,
+  "latency_s": 8.1,
+  "finish_reason": "stop",
+  "prompt_tokens": 122532,
+  "completion_tokens": 349
+ },
+ {
+  "model": "deepseek-v4-flash",
+  "ok": true,
+  "latency_s": 31.4,
+  "finish_reason": "stop",
+  "prompt_tokens": 122610,
+  "completion_tokens": 912
+ },
+ {
+  "model": "qwen3.7-flash",
+  "ok": true,
+  "latency_s": 30.0,
+  "finish_reason": "stop",
+  "prompt_tokens": 121132,
+  "completion_tokens": 1915
+ },
+ {
+  "model": "glm-5.2",
+  "ok": true,
+  "latency_s": 15.9,
+  "finish_reason": "stop",
+  "prompt_tokens": 118072,
+  "completion_tokens": 658
+ },
+ {
+  "model": "glm-5.3-flash",
+  "ok": true,
+  "latency_s": 13.9,
+  "finish_reason": "stop",
+  "prompt_tokens": 118072,
+  "completion_tokens": 564
+ },
+ {
+  "model": "kimi-k3",
+  "ok": true,
+  "latency_s": 43.7,
+  "finish_reason": "stop",
+  "prompt_tokens": 113523,
+  "completion_tokens": 513
+ }
+]
