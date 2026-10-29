@@ -180,5 +180,6 @@ def import_after_ready(authorities) -> None:
             from gateway.session_authorities import owner_scope
             with owner_scope(authority):  # a new thread holds the launch profile's scope otherwise
                 if import_standalone_rooms(target, runtime_epoch=epoch):
+                    service.start()
                     service.wakeup()
         threading.Thread(target=run, name="hosted-rooms-ready-import", daemon=True).start()

@@ -44,6 +44,22 @@ _FIELDS = {
                        'choice', 'request_id'},
     'profiles.list': {'include_sessions'},
 }
+_RUNTIME_ACTIVATING_METHODS = frozenset({
+    'groups.create', 'groups.rename', 'groups.disband', 'groups.send',
+    'groups.attachment.upload', 'groups.stop', 'groups.retry', 'groups.discard',
+    'groups.approve',
+})
+
+
+def _activate_dormant_runtime(service) -> None:
+    """Start a dormant service only when it is healthy and actually stopped."""
+    runtime = getattr(service, 'runtime', None)
+    status = runtime.status() if hasattr(runtime, 'status') else {}
+    if status.get('running') or status.get('stopping'):
+        return
+    start = getattr(service, 'start', None)
+    if callable(start):
+        start()
 
 
 async def dispatch_group_control(connection, method, params):
@@ -89,14 +105,21 @@ def _group(authority, actor, method, params, *, host_scope=False):
     from gateway import hosted_rooms as rooms
     db_path = authority.db.db_path
     gateway_id = rooms.local_authority_gateway_id()
-    service = getattr(authority, 'hosted_room_service', None)
-    room_authorizer = getattr(service, 'authorize_room', None)
-    if service is not None:
-        if Path(service.db_path).resolve() != Path(db_path).resolve():
-            raise RuntimeStoreError('profile_mismatch')
-        status = service.runtime.status()
+    stored_service = getattr(authority, 'hosted_room_service', None)
+
+    def ready_service():
+        if stored_service is None:
+            return None
+        status = stored_service.runtime.status()
         if not status.get('running') or status.get('stopping'):
-            service = None
+            return None
+        return stored_service
+
+    service = ready_service()
+    room_authorizer = getattr(stored_service, 'authorize_room', None)
+    if stored_service is not None:
+        if Path(stored_service.db_path).resolve() != Path(db_path).resolve():
+            raise RuntimeStoreError('profile_mismatch')
 
     execution_methods = {'groups.send', 'groups.stop', 'groups.retry', 'groups.discard', 'groups.approve'}
     admit = None
@@ -107,9 +130,18 @@ def _group(authority, actor, method, params, *, host_scope=False):
             # Claim ownership inside the room insert's transaction: a create rejected by
             # validation or storage must not leave an owner-only reservation behind.
             def admit(conn):
-                room_authorizer(actor.subject, params['room_id'], create=True, conn=conn)
+                claim = room_authorizer(actor.subject, params['room_id'], create=True, conn=conn)
+                # Activate only after ownership is claimed inside the same transaction. An
+                # unauthorized or invalid create leaves a dormant empty store dormant.
+                _activate_dormant_runtime(stored_service)
+                return claim
         else:
             room_authorizer(actor.subject, params['room_id'])
+            if method in _RUNTIME_ACTIVATING_METHODS:
+                # Empty stores start dormant; an authorized mutation proves a supervisor is
+                # now needed. This handler already runs off the event loop.
+                _activate_dormant_runtime(stored_service)
+        service = ready_service()
     if method in {'groups.attachment.upload', 'groups.attachment.download'}:
         if service is None:
             raise RuntimeStoreError('runtime_coordination_required')

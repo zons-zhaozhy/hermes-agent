@@ -273,7 +273,10 @@ def start_ready_hosted_services(runner):
         return
     for service in services:
         # start() only releases its thread; preparation and disk access happened above.
-        service.start()
+        # Empty profile stores stay dormant until create/import/send activates them: a fixed
+        # poller per profile made a multiplexed gateway issue dozens of SQLite reads forever.
+        if service.bindings():
+            service.start()
     from gateway.hosted_rooms_gateway_import import import_after_ready
     import_after_ready(serving_authorities(runner))
 

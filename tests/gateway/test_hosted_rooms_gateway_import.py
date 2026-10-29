@@ -90,7 +90,8 @@ def test_the_gateway_imports_again_once_ready(tmp_path):
     source, target = _stores(tmp_path)
     woke = threading.Event()
     authority = SimpleNamespace(db=SimpleNamespace(db_path=str(target)), epoch=None,
-                                hosted_room_service=SimpleNamespace(wakeup=woke.set))
+                                hosted_room_service=SimpleNamespace(
+                                    start=lambda: None, wakeup=woke.set))
     _standalone_room(source, "room-window")  # written by a standalone backend before `ready`
 
     import_after_ready([authority])

@@ -32,6 +32,7 @@ MAX_TERMINAL_TEXT_BYTES = 64 * 1024
 _TERMINAL_TRUNCATION_NOTICE = (
     "\n\n[Reply truncated. Ask the Bot to share the full result as a file.]")
 _STOP_PENDING = "stop retry remains pending: {exc}"
+_IDLE_BACKOFF_MAX_MULTIPLIER = 12.0
 
 
 class AttachmentsUnsupportedError(RuntimeError):
@@ -118,6 +119,20 @@ def _poll_phase_seconds(db_path: Path | str, poll_interval_seconds: float) -> fl
     return fraction * float(poll_interval_seconds)
 
 
+def _idle_delay_seconds(poll_interval_seconds: float, idle_cycles: int) -> float:
+    """Delay after an empty supervisor pass, bounded at twelve normal intervals.
+
+    A multiplexed gateway can serve dozens of profiles that own no Group Chat. A fixed
+    five-second empty-store poll makes those profiles open, query, and close SQLite read
+    connections forever. Explicit wakeups (room creation/import/send/terminal events)
+    reset the sequence, while an external direct store write is still observed within
+    one bounded minute by default.
+    """
+    exponent = max(0, int(idle_cycles))
+    multiplier = min(2.0 ** exponent, _IDLE_BACKOFF_MAX_MULTIPLIER)
+    return float(poll_interval_seconds) * multiplier
+
+
 class HostedRoomRuntime:
     """Run queued hosted-room tasks independently of Desktop connections."""
 
@@ -183,6 +198,18 @@ class HostedRoomRuntime:
         with self._status_lock:
             if self._thread is not None and self._thread.is_alive():
                 return
+            # A caller that starts because a room already exists must not add a random startup
+            # delay. Only dormant/empty stores phase-shift; ready gateway startup launches
+            # those conditionally, while the standalone worker still must not poll in lockstep
+            # with sibling profiles.
+            try:
+                has_rooms = bool(tuple(self._rooms_provider()))
+            except Exception:
+                logger.debug("Hosted-room binding probe failed; starting without a phase offset",
+                             exc_info=True)
+                has_rooms = True
+            self._poll_phase_seconds = (
+                0.0 if has_rooms else _poll_phase_seconds(self.db_path, self.poll_interval_seconds))
             self._stop.clear()
             self._wake.set()
             self._thread = threading.Thread(
@@ -459,16 +486,21 @@ class HostedRoomRuntime:
             # state.db at the same instant.
             if self._poll_phase_seconds:
                 self._wake.wait(self._poll_phase_seconds)
+            idle_cycles = 0
             while not self._stop.is_set():
                 # Clear before work so a write racing the cycle forces a follow-up pass.
                 self._wake.clear()
                 try:
-                    self._run_cycle()
+                    has_rooms = self._run_cycle()
                 except Exception as exc:  # keep independent rooms serviceable
                     self._record_error(f"worker cycle failed: {exc}")
+                    has_rooms = True  # never lengthen the delay after an unknown failure
                 with self._status_lock:
                     self._cycles += 1
-                self._wake.wait(self.poll_interval_seconds)
+                idle_cycles = 0 if has_rooms else idle_cycles + 1
+                woken = self._wake.wait(_idle_delay_seconds(self.poll_interval_seconds, idle_cycles))
+                if has_rooms or woken:
+                    idle_cycles = 0
         finally:
             while True:
                 with self._status_lock:
@@ -479,30 +511,31 @@ class HostedRoomRuntime:
                     room_thread.join(self.active_poll_interval_seconds)
             self._release_idle_leases()
 
-    def _run_cycle(self) -> None:
+    def _run_cycle(self) -> bool:
         with self._status_lock:
             supervisor = self._thread
         if threading.current_thread() is not supervisor:
-            for binding in tuple(self._rooms_provider()):
+            bindings = tuple(self._rooms_provider())
+            for binding in bindings:
                 if self._stop.is_set():
-                    return
+                    return bool(bindings)
                 self._run_room_once(binding)
-            return
+            return bool(bindings)
         with self._status_lock:
             self._room_threads = {
                 room_id: t for room_id, t in self._room_threads.items() if t.is_alive()}
             available = self.max_concurrent_rooms - len(self._room_threads)
             active_rooms = set(self._room_threads)
         if available <= 0:
-            return
+            return True
         bindings = tuple(self._rooms_provider())
         if not bindings:
-            return
+            return False
         start = self._room_schedule_cursor % len(bindings)
         self._room_schedule_cursor = (start + 1) % len(bindings)
         for binding in bindings[start:] + bindings[:start]:
             if self._stop.is_set() or available <= 0:
-                return
+                return True
             if binding.room_id in active_rooms:
                 continue
             room_thread = threading.Thread(
@@ -513,6 +546,7 @@ class HostedRoomRuntime:
             active_rooms.add(binding.room_id)
             available -= 1
             room_thread.start()
+        return True
 
     def _run_room_once(self, binding: HostedRoomBinding) -> None:
         try:

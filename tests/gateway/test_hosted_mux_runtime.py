@@ -69,7 +69,9 @@ def test_hosted_lifecycle_serves_and_stops_every_authority(mux):
                 for a in runner.session_authorities}
     assert all(services.values()), 'each served profile needs its own hosted service'
     assert len({id(s) for s in services.values()}) == len(homes)
-    assert all(s.runtime.status()['running'] for s in services.values())
+    # Empty profile stores stay dormant; their transports are installed, but no supervisor
+    # polls state.db until that profile owns a room.
+    assert not any(s.runtime.status()['running'] for s in services.values())
     assert call(runner._ensure_hosted_room_worker()) is runner.session_authority.hosted_room_service
     call(recover_gateway_native_sessions(runner))
     assert all(a.hosted_room_service is services[a.profile_id] for a in runner.session_authorities)
@@ -200,6 +202,9 @@ def test_room_coordinator_submits_once_to_destination_authority(mux, monkeypatch
         service.create_room(room_id='room', name='Room', members=[
             {'member_id': 'host', 'profile': 'alpha', 'handle': 'host'},
             {'member_id': 'helper', 'profile': 'beta', 'handle': 'helper'}])
+        # This test drives the service directly rather than groups.create; a dormant
+        # empty profile starts only when its store gains a room.
+        service.start()
         service.send(room_id='room', event_id='input',
                      payload={'text': '@helper hello', 'thread_id': 'thread'})
     deadline = time.monotonic() + 5
