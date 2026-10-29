@@ -1120,3 +1120,41 @@ class TestExecHybridPrivateUrlRouting:
         assert daemons == [want for _, want in steps]
         assert self.cloud_keys == ["t"]
         assert self.local_keys == ["t::local", "t::local"]
+
+
+class TestHarnessIpcTimeoutRecyclesDaemon:
+    """A harness IPC response timeout (``_IPCResponseTimeout``) leaves the daemon on unknown request
+    state — it can still answer ping while a wedged request holds ``_session_state_lock`` — so a later
+    call reusing it reports the "daemon hung" symptom. browser_exec must recycle that daemon."""
+
+    def test_recycles_daemon_on_ipc_timeout(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("hermes_cli.config_effective.load_user_config_effective", dict)
+        cli = _fake_cli(tmp_path, (
+            "cat > /dev/null\n"
+            "echo 'browser_harness.helpers._IPCResponseTimeout: Runtime.evaluate timed out after 5s "
+            "waiting for the daemon' >&2\n"
+            "exit 1\n"
+        ))
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        recycled = []
+        monkeypatch.setattr(bu_cli, "_reload_daemon", lambda daemon: recycled.append(daemon) or True)
+
+        result = json.loads(bu_cli.browser_exec("print(1)"))
+
+        assert result["exit_code"] == 1  # 期望: CLI 非零退出
+        assert result.get("daemon_recycled") is True  # 期望: 识别 IPC 超时签名 → 回收标志置位
+        assert len(recycled) == 1  # 期望: 恰好回收一次
+
+    def test_does_not_recycle_on_ordinary_failure(self, tmp_path, monkeypatch):
+        """A plain non-zero exit (a syntax error in the user's code) must not stop a healthy daemon."""
+        monkeypatch.setattr("hermes_cli.config_effective.load_user_config_effective", dict)
+        cli = _fake_cli(tmp_path, "cat > /dev/null\necho 'SyntaxError: invalid syntax' >&2\nexit 1\n")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        recycled = []
+        monkeypatch.setattr(bu_cli, "_reload_daemon", lambda daemon: recycled.append(daemon) or True)
+
+        result = json.loads(bu_cli.browser_exec("print(1)"))
+
+        assert result["exit_code"] == 1  # 期望: 普通非零退出
+        assert "daemon_recycled" not in result  # 期望: 无 IPC 签名 → 不回收健康 daemon
+        assert recycled == []  # 期望: 回收函数未被调用

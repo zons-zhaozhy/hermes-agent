@@ -639,6 +639,38 @@ def _reload_daemons(daemons) -> None:  # each ``daemon_identity`` daemon, with i
             _run_cli_killing_process_group([*cmd, "--reload"], "", daemon_env(env, daemon), 15)
 
 
+def _reload_daemon(daemon: tuple[str, ...]) -> bool:
+    """Stop one harness daemon (``daemon`` is a ``daemon_identity`` tuple) so the next call respawns a
+    fresh one; returns whether the stop command ran. Used to recycle a daemon left on unknown request
+    state by a timed-out browser_exec — a reused one can answer ping yet wedge every real request."""
+    cmd = _find_cli()
+    if not cmd:
+        return False
+    try:
+        _run_cli_killing_process_group([*cmd, "--reload"], "", daemon_env(_base_subprocess_env(), daemon), 15)
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.warning("recycle of harness daemon %s failed: %s", daemon[-1], e, exc_info=True)
+        return False
+    return True
+
+
+def _harness_ipc_timed_out(stderr: str) -> bool:
+    """True when the CLI failed on the harness's own IPC response timeout. The daemon forwards CDP with
+    no timeout of its own, so a request wedged inside the stale-session recovery path surfaces here (a
+    fast exit-1 with ``_IPCResponseTimeout``), not as a Hermes-level timeout. A daemon that keeps
+    answering ping after such a failure is still unsafe to reuse: the abandoned request can hold
+    ``_session_state_lock`` and wedge every later call that takes the same recovery path."""
+    return "_IPCResponseTimeout" in stderr or "waiting for the daemon" in stderr
+
+
+def _recycle_after_timeout(env: dict) -> bool:
+    """Drop the current call's daemon from the driven set and stop it. Returns whether it was stopped."""
+    daemon = daemon_identity(env)
+    with _driven_daemons_lock:
+        _driven_daemons.pop(daemon, None)
+    return _reload_daemon(daemon)
+
+
 def _route_exec(env: dict, session: str, task_id: Optional[str], local: bool, local_sidecar: bool,
                 route_key: str) -> tuple[Optional[str], bool]:
     """``_route_backend`` for one browser_exec call; returns ``(error, runs on the local sidecar)``.
@@ -753,10 +785,17 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         try:
             return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
         except subprocess.TimeoutExpired:
+            # A call that outlived Hermes's own timeout is gone, but its CLI process group may have left
+            # the daemon holding an in-flight CDP request; recycle it so the next call spawns a fresh one
+            # instead of reusing daemon state this call can no longer vouch for.
+            reloaded = _reload_daemon(daemon)
             return {"error_result": tool_error(
-                f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
-                f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
-                "append to workspace files — anything already written to the workspace is preserved."
+                f"browser-use exec timed out after {timeout}s. "
+                + ("Its harness daemon was recycled so the next call gets a fresh one; "
+                   if reloaded else
+                   "The harness daemon could not be recycled and may be wedged; ")
+                + f"retry with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several "
+                "calls that append to workspace files — anything already written to the workspace is preserved."
             )}
         except OSError as e:
             return {"error_result": tool_error(f"Failed to launch browser-use CLI: {e}")}
@@ -795,6 +834,11 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"
     if stderr:
         result["stderr"] = stderr
+    if proc.returncode != 0 and _harness_ipc_timed_out(stderr):
+        # The harness's own IPC timeout, not a Hermes-level one: recycle this daemon so the next call
+        # spawns a fresh one instead of inheriting a request that may still hold _session_state_lock.
+        if _recycle_after_timeout(env):
+            result["daemon_recycled"] = True
     screenshot = _find_screenshot(proc.stdout, started)
     if screenshot:
         result["screenshot_path"] = screenshot
