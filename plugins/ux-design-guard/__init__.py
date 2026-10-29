@@ -229,14 +229,38 @@ def _btn_selector_context(lines: list, idx: int) -> bool:
     return any(_btn_token_boundary_hit(blob, tok) for tok in _BTN_SELECTOR_TOKENS)
 
 
-def _check_btn_font_size(lines: list) -> list:
+def _style_block_ranges(lines: list) -> list[tuple[int, int]]:
+    """定位 .vue 文件 <style ...>...</style> 行号区间(1-based, 闭区间)。
+
+    Contract:
+      Postconditions: 返回区间列表; 无 style 块 → []
+    """
+    ranges = []
+    start = None
+    for i, line in enumerate(lines, start=1):
+        if start is None and "<style" in line:
+            start = i
+        elif start is not None and "</style>" in line:
+            ranges.append((start, i))
+            start = None
+    if start is not None:
+        ranges.append((start, len(lines)))
+    return ranges
+
+
+def _check_btn_font_size(lines: list, style_only: bool = False) -> list:
     """U4 操作按钮字号下限——按钮语义选择器下 font-size <13px 即拦。
 
     Contract:
-      Postconditions: 返回违规消息列表（空=合规）；豁免行(ux-ok:)跳过
+      Postconditions: 返回违规消息列表（空=合规）；豁免行(ux-ok:)跳过；
+        style_only=True 时仅检 <style> 块内行(.vue 模板内联 style 非本规则范畴,
+        模板 el-button 标签非 CSS 选择器上下文, 不得作为按钮语义依据)
     """
     issues: list = []
+    in_scope = _style_block_ranges(lines) if style_only else [(1, len(lines))]
     for lineno, line in enumerate(lines, start=1):
+        if not any(a <= lineno <= b for a, b in in_scope):
+            continue
         low = line.lower()
         if "font-size" not in low and "font:" not in low:
             continue
@@ -453,7 +477,7 @@ def on_pre_tool_call(**kwargs: Any) -> dict:
             _check_decorative_infinite(lines)
             + _check_queue_in(lines)
             + _check_motion_duration(lines)
-            + _check_btn_font_size(lines)
+            + _check_btn_font_size(lines, style_only=path.endswith(".vue"))
             + _check_body_line_height(lines)
         )
         if issues:
