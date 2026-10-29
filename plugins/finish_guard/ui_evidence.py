@@ -41,6 +41,10 @@ def _is_ui_source(path: str) -> bool:
     """
     if any(seg in path for seg in _NON_SOURCE_SEGMENTS):
         return False
+    # 声明文件(.d.ts, 构建插件再生的 auto_imports/components 类型缓存)无运行时界面
+    # 语义; 计入会把 min_checked_at 抬到最近一次构建时刻, 既有走查证据整体判过期
+    if path.endswith(".d.ts"):
+        return False
     if path.endswith(_UI_SUFFIXES):
         return True
     return path.endswith(".ts") and any(seg in path for seg in _FRONTEND_TS_SEGMENTS)
