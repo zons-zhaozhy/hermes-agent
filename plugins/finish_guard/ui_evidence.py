@@ -115,24 +115,38 @@ def _hard_assertion_defect(idx: int, w: dict, root: Path) -> str | None:
     return None
 
 
+def _validate_time_bounds(idx: int, w: Any,
+                         min_checked_at: float) -> tuple[float | None, str | None]:
+    """Contract: Preconditions: w 为单条 walkthrough, min_checked_at 为 epoch 秒;
+    Postconditions: checked_at 合法(数值且在 [min_checked_at-tol, now+tol])返回
+    (checked_at, None), 否则返回 (None, 缺陷说明)。
+    """
+    checked_at = w.get("checked_at")
+    if not isinstance(checked_at, (int, float)):
+        return None, f"walkthroughs[{idx}] 缺 checked_at 时间戳"
+    if checked_at < min_checked_at - _TIME_TOLERANCE_S:
+        return None, (f"walkthroughs[{idx}] 的 checked_at({checked_at}) 早于 UI 改动文件"
+                      f" mtime({min_checked_at:.0f})——证据须在最后一次界面改动之后取得")
+    if checked_at > time.time() + _FUTURE_TOLERANCE_S:
+        return None, (f"walkthroughs[{idx}] 的 checked_at({checked_at}) 是未来时间"
+                      f"(now={time.time():.0f})——自报时间戳只查结构不防伪, 上界必拒")
+    return checked_at, None
+
+
 def _validate_walkthrough(idx: int, w: Any, min_checked_at: float,
                           root: Path | None = None,
-                          ui_file: str = "") -> str | None:
+                          asset_refs: list | None = None) -> str | None:
     """Contract: Preconditions: w 为 walkthroughs[idx], min_checked_at 为 epoch 秒,
-    root 为仓库根(可空——空则跳过 dom_assets 锚), ui_file 为首个 UI 源文件路径;
+        root 为仓库根(可空——空则跳过 dom_assets 锚), asset_refs 为各应用
+        (产物引用集, stale) 列表(可空——空则跳过 dom 锚);
     Postconditions: 结构/时间上下界/截图锚/dom 锚全过返回 None, 否则返回缺陷说明。
     """
     if not isinstance(w, dict) or not w.get("url"):
         return f"walkthroughs[{idx}] 缺 url"
-    checked_at = w.get("checked_at")
-    if not isinstance(checked_at, (int, float)):
-        return f"walkthroughs[{idx}] 缺 checked_at 时间戳"
-    if checked_at < min_checked_at - _TIME_TOLERANCE_S:
-        return (f"walkthroughs[{idx}] 的 checked_at({checked_at}) 早于 UI 改动文件"
-                f" mtime({min_checked_at:.0f})——证据须在最后一次界面改动之后取得")
-    if checked_at > time.time() + _FUTURE_TOLERANCE_S:
-        return (f"walkthroughs[{idx}] 的 checked_at({checked_at}) 是未来时间"
-                f"(now={time.time():.0f})——自报时间戳只查结构不防伪, 上界必拒")
+    checked_at, defect = _validate_time_bounds(idx, w, min_checked_at)
+    if defect:
+        return defect
+    assert isinstance(checked_at, (int, float))  # defect 为空时 checked_at 恒为数值
     shot_defect = _validate_screenshots(idx, w, checked_at)
     if shot_defect:
         return shot_defect
@@ -140,7 +154,7 @@ def _validate_walkthrough(idx: int, w: Any, min_checked_at: float,
         hard_defect = _hard_assertion_defect(idx, w, root)
         if hard_defect:
             return hard_defect
-        dom_defect = _validate_dom_assets(idx, w, Path(ui_file), min_checked_at)
+        dom_defect = _validate_dom_assets(idx, w, asset_refs or [])
         if dom_defect:
             return dom_defect
     return _validate_assertions(idx, w)
@@ -217,33 +231,84 @@ def _load_asset_refs(ui_file: Path) -> tuple[set[str], float] | None:
     return None
 
 
-def _validate_dom_assets(idx: int, w: dict, ui_file: Path, min_checked_at: float) -> str | None:
-    """Contract: Preconditions: ui_file 为首个 UI 源文件路径, min_checked_at 为
-    UI 源文件最大 mtime;
-    Postconditions: 构建产物新鲜且 dom_assets 与产物引用有交集返回 None,
-    否则返回缺陷说明; 无构建产物时返回 None(降级)。
+def _dom_declared_set(idx: int, w: dict) -> tuple[set[str], str | None]:
+    """Contract: Preconditions: w 为单条 walkthrough;
+    Postconditions: dom_assets 为非空 list 返回 (文件名集合, None),
+    否则返回 (空集, 缺陷说明)。
     """
-    refs = _load_asset_refs(ui_file)
-    if refs is None:
-        return None
-    asset_names, bundle_mtime = refs
-    if bundle_mtime < min_checked_at - _TIME_TOLERANCE_S:
-        return (f"构建产物 index.html mtime({bundle_mtime:.0f}) 早于 UI 源文件"
-                f"({min_checked_at:.0f})——改码后未重建, 页面跑的是旧产物")
     declared = w.get("dom_assets")
     if not isinstance(declared, list) or not declared:
-        return (f"walkthroughs[{idx}] 缺 dom_assets（走查时页面实际加载的 JS 文件名"
-                "列表, 浏览器执行 [...document.scripts].map(s=>s.src.split('/').pop()) 取值）")
-    if not asset_names & {str(d) for d in declared}:
-        return (f"walkthroughs[{idx}].dom_assets 与当前构建产物引用零交集"
-                f"（产物引用 {sorted(asset_names)[:5]}）——须从真实加载页面读取, "
-                "证明走查发生在当前构建版本上")
-    return None
+        return set(), (f"walkthroughs[{idx}] 缺 dom_assets（走查时页面实际加载的 JS 文件名"
+                       "列表, 浏览器执行 [...document.scripts].map(s=>s.src.split('/').pop()) 取值）")
+    return {str(d) for d in declared}, None
+
+
+def _dom_hit_status(asset_refs: list[tuple[set[str], bool]],
+                    declared_set: set[str]) -> str:
+    """Contract: Preconditions: asset_refs 为 (产物引用集, stale) 列表非空,
+    declared_set 非空;
+    Postconditions: 存在非 stale 产物交集返回 'fresh', 仅 stale 产物交集返回
+    'stale', 无交集返回 'none'。
+    """
+    hit_stale = False
+    for refs, stale in asset_refs:
+        if refs & declared_set:
+            if not stale:
+                return "fresh"
+            hit_stale = True
+    return "stale" if hit_stale else "none"
+
+
+def _validate_dom_assets(idx: int, w: dict,
+                         asset_refs: list[tuple[set[str], bool]]) -> str | None:
+    """Contract: Preconditions: asset_refs 为各 UI 源文件探测到的
+        (产物引用文件名集合, 产物是否早于源码即 stale) 列表, 可为空;
+    Postconditions: 存在至少一个非 stale 产物与 dom_assets 有交集返回 None,
+        否则返回缺陷说明; asset_refs 为空(无构建产物)返回 None(降级)。
+    多应用语义: monorepo 一回合可改多个应用的 UI, 各应用产物独立探测——
+        记录 dom_assets 命中任一应用的产物即认可(页面只属于一个应用),
+        但命中的应用产物 stale 则挂(改码必须重建该应用)。单文件时行为
+        与「仅 ui_files[0] 产物」的历史版本一致。
+    """
+    if not asset_refs:
+        return None
+    if all(stale for _, stale in asset_refs):
+        return ("构建产物 index.html mtime 早于 UI 源文件"
+                "——改码后未重建, 页面跑的是旧产物")
+    declared_set, defect = _dom_declared_set(idx, w)
+    if defect:
+        return defect
+    status = _dom_hit_status(asset_refs, declared_set)
+    if status == "fresh":
+        return None
+    if status == "stale":
+        return (f"walkthroughs[{idx}].dom_assets 命中的构建产物 mtime 早于该应用 UI 源文件"
+                "——改码后未重建, 页面跑的是旧产物")
+    sample = sorted(set().union(*(r for r, _ in asset_refs)))[:5]
+    return (f"walkthroughs[{idx}].dom_assets 与当前构建产物引用零交集"
+            f"（产物引用 {sample}）——须从真实加载页面读取, "
+            "证明走查发生在当前构建版本上")
+
+
+def _build_asset_refs(ui_files: list[str]) -> list:
+    """Contract: Preconditions: ui_files 为本回合 UI 源文件路径列表;
+    Postconditions: 返回各文件探测到的 (产物引用集, 产物是否早于该源文件
+    mtime 即 stale) 列表; 无产物的文件跳过(降级——与无构建产物语义一致)。
+    """
+    refs_list: list = []
+    for f in ui_files:
+        refs = _load_asset_refs(Path(f))
+        if refs is None:
+            continue
+        asset_names, bundle_mtime = refs
+        stale = bundle_mtime < Path(f).stat().st_mtime - _TIME_TOLERANCE_S
+        refs_list.append((asset_names, stale))
+    return refs_list
 
 
 def _validate_evidence(data: Any, min_checked_at: float,
                        root: Path | None = None,
-                       ui_file: str = "") -> str | None:
+                       asset_refs: list | None = None) -> str | None:
     """Contract: Preconditions: data 为 json.loads 产物;
     Postconditions: 存在至少一条结构校验全过的 walkthrough 且角色覆盖达标返回 None
     (账本累积语义: 历史段早于本次改动 mtime 属正常, 不得因旧段缺陷否定新证据),
@@ -257,7 +322,7 @@ def _validate_evidence(data: Any, min_checked_at: float,
     first_defect = None
     valid: list = []
     for idx, w in enumerate(walkthroughs):
-        defect = _validate_walkthrough(idx, w, min_checked_at, root, ui_file)
+        defect = _validate_walkthrough(idx, w, min_checked_at, root, asset_refs)
         if defect:
             first_defect = first_defect or defect
         else:
@@ -285,7 +350,8 @@ def _check_evidence(ui_files: list[str]) -> str | None:
     except (OSError, json.JSONDecodeError) as e:
         logger.warning("ui_journey 证据文件读取失败: %s", e)
         return f"证据文件不可读/非 JSON: {e}"
-    return _validate_evidence(data, min_checked_at, root, ui_files[0])
+    return _validate_evidence(data, min_checked_at, root,
+                              _build_asset_refs(ui_files))
 
 
 def nudge_message(ui_files: list[str], defect: str) -> str:
