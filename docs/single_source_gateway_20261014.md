@@ -44,7 +44,7 @@ fork 仓 `venv/`（uv sync --frozen 管理）服务仓库内测试与脚本。
 
 1. **改码即生产**：fork 仓保存的任何代码，gateway 新拉起的会话立即加载。修复即时生效；反面是改到一半的代码也会进生产会话。纪律：先跑测试再落盘；落盘错文件 git checkout 秒级回滚。
 2. **upstream merge 期间**：冲突中间态会被新会话加载——低频场景，merge 完成即愈。
-3. **workspace 快照退役**：`~/.hermes/installs/*/environments/*/workspace` 不再被加载，留着不碍事，可择机清理。
+3. **workspace 快照退役**：`~/.hermes/installs/*/environments/*/workspace` 不再被加载。**2026-10-29 已全部清理**（24 份死快照删除，仅删 workspace 源码快照；各环境 `venv/` 依赖层保留继续服务 fork 树，回收约 2GB）——死快照曾误导排查（拿快照当 guard 代码复现出假结论），物理清除后全系统插件/源码只剩 fork 仓一份实现。
 4. **工具退役**：tools/workspace_drift_check.py 无对账对象，保留作 installs 形态排查兜底。
 5. **hermes update 不再触达源码**：更新 fork 代码走 git（upstream merge / 手工修复）；PM 依赖更新走 `hermes pm install` 或仓内 uv sync。
 
