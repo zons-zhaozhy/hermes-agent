@@ -1,0 +1,106 @@
+[
+ {
+  "model": "deepseek-v4-flash",
+  "ok": true,
+  "latency_s": 19.5,
+  "finish_reason": "stop",
+  "prompt_tokens": 8577,
+  "completion_tokens": 1444
+ },
+ {
+  "model": "deepseek-v4.1-flash",
+  "ok": true,
+  "latency_s": 4.2,
+  "finish_reason": "stop",
+  "prompt_tokens": 8499,
+  "completion_tokens": 1247
+ },
+ {
+  "model": "deepseek-v4-pro-0813",
+  "ok": true,
+  "latency_s": 65.6,
+  "finish_reason": "stop",
+  "prompt_tokens": 8577,
+  "completion_tokens": 3808
+ },
+ {
+  "model": "glm-5.3-flash",
+  "ok": true,
+  "latency_s": 45.9,
+  "finish_reason": "stop",
+  "prompt_tokens": 8151,
+  "completion_tokens": 3129
+ },
+ {
+  "model": "glm-5.2",
+  "ok": true,
+  "latency_s": 32.6,
+  "finish_reason": "stop",
+  "prompt_tokens": 8151,
+  "completion_tokens": 3614
+ },
+ {
+  "model": "qwen3.5-flash",
+  "ok": true,
+  "latency_s": 66.9,
+  "finish_reason": "stop",
+  "prompt_tokens": 8321,
+  "completion_tokens": 4943
+ },
+ {
+  "model": "qwen3.7-flash",
+  "ok": true,
+  "latency_s": 43.9,
+  "finish_reason": "stop",
+  "prompt_tokens": 8321,
+  "completion_tokens": 3556
+ },
+ {
+  "model": "qwen3.8-max",
+  "ok": false,
+  "latency_s": 120.0,
+  "error": "TimeoutError: timed out"
+ },
+ {
+  "model": "kimi-k3",
+  "ok": true,
+  "latency_s": 64.6,
+  "finish_reason": "stop",
+  "prompt_tokens": 7959,
+  "completion_tokens": 2588
+ },
+ {
+  "model": "mimo-v2.5",
+  "ok": false,
+  "latency_s": 0.6,
+  "error": "HTTPError: HTTP Error 403: Forbidden"
+ },
+ {
+  "model": "mimo-v2.5-pro",
+  "ok": false,
+  "latency_s": 0.6,
+  "error": "HTTPError: HTTP Error 403: Forbidden"
+ },
+ {
+  "model": "minimax-m2.5",
+  "ok": false,
+  "latency_s": 120.0,
+  "error": "TimeoutError: timed out"
+ },
+ {
+  "model": "mco-5",
+  "ok": true,
+  "latency_s": 44.9,
+  "finish_reason": "stop",
+  "prompt_tokens": 13033,
+  "completion_tokens": 2220
+ },
+ {
+  "model": "mcs-5",
+  "ok": true,
+  "latency_s": 30.0,
+  "finish_reason": "stop",
+  "prompt_tokens": 12219,
+  "completion_tokens": 2806
+ }
+]
