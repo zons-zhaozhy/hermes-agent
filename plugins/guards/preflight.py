@@ -45,7 +45,7 @@ def main(argv: list[str]) -> int:
         if not p.is_file():
             print(f"[preflight] 跳过(不存在): {path}")
             continue
-        source = p.read_text(encoding="utf-8", errors="replace")
+        source = p.read_text(encoding="utf-8-sig", errors="replace")
         skip_tests = "/tests/" in p.as_posix() or p.as_posix().startswith("tests/")
         violations = _run_all_checks(source, skip_tests=skip_tests)
         if not violations:

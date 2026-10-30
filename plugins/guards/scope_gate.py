@@ -67,7 +67,7 @@ _EXEMPT_EXTS = (
 
 # 临时/产物目录豁免（绝对路径前缀匹配）
 _EXEMPT_PREFIXES = (
-    "/tmp",
+    "/tmp",                # no-tmp: ok — 检测用户命令里的 /tmp 路径(豁免表数据),非本代码写 /tmp
     "/private/tmp",        # macOS /tmp 的真实路径
     "/var/folders",        # macOS 系统临时目录
     "/var/tmp",

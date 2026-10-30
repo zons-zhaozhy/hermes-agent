@@ -96,7 +96,7 @@ def _hard_assertion_defect(idx: int, w: dict, root: Path) -> str | None:
     if not cfg_file.exists():
         return None
     try:
-        cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+        cfg = json.loads(cfg_file.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
         print(f"[ui_evidence] ui_hard_assertions.json 解析失败, 本次不执法: {exc}")
         return None
@@ -215,7 +215,7 @@ def _load_asset_refs(ui_file: Path) -> tuple[set[str], float] | None:
             if not idx_html.exists():
                 continue
             try:
-                text = idx_html.read_text(encoding="utf-8", errors="ignore")
+                text = idx_html.read_text(encoding="utf-8-sig", errors="ignore")
             except OSError:
                 continue
             refs = set()
@@ -346,7 +346,7 @@ def _check_evidence(ui_files: list[str]) -> str | None:
         (Path(f).stat().st_mtime for f in ui_files if Path(f).exists()), default=0
     )
     try:
-        data = json.loads(evidence.read_text(encoding="utf-8"))
+        data = json.loads(evidence.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as e:
         logger.warning("ui_journey 证据文件读取失败: %s", e)
         return f"证据文件不可读/非 JSON: {e}"

@@ -52,7 +52,7 @@ _BATCH_THRESHOLD = 2
 
 # 临时/产物目录豁免（绝对路径前缀匹配）：审计产物、diff 落盘是合法批量写。
 _EXEMPT_PREFIXES = (
-    "/tmp",
+    "/tmp",                # no-tmp: ok — 检测用户命令里的 /tmp 路径(豁免表数据),非本代码写 /tmp
     "/private/tmp",       # macOS /tmp 的真实路径
     "/var/folders",       # macOS 系统临时目录
     "/var/tmp",
@@ -282,7 +282,7 @@ def _on_pre_tool_call(**kwargs: Any) -> Optional[dict[str, Any]]:
             "应逐文件 patch——patch 自带 diff 回显且可控可审计；批量脚本写入曾造成"
             "替换静默跳过与事后无法重建 diff（2026-08-01/2026-10-10 两次实录）。\n"
             "正路：改用 patch 工具逐文件修改（写入目标 <2 个已存在文件时本闸门放行）；"
-            "确为合法批量产物落盘，写入目标放临时/缓存目录（scratch、/tmp）。"
+            "确为合法批量产物落盘，写入目标放临时/缓存目录（scratch、系统临时区）。"  # no-tmp: ok — 提示词文本,引导模型离开 /tmp
         ),
     }
 

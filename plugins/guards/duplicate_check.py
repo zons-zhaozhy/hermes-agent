@@ -551,7 +551,7 @@ def _symbols_in_file(rel: str, cwd: str) -> set[str]:
       Invariants: 复用 _extract_declared_symbols 的顶格/入口名规则，口径与策略2一致
     """
     try:
-        with open(os.path.join(cwd, rel), encoding="utf-8", errors="replace") as fh:
+        with open(os.path.join(cwd, rel), encoding="utf-8-sig", errors="replace") as fh:
             text = fh.read()
     except OSError:
         logger.warning("查重：读取既有文件失败，已跳过符号比对: %s", rel, exc_info=True)

@@ -94,7 +94,7 @@ def _has_red_proof(name: str, tests_dir: Path) -> bool:
     markers = _red_proof_markers(name)
     for f in sorted(tests_dir.rglob("test_*.py")):
         try:
-            text = f.read_text(encoding="utf-8")
+            text = f.read_text(encoding="utf-8-sig")
         except OSError as exc:
             logger.warning("frontier: 测试文件读取失败 %s: %s", f, exc)
             continue
@@ -169,7 +169,7 @@ def _declared_rule_ids(plugin_dirs: list[Path]) -> list[str]:
             continue
         for p in sorted(d.glob("*.py")):
             try:
-                src = p.read_text(encoding="utf-8")
+                src = p.read_text(encoding="utf-8-sig")
             except OSError as exc:
                 logger.warning("frontier: 规则件读取失败 %s: %s", p, exc)
                 continue
@@ -253,7 +253,7 @@ def compare_with_baseline(report: dict[str, Any], baseline_path: Path) -> list[s
     if not baseline_path.exists():
         return []
     try:
-        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+        baseline = json.loads(baseline_path.read_text(encoding="utf-8-sig"))
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning("frontier: 基线读取失败（按无基线段处理）: %s", exc)
         return []
@@ -282,7 +282,7 @@ def _filter_dispositioned(regressions: list[str], home: Path) -> list[str]:
     if not path.exists():
         return regressions
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning("frontier: dispositions 读取失败（按全部未处置处理）: %s", exc)
         return regressions

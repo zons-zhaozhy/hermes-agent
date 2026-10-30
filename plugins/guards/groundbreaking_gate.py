@@ -154,7 +154,7 @@ def _doc_is_groundwork(md_path: Path) -> bool:
         能力、缺业务边界、缺表结构本体的文档均不构成证据）
     """
     try:
-        lines = md_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        lines = md_path.read_text(encoding="utf-8-sig", errors="ignore").splitlines()
     except OSError:
         return False
     if sum(1 for ln in lines if ln.strip()) < _MIN_DOC_LINES:
@@ -248,7 +248,7 @@ def _exempt_listed(repo_root: Path, app_name: str) -> bool:
     if not exempt.is_file():
         return False
     try:
-        rows = exempt.read_text(encoding="utf-8", errors="ignore").splitlines()
+        rows = exempt.read_text(encoding="utf-8-sig", errors="ignore").splitlines()
     except OSError:
         return False
     norm = app_name.replace("-", "_")

@@ -51,7 +51,7 @@ def test_comment_only_mention_passes(ng: types.ModuleType, tmp_path: pathlib.Pat
     """脚本里只在注释中提及 build.sh（用法文档）→ 不构成间接执行 → 放行。"""
     script = tmp_path / "comment_only.sh"
     script.write_text(
-        "#!/bin/bash\n"
+        "#!/usr/bin/env bash\n"
         "#   bash deploy/build.sh auth cortex    # 构建多个\n"
         "#   bash deploy/deploy.sh cloud auth\n",
         encoding="utf-8",
@@ -65,7 +65,7 @@ def test_unverified_service_name_still_blocked(
     """负例：脚本内真实调用且服务名未经验证 → 必须仍然拦截。"""
     script = tmp_path / "bogus.sh"
     script.write_text(
-        "#!/bin/bash\nbash /repo/deploy/build.sh totally-bogus-service\n",
+        "#!/usr/bin/env bash\nbash /repo/deploy/build.sh totally-bogus-service\n",
         encoding="utf-8",
     )
     message = ng._check_script_indirection(f"bash {script}")

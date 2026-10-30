@@ -194,7 +194,7 @@ def _load_baseline(baseline_path: Path) -> dict | None:
         Postconditions: 合法 v2 返回 dict；否则打印原因返回 None
     """
     try:
-        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+        baseline = json.loads(baseline_path.read_text(encoding="utf-8-sig"))
     except (json.JSONDecodeError, OSError) as exc:
         print(f"[drift] 基线文件损坏: {exc}", file=sys.stderr)
         return None

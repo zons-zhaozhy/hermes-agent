@@ -21,7 +21,9 @@ import time
 
 logger = logging.getLogger(__name__)
 
-_STATE_FILE = "/tmp/.hermes_patch_first_pending"
+from hermes_constants import get_scratch_dir
+
+_STATE_FILE = str(get_scratch_dir() / ".hermes_patch_first_pending")
 
 _REMINDER = """\
 [修改方式安全提醒]

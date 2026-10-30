@@ -468,7 +468,7 @@ def on_pre_tool_call(**kwargs: Any) -> dict:
         # 做一次替换模拟,让检测器看到改动后的完整文件而非孤立片段
         if tool_name == "patch" and args.get("old_string") and args.get("new_string"):
             try:
-                with open(path, encoding="utf-8") as fh:
+                with open(path, encoding="utf-8-sig") as fh:
                     text = fh.read().replace(str(args["old_string"]), str(args["new_string"]), 1)
             except OSError:
                 text = str(args["new_string"])

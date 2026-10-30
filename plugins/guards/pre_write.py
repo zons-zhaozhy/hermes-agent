@@ -76,7 +76,7 @@ def _disk_read_paths(sid: str) -> set[str]:
     """
     marker = _read_marker(sid)
     try:
-        data = json.loads(marker.read_text(encoding="utf-8"))
+        data = json.loads(marker.read_text(encoding="utf-8-sig"))
         if not data.get("sid") or time.time() - float(data.get("ts", 0)) >= _PW_PROBE_TTL:
             return set()
         return {str(p) for p in data.get("paths", []) if p}

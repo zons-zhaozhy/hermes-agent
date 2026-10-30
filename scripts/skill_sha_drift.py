@@ -139,7 +139,7 @@ def load_cache() -> dict[str, dict[str, str]]:
     """Load the SHA baseline cache."""
     if CACHE_FILE.exists():
         try:
-            return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+            return json.loads(CACHE_FILE.read_text(encoding="utf-8-sig"))
         except Exception:
             logger.warning("Failed to read cache %s, starting fresh", CACHE_FILE)
     return {}
@@ -163,14 +163,14 @@ def check_skill(
     if not skill_md.exists():
         return [], [], []
 
-    content = skill_md.read_text(encoding="utf-8")
+    content = skill_md.read_text(encoding="utf-8-sig")
 
     # Also scan references/ directory
     refs_dir = skill_dir / "references"
     if refs_dir.exists():
         for f in refs_dir.glob("*.md"):
             try:
-                content += "\n" + f.read_text(encoding="utf-8")
+                content += "\n" + f.read_text(encoding="utf-8-sig")
             except (OSError, UnicodeDecodeError):
                 logger.warning("Failed to read %s, skipping", f)
 

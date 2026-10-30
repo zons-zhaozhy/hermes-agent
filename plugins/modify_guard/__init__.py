@@ -18,7 +18,6 @@ Contract:
 
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import time
@@ -57,6 +56,8 @@ def _acquire(root: Path, session_id: str) -> tuple[bool, str]:
     """抢仓级修改锁。返回 (是否获得, 持有者说明)。flock 排他 + 原子替换 + TTL。"""
     lock_file = _lock_path(root)
     lock_file.parent.mkdir(parents=True, exist_ok=True)
+    import fcntl  # POSIX-only: delayed so the plugin loads on Windows; flock paths are Unix-only by design
+
     now = time.time()
     holder: dict[str, Any] = {}
     with open(lock_file, "a+", encoding="utf-8") as f:

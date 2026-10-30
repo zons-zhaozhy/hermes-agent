@@ -26,7 +26,6 @@ Set DAO_RECURRING_ERROR_GUARD_DISABLE=1 to turn off.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import os
@@ -90,7 +89,7 @@ def _load_persist() -> dict[str, dict[str, int]]:
         p = _persist_path()
         if not p.exists():
             return {}
-        data = json.loads(p.read_text(encoding="utf-8"))
+        data = json.loads(p.read_text(encoding="utf-8-sig"))
         if not isinstance(data, dict):
             return {}
         now = time.time()
@@ -131,6 +130,8 @@ def _bump_persist_count(key: str) -> None:
       Postconditions: 持久文件中 key 的 n 恰好 +1（或异常时不变）
     """
     try:
+        import fcntl  # POSIX-only: delayed so the plugin loads on Windows; flock paths are Unix-only by design
+
         p = _persist_path()
         p.parent.mkdir(parents=True, exist_ok=True)
         lock_path = p.with_suffix(".lock")
@@ -140,7 +141,7 @@ def _bump_persist_count(key: str) -> None:
                 # 锁内读（含窗口衰减）
                 data: dict[str, dict[str, int]] = {}
                 if p.exists():
-                    raw = json.loads(p.read_text(encoding="utf-8"))
+                    raw = json.loads(p.read_text(encoding="utf-8-sig"))
                     if isinstance(raw, dict):
                         now = time.time()
                         data = {

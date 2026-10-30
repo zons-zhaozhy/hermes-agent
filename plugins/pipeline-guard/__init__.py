@@ -82,7 +82,7 @@ def _read_phase_state(session_id: str) -> Optional[dict]:
     try:
         f = _phase_file(session_id)
         if f.exists():
-            return json.loads(f.read_text(encoding="utf-8"))
+            return json.loads(f.read_text(encoding="utf-8-sig"))
     except Exception:
         logger.warning("[PipelineGuard] failed to read phase file", exc_info=True)
     return None

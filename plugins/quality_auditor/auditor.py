@@ -265,7 +265,7 @@ def aggregate_daily(output_file=None):
     cutoff = time.time() - 86400
     entries = []
     try:
-        with open(audit_file, encoding="utf-8") as f:
+        with open(audit_file, encoding="utf-8-sig") as f:
             for line in f:
                 line = line.strip()
                 if not line or line[0] != "{":

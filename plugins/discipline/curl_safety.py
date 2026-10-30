@@ -20,7 +20,9 @@ import time
 
 logger = logging.getLogger(__name__)
 
-_STATE_FILE = "/tmp/.hermes_curl_safety_pending"
+from hermes_constants import get_scratch_dir
+
+_STATE_FILE = str(get_scratch_dir() / ".hermes_curl_safety_pending")
 
 _REMINDER = """\
 [HTTP 请求安全提醒]
@@ -106,7 +108,7 @@ def _on_pre_llm_call(**kwargs) -> dict:
         return {}
 
     try:
-        with open(_STATE_FILE, encoding="utf-8") as f:
+        with open(_STATE_FILE, encoding="utf-8-sig") as f:
             payload = json.load(f)
     except (json.JSONDecodeError, KeyError, OSError) as e:
         try:

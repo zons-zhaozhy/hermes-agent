@@ -82,7 +82,7 @@ diff_debt 17,517 / four_axis 5,356 / tool_safety-read 1,897 / pre_write 2,673。
 | diff_debt | 工具结果已自带 diff 回显的写仍被记欠账——义务双重征收（回显+正文两份） | 结果含 diff 形态（`_RESULT_DIFF_RE`，无锚定子串）不记账；空路径欠账不记（无法出示对照的死锁对象） |
 | tool_safety Check2 | 读是幂等无副作用操作，连续失败 3 次永久拦；样本全在 TCC 权限区，拦截指引 execute_code open() 同样必败 | 留日志放行；无进展循环由 block_escalation 观测层兜底 |
 | four_axis | marker 时效 600s < 单任务写链时长（含跑测+多笔 patch），中途过期重拦 | 1800s；仍保留时效 + gate 每 turn 重写刷新 |
-| source_write | `_SAFE_PREFIXES` 缺 `~/.hermes/cache/`（TMPDIR 官方临时区，24h 清理） | 加入豁免，与 /tmp 同语义 |
+| source_write | `_SAFE_PREFIXES` 缺 `~/.hermes/cache/`（TMPDIR 官方临时区，24h 清理） | 加入豁免，与 /tmp 同语义 | <!-- no-tmp: ok — 表格叙述引用检测语义,非代码写 /tmp -->
 
 ### 两条体系级不变量（本轮确立）
 

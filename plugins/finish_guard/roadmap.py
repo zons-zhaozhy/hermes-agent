@@ -73,7 +73,7 @@ def _load_pending(changed_paths: list[str]) -> list[str] | None:
     if not roadmap_file.exists():
         return None
     try:
-        roadmap = json.loads(roadmap_file.read_text(encoding="utf-8"))
+        roadmap = json.loads(roadmap_file.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
         logger.warning("[roadmap] %s 解析失败, 本次不执法: %s", _ROADMAP_NAME, exc)
         return None

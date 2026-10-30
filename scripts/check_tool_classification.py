@@ -109,7 +109,7 @@ def check_file(path: Path) -> list[str]:
     if rel == OWNER:
         return []
     try:
-        source = path.read_text(encoding="utf-8")
+        source = path.read_text(encoding="utf-8-sig")
         tree = ast.parse(source, filename=str(path))
     except (SyntaxError, UnicodeDecodeError):
         return []

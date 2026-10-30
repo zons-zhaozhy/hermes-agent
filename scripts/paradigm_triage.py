@@ -77,7 +77,7 @@ def _load_recent(papers_dir: Path, days: int) -> list[dict[str, Any]]:
         mtime = p.stat().st_mtime
         if mtime < cutoff:
             continue
-        text = p.read_text(encoding="utf-8", errors="replace")
+        text = p.read_text(encoding="utf-8-sig", errors="replace")
         title = _extract_title(text)
         abstract = _extract_section(text, "摘要", max_chars=1200)
         out.append({
@@ -150,7 +150,9 @@ def _ollama_score(title: str, abstract: str, timeout: int = 60) -> Optional[int]
         resp = json.loads(proc.stdout.decode("utf-8", errors="replace"))
     except json.JSONDecodeError as e:
         # 全文落盘供事后排查（诊断输出禁截断，写文件而非切片打印）
-        dump_path = Path("/tmp/paradigm_triage_ollama_raw.txt")
+        from hermes_constants import get_scratch_dir
+
+        dump_path = get_scratch_dir() / "paradigm_triage_ollama_raw.txt"
         dump_path.write_bytes(proc.stdout)
         print(f"Ollama 响应非 JSON，全文已落盘 {dump_path}", file=sys.stderr)
         raise RuntimeError("Ollama 响应解析失败") from e

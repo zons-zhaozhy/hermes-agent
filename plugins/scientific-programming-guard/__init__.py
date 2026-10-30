@@ -360,7 +360,7 @@ def _check_guessed_kwargs(tree: ast.AST, path: str) -> list:
     test_path = Path(path).resolve()
     src_text = ""
     try:
-        src_text = Path(path).read_text(encoding="utf-8")
+        src_text = Path(path).read_text(encoding="utf-8-sig")
     except OSError:
         src_text = ""
     own_params = _top_level_defs(src_text)[1]
@@ -374,7 +374,7 @@ def _check_guessed_kwargs(tree: ast.AST, path: str) -> list:
             src_file = _resolve_local_module(node.module, test_path)
             if src_file is not None:
                 try:
-                    mod_targets_local = _top_level_defs(src_file.read_text(encoding="utf-8"))[1]
+                    mod_targets_local = _top_level_defs(src_file.read_text(encoding="utf-8-sig"))[1]
                 except OSError:
                     continue
                 for a in node.names:

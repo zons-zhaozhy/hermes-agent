@@ -70,7 +70,7 @@ def load_discipline_dates(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         return {str(k): str(v) for k, v in data.items() if isinstance(v, str)}
     except (json.JSONDecodeError, OSError):
         return {}
@@ -277,7 +277,7 @@ def load_dispositions(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError):
         print(f"WARNING: dispositions 文件损坏,按无处置处理: {path}", file=sys.stderr)

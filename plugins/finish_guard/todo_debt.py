@@ -58,7 +58,7 @@ def _load_debt() -> dict[str, Any]:
     """
     path = _debt_path()
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return {"sessions": {}}
     if not isinstance(data, dict) or not isinstance(data.get("sessions"), dict):

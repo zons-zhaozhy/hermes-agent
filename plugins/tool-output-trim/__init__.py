@@ -65,9 +65,9 @@ def _resolve_config() -> dict[str, Any]:
     cfg = dict(_default_config())
     try:
         from hermes_constants import get_hermes_home
+        from hermes_cli.config_backend import config_version
         config_path = get_hermes_home() / "config.yaml"
-        stat = config_path.stat()
-        key = (stat.st_mtime_ns, stat.st_size)
+        key = config_version(config_path)  # 期望: raises FileNotFoundError like stat when absent
     except FileNotFoundError:
         return cfg
     except Exception as exc:

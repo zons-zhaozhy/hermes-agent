@@ -23,7 +23,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_STATE_FILE = "/tmp/.hermes_log_first_pending"
+from hermes_constants import get_scratch_dir
+
+_STATE_FILE = str(get_scratch_dir() / ".hermes_log_first_pending")
 
 _REMINDER = """\
 [错误诊断强制提醒]
@@ -126,7 +128,7 @@ def _on_pre_llm_call(**kwargs) -> dict:
         return {}
 
     try:
-        with open(_STATE_FILE, encoding="utf-8") as f:
+        with open(_STATE_FILE, encoding="utf-8-sig") as f:
             payload = json.load(f)
         os.remove(_STATE_FILE)
     except (json.JSONDecodeError, KeyError, OSError):

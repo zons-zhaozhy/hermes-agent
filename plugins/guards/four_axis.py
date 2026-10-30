@@ -129,7 +129,7 @@ def _read_marker(session_id: str) -> Optional[dict]:
         _marker = _marker_file(session_id)
         if not _marker.exists():
             return None
-        data = json.loads(_marker.read_text(encoding="utf-8"))
+        data = json.loads(_marker.read_text(encoding="utf-8-sig"))
         age = time.time() - data.get("timestamp", 0)
         if age > _MARKER_MAX_AGE_SECONDS:
             logger.debug("four-axis marker expired (age=%.0fs)", age)
@@ -151,7 +151,7 @@ def _read_progress(session_id: str) -> Optional[dict]:
         _marker = _marker_file(session_id)
         if not _marker.exists():
             return None
-        data = json.loads(_marker.read_text(encoding="utf-8"))
+        data = json.loads(_marker.read_text(encoding="utf-8-sig"))
         age = time.time() - data.get("timestamp", 0)
         if age > _MARKER_MAX_AGE_SECONDS:
             return None

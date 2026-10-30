@@ -197,7 +197,7 @@ def _producers_all_disabled(home: Path, job_ids: tuple[str, ...]) -> Optional[bo
     if not jobs_file.is_file():
         return None
     try:
-        data = json.loads(jobs_file.read_text(encoding="utf-8"))
+        data = json.loads(jobs_file.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as e:
         _LOGGER.warning("producer liveness: parse jobs.json failed: %s", e)
         return None

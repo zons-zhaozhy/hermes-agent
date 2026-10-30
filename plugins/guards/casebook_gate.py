@@ -438,7 +438,7 @@ def _write_probe_marker(sid: str) -> None:
 def _marker_fresh(marker: Path) -> bool:
     """marker 存在、sid 非空且未过 TTL 才算证据；其余一律 False（fail-closed）。"""
     try:
-        data = json.loads(marker.read_text(encoding="utf-8"))
+        data = json.loads(marker.read_text(encoding="utf-8-sig"))
         return bool(data.get("sid")) and time.time() - float(data.get("ts", 0)) < _PROBE_MARKER_TTL
     except (OSError, ValueError, TypeError):
         logger.debug("casebook_gate: probe marker unreadable/stale: %s", marker, exc_info=True)

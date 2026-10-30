@@ -52,7 +52,7 @@ def _load_library() -> dict[str, str]:
       值为非字符串的键被跳过并告警（禁静默丢弃）。
     """
     try:
-        raw = _LIBRARY.read_text(encoding="utf-8")
+        raw = _LIBRARY.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         if "library" not in _WARNED:
             _WARNED.add("library")

@@ -119,7 +119,7 @@ def _on_pre_llm_call(**kwargs) -> dict[str, Any]:
             )
         return {}
     try:
-        text = rules_path.read_text(encoding="utf-8")
+        text = rules_path.read_text(encoding="utf-8-sig")
     except OSError as exc:
         logger.warning("rule-reinjection: 规则文件读取失败 %s: %s", rules_path, exc)
         return {}

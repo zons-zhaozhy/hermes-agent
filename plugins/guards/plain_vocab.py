@@ -105,7 +105,7 @@ def _load_terms(vocab_path: str) -> tuple[tuple[str, str], ...]:
     try:
         from hermes_yaml import safe_load
 
-        with open(vocab_path, encoding="utf-8") as fh:
+        with open(vocab_path, encoding="utf-8-sig") as fh:
             parsed = _parse_terms(safe_load(fh.read()))
     except Exception:
         logger.warning(

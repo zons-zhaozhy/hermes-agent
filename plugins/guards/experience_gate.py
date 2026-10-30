@@ -101,18 +101,16 @@ def _load_config(cfg_path: str) -> dict[str, Any]:
       Postconditions: 返回 dict(可能为空);解析异常吞掉记日志,永不抛出。
     """
     try:
-        st = os.stat(cfg_path)
-        stamp = (st.st_mtime_ns, st.st_size)
+        from hermes_cli.config_backend import config_version, read_config_doc_readonly
+
+        stamp = config_version(cfg_path)  # 期望: raises OSError like os.stat; FileNotFoundError ⇒ missing config
     except OSError:
         return {}
     cached = _cache.get(cfg_path)
     if cached and cached[0] == stamp:
         return cached[1]
     try:
-        from hermes_yaml import safe_load
-
-        with open(cfg_path, encoding="utf-8") as fh:
-            parsed = _parse_config(safe_load(fh.read()))
+        parsed = _parse_config(read_config_doc_readonly(cfg_path))  # 期望: doc dict in, parsed dict out
     except Exception:
         logger.warning(
             "guards.experience_gate: config %s unreadable; failing open", cfg_path, exc_info=True

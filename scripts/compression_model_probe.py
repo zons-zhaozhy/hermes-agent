@@ -70,6 +70,6 @@ for m in CANDIDATES:
     print(json.dumps(r, ensure_ascii=False), flush=True)
     results.append(r)
 
-with open("/Users/stan/.hermes/cache/scratch/compression_probe_results.json", "w") as f:
+with open("/Users/stan/.hermes/cache/scratch/compression_probe_results.json", "w", encoding="utf-8") as f:
     json.dump(results, f, ensure_ascii=False, indent=1)
 print("DONE", len(results))

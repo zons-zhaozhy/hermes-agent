@@ -531,7 +531,7 @@ def _load_registry_names():
         age_h = (time.time() - path.stat().st_mtime) / 3600
         if age_h > 24:
             return set()  # 陈旧注册表不可作为放行证据
-        return _names_from_registry_text(path.read_text(encoding="utf-8"))
+        return _names_from_registry_text(path.read_text(encoding="utf-8-sig"))
     except OSError:
         return set()
 
@@ -640,7 +640,7 @@ def _check_script_indirection(command: str):
             path = _Path(sp)
             if not path.exists() or path.stat().st_size > 100_000:
                 continue
-            text = path.read_text(encoding="utf-8", errors="replace")
+            text = path.read_text(encoding="utf-8-sig", errors="replace")
             # 只检查含 build.sh/deploy.sh 调用的行（docker compose 行是
             # 部署动作但不含服务注册语义,其服务名参数也一并提取即可）
             deploy_lines = [

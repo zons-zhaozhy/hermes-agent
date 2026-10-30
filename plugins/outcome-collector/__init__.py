@@ -479,7 +479,7 @@ def _check_findings_for_injection() -> Optional[str]:
         if not findings_path.exists():
             return None
 
-        content = findings_path.read_text(encoding="utf-8").strip()
+        content = findings_path.read_text(encoding="utf-8-sig").strip()
         if not content or "⚠" not in content:
             return None  # No high-severity findings
 
@@ -525,7 +525,7 @@ def _regression_alerts_context() -> Optional[str]:
         alerts_path = get_hermes_home() / "outcomes" / "regression_alerts.json"
         if not alerts_path.exists():
             return None
-        data = json.loads(alerts_path.read_text(encoding="utf-8"))
+        data = json.loads(alerts_path.read_text(encoding="utf-8-sig"))
         alerts = data.get("alerts") if isinstance(data, dict) else None
         if not alerts:
             return None
@@ -567,7 +567,7 @@ def _frontier_alerts_context() -> Optional[str]:
         alerts_path = home / "outcomes" / "frontier_alerts.json"
         if not alerts_path.exists():
             return None
-        data = json.loads(alerts_path.read_text(encoding="utf-8"))
+        data = json.loads(alerts_path.read_text(encoding="utf-8-sig"))
         alerts = data.get("alerts") if isinstance(data, dict) else None
         if not alerts:
             return None
@@ -769,7 +769,7 @@ def _register_discipline_effective_date(args: dict[str, Any]) -> None:
     try:
         existing: dict[str, str] = {}
         if dates_path.exists():
-            loaded = _json.loads(dates_path.read_text(encoding="utf-8"))
+            loaded = _json.loads(dates_path.read_text(encoding="utf-8-sig"))
             assert isinstance(loaded, dict), "corrupt dates file"
             existing = {str(k): str(v) for k, v in loaded.items()}
         existing.update(found)  # 同规则号再写=修订版生效,重开窗口

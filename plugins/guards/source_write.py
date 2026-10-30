@@ -52,7 +52,7 @@ _SOURCE_EXTENSIONS = frozenset({
 # ── Non-source path exclusions ──────────────────────────────────────────
 
 _SAFE_PREFIXES = (
-    "/tmp/",
+    "/tmp/",               # no-tmp: ok — 检测写目标是否在系统临时区(安全前缀表数据),非本代码写 /tmp
     "/var/",
     "/dev/null",
 )

@@ -42,7 +42,7 @@
 
 ## 五、复现命令
 
-时点基线快照：`git archive 9dd6634c56 | tar -x -C /tmp/repo0905`，再对两个目录跑同一份统计。
+时点基线快照：`git archive 9dd6634c56 | tar -x -C /tmp/repo0905`，再对两个目录跑同一份统计。 <!-- no-tmp: ok — 历史复盘文档,记录的是当时执行过的命令 -->
 
 ```bash
 python3 - <<'PY'
@@ -94,7 +94,7 @@ def stats(root, label):
     for n, r in sorted(bfn, reverse=True): print("   %d %s" % (n, r))
     print("longest if/elif: %d (%s)" % lg)
 
-stats("/tmp/repo0905", "2026-09-05 snapshot")
+stats("/tmp/repo0905", "2026-09-05 snapshot") <!-- no-tmp: ok — 历史复盘文档,记录的是当时执行过的命令 -->
 stats(".", "today")
 PY
 ```

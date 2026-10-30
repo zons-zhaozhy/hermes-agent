@@ -299,7 +299,7 @@ class WorldModel:
         if not self._file_path.exists():
             return False
         try:
-            data = json.loads(self._file_path.read_text(encoding="utf-8"))
+            data = json.loads(self._file_path.read_text(encoding="utf-8-sig"))
             self._deserialize(data)
             self._loaded = True
             return True

@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 _VIOLATION_TRACKER: dict[str, dict[str, dict[str, Any]]] = {}
 _TRACKER_LOCK = threading.Lock()
 
-_CONFIG_CACHE: dict[str, tuple[float, Optional[dict]]] = {}  # path -> (mtime, data)
+_CONFIG_CACHE: dict[str, tuple[tuple[Any, ...], Optional[dict]]] = {}  # path -> (config_version signature, data)
 _CONFIG_LOCK = threading.Lock()
 
 # knowledge_files 内容缓存: path -> (mtime, content)
@@ -114,18 +114,19 @@ def _load_config() -> Optional[dict]:
     """
     path = _config_path()
     try:
-        if not path.exists():
+        from hermes_cli.config_backend import config_version, read_config_doc_readonly
+
+        try:
+            stamp = config_version(path)  # 期望: raises FileNotFoundError when absent, like Path.exists()==False
+        except FileNotFoundError:
             return None
-        mtime = path.stat().st_mtime
         with _CONFIG_LOCK:
             cached = _CONFIG_CACHE.get(str(path))
-            if cached and cached[0] == mtime:
+            if cached and cached[0] == stamp:
                 return cached[1]
-        from hermes_yaml import safe_load  # core SSOT(ruamel)——gateway 隔离解释器无 PyYAML
-
-        data = safe_load(path.read_text(encoding="utf-8"))
+        data = read_config_doc_readonly(path)
         with _CONFIG_LOCK:
-            _CONFIG_CACHE[str(path)] = (mtime, data)
+            _CONFIG_CACHE[str(path)] = (stamp, data)
         return data
     except Exception as exc:
         logger.warning("[Sandwich] config load failed: %s", exc)
@@ -156,7 +157,7 @@ def _load_knowledge_files(files: Optional[list[str]]) -> str:
                 if cached and cached[0] == mtime:
                     parts.append(cached[1])
                     continue
-            content = p.read_text(encoding="utf-8")
+            content = p.read_text(encoding="utf-8-sig")
             with _KB_LOCK:
                 _KB_CACHE[str(p)] = (mtime, content)
             parts.append(content)

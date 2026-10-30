@@ -18,7 +18,6 @@ admission control, Einziger et al. 2017）:
 
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import os
@@ -102,7 +101,7 @@ def _load_glossary() -> list[dict[str, Any]]:
             return _GLOSSARY_CACHE["entries"]
         entries: list[dict[str, Any]] = []
         if path.exists():
-            raw = _yaml_safe_load(path.read_text(encoding="utf-8")) or {}
+            raw = _yaml_safe_load(path.read_text(encoding="utf-8-sig")) or {}
             # aliases 为空列表合法（纯规范名锚定，无禁用变体）；只拦结构残缺
             entries = [
                 e
@@ -402,7 +401,7 @@ def _load_consolidated_raw(cached: bool = False) -> dict[str, Any]:
             # 旧 YAML 一次性迁移：ruamel 慢解析只付最后一次；迁移后旧文件
             # 改名 .migrated 留证（未运行新代码的旧进程仍写旧名，其记账
             # 自然失效，候选计数由 admission 重新积累）。
-            raw_legacy = _yaml_safe_load(legacy.read_text(encoding="utf-8")) or {}
+            raw_legacy = _yaml_safe_load(legacy.read_text(encoding="utf-8-sig")) or {}
             if not isinstance(raw_legacy, dict):
                 raw_legacy = {}
             raw_legacy.setdefault("terms", [])
@@ -415,7 +414,7 @@ def _load_consolidated_raw(cached: bool = False) -> dict[str, Any]:
     key: tuple[int, int] = (stat.st_mtime_ns, stat.st_size)
     if cached and _RAW_CACHE["key"] == key and _RAW_CACHE["raw"] is not None:
         return _RAW_CACHE["raw"]
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8-sig")
     try:
         raw: dict[str, Any] = json.loads(text) or {}
     except Exception as exc:
@@ -532,6 +531,8 @@ def _consolidate(fresh: list[str], sid: str) -> None:
         lock_path = _consolidated_path().with_name(
             _consolidated_path().name + ".lock"
         )
+        import fcntl  # POSIX-only: delayed so the plugin loads on Windows; flock paths are Unix-only by design
+
         with open(lock_path, "a", encoding="utf-8") as _lk:
             fcntl.flock(_lk, fcntl.LOCK_EX)
             raw = _load_consolidated_raw()
