@@ -17,7 +17,7 @@ import tempfile
 import threading
 import time
 
-from tools.budget_config import DEFAULT_PREVIEW_SIZE_CHARS, BudgetConfig, DEFAULT_BUDGET
+from tools.budget_config import DEFAULT_PREVIEW_SIZE_CHARS, PINNED_THRESHOLDS, BudgetConfig, DEFAULT_BUDGET
 
 logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
@@ -458,16 +458,22 @@ def _spill_largest_text_part(parts: list, tool_use_id: str, env, config: BudgetC
     return [*parts[:idx], {**parts[idx], "text": replacement}, *parts[idx + 1:]], len(text) - len(replacement)
 
 
-def enforce_turn_budget(tool_messages: list[dict], env=None,
+def enforce_turn_budget(tool_messages: list[dict], env: object = None,
                         config: BudgetConfig = DEFAULT_BUDGET) -> list[dict]:
     """Layer 3: persist the largest non-persisted results first until the turn's aggregate is
     under budget. Mutates the list in-place and returns it. A multimodal result (part list) counts its
-    text characters and spills its largest text part; its images stay inline."""
+    text characters and spills its largest text part; its images stay inline.
+
+    Tools pinned in ``PINNED_THRESHOLDS`` (read_file) are never spill candidates at this layer
+    either: pinning exists to stop the persist->read->persist loop, and spilling a pinned
+    result here would reintroduce it. Pinned sizes still count toward the aggregate, so the
+    loop keeps spilling the largest non-pinned results until the budget is met or exhausted."""
     sizes = [_content_text_size(msg.get("content", "")) for msg in tool_messages]
     total_size = sum(sizes)
     candidates = [(i, size) for i, size in enumerate(sizes)
-                  if isinstance(tool_messages[i].get("content"), list)
-                  or PERSISTED_OUTPUT_TAG not in tool_messages[i].get("content", "")]
+                  if (isinstance(tool_messages[i].get("content"), list)
+                      or PERSISTED_OUTPUT_TAG not in tool_messages[i].get("content", ""))
+                  and (tool_messages[i].get("tool_name") or tool_messages[i].get("name")) not in PINNED_THRESHOLDS]
     if total_size <= config.turn_budget:
         return tool_messages
     for idx, size in sorted(candidates, key=lambda x: x[1], reverse=True):

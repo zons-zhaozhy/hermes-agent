@@ -742,3 +742,21 @@ class TestMcpEnvelopeSpillover:
 
         assert PERSISTED_OUTPUT_TAG in msgs[0]["content"]
         assert (get_spillover_dir() / "tc_budget_mcp.txt").read_text(encoding="utf-8") == markdown
+
+    def test_turn_budget_never_spills_pinned_read_file(self):
+        """Layer 3 honors the pin: read_file results count toward the aggregate but are never
+        spill candidates (persist->read->persist loop, intent of PINNED_THRESHOLDS=inf)."""
+        pinned_content = "pinned read result\n" * 2_000   # ~36K chars
+        spillable_content = "terminal output\n" * 2_000   # ~30K chars
+        msgs = [
+            {"role": "tool", "name": "read_file", "tool_call_id": "tc_pinned_read",
+             "content": pinned_content},
+            {"role": "tool", "name": "terminal", "tool_call_id": "tc_pinned_term",
+             "content": spillable_content},
+        ]
+
+        enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=10_000))
+
+        assert msgs[0]["content"] == pinned_content          # 期望: pinned 工具永不溢写, 内容原样保留
+        assert PERSISTED_OUTPUT_TAG in msgs[1]["content"]    # 期望: 非pinned工具承接预算削减
+        assert (get_spillover_dir() / "tc_pinned_read.txt").exists() is False  # 期望: pinned 未产生溢写文件

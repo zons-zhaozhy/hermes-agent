@@ -88,14 +88,17 @@ def _prune_zero_event_retry_payload(api_kwargs: dict, attempt: int, attempts: in
     policy -- bounded preview + recoverable ``<persisted-output>`` reference -- and ONE log line
     records the size delta. When nothing is prunable the resend is logged as unchanged. The
     caller's kwargs are never mutated; only the retried wire payload changes."""
-    from tools.budget_config import DEFAULT_BUDGET
+    from tools.budget_config import budget_for_context_window
     from tools.tool_result_storage import maybe_persist_tool_result
 
     items = api_kwargs.get("input")
     if not isinstance(items, list):
         return api_kwargs
+    # The same config-aware budget the executor resolves (tool_budget: in config.yaml), so the
+    # reconnect path can never enforce a different threshold than commit-time persistence.
+    budget = budget_for_context_window(None)
     before = len(json.dumps(items, default=str).encode("utf-8"))
-    if before <= DEFAULT_BUDGET.turn_budget:
+    if before <= budget.turn_budget:
         return api_kwargs
     pruned_items, pruned = [], 0
     for item in items:
@@ -103,7 +106,7 @@ def _prune_zero_event_retry_payload(api_kwargs: dict, attempt: int, attempts: in
         if isinstance(output, str):
             replaced = maybe_persist_tool_result(content=output, tool_name="codex_zero_event_retry",
                                                  tool_use_id=str(item.get("call_id") or "call"),
-                                                 config=DEFAULT_BUDGET, threshold=DEFAULT_BUDGET.default_result_size)
+                                                 config=budget, threshold=budget.default_result_size)
             if replaced != output:
                 item, pruned = {**item, "output": replaced}, pruned + 1
         pruned_items.append(item)

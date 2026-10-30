@@ -943,14 +943,23 @@ tool_output:
 
 Separately from truncation, oversized tool *results* are spilled to disk rather than cut: the full output is saved under `$HERMES_HOME/cache/spillover/` and the in-context content is replaced by a preview plus the saved file's path (readable with `read_file` using `offset`/`limit`, or processable with `execute_code`). The generic per-result spillover threshold is 100,000 chars, scaled down automatically for small-context models. A spill file is kept as long as any session's transcript still points at it, and leaves with its session when that session is deleted or pruned; the gateway's hourly housekeeping and the first spill of each process only sweep unreferenced files older than the session retention window (`sessions.retention_days`, default 90 days, never less than 24 hours), so a session resumed later still finds what its transcript points at.
 
-MCP tool results (tools named `mcp_*`) spill at a tighter **50,000-char** default: MCP servers routinely return large un-paginated payloads (tool-discovery catalogs, batched executions) that would otherwise sit under the generic threshold and bloat context on every subsequent turn. Nothing is lost — the full result is preserved on disk. Override the threshold via:
+Both budget thresholds are configurable under `tool_budget:` (values outside the documented range warn once and are clamped — these keys tighten or stay within the default range, they never loosen it):
 
 ```yaml
 tool_budget:
-  mcp_result_size_chars: 50000   # per-result spillover threshold for mcp_* tools
+  result_size_chars: 100000    # generic per-result spillover threshold; clamped to [8000, 100000]
+  turn_budget_chars: 200000    # per-turn aggregate for one tool batch; clamped to [16000, 200000]
+  mcp_result_size_chars: 50000 # per-result spillover threshold for mcp_* tools
+  # Advanced: per-tool spill thresholds, checked before the registry value.
+  # patch/write_file keep their diff fully inline at 100000 even under a tighter generic budget:
+  tool_overrides:
+    patch: 100000
+    write_file: 100000
 ```
 
-The MCP threshold is always capped at the (possibly context-scaled) generic per-result threshold, so raising it cannot exceed what the active model's window allows.
+Tightening `result_size_chars` is the root lever for keeping long tool output out of conversation history: every result above the threshold lands on disk with a short preview inline, so history grows by the preview, not the payload. Pair it with `tool_output.max_bytes` (terminal) set **at or below** `result_size_chars`, so terminal output takes the head+tail truncation (which keeps both ends visible) before spillover replaces it with a preview. `read_file` is pinned: its results are never spilled at any layer (it paginates itself via `file_read_max_chars` + `offset`), so per-call read size is tuned with `file_read_max_chars`, not `tool_budget`.
+
+MCP tool results (tools named `mcp_*`) spill at a tighter **50,000-char** default: MCP servers routinely return large un-paginated payloads (tool-discovery catalogs, batched executions) that would otherwise sit under the generic threshold and bloat context on every subsequent turn. Nothing is lost — the full result is preserved on disk. The MCP threshold is always capped at the (possibly context-scaled, possibly tightened) generic per-result threshold, so raising it cannot exceed what the active model's window allows.
 
 Hermes also flags **provider-side elision**: when an MCP or web tool result embeds its own truncation markers (`...N more items`, `"has_more": true`, "saved to sandbox" notes), a one-line notice is appended to the result warning that the visible data is incomplete and should be paged/fetched before treating any enumeration as complete.
 
@@ -2267,6 +2276,10 @@ display:
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   show_cost: false        # Show estimated $ cost in the CLI status bar
   vim_mode: false         # CLI only: vi/vim keybindings in the input composer (Esc → NORMAL, i → INSERT). The live NORMAL/INSERT/REPLACE mode shows at the right of the status bar. Config-only, read at startup.
+  user_message_preview:   # CLI only: submitted user-message lines echoed to scrollback
+    first_lines: 2        # how many leading lines of the submitted message to echo
+    last_lines: 2         # how many trailing lines to echo (long pastes keep head+tail)
+    highlight: "color"    # how echoed user text stands out: none (bold only) | color (accent fg) | background (black text on accent bg)
   timestamps: false       # When true, prefixes user and assistant labels with timestamps in the CLI / TUI transcript
   timestamp_format: "%H:%M"  # strftime format for those timestamps (e.g. "%b-%d %H:%M" for month-day)
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)

@@ -1,10 +1,13 @@
 """Configurable budget constants for tool result persistence.
 Per-tool resolution: pinned > config overrides > registry > default."""
 
+import logging
 from dataclasses import dataclass, field
 from typing import Dict
 
 from agent.model_metadata import CHARS_PER_TOKEN
+
+logger = logging.getLogger(__name__)
 
 # Never overridden; read_file=inf prevents infinite persist->read->persist loops.
 PINNED_THRESHOLDS: dict[str, float] = {"read_file": float("inf")}
@@ -22,24 +25,68 @@ DEFAULT_MCP_RESULT_SIZE_CHARS: int = 50_000
 MCP_TOOL_PREFIX: str = "mcp_"
 
 
-def _configured_mcp_result_size() -> int:
-    """Read ``tool_budget.mcp_result_size_chars`` via ``load_config_readonly`` (the
-    sanctioned path; raw config.yaml parsing outside owner modules is test-guarded).
-    Any error, missing key or non-positive value returns the built-in default.
-
-    The ``tool_budget:`` block name is shared with the wider configurable-caps proposal (#80508) so the two
-    can merge without a key rename.
-    """
+def _tool_budget_block() -> dict:
+    """The ``tool_budget:`` config block via ``load_config_readonly`` (the sanctioned
+    path; raw config.yaml parsing outside owner modules is test-guarded), or ``{}``
+    on a read failure. No module cache: ``load_config_readonly`` is mtime+path cached."""
     try:
         from hermes_cli.config import load_config_readonly
         data = load_config_readonly()
         block = data.get("tool_budget") if isinstance(data, dict) else None
-        raw = block.get("mcp_result_size_chars") if isinstance(block, dict) else None
-        if raw is not None and int(raw) > 0:
-            return int(raw)
+        return block if isinstance(block, dict) else {}
     except Exception:
-        pass
-    return DEFAULT_MCP_RESULT_SIZE_CHARS
+        logger.warning("tool_budget config read failed; using built-in defaults", exc_info=True)
+        return {}
+
+
+def _configured_mcp_result_size() -> int:
+    """Read ``tool_budget.mcp_result_size_chars``. Any error, missing key or non-positive
+    value returns the built-in default.
+
+    The ``tool_budget:`` block name is shared with the wider configurable-caps proposal (#80508) so the two
+    can merge without a key rename.
+    """
+    raw = _tool_budget_block().get("mcp_result_size_chars")
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        return DEFAULT_MCP_RESULT_SIZE_CHARS
+    return raw
+
+
+# Clamp warnings are deduped per distinct (key, raw, applied) so a mis-set key warns
+# once per process instead of on every budget resolution (one per tool batch).
+_CLAMP_WARNED: set[tuple[str, int, int]] = set()
+
+
+def _clamped_configured(key: str, floor: int, ceiling: int) -> int | None:
+    """Configured ``tool_budget.<key>`` clamped into ``[floor, ceiling]``; ``None`` when
+    unset or not a positive int. A value outside the range is clamped AND warned once:
+    a budget key must never silently take effect at a different value than configured."""
+    raw = _tool_budget_block().get(key)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        return None
+    applied = max(floor, min(raw, ceiling))
+    if applied != raw and (key, raw, applied) not in _CLAMP_WARNED:
+        _CLAMP_WARNED.add((key, raw, applied))
+        logger.warning(
+            "tool_budget.%s=%d outside [%d, %d]; applying %d (keys tighten or stay within the default range)",
+            key, raw, floor, ceiling, applied,
+        )
+    return applied
+
+
+def _configured_tool_overrides() -> dict[str, int]:
+    """Read ``tool_budget.tool_overrides`` (per-tool spill thresholds, e.g.
+    ``{patch: 100000}``). Invalid entries are dropped with a warning, never silently."""
+    raw = _tool_budget_block().get("tool_overrides")
+    if not isinstance(raw, dict):
+        return {}
+    overrides: dict[str, int] = {}
+    for name, value in raw.items():
+        if isinstance(name, str) and isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            overrides[name] = value
+        else:
+            logger.warning("tool_budget.tool_overrides.%s=%r invalid (need positive int); dropped", name, value)
+    return overrides
 
 
 @dataclass(frozen=True)
@@ -89,6 +136,33 @@ _MIN_RESULT_SIZE_CHARS: int = 8_000
 _MIN_TURN_BUDGET_CHARS: int = 16_000
 
 
+def _configured_budget_values() -> tuple[int | None, int | None, dict[str, int], int]:
+    """``(result_size, turn_budget, tool_overrides, mcp_result_size)`` from ``tool_budget:``."""
+    return (
+        _clamped_configured("result_size_chars", _MIN_RESULT_SIZE_CHARS, DEFAULT_RESULT_SIZE_CHARS),
+        _clamped_configured("turn_budget_chars", _MIN_TURN_BUDGET_CHARS, DEFAULT_TURN_BUDGET_CHARS),
+        _configured_tool_overrides(),
+        _configured_mcp_result_size(),
+    )
+
+
+def _values_match_defaults(result_cfg: int | None, turn_cfg: int | None,
+                           overrides: dict[str, int], mcp_result_size: int) -> bool:
+    """True when every configured value equals (or is absent from) the built-in default,
+    i.e. the caller may return the ``DEFAULT_BUDGET`` singleton unchanged."""
+    return (
+        (result_cfg is None or result_cfg == DEFAULT_RESULT_SIZE_CHARS)
+        and (turn_cfg is None or turn_cfg == DEFAULT_TURN_BUDGET_CHARS)
+        and not overrides
+        and mcp_result_size == DEFAULT_MCP_RESULT_SIZE_CHARS
+    )
+
+
+def _window_scaled(window_chars: int, fraction: float, floor: int, ceiling: int) -> int:
+    """Proportional budget clamped into ``[floor, ceiling]`` (the defaults are the cap)."""
+    return max(floor, min(int(window_chars * fraction), ceiling))
+
+
 def budget_for_context_window(context_length: int | None) -> BudgetConfig:
     """Return a BudgetConfig scaled to the model's context window: the fixed
     defaults suit 200K+ models but on 65K one result/turn can fill the window.
@@ -99,16 +173,29 @@ def budget_for_context_window(context_length: int | None) -> BudgetConfig:
     to small ones: on a 65K-token model a single tool result persisted at the 100K-char threshold, or a
     200K-char turn budget (~50K tokens), can by itself approach or exceed the whole window and force an
     oversized request (#23767).
+
+    Config (``tool_budget:``) tightens further: ``result_size_chars`` and ``turn_budget_chars``
+    clamp into ``[floor, default]`` (warned when the configured value is out of range),
+    ``tool_overrides`` sets per-tool spill thresholds ahead of the registry. A configured
+    value equal to the default keeps the exact historical budget (``DEFAULT_BUDGET`` identity).
     """
-    mcp_result_size = _configured_mcp_result_size()
+    result_cfg, turn_cfg, overrides, mcp_result_size = _configured_budget_values()
     if not context_length or context_length <= 0:
-        if mcp_result_size == DEFAULT_MCP_RESULT_SIZE_CHARS:
+        if _values_match_defaults(result_cfg, turn_cfg, overrides, mcp_result_size):
             return DEFAULT_BUDGET
-        return BudgetConfig(mcp_result_size=mcp_result_size)
+        return BudgetConfig(
+            default_result_size=result_cfg or DEFAULT_RESULT_SIZE_CHARS,
+            turn_budget=turn_cfg or DEFAULT_TURN_BUDGET_CHARS,
+            mcp_result_size=mcp_result_size,
+            tool_overrides=overrides,
+        )
     window_chars = context_length * _CHARS_PER_TOKEN
+    scaled_result = _window_scaled(window_chars, _PER_RESULT_WINDOW_FRACTION, _MIN_RESULT_SIZE_CHARS, DEFAULT_RESULT_SIZE_CHARS)
+    scaled_turn = _window_scaled(window_chars, _PER_TURN_WINDOW_FRACTION, _MIN_TURN_BUDGET_CHARS, DEFAULT_TURN_BUDGET_CHARS)
     return BudgetConfig(
-        default_result_size=max(_MIN_RESULT_SIZE_CHARS, min(int(window_chars * _PER_RESULT_WINDOW_FRACTION), DEFAULT_RESULT_SIZE_CHARS)),
-        turn_budget=max(_MIN_TURN_BUDGET_CHARS, min(int(window_chars * _PER_TURN_WINDOW_FRACTION), DEFAULT_TURN_BUDGET_CHARS)),
+        default_result_size=min(result_cfg, scaled_result) if result_cfg else scaled_result,
+        turn_budget=min(turn_cfg, scaled_turn) if turn_cfg else scaled_turn,
         preview_size=DEFAULT_PREVIEW_SIZE_CHARS,
         mcp_result_size=mcp_result_size,
+        tool_overrides=overrides,
     )
