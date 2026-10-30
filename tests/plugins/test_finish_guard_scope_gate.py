@@ -47,6 +47,23 @@ def test_l3_marker_carries_scope_gate():
     assert "不等于建造授权" in out  # 期望: 标记含范围定义
 
 
+def test_messages_carry_companion_file_carveout():
+    """边界收敛不变量：三条消息须同时携带两侧口径——越权线=新能力面
+    （新应用/新依赖/新开目录树，与 scope_gate 机械闸门对齐）；既有目录树内
+    为执行当轮任务所需的伴生文件不属越权。防「新文件」枚举回归漂移。"""
+    l1 = fg._on_pre_tool_call(
+        tool_name="clarify",
+        args={"questions": [{"question": "要不要我继续把骨架建起来？"}]},
+    ).get("message", "")
+    l2 = fg._on_pre_verify(
+        attempt=0, final_response=_DECLARED, changed_paths=["a.py"]
+    ).get("message", "")
+    l3 = fg._transform_llm_output(response_text=_DECLARED) or ""
+    for name, msg in (("L1", l1), ("L2", l2), ("L3", l3)):
+        assert "新开目录树" in msg, name  # 期望: 越权线=新能力面（机械闸门口径）
+        assert "伴生" in msg, name  # 期望: 既有树内伴生文件豁免随消息下发
+
+
 def test_legit_ask_exempt_still_passes():
     """合法请示豁免不受影响（I2 不变量）。"""
     out = fg._on_pre_tool_call(
