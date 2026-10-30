@@ -35,6 +35,13 @@ _JS_ONLY = lambda p: p.endswith(_JS_EXTS)
 _PY_ONLY = lambda p: p.endswith(_PY_EXTS)
 _NOT_DOCS = lambda p: not p.endswith(_DOC_EXTS)
 
+# Files served to browsers or shipped inside a build artifact, where a baked-in internal
+# address (loopback / private range) is a leak rather than a dev-only convenience.
+_CONFIG_ARTIFACT_EXTS = (".js", ".mjs", ".cjs", ".ts", ".json", ".yaml", ".yml", ".conf",
+                         ".env", ".properties", ".toml")
+_CONFIG_ARTIFACT = lambda p: p.endswith(_CONFIG_ARTIFACT_EXTS)
+_CONF_ONLY = lambda p: p.endswith(".conf")
+
 _UNSAFE_DESERIALIZATION_REMINDER = """⚠️ Security Warning: Loading pickle data (or equivalents: cPickle, cloudpickle, dill, marshal, shelve, joblib, pandas.read_pickle, numpy with allow_pickle=True) from untrusted sources allows arbitrary code execution.
 
 For simple data, prefer JSON or msgspec. For typed objects, prefer a schema-validated deserializer (msgspec.Struct, pydantic, marshmallow) that constructs only declared types.
@@ -131,6 +138,22 @@ Additionally, validate user inputs:
 - For file paths: use filepath.Clean() and verify the result is within an allowed directory
 - For numeric values: parse to int/float first"""
 
+_INTERNAL_ADDRESS_LEAK_REMINDER = """⚠️ Security Warning: This file looks like a browser-served or shipped config artifact, and it contains a hardcoded internal address (loopback 127.0.0.1/localhost, or a private range 10.x/172.16-31.x/192.168.x). A deployed build would hand attackers an internal topology map and often a reachable admin surface.
+
+Make the address come from the deployment environment instead: read it from an env var, or emit a runtime config file generated at container start. In nginx conf this usually means the proxy_pass upstream name, not a baked IP. If a dev-only default is genuinely intended, gate it behind `import.meta.env.DEV` / a build flag so it is stripped from the production artifact."""
+
+_DEBUG_ENDPOINT_EXPOSURE_REMINDER = """⚠️ Security Warning: A FastAPI/Starlette app mounts /docs, /redoc and /openapi.json by default, and a reverse-proxy prefix block (a location ending in `/` that proxies the whole app root) will re-expose them at `/<prefix>/docs` even when no explicit `/docs` location exists. This leaks the full API structure. Any prefix-proxy block that fronts such an app needs explicit `return 404` (or equivalent) blocks for /docs, /redoc and /openapi.json, or the app must disable them (`docs_url=None, redoc_url=None, openapi_url=None`) in production.
+
+Do not assume "no explicit /docs location" means "not exposed" — enumerate (prefix block × backend default endpoint)."""
+
+_HEALTH_TOPOLOGY_LEAK_REMINDER = """⚠️ Security Warning: An unauthenticated health/status endpoint that returns dependency topology (`checks: {db, cache, ...}`), internal service names, version strings, uptime or feature flags is an information-disclosure (CWE-200) finding. It hands an attacker a map of the internals and a version-fingerprinting hint for exploit selection.
+
+Return only `{"status": "ok"}` (or a similarly minimal shape) on the public probe. Keep the detailed dependency/version breakdown behind auth, or log it server-side only and let the probe read a single aggregate status."""
+
+_SECURITY_HEADER_CONFLICT_REMINDER = """⚠️ Security Warning: A security response header (CSP, HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy) set at BOTH the server scope and a nested location scope is emitted twice, and browsers apply the most restrictive across some directives but the last-wins behaviour across others — the result is a conflicted/unpredictable policy. Pick one scope per header: either the server block or the location block, never both.
+
+In nginx, `add_header` in a location fully replaces inherited server-level headers of the same name — if you add any `add_header` inside a location you silently drop the server-level ones, which is the usual way these get double- or un-set."""
+
 
 def _rule(name, reminder, **triggers):
     """Build one rule dict; only the trigger keys given (regex / substrings /
@@ -201,4 +224,25 @@ SECURITY_PATTERNS = [
     _rule("yaml_unsafe_load_variants", _UNSAFE_YAML_LOAD_REMINDER, regex=r"(?:\byaml\.unsafe_load|\.yaml_unsafe_load)\s*\("),
     _rule("pickle_wrapper_load", _UNSAFE_DESERIALIZATION_REMINDER,
           regex=r"\bjoblib\.load\s*\(|\b(?:pd|pandas)\.read_pickle\s*\(|\.cloudpickle_load\s*\(|\b(?:np|numpy)\.load\s*\([^)\n]{0,200}allow_pickle\s*=\s*True"),
+    # ── Deployment/config-surface rules (Hermes addition, 2026-10-30) ──
+    # Complement the code-level rules above with the config/deploy-形态 leak classes
+    # found in a live penetration test: internal addresses baked into shipped
+    # artifacts, re-exposed debug endpoints, health topology disclosure, and
+    # double-set security headers.
+    _rule("internal_address_in_artifact", _INTERNAL_ADDRESS_LEAK_REMINDER,
+          path_filter=_CONFIG_ARTIFACT,
+          regex=r"(?<![0-9])127\.0\.0\.1\b|\blocalhost\b|\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b|"
+                r"\b192\.168\.\d{1,3}\.\d{1,3}\b|\b172\.(?:1[6-9]|2[0-9]|3[01])\.\d{1,3}\.\d{1,3}\b"),
+    _rule("prefix_proxy_exposes_debug_endpoints", _DEBUG_ENDPOINT_EXPOSURE_REMINDER,
+          path_filter=_CONF_ONLY,
+          regex=r"location\s+[^\s{]+\/\s*\{[^}]*proxy_pass"),
+    _rule("health_endpoint_topology_leak", _HEALTH_TOPOLOGY_LEAK_REMINDER,
+          path_filter=_PY_ONLY,
+          regex=r"[\"']checks[\"']\s*[:=]|[\"']uptime_s[\"']\s*[:=]|"
+                r"[\"']docs_enabled[\"']\s*[:=]|[\"']started_at[\"']\s*[:=]"),
+    _rule("security_header_double_scope", _SECURITY_HEADER_CONFLICT_REMINDER,
+          path_filter=_CONF_ONLY,
+          regex=r"add_header\s+(?:Content-Security-Policy|Strict-Transport-Security|"
+                r"X-Frame-Options|X-Content-Type-Options|Referrer-Policy|"
+                r"Permissions-Policy|X-XSS-Protection)\b"),
 ]

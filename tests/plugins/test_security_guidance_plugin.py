@@ -134,6 +134,47 @@ class TestScanContent:
         )
         assert "github_actions_workflow" in [n for n, _ in findings]
 
+    # ── Deployment/config-surface rules ──
+    def test_internal_address_in_shipped_js_warns(self):
+        mod = _load_plugin_init()
+        findings = mod._scan_content(
+            "app/config.js", "window.API = 'http://127.0.0.1:12344/oms'"
+        )
+        assert "internal_address_in_artifact" in [n for n, _ in findings]
+
+    def test_private_range_and_localhost_warn(self):
+        mod = _load_plugin_init()
+        for content in ("h='192.168.1.5'", "u='http://localhost:8080'", "h='10.0.0.9'"):
+            findings = mod._scan_content("deploy/x.yaml", content)
+            assert "internal_address_in_artifact" in [n for n, _ in findings], content
+
+    def test_internal_address_not_flagged_in_plain_python(self):
+        """Path filter keeps the rule off source files where a test fixture may legitimately use one."""
+        mod = _load_plugin_init()
+        findings = mod._scan_content("app/main.py", "HOST = '127.0.0.1'")
+        assert "internal_address_in_artifact" not in [n for n, _ in findings]
+
+    def test_prefix_proxy_conf_warns(self):
+        mod = _load_plugin_init()
+        conf = "location /svc/ {\n proxy_pass http://svc_app/;\n}"
+        findings = mod._scan_content("deploy/nginx_gateway.conf", conf)
+        assert "prefix_proxy_exposes_debug_endpoints" in [n for n, _ in findings]
+
+    def test_health_topology_leak_warns(self):
+        mod = _load_plugin_init()
+        findings = mod._scan_content(
+            "app/routes_health.py", 'return {"status": "ok", "checks": {"db": "ok"}}'
+        )
+        assert "health_endpoint_topology_leak" in [n for n, _ in findings]
+
+    def test_security_header_in_conf_warns(self):
+        mod = _load_plugin_init()
+        findings = mod._scan_content(
+            "deploy/nginx_gateway.conf",
+            "add_header Content-Security-Policy \"default-src 'self'\";",
+        )
+        assert "security_header_double_scope" in [n for n, _ in findings]
+
     def test_non_workflow_path_doesnt_trip_workflow_rule(self):
         mod = _load_plugin_init()
         findings = mod._scan_content("/tmp/foo.py", "name: CI")
