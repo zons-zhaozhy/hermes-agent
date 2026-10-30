@@ -69,6 +69,11 @@ f799fd8578 在官方 Linux CI "Python tests / Run tests" = success。
 | hermes_cli/plugins.py | VALID_HOOKS + pre_tool_batch 注释更新为 policy/fail-closed 契约 | 低（hook 名单追加式） | 等 upstream 化 |
 | hermes_cli/plugins_dispatch.py | pre_tool_batch 加入 _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS + _hook_timeout_block_message 泛化 | 低（分类集追加式） | 与 pre_tool_call 同机制 |
 | agent/turn_facade_lease.py | 4 行: 等待上限 1800s→300s | 低 | 上游改同参数时让位 |
+| agent/error_classifier.py | 16 行: reasoning 词形拒绝(422 自愈, 76d800c136) + 中文配额 429→billing 长隔离(cd46e86651) | 低 | 2026-10-30 补记(1030 报告漏记项) |
+| gateway/run_inbound.py | 9f21fa12a8 定制行 | 低 | 2026-10-30 补记(1030 报告漏记项) |
+| hermes_cli/config_defaults.py | 9d75c43c33 定制行 | 低 | 2026-10-30 补记(1030 报告漏记项) |
+| tools/delegate_tool.py | b0148fb64e 定制行 | 低 | 2026-10-30 补记(1030 报告漏记项) |
+| tools/file_operations_common.py | 1e2164cc6e 定制行 | 低 | 2026-10-30 补记(1030 报告漏记项) |
 | gateway/session_viewer_automation.py | viewer_driven 过期接管机制（STALE_VIEWER_AUTOMATION_SECONDS 活性窗口 + 失活注册清理，gateway 收回 post-turn hooks）；2026-10-26 起与上游 registry 参数融合：过期机制仅对 "viewer_automation" 注册表生效，"viewer_heartbeat" 保持上游订阅即活语义 | 中（上游持续演进该文件，10-20/10-26 两轮冲突） | 10-26 已融合，配套测试 tests/gateway/test_session_viewer_automation.py |
 | tests/agent/test_read_think_gate_*.py | 2 文件纯新增 | 零 | 长期保留 |
 | tests/agent/test_auxiliary_client.py | 457da1e3f2: 对齐 timeout 短TTL隔离定制（auxiliary_client.py 配套测试） | 零（测试文件） | 与 aux 定制同命运 |
