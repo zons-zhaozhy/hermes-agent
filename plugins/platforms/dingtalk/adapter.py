@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import traceback
 import uuid
@@ -68,6 +69,62 @@ RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 RECONNECT_CIRCUIT_BREAKER_TRIPS = 5  # identical errors escaping start() before the breaker trips
 RECONNECT_CIRCUIT_BREAKER_DELAY = 300  # seconds between attempts while tripped (matches the runner's cap)
 _SDK_LOG_REPEAT_WINDOW = 300.0  # identical dingtalk_stream.client records are collapsed within this window
+_SDK_HTTP_TIMEOUT_S = 15.0  # bounds the SDK's un-timed requests.post (connect+read); override via DINGTALK_SDK_HTTP_TIMEOUT_S
+_sdk_http_shim_installed = False
+
+
+def _sdk_http_timeout() -> float:
+    """Timeout for the SDK's un-timed ``requests.post`` calls; overrides go through
+    ``DINGTALK_SDK_HTTP_TIMEOUT_S``. A non-numeric or non-positive override is rejected
+    loudly (the value gates watchdog-level hang behaviour, silent fallback would mask it)."""
+    raw = os.environ.get("DINGTALK_SDK_HTTP_TIMEOUT_S", "").strip()
+    if not raw:
+        return _SDK_HTTP_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError as e:
+        raise ValueError(
+            f"DINGTALK_SDK_HTTP_TIMEOUT_S must be a positive number in seconds, got {raw!r}"
+        ) from e
+    if value <= 0:
+        raise ValueError(f"DINGTALK_SDK_HTTP_TIMEOUT_S must be positive, got {value}")
+    return value
+
+
+def _install_sdk_http_timeout_shim() -> None:
+    """Bound the dingtalk-stream SDK's un-timed ``requests.post`` calls with a timeout.
+
+    The SDK's ``stream.py`` calls ``requests.post`` without a timeout (connection setup,
+    token fetch, media upload); under a system SOCKS proxy plus a host load spike the TLS
+    handshake can hang indefinitely. The shim replaces ``requests`` only inside the
+    ``dingtalk_stream.stream`` namespace — the process-global ``requests`` module and
+    every other consumer are untouched. Scope note: this bounds ``stream.py``'s three
+    call sites only; ``chatbot.py``/``card_replier.py`` import ``requests`` separately
+    and are NOT covered (those run on reply paths that already carry their own timeouts).
+    Idempotent across reconnects and the lazy dependency installer's module rebind.
+    """
+    global _sdk_http_shim_installed
+    if _sdk_http_shim_installed:
+        return
+    try:
+        import types
+        import dingtalk_stream.stream as _stream_mod
+        real_requests = _stream_mod.requests
+    except Exception as e:
+        logger.warning("[dingtalk] stream module unavailable; HTTP timeout shim not installed: %s", e)
+        return
+    timeout_s = _sdk_http_timeout()
+
+    class _TimeoutRequestsShim(types.ModuleType):
+        def post(self, *args: Any, **kwargs: Any) -> Any:
+            kwargs.setdefault("timeout", timeout_s)
+            return real_requests.post(*args, **kwargs)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(real_requests, name)
+
+    _stream_mod.requests = _TimeoutRequestsShim("dingtalk_sdk_requests_timeout_shim")
+    _sdk_http_shim_installed = True
 
 
 def _is_sdk_incompat(exc: BaseException | None) -> bool:
@@ -96,6 +153,21 @@ class _SdkLogGuard(logging.Filter):
         super().__init__()
         self._on_exception, self._window = on_exception, window
         self._seen: dict[tuple, list] = {}  # key -> [last_emitted_monotonic, suppressed_count]
+        self._seen_lock = threading.Lock()  # the guard runs on the SDK worker thread and the adapter loop
+
+    def _should_emit(self, key: tuple, now: float, record: logging.LogRecord) -> bool:
+        """Dedup verdict under the lock; rewrites ``record`` with the suppressed count when emitting."""
+        with self._seen_lock:
+            entry = self._seen.get(key)
+            if entry is not None and now - entry[0] < self._window:
+                entry[1] += 1
+                return False
+            if entry is not None and entry[1]:
+                record.msg, record.args = f"{record.msg} (suppressed {entry[1]} identical repeats)", ()
+            if len(self._seen) >= 256:
+                self._seen.clear()
+            self._seen[key] = [now, 0]
+            return True
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
@@ -109,16 +181,7 @@ class _SdkLogGuard(logging.Filter):
             if exc is not None and self._on_exception is not None:
                 self._on_exception(exc)
             key = (record.levelno, msg[:500], type(exc).__name__ if exc is not None else None)
-            now = time.monotonic()
-            entry = self._seen.get(key)
-            if entry is not None and now - entry[0] < self._window:
-                entry[1] += 1
-                return False
-            if entry is not None and entry[1]:
-                record.msg, record.args = f"{msg} (suppressed {entry[1]} identical repeats)", ()
-            if len(self._seen) >= 256:
-                self._seen.clear()
-            self._seen[key] = [now, 0]
+            return self._should_emit(key, time.monotonic(), record)
         except Exception:
             pass  # a logging filter must never break the caller
         return True
@@ -246,6 +309,14 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._mention_patterns: list[re.Pattern] = self._compile_mention_patterns()
         self._allowed_users: set[str] = {item.lower() for item in self._csv_setting("allowed_users", "DINGTALK_ALLOWED_USERS")}
         self._stream_client = self._stream_task = self._http_client = self._card_sdk = self._robot_sdk = None
+        # SDK thread isolation (see _sdk_thread_main): the SDK's start() runs on a worker
+        # thread with its own loop; the adapter loop only awaits its completion event.
+        self._sdk_thread: Optional[threading.Thread] = None
+        self._sdk_thread_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._sdk_thread_exc: Optional[BaseException] = None
+        self._sdk_thread_wakeup: Optional[asyncio.Event] = None
+        self._fatal_pending_notify = False
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._robot_code: str = extra.get("robot_code") or self._client_id
         self._dedup = MessageDeduplicator(max_size=1000)
         self._session_webhooks: dict[str, tuple[str, int]] = {}  # chat_id -> (webhook, expired_time_ms)
@@ -270,6 +341,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             from gateway.platforms._http_client_limits import platform_httpx_limits  # tighter keepalive: idle CLOSE_WAIT drains promptly
             self._http_client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
             self._stream_client = dingtalk_stream.DingTalkStreamClient(dingtalk_stream.Credential(self._client_id, self._client_secret))
+            _install_sdk_http_timeout_shim()
             if CARD_SDK_AVAILABLE:
                 sdk_config = open_api_models.Config()
                 sdk_config.protocol, sdk_config.region_id = "https", "central"
@@ -281,6 +353,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                 else:
                     logger.info("[%s] Robot SDK initialized (media download)", self.name)
             self._stream_client.register_callback_handler(dingtalk_stream.ChatbotMessage.TOPIC, _IncomingHandler(self, asyncio.get_running_loop()))
+            self._loop = asyncio.get_running_loop()
             self._stream_task = asyncio.create_task(self._run_stream())
             self._mark_connected()
             logger.info("[%s] Connected via Stream Mode", self.name)
@@ -303,7 +376,6 @@ class DingTalkAdapter(BasePlatformAdapter):
         trips and stays tripped (silent, RECONNECT_CIRCUIT_BREAKER_DELAY between
         attempts) until the error type changes.
         """
-        self._sdk_loop_task = asyncio.current_task()
         sdk_logger = getattr(self._stream_client, "logger", None)
         if not isinstance(sdk_logger, logging.Logger):
             sdk_logger = logging.getLogger("dingtalk_stream.client")
@@ -314,39 +386,146 @@ class DingTalkAdapter(BasePlatformAdapter):
         finally:
             sdk_logger.removeFilter(guard)
 
+    def _sdk_thread_main(self) -> None:
+        """Worker body: run ``stream_client.start()`` on a private event loop.
+
+        Teardown is bounded (``asyncio.wait(..., timeout=1.0)``): the SDK swallows
+        ``CancelledError`` and keeps looping (stream.py ``except CancelledError:
+        sleep(10); continue``), so an unbounded ``gather`` over cancelled tasks
+        would never return and the thread would never die.
+        """
+        loop = asyncio.new_event_loop()
+        self._sdk_thread_loop = loop
+        self._sdk_thread_exc = None
+        try:
+            asyncio.set_event_loop(loop)
+            if self._stream_client is None:
+                raise RuntimeError("SDK worker started without a stream client (disconnect raced the start)")
+            loop.run_until_complete(self._stream_client.start())
+        except asyncio.CancelledError:
+            pass
+        except RuntimeError:
+            # loop.stop() from the adapter side: "Event loop stopped before Future completed"
+            pass
+        except BaseException as e:
+            self._sdk_thread_exc = e
+        finally:
+            self._teardown_worker_loop(loop)
+            self._sdk_thread_loop = None
+            self._notify_sdk_thread_done()
+
+    def _teardown_worker_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Cancel and drain the worker loop's pending tasks, then close it."""
+        try:
+            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.wait(pending, timeout=1.0))
+        except Exception:
+            logger.debug("[%s] SDK worker pending-task cleanup incomplete", self.name, exc_info=True)
+        for closer in (loop.stop, loop.close):
+            try:
+                closer()
+            except Exception:
+                pass
+
+    def _notify_sdk_thread_done(self) -> None:
+        """Wake the adapter loop (last step of the worker, after all state writes)."""
+        loop, ev = self._loop, self._sdk_thread_wakeup
+        if loop is not None and not loop.is_closed() and ev is not None:
+            try:
+                loop.call_soon_threadsafe(ev.set)
+            except RuntimeError:
+                pass  # adapter loop closed during shutdown
+
+    def _start_sdk_thread(self) -> bool:
+        """Start the SDK worker thread; refuses while a predecessor is still alive
+        (a stuck predecessor means we are still draining — reconnect next round)."""
+        if self._sdk_thread is not None and self._sdk_thread.is_alive():
+            logger.warning("[%s] previous SDK worker still alive; deferring (re)start", self.name)
+            return False
+        self._sdk_thread_exc = None
+        self._sdk_thread = threading.Thread(
+            target=self._sdk_thread_main, name="dingtalk-sdk-stream", daemon=True)
+        self._sdk_thread.start()
+        return True
+
+    def _join_sdk_worker(self, thread: threading.Thread, join_timeout: float) -> bool:
+        """Join the worker; on timeout re-arm the loop stop (it fires once the stuck
+        synchronous call returns) and report the detach. True = thread stopped."""
+        if thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=join_timeout)
+            if thread.is_alive():
+                loop = self._sdk_thread_loop
+                if loop is not None and loop.is_running():
+                    try:
+                        loop.call_soon_threadsafe(loop.stop)  # re-arm for when the sync call returns
+                    except RuntimeError:
+                        pass
+                logger.error(
+                    "[%s] SDK worker did not stop within %.1fs (stuck in a synchronous SDK call?); "
+                    "detaching — it will exit once the call returns and the stop lands",
+                    self.name, join_timeout)
+                return False
+        return True
+
+    def _stop_sdk_thread(self, join_timeout: float = 5.0) -> bool:
+        """Stop the SDK worker at loop level. The SDK swallows task-level
+        ``CancelledError``, so ``call_soon_threadsafe(loop.stop)`` is the only lever.
+        Returns True when the thread stopped (or never ran); False when it was
+        detached while stuck in a synchronous call — callers must then leave
+        ``_stream_client`` untouched (the worker still references it).
+        """
+        loop = self._sdk_thread_loop
+        if loop is not None and loop.is_running():
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except RuntimeError:
+                pass  # closed concurrently by the worker itself
+        thread = self._sdk_thread
+        if thread is None:
+            return True
+        if not self._join_sdk_worker(thread, join_timeout):
+            return False
+        self._sdk_thread = None
+        return True
+
     async def _run_stream_loop(self) -> None:
         backoff_idx = 0
         consecutive_same_error = 0
         last_error_type: type | None = None
         while self._running:
-            try:
-                logger.debug("[%s] Starting stream client...", self.name)
-                await self._stream_client.start()
-            except asyncio.CancelledError:
-                if getattr(self, "_fatal_error_code", None) == "dingtalk_stream_error":
-                    await self._notify_fatal_error()
+            self._sdk_thread_wakeup = asyncio.Event()
+            if not self._start_sdk_thread():
+                await asyncio.sleep(1.0)  # predecessor draining; retry next round
+                continue
+            await self._sdk_thread_wakeup.wait()
+            self._sdk_thread_wakeup = None
+            if self._fatal_pending_notify:
+                await self._notify_fatal_error()
                 return
-            except Exception as e:
-                if not self._running:
-                    return
-                if _is_sdk_incompat(e):
-                    self._on_sdk_error(e, cancel=False)
-                    await self._notify_fatal_error()
-                    return
-                error_type = type(e)
-                if error_type is last_error_type:
-                    consecutive_same_error += 1
-                else:
-                    consecutive_same_error = 1
-                    last_error_type = error_type
-                if consecutive_same_error <= RECONNECT_CIRCUIT_BREAKER_TRIPS:
-                    logger.warning("[%s] Stream client error: %s", self.name, e)
-                elif consecutive_same_error == RECONNECT_CIRCUIT_BREAKER_TRIPS + 1:
-                    logger.error(
-                        "[%s] Stream client error repeated %d times: %s — circuit breaker tripped; "
-                        "retrying every %ds silently until the error changes.",
-                        self.name, consecutive_same_error, e, RECONNECT_CIRCUIT_BREAKER_DELAY,
-                    )
+            exc = self._sdk_thread_exc
+            if exc is None:
+                continue  # clean exit (e.g. stop with no exception): reconnect
+            if _is_sdk_incompat(exc):
+                self._on_sdk_error(exc, cancel=False)
+                await self._notify_fatal_error()
+                return
+            error_type = type(exc)
+            if error_type is last_error_type:
+                consecutive_same_error += 1
+            else:
+                consecutive_same_error = 1
+                last_error_type = error_type
+            if consecutive_same_error <= RECONNECT_CIRCUIT_BREAKER_TRIPS:
+                logger.warning("[%s] Stream client error: %s", self.name, exc)
+            elif consecutive_same_error == RECONNECT_CIRCUIT_BREAKER_TRIPS + 1:
+                logger.error(
+                    "[%s] Stream client error repeated %d times: %s — circuit breaker tripped; "
+                    "retrying every %ds silently until the error changes.",
+                    self.name, consecutive_same_error, exc, RECONNECT_CIRCUIT_BREAKER_DELAY,
+                )
             if not self._running:
                 return
             if consecutive_same_error > RECONNECT_CIRCUIT_BREAKER_TRIPS:
@@ -368,9 +547,18 @@ class DingTalkAdapter(BasePlatformAdapter):
         # Not retryable: only a reinstall + restart fixes it, and connect() returns True before the
         # socket exists, so a gateway reconnect would re-fail every watcher tick forever.
         self._set_fatal_error("dingtalk_stream_error", msg, retryable=False)
-        task = getattr(self, "_sdk_loop_task", None)
-        if cancel and task is not None and not task.done():
-            task.cancel()  # SDK's own retry loop never exits; lands on its next await
+        if cancel:
+            # The SDK runs on its worker thread now: flag the pending notify (the
+            # stream loop hands it to _notify_fatal_error when the worker exits)
+            # and stop the worker at loop level — the SDK swallows task-level
+            # CancelledError, so cancelling the old _sdk_loop_task was a no-op.
+            self._fatal_pending_notify = True
+            loop = self._sdk_thread_loop
+            if loop is not None and loop.is_running():
+                try:
+                    loop.call_soon_threadsafe(loop.stop)  # fires at the SDK's next await point
+                except RuntimeError:
+                    pass  # worker already closing its loop
 
     async def _quiet(self, coro, debug_fmt: str = "", *args) -> None:
         """Await *coro*, swallowing any exception (logged at debug as ``debug_fmt % (name, *args, exc)`` when given)."""
@@ -384,12 +572,14 @@ class DingTalkAdapter(BasePlatformAdapter):
         """Disconnect from DingTalk."""
         self._running = False
         self._mark_disconnected()
-        # Close the websocket first so the stream task sees the disconnect instead of awaiting frames that never arrive.
-        websocket = getattr(self._stream_client, "websocket", None) if self._stream_client else None
-        if websocket is not None:
-            await self._quiet(websocket.close(), "[%s] websocket close during disconnect failed: %s")
+        # Stop the SDK worker first (loop-level stop + bounded join). Its teardown
+        # cancels the websocket task, which triggers the SDK's own close path, so
+        # the old direct websocket.close() call is gone (it raced the worker).
+        stopped = self._stop_sdk_thread(5.0)
         if self._stream_task:
-            if hasattr(self._stream_client, "close"):
+            if stopped and self._stream_client is not None and hasattr(self._stream_client, "close"):
+                # Only touch the client when the worker no longer references it; a
+                # detached worker (stuck in a sync call) still owns the client.
                 await self._quiet(asyncio.to_thread(self._stream_client.close))  # sync close() may block on I/O
             self._stream_task.cancel()
             try:
@@ -793,7 +983,11 @@ class _IncomingHandler(dingtalk_stream.ChatbotHandler if DINGTALK_STREAM_AVAILAB
         return
 
     async def process(self, message: CallbackMessage):
-        """Convert to ChatbotMessage, dispatch as a background task, ACK immediately (blocking would stall SDK heartbeats)."""
+        """Convert to ChatbotMessage and hand it to the adapter loop; ACK immediately
+        (blocking would stall SDK heartbeats). This coroutine runs on the SDK worker
+        thread's private loop, so all adapter work is bounced back to the gateway
+        loop via ``call_soon_threadsafe`` — tasks spawned here would otherwise die
+        with the worker loop on every reconnect."""
         try:
             data = json.loads(message.data) if isinstance(message.data, str) else message.data
             chatbot_msg = ChatbotMessage.from_dict(data)
@@ -804,9 +998,21 @@ class _IncomingHandler(dingtalk_stream.ChatbotHandler if DINGTALK_STREAM_AVAILAB
             if not getattr(chatbot_msg, "is_in_at_list", False) and data.get("isInAtList"):
                 chatbot_msg.is_in_at_list = True
             msg_id, conversation_id = getattr(chatbot_msg, "message_id", None) or "", getattr(chatbot_msg, "conversation_id", None) or ""
-            if msg_id and conversation_id:
-                self._adapter._spawn_bg(self._adapter._send_emotion(msg_id, conversation_id, t("platform.dingtalk.emotion.thinking"), recall=False))
-            asyncio.create_task(self._safe_on_message(chatbot_msg))  # surfaces exceptions in logs instead of losing them
+
+            def _dispatch_on_adapter_loop() -> None:
+                adapter = self._adapter
+                if msg_id and conversation_id:
+                    adapter._spawn_bg(adapter._send_emotion(msg_id, conversation_id, t("platform.dingtalk.emotion.thinking"), recall=False))
+                adapter._spawn_bg(self._safe_on_message(chatbot_msg))
+
+            loop = self._loop
+            if loop is not None and not loop.is_closed():
+                try:
+                    loop.call_soon_threadsafe(_dispatch_on_adapter_loop)
+                except RuntimeError:
+                    logger.warning("[%s] gateway loop closed; dropping incoming message %s", self._adapter.name, msg_id or "<no-id>")
+            else:
+                logger.warning("[%s] gateway loop unavailable; dropping incoming message %s", self._adapter.name, msg_id or "<no-id>")
         except Exception:
             logger.exception("[%s] Error preparing incoming message", self._adapter.name)
             return AckMessage.STATUS_SYSTEM_EXCEPTION, "error"
