@@ -635,7 +635,15 @@ default-groups = []
 # 3.11 is an install bridge for pre-PM updaters, never a runtime, so the lock
 # covers 3.14 only. Without this the lock must resolve every supported version,
 # where extras that only ever coexist on 3.14 (kittentts vs neutts) conflict.
-environments = ["python_version >= '3.14'"]
+environments = [
+  # Desktop platforms only. uv resolves every platform the markers admit; since
+  # 0.12.14 one wheel-less fork fails the whole lock, and sherpa-onnx-core ships
+  # no android wheel — an unconditional `hermes pm lock` / `uv lock` failure.
+  # One clause, not per-platform entries: pm/workspace.py::_solve_only_for
+  # intersects each entry with the installing host's marker, so a per-platform
+  # list goes empty-set on every other host and uv rejects the projection.
+  "python_version >= '3.14' and sys_platform != 'android'",
+]
 override-dependencies = [
   # discord.py's latest published version, 2.7.1, pins pynacl at <1.6. however, pynacl 1.5.0 has known vulnerabilities.
   # discord.py has updated pynacl to 1.6 on `main`, but has not yet published a patch release.
