@@ -72,12 +72,16 @@ class HostedRoomAuthorityRPC:
         return await getattr(self, '_' + operation)(params)
 
     async def _resolve_exact(self, params):
-        if self.authority.db.get_session(self.ref.session_id) is None:
+        if await asyncio.to_thread(
+            self.authority.db.get_session, self.ref.session_id
+        ) is None:
             return None
         return await self._resume(params)
 
     async def _create(self, params):
-        if self.authority.db.get_session(self.ref.session_id) is not None:
+        if await asyncio.to_thread(
+            self.authority.db.get_session, self.ref.session_id
+        ) is not None:
             return await self._resume(params)
         from gateway.run import _load_gateway_config, _resolve_gateway_model
         from gateway.session_policy import build_policy

@@ -139,6 +139,52 @@ class SessionMaintenanceMixin:
             self._remove_session_files(sessions_dir, sid)
         return len(removed_ids)
 
+    def prune_orphan_admission_results(self) -> int:
+        """Reclaim terminal result blobs whose admission and tombstone are both gone.
+
+        A result is retry evidence for an admission.  When both the live
+        ``session_admissions`` row and the retired terminal-admission tombstone are absent, no
+        reader can request that result again.  Keeping its JSON only inflates ``state_meta`` and
+        every WAL checkpoint on a multi-gigabyte store.
+        """
+        from hermes_state_terminal import ADMISSION_PREFIX, RESULT_PREFIX
+
+        def write(conn):
+            expired = [
+                row[0] for row in conn.execute(
+                """WITH expired AS (
+                        SELECT substr(m.key, ?) AS admission_id
+                        FROM state_meta AS m
+                        WHERE m.key LIKE ?
+                          AND NOT EXISTS (
+                              SELECT 1 FROM session_admissions AS a
+                              WHERE a.admission_id = substr(m.key, ?)
+                          )
+                          AND NOT EXISTS (
+                              SELECT 1 FROM state_meta AS t
+                              WHERE t.key = ? || substr(m.key, ?)
+                          )
+                    )
+                    SELECT admission_id FROM expired""",
+                (
+                    len(RESULT_PREFIX) + 1,
+                    RESULT_PREFIX + "%",
+                    len(RESULT_PREFIX) + 1,
+                    ADMISSION_PREFIX,
+                    len(RESULT_PREFIX) + 1,
+                ),
+                )
+            ]
+            if expired:
+                keys = [RESULT_PREFIX + admission_id for admission_id in expired]
+                conn.execute(
+                    f"DELETE FROM state_meta WHERE key IN ({','.join('?' for _ in keys)})",
+                    keys,
+                )
+            return len(expired)
+
+        return self._execute_write(write)
+
     def _guarded_ids(self, conn, ids: Iterable[str]) -> set:
         """Ids in *ids* protected by a live turn lease / compression lock. Idle compression-ended
         parents are closed, not live, so they are not guarded (prune and delete share this)."""
@@ -499,7 +545,13 @@ class SessionMaintenanceMixin:
         Messaging and UI sources are never touched here. See #54189.
         """
         from hermes_state_repair import _release_auto_maintenance_lock, _try_acquire_auto_maintenance_lock
-        result: dict[str, Any] = {"skipped": False, "pruned": 0, "closed": 0, "vacuumed": False}
+        result: dict[str, Any] = {
+            "skipped": False,
+            "pruned": 0,
+            "closed": 0,
+            "vacuumed": False,
+            "orphan_results_pruned": 0,
+        }
         if retention_days is None or retention_days < 0:
             # A negative retention would build a future cutoff and match every ended
             # session; auto_prune=false is the disable switch, not a negative bound.
@@ -525,6 +577,7 @@ class SessionMaintenanceMixin:
             # _MAX_LEASE_S=900 per call, so a multi-minute step renews per step rather than
             # once at entry. No-op when the watchdog is not armed; never raises.
             report_startup_progress(900.0, phase="state_db_auto_prune")
+            result["orphan_results_pruned"] = self.prune_orphan_admission_results()
             result["pruned"] = pruned = self.prune_sessions(
                 older_than_days=retention_days, sessions_dir=sessions_dir, exclude_active_write_guards=True)
             report_startup_progress(900.0, phase="state_db_auto_sweep")
@@ -575,8 +628,9 @@ class SessionMaintenanceMixin:
             self.set_meta("last_auto_prune", str(now))
             if closed or pruned > 0:
                 logger.info("state.db auto-maintenance: closed %d stale open session(s), "
-                            "pruned %d session(s) inactive for %d days%s",
-                            len(closed), pruned, retention_days, " + VACUUM" if result["vacuumed"] else "")
+                            "pruned %d session(s) inactive for %d days, reclaimed %d orphan result(s)%s",
+                            len(closed), pruned, retention_days, result["orphan_results_pruned"],
+                            " + VACUUM" if result["vacuumed"] else "")
         except Exception as exc:
             # Maintenance must never block startup.
             logger.warning("state.db auto-maintenance failed: %s", exc)

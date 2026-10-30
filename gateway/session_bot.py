@@ -730,18 +730,25 @@ async def recover_bot_deliveries(authority):
                 continue
             await write_receipt(home, record)
             remember_receipt(authority, home, record)
-        row = authority.db.get_session_by_title('Bot Chat')
-        if row is None:
-            return
-        target = authority.db.get_session(authority.db.get_compression_tip(row['id']))
+        def load_bound_target():
+            row = authority.db.get_session_by_title('Bot Chat')
+            if row is None:
+                return None
+            target = authority.db.get_session(authority.db.get_compression_tip(row['id']))
+            if target is None:
+                return None
+            from hermes_state_local import POLICY_PREFIX
+            with authority.db._read_ctx() as conn:
+                bound = conn.execute(
+                    'SELECT 1 FROM state_meta WHERE key=?',
+                    (POLICY_PREFIX + (target.get('chat_id') or target['id']),),
+                ).fetchone()
+            return target if bound else None
+
+        target = await asyncio.to_thread(load_bound_target)
         if target is None:
             return
-        from hermes_state_local import POLICY_PREFIX
-        with authority.db._read_ctx() as conn:
-            bound = conn.execute('SELECT 1 FROM state_meta WHERE key=?',
-                (POLICY_PREFIX + (target.get('chat_id') or target['id']),)).fetchone()
-        if not bound:
-            return  # Unowned history requires a native ticket, never the first remote sender.
+        # Unowned history requires a native ticket, never the first remote sender.
         actor = Principal(target['user_id'], authority.profile_id,
                           frozenset({'session:submit', 'session:read'}), 'bot-owner-recovery')
         await _migrate(authority, actor, home, root)

@@ -104,16 +104,28 @@ async def forward(connection, params):
     request_id = lambda n: base if n == 0 else f'{base}:{n}'
     pinned = lambda conn, sid: conn.execute('SELECT 1 FROM state_meta WHERE key=?', (
         identity_key(actor.subject, sid, params['input_id']),)).fetchone() is not None
-    generation, sid = first_generation(
-        authority.db, lambda n: local_identity(authority.profile_id, actor.subject, request_id(n)), pinned=pinned)
+    def resolve_context():
+        return first_generation(
+            authority.db,
+            lambda n: local_identity(authority.profile_id, actor.subject, request_id(n)),
+            pinned=pinned,
+        )
+
+    generation, sid = await asyncio.to_thread(resolve_context)
     key = request_id(generation)
     authority._require_admission_open()
-    if authority.db.get_session(sid) is not None:
+
+    def restore_existing():
+        if authority.db.get_session(sid) is None:
+            return None
         receipt = local_receipt(authority.db, sid)
-        if json.loads(receipt['policy']['request_json']).get('a2a_identity') != identity:
+        policy_request = json.loads(receipt['policy']['request_json'])
+        if policy_request.get('a2a_identity') != identity:
             raise RuntimeStoreError('admission_conflict')
-        ref = restore_local_session(authority, sid)
-    else:
+        return restore_local_session(authority, sid)
+
+    ref = await asyncio.to_thread(restore_existing)
+    if ref is None:
         # Historical `a2a-{agent}-{slug}` titles discarded peer/tenant identity and collapsed
         # context characters, and those `hermes chat --source a2a` rows stored no origin, so a
         # titled row never proves it belongs to this exact conversation. Never adopt or retitle
@@ -121,7 +133,7 @@ async def forward(connection, params):
         # slug collides: start this identity's own canonical session and leave the old row be.
         from plugins.platforms.a2a.adapter import _safe_context_slug
         title = f'a2a-{params["agent"]}-{_safe_context_slug(params["context_id"])}'
-        legacy = authority.db.get_session_by_title(title)
+        legacy = await asyncio.to_thread(authority.db.get_session_by_title, title)
         if legacy is not None:
             logger.warning('A2A: pre-authority session %s titled %r has no peer identity; '
                            'forwarding into a new session instead of adopting it', legacy['id'], title)
@@ -137,7 +149,7 @@ async def forward(connection, params):
         await connection.resume(ref, {})
     receipt = await authority.submit(actor, Submission(params['input_id'], ref, {'text': params['text']}, 'queue'))
     from gateway.session_results import admission_result
-    saved = admission_result(authority.db, receipt.admission_id)
+    saved = await asyncio.to_thread(admission_result, authority.db, receipt.admission_id)
     return dict(asdict(receipt), session_id=ref.session_id,
                 result=saved['result'] if saved is not None else None)
 

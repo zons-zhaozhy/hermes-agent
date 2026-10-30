@@ -2119,12 +2119,11 @@ DEFAULT_CONFIG = {
         # Set to false to disable. See #69089.
         "loop_watchdog": True,
         # Watchdog tuning (defaults mirror gateway/shutdown_watchdog.py): probe_interval = seconds
-        # between probes; probe_timeout = seconds before an unprocessed probe counts as a miss;
-        # max_strikes = consecutive misses before hard-exit 75 (~90-120s of sustained loop block at
-        # the defaults).
+        # between probes; probe_timeout = a miss's deadline; max_strikes = hard-exit 75.
         "loop_watchdog_probe_interval_s": 30.0,
         "loop_watchdog_probe_timeout_s": 10.0,
         "loop_watchdog_max_strikes": 3,
+        "loop_slow_callback_stack_s": 1.0,
         # Allow all users without allowlists (security opt-in).
         "allow_all_users": False,
         # Bot-to-bot loop guard: admitted bot messages per conversation before a cooldown.

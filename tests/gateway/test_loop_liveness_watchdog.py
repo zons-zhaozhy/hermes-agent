@@ -189,6 +189,7 @@ def test_gateway_config_loop_watchdog_tuning_round_trip():
     assert default.loop_watchdog_probe_interval_s == 30.0
     assert default.loop_watchdog_probe_timeout_s == 10.0
     assert default.loop_watchdog_max_strikes == 3
+    assert default.loop_slow_callback_stack_s == 1.0
 
     # Explicit values round-trip
     cfg = GatewayConfig.from_dict(

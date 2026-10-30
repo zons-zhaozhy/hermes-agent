@@ -635,6 +635,8 @@ class GatewayConfig:
     loop_watchdog_probe_interval_s: float = DEFAULT_LOOP_WATCHDOG_INTERVAL_S
     loop_watchdog_probe_timeout_s: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
     loop_watchdog_max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
+    # Diagnostic threshold for a same-stack event-loop callback; logs a Python stack, never exits.
+    loop_slow_callback_stack_s: float = 1.0
     # What happens when the LAST messaging adapter goes down. ``exit`` (default) shuts the gateway
     # down with the failure verdict so a supervising service manager (systemd/launchd) restarts it;
     # ``stay_alive`` keeps the process running and leaves recovery to the reconnect watcher — for
@@ -657,7 +659,8 @@ class GatewayConfig:
         "on_all_adapters_down",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
-        "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
+        "loop_watchdog_max_strikes", "loop_slow_callback_stack_s", "unauthorized_dm_behavior",
+        "unauthorized_dm_decline_message",
     )
 
     def __post_init__(self) -> None:
@@ -744,6 +747,7 @@ class GatewayConfig:
         max_strikes = _coerce_int(pick("loop_watchdog_max_strikes"), DEFAULT_LOOP_WATCHDOG_MAX_STRIKES)
         if not 1 <= max_strikes <= 1000:
             max_strikes = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
+        slow_callback_stack_s = bounded_float("loop_slow_callback_stack_s", 1.0, 0.05, 60.0)
 
         systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
             pick("systemd_watchdog_seconds"), key_label("systemd_watchdog_seconds")
@@ -792,6 +796,7 @@ class GatewayConfig:
             loop_watchdog_probe_interval_s=bounded_float("loop_watchdog_probe_interval_s", DEFAULT_LOOP_WATCHDOG_INTERVAL_S, 1.0, 3600.0),
             loop_watchdog_probe_timeout_s=bounded_float("loop_watchdog_probe_timeout_s", DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, 1.0, 600.0),
             loop_watchdog_max_strikes=max_strikes,
+            loop_slow_callback_stack_s=slow_callback_stack_s,
             on_all_adapters_down=on_all_adapters_down,
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=_normalize_choice(data.get("unauthorized_dm_behavior"), UNAUTHORIZED_DM_BEHAVIORS, "pair"),

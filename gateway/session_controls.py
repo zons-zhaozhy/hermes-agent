@@ -575,12 +575,22 @@ class AuthorityConnection:
             # resolver `session.resume title=` uses, so a hidden canonical chat answers here
             # instead of being re-minted. Never confirms another principal's titles.
             from gateway.session_local_title import resolve_titled_session
-            found = resolve_titled_session(self.authority, self.actor, params['title'], missing_ok=True)
+            def resolve_title():
+                found = resolve_titled_session(
+                    self.authority, self.actor, params['title'], missing_ok=True
+                )
+                if found is None:
+                    return None, {}, {}
+                row = self.authority.db.get_session(found.session_id) or {}
+                root = self.authority.db.get_session(
+                    self.authority.db.resolve_session_by_title(params['title'])
+                    or found.session_id
+                ) or row
+                return found, row, root
+
+            found, row, root = await asyncio.to_thread(resolve_title)
             if found is None:
                 return {'sessions': [], 'scope': 'stored'}
-            row = self.authority.db.get_session(found.session_id) or {}
-            root = self.authority.db.get_session(
-                self.authority.db.resolve_session_by_title(params['title']) or found.session_id) or row
             return {'sessions': [{'session_id': found.session_id, 'id': root.get('id') or found.session_id,
                                   'resolved_id': found.session_id, 'title': row.get('title') or '',
                                   'root_title': root.get('title') or '', 'source': row.get('source'),

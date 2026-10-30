@@ -13,6 +13,7 @@ import faulthandler
 import logging
 import os
 import signal
+import threading
 import time
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
@@ -738,12 +739,25 @@ class GatewayStartupMixin:
                 )
             except Exception:
                 logger.debug("Failed to start gateway loop liveness watchdog", exc_info=True)
+        monitor = getattr(self, "_slow_loop_stack_monitor", None)
+        if monitor is None or not monitor.is_alive():
+            try:
+                from gateway.slow_loop_monitor import SlowLoopStackMonitor
+                self._slow_loop_stack_monitor = SlowLoopStackMonitor.start(
+                    thread_id=threading.get_ident(),
+                    threshold_seconds=float(getattr(
+                        config, "loop_slow_callback_stack_s", 1.0
+                    )),
+                )
+            except Exception:
+                logger.debug("Failed to start gateway slow-loop stack monitor", exc_info=True)
 
     def _stop_loop_liveness_guards(self) -> None:
         """Disarm lifetime liveness guards before shutdown can load the loop — including the
         heartbeat writer, which would otherwise make a draining gateway look healthy to probes."""
         for attr, method, what in (
             ("_loop_liveness_watchdog", "stop", "stop gateway loop liveness watchdog"),
+            ("_slow_loop_stack_monitor", "stop", "stop gateway slow-loop stack monitor"),
             ("_loop_floor_timer_handle", "cancel", "cancel gateway loop floor timer"),
             ("_loop_heartbeat_task", "cancel", "cancel gateway loop heartbeat task"),
         ):

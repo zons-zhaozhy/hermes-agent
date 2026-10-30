@@ -228,6 +228,7 @@ class GatewayRuntimeInitMixin:
         self._gateway_started_at: float = time.time()
         self._loop_heartbeat_task: Optional[asyncio.Task] = None
         self._loop_floor_timer_handle = self._loop_liveness_watchdog = None
+        self._slow_loop_stack_monitor = None
         # scale-to-zero: gateway-scoped "last inbound seen" clock, stamped in _handle_message (the single
         # inbound chokepoint) and seeded to "now" so a fresh gateway isn't idle from epoch.
         self._last_inbound_at: float = time.time()
