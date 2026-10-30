@@ -16,14 +16,8 @@ import queue
 import threading
 import time
 
-from hermes_cli.gateway_client import (
-    DEFAULT_RPC_TIMEOUT,
-    DISCONNECTED,
-    NOT_SENT,
-    RESUME_KEY_MISMATCH,
-    GatewayClientError,
-    GatewayRPCError,
-)
+from hermes_cli.gateway_client import (DEFAULT_RPC_TIMEOUT, DISCONNECTED, NOT_SENT, RESUME_KEY_MISMATCH,
+                                       GatewayClientError, GatewayRPCError)
 
 logger = logging.getLogger(__name__)
 
