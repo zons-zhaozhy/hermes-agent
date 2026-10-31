@@ -30,7 +30,10 @@ _UI_SUFFIXES = (".vue", ".tsx", ".jsx", ".html", ".css", ".scss")
 # 根因即 router/index.ts 路由修改, 不识别则路由类改动整体漏拦。
 # 范围限定前端目录特征, 避免把任意工具脚本 .ts 算进 UI 源。
 _FRONTEND_TS_SEGMENTS = ("/src/", "/frontend/")
-_NON_SOURCE_SEGMENTS = ("/dist/", "/node_modules/", "/build/", "/.hermes/cache/")
+_NON_SOURCE_SEGMENTS = ("/dist/", "/node_modules/", "/build/", "/.hermes/cache/", "/__tests__/")
+# 测试文件(*.spec.ts / *.test.ts)无运行时界面语义; 计入会把 min_checked_at
+# 抬到测试文件 mtime, 既有走查证据整体误判过期——与 .d.ts 排除同理。
+_TEST_SUFFIXES = (".spec.ts", ".spec.tsx", ".test.ts", ".test.tsx", ".spec.js", ".test.js")
 _EVIDENCE_NAME = "ui_walkthrough.json"
 
 
@@ -40,6 +43,9 @@ def _is_ui_source(path: str) -> bool:
     构建产物与依赖目录内返回 False。
     """
     if any(seg in path for seg in _NON_SOURCE_SEGMENTS):
+        return False
+    # 测试文件无运行时界面语义, 与 .d.ts 同理豁免
+    if path.endswith(_TEST_SUFFIXES):
         return False
     # 声明文件(.d.ts, 构建插件再生的 auto_imports/components 类型缓存)无运行时界面
     # 语义; 计入会把 min_checked_at 抬到最近一次构建时刻, 既有走查证据整体判过期

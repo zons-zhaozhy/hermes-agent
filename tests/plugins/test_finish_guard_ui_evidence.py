@@ -63,6 +63,21 @@ class TestIsUiSource:
     def test_python_not_ui(self):
         assert ui_evidence._is_ui_source("apps/x/webapp.py") is False  # 期望: False（.py 非界面文件）
 
+    def test_spec_ts_not_ui(self):
+        # 期望: False——*.spec.ts 是测试文件，无运行时界面语义；
+        # 计入会把 min_checked_at 抬到测试文件 mtime，既有走查证据整体误判过期
+        assert ui_evidence._is_ui_source("packages/shared_ui/src/__tests__/TripleState.spec.ts") is False  # 期望: False（测试文件豁免）
+
+    def test_test_ts_not_ui(self):
+        assert ui_evidence._is_ui_source("oms/frontend/src/__tests__/api/dataSource.test.ts") is False  # 期望: False（.test.ts 测试文件豁免）
+
+    def test_tests_dir_vue_excluded(self):
+        # __tests__/ 目录内即使是 .vue 夹具也不属用户可感知界面源
+        assert ui_evidence._is_ui_source("apps/x/frontend/src/__tests__/Fixture.vue") is False  # 期望: False（__tests__ 目录豁免）
+
+    def test_router_ts_still_ui(self):
+        assert ui_evidence._is_ui_source("apps/x/frontend/src/router/index.ts") is True  # 期望: True（回归保护：正常前端 .ts 仍算 UI 源）
+
 
 class TestCheck:
     def test_no_ui_files_pass(self):
