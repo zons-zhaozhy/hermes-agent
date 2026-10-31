@@ -18,6 +18,7 @@ outcome-collector 的 outcomes.db，WAL + 进程内锁）。跨会话、跨进�
   - 无路径可提取时退化为命令文本的 token 集合（排序去重），忽略通道差异
 """
 
+import json
 import logging
 import sqlite3
 import threading
@@ -48,6 +49,7 @@ _GIT_READ_SUBCMDS = frozenset({
     "status", "log", "diff", "show", "rev-list", "branch", "blame",
     "shortlog", "describe", "ls-files", "ls-remote", "remote", "tag",
     "cat-file", "name-only", "reflog", "whatchanged", "grep", "config",
+    "rev-parse", "merge-base", "for-each-ref", "name-rev", "verify",
 })
 _SQL_WRITE_VERBS = (
     "INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "REPLACE",
@@ -93,17 +95,27 @@ def _get_conn() -> sqlite3.Connection:
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     """Contract: Preconditions: conn 为可写连接；Postconditions:
-    block_streaks 表与指纹索引存在（幂等）。"""
+    block_streaks 表与指纹索引存在（幂等）；kind 列（'blocked'=护栏拦截/
+    'error'=执行失败）缺失时经 PRAGMA table_info 判定后追加，追加同时清空
+    全部历史行——streak 窗口仅 1800s 短命，旧行 kind 不可判定，保留会让
+    执行失败行继续保有升级权（10-31 deputy-patrol 三次误杀链）。跨进程
+    并发迁移撞 duplicate column 时由调用方 except 记日志，下次调用即正常。"""
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS block_streaks (
             fingerprint TEXT PRIMARY KEY,
             count INTEGER NOT NULL DEFAULT 0,
             last_ts REAL NOT NULL,
             tools TEXT NOT NULL DEFAULT '',
-            sample TEXT
+            sample TEXT,
+            kind TEXT NOT NULL DEFAULT 'blocked'
         );
         CREATE INDEX IF NOT EXISTS idx_bs_last_ts ON block_streaks(last_ts);
     """)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(block_streaks)")}
+    if "kind" not in cols:
+        conn.execute("ALTER TABLE block_streaks ADD COLUMN kind TEXT NOT NULL DEFAULT 'blocked'")
+        conn.execute("DELETE FROM block_streaks")
+        _escalated.clear()
     conn.commit()
 
 
@@ -275,11 +287,12 @@ def _fp_key(fp: tuple) -> str:
     return "\x1f".join(fp)
 
 
-def _note_blocked(tool_name: str, args: dict, session_id: str = "") -> None:
-    """Contract: Preconditions: 已发生一次 status=blocked 的调用；
-    Postconditions: 写意图指纹计数持久化入库（只读命令豁免不计），窗口
-    过期行重置、超上限驱逐最旧，计数达阈值时置进程内升级标记；任何库
-    异常降级为 ERROR 日志不中断。"""
+def _note_blocked(tool_name: str, args: dict, session_id: str = "",
+                  kind: str = "blocked") -> None:
+    """Contract: Preconditions: 一次「未成功落地」的工具调用已发生，kind
+    区分语义（'blocked'=护栏拦截/'error'=执行失败）；
+    Postconditions: 只读命令豁免不计；写意图指纹计数经 _bump_streak 持久化，
+    达阈值时按 kind 分流（blocked 升级终止/error 仅观测告警）。"""
     fp = _intent_fingerprint(tool_name, args)
     if not fp:
         return
@@ -289,6 +302,18 @@ def _note_blocked(tool_name: str, args: dict, session_id: str = "") -> None:
             "block_escalation: 只读命令被拦（指纹=%s），豁免升级计数",
             _fp_key(fp))
         return
+    bumped = _bump_streak(fp, tool_name, args, kind)
+    if bumped is None:
+        return
+    _streak_threshold_action(bumped[0], bumped[1], bumped[2], session_id, fp)
+
+
+def _bump_streak(fp: tuple, tool_name: str, args: dict, kind: str) -> "tuple[int, set, str] | None":
+    """Contract: Preconditions: fp 为非空意图指纹，kind 为本次语义；
+    Postconditions: 指数计数持久化入库（窗口过期行重置、超上限驱逐最旧，
+    INSERT/UPDATE 显式写 kind；同指纹已有 blocked 史时行 kind 不因 error
+    降级——拦截挣扎不弱化升级权）；任何库异常降级为 ERROR 日志并返回
+    None（不中断拦截链）。"""
     now = time.time()
     key = _fp_key(fp)
     try:
@@ -298,7 +323,7 @@ def _note_blocked(tool_name: str, args: dict, session_id: str = "") -> None:
                 _ensure_schema(conn)
                 conn.execute("DELETE FROM block_streaks WHERE last_ts < ?", (now - _WINDOW_SECS,))
                 row = conn.execute(
-                    "SELECT count, tools FROM block_streaks WHERE fingerprint = ?",
+                    "SELECT count, tools, kind FROM block_streaks WHERE fingerprint = ?",
                     (key,)).fetchone()
                 if row is None:
                     while conn.execute("SELECT COUNT(*) FROM block_streaks").fetchone()[0] >= _STATE_CAP:
@@ -310,27 +335,48 @@ def _note_blocked(tool_name: str, args: dict, session_id: str = "") -> None:
                         conn.execute("DELETE FROM block_streaks WHERE fingerprint = ?",
                                      (oldest[0],))
                     conn.execute(
-                        "INSERT INTO block_streaks (fingerprint, count, last_ts, tools, sample) "
-                        "VALUES (?, 1, ?, ?, ?)",
-                        (key, now, tool_name, str(args)[:200]))
-                    count, tools = 1, {tool_name}
+                        "INSERT INTO block_streaks (fingerprint, count, last_ts, tools, sample, kind) "
+                        "VALUES (?, 1, ?, ?, ?, ?)",
+                        (key, now, tool_name, str(args)[:200], kind))
+                    count, tools, kind_now = 1, {tool_name}, kind
                 else:
                     count = row["count"] + 1
                     tools = set(filter(None, row["tools"].split(","))) | {tool_name}
+                    kind_now = "blocked" if row["kind"] == "blocked" or kind == "blocked" else "error"
                     conn.execute(
-                        "UPDATE block_streaks SET count = ?, last_ts = ?, tools = ? "
+                        "UPDATE block_streaks SET count = ?, last_ts = ?, tools = ?, kind = ? "
                         "WHERE fingerprint = ?",
-                        (count, now, ",".join(sorted(tools)), key))
+                        (count, now, ",".join(sorted(tools)), kind_now, key))
                 conn.commit()
             finally:
                 conn.close()
     except Exception as err:
         logger.error("block_escalation: 持久化失败（不中断拦截链）: %s", err)
+        return None
+    return count, tools, kind_now
+
+
+def _streak_threshold_action(count: int, tools: set, kind: str, session_id: str,
+                             fp: tuple) -> None:
+    """Contract: Preconditions: count/kind 为刚落库的 streak 计数与语义；
+    Postconditions: kind=blocked 达阈值时置进程内升级标记并 WARNING（升级
+    终止）；kind=error 达阈值时仅 WARNING 观测（执行失败循环——周期任务
+    跨班合法重复与同会话死循环不可零成本区分，终止权只保留给护栏拦截，
+    10-31 deputy-patrol 三次误杀链）。已知语义取舍：同指纹先累积 error 计
+    数后首次 blocked 即达阈值升级（count 不分车道）——保守方向可接受，
+    误升级代价仅一次终止提示文本且随后 ok 清账，反向（blocked 后 error
+    保留升级权）为设计意图。"""
+    if count < _STREAK_LIMIT:
         return
-    if count >= _STREAK_LIMIT:
+    if kind == "blocked":
         _escalated.setdefault(session_id, set()).add(fp)
         logger.warning(
             "block_escalation: 同一意图第 %d 次被拦（通道=%s，跨会话持久计数），升级终止",
+            count, sorted(tools))
+    else:
+        logger.warning(
+            "block_escalation: 同一意图第 %d 次执行失败（通道=%s，跨会话持久计数），"
+            "观测告警不终止（执行失败≠护栏拦截，杀班权仅限拦截循环）",
             count, sorted(tools))
 
 
@@ -375,17 +421,35 @@ def _clear_streak(tool_name: str, args: dict) -> None:
             del _escalated[sid]
 
 
+def _is_semantic_block(status: str, result: "str | dict | None") -> bool:
+    """Contract: Preconditions: status 为 hook 复播状态，result 为工具原始
+    结果（str/None/dict）；Postconditions: 返回该调用是否属于护栏拦截语义
+    ——status=blocked（guardrail/pre_tool_call 插件块显式复播，
+    tool_executor.py emit_post），或 result 包体 status=blocked（terminal
+    工具体护栏拒绝：_blocked_json 含 error 键，被 model_tools
+    _tool_result_observer_fields 复播为 error——按 status 分流会漏判真拦截）。
+    result 非 JSON/非 dict 一律 False（执行失败归 error 车道）。"""
+    if status == "blocked":
+        return True
+    try:
+        parsed = json.loads(result) if isinstance(result, str) else result
+        return isinstance(parsed, dict) and parsed.get("status") == "blocked"
+    except Exception as err:
+        logger.warning("block_escalation: result 包体解析失败，按执行失败车道处理: %s", err)
+        return False
+
+
 def _on_post_tool_call(tool_name: str = "", status: str = "", error_type: str = "",
                        args: dict | None = None, session_id: str = "", **kwargs) -> None:
     """Contract: Preconditions: 核心以 status/error_type 复播工具结果；
-    Postconditions: status=blocked 时记录意图指纹；status=error 时同指纹
-    计数（未成功落地与被拦同构——error 循环曾无任何观测分支，读工具
-    放行后的无进展循环零拦截零升级）；status=ok 时同指纹清账（成功落地
-    =streak 作废，防误判残留）；纯观察无返回值。"""
+    Postconditions: 护栏拦截语义（status=blocked 或包体 status=blocked）按
+    blocked 车道计数（达阈值升级终止）；纯执行失败按 error 车道计数（达
+    阈值仅观测告警不终止——周期任务跨班合法重复与死循环不可零成本区分，
+    终止权只保留给拦截循环，10-31 deputy-patrol 三次误杀链）；status=ok
+    时同指纹清账（成功落地=streak 作废，防误判残留）；纯观察无返回值。"""
     if status in ("blocked", "error"):
-        # blocked/error 同为「未成功落地」——同指纹计数（error 循环曾无任何
-        # 观测分支，读工具放行后的无进展循环零拦截零升级）。
-        _note_blocked(tool_name, args or {}, session_id=session_id)
+        kind = "blocked" if _is_semantic_block(status, kwargs.get("result")) else "error"
+        _note_blocked(tool_name, args or {}, session_id=session_id, kind=kind)
     elif status == "ok":
         _clear_streak(tool_name, args or {})
 

@@ -298,7 +298,7 @@ def gateway_lifecycle_block(
             "or determine whether it is independent of Hermes. Perform authorized "
             "LaunchAgent maintenance from a separate shell outside the gateway, "
             "not by switching launchctl verbs to bypass this rejection.",
-            "error",
+            "blocked",
         )
     guard_cwd_base = get_session_cwd(session_key)
     if guard_cwd_base is None:
@@ -322,20 +322,20 @@ def gateway_lifecycle_block(
             "Nothing in the command is known to contain a gateway lifecycle command, but a "
             "script the command executes must be scannable (a regular text file under 1 MiB) "
             "before it can run inside the gateway process.",
-            "error",
+            "blocked",
         )
     if unsafe:
         # Name the ownership-scoped route for image-name kills: the intent is almost always "stop
         # MY background job", and re-rolling the same over-broad spelling is what takes the gateway down.
         if lifecycle_scan_root_within_budget(command) and contains_host_interpreter_kill(command):
-            return _blocked_json(HOST_INTERPRETER_KILL_REJECTION, "error")
+            return _blocked_json(HOST_INTERPRETER_KILL_REJECTION, "blocked")
         return _blocked_json(
             "Blocked: command or referenced script cannot restart, stop, or "
             "uninstall the gateway from inside the gateway process. The gateway would "
             "kill this command before it could complete (SIGTERM propagates "
             "to child processes). Run `hermes gateway restart` from a "
             "separate shell outside the running gateway.",
-            "error",
+            "blocked",
         )
     return None
 
