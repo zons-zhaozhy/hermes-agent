@@ -13,6 +13,7 @@ from pathlib import Path
 from plugins.finish_guard import ui_evidence
 
 _DEFAULT_CLAIM = "顶栏显示 身份 · admin；全部导航目标可达非404"
+_DEFAULT_EVIDENCE = "CDP 实访 7 个导航目标, 全部 HTTP 200 + DOM 落地渲染"
 
 
 def _mk_repo(tmp_path: Path) -> tuple[Path, Path]:
@@ -41,9 +42,13 @@ def _mk_shot(tmp_path: Path, mtime: float | None = None) -> Path:
 
 def _write_evidence(repo: Path, checked_at: int, shot: Path | None = None,
                     assets: list[str] | None = None,
-                    claim: str = _DEFAULT_CLAIM) -> None:
+                    claim: str = _DEFAULT_CLAIM,
+                    evidence: str | None = _DEFAULT_EVIDENCE) -> None:
+    a: dict = {"claim": claim, "result": "pass"}
+    if evidence is not None:
+        a["evidence"] = evidence
     w: dict = {"url": "http://127.0.0.1:8130/", "checked_at": checked_at,
-               "assertions": [{"claim": claim, "result": "pass"}]}
+               "assertions": [a]}
     if shot is not None:
         w["screenshots"] = [str(shot)]
     if assets is not None:
@@ -200,3 +205,42 @@ class TestRepoRoot:
     def test_finds_git_ancestor(self, tmp_path):
         repo, src = _mk_repo(tmp_path)
         assert ui_evidence._repo_root(str(src)) == repo  # 期望: 从源文件祖先链定位 .git 根
+
+
+class TestHardAssertionEvidence:
+    """硬断言与可达性断言必须带 evidence——关键词命中只证明措辞, 不证明实测。"""
+
+    def _mk(self, tmp_path: Path, claim: str, evidence: str | None) -> tuple[Path, dict]:
+        repo = tmp_path / "repo"
+        (repo / ".hermes").mkdir(parents=True, exist_ok=True)
+        (repo / ".hermes" / "ui_hard_assertions.json").write_text(
+            json.dumps({"staff": ["键盘"]}), encoding="utf-8")
+        a: dict = {"claim": claim, "result": "pass"}
+        if evidence is not None:
+            a["evidence"] = evidence
+        w = {"role": "staff", "url": "http://127.0.0.1:8130/",
+             "checked_at": int(time.time()), "assertions": [a]}
+        return repo, w
+
+    def test_keyword_hit_without_evidence_rejected(self, tmp_path):
+        repo, w = self._mk(tmp_path, "键盘可达", None)
+        defect = ui_evidence._hard_assertion_defect(0, w, repo)
+        # 期望: 关键词命中但无 evidence 被拒（措辞迎合通道封堵）
+        assert defect is not None and "evidence" in defect
+
+    def test_keyword_hit_with_evidence_passes(self, tmp_path):
+        repo, w = self._mk(tmp_path, "键盘可达", "CDP Input.dispatchKeyEvent Tab×8 焦点链实测")
+        defect = ui_evidence._hard_assertion_defect(0, w, repo)
+        assert defect is None  # 期望: 同条带实测证据则放行
+
+    def test_reachability_claim_without_evidence_rejected(self, tmp_path):
+        _repo, w = self._mk(tmp_path, "全部导航链接可达", None)
+        defect = ui_evidence._validate_assertions(0, w)
+        # 期望: 可达性断言缺 evidence 被拒（实访记录是唯一凭证）
+        assert defect is not None and "evidence" in defect
+
+    def test_no_declaration_file_no_enforcement(self, tmp_path):
+        repo = tmp_path / "bare"
+        (repo / ".hermes").mkdir(parents=True, exist_ok=True)
+        w = {"role": "staff", "assertions": [{"claim": "键盘可达", "result": "pass"}]}
+        assert ui_evidence._hard_assertion_defect(0, w, repo) is None  # 期望: 未声明项目零影响（向后兼容）

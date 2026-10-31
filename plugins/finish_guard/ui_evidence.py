@@ -81,6 +81,11 @@ def _validate_assertions(idx: int, w: dict) -> str | None:
     if not any("可达" in str(a.get("claim")) for a in assertions if isinstance(a, dict)):
         return (f"walkthroughs[{idx}] 缺全站可达性断言——至少 1 条 claim 含「可达」"
                 "（枚举页面全部链接/导航目标逐一实访, 断言非 404/非静默回退）")
+    reach = [a for a in assertions if isinstance(a, dict) and "可达" in str(a.get("claim"))]
+    bare = [str(a.get("claim"))[:40] for a in reach if not str(a.get("evidence") or "").strip()]
+    if bare:
+        return (f"walkthroughs[{idx}] 可达性断言缺 evidence: {bare}——"
+                "claim 措辞不算证据, 同条须给可核对的实访记录(URL 清单/HTTP 状态/实际渲染结果)")
     return None
 
 
@@ -118,6 +123,13 @@ def _hard_assertion_defect(idx: int, w: dict, root: Path) -> str | None:
         return (f"walkthroughs[{idx}](role={role}) 走查断言全软——本项目已在 "
                 f"ui_hard_assertions.json 声明硬断言关键词 {keywords}, 至少 1 条 claim "
                 f"须命中（软断言「渲染正常/N 行/样式表加载」只证页面活着, 不证任务完成）")
+    hit = [a for a in assertions
+           if isinstance(a, dict) and any(str(kw) in str(a.get("claim", "")) for kw in keywords)]
+    bare = [str(a.get("claim"))[:40] for a in hit if not str(a.get("evidence") or "").strip()]
+    if bare:
+        return (f"walkthroughs[{idx}](role={role}) 硬断言命中关键词但缺 evidence: {bare}——"
+                f"关键词命中只证明措辞, 同条须给可核对的实测证据(命令/选择器/实测值), "
+                f"声明关键词 {keywords}")
     return None
 
 
