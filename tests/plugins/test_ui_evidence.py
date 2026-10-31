@@ -38,8 +38,9 @@ def test_missing_reachability_assertion_rejected() -> None:
 
 def test_reachability_assertion_accepted() -> None:
     w = {"url": "http://x/", "checked_at": 9e18,
-         "assertions": [{"claim": "全部导航目标可达非404", "result": "pass"}]}
-    assert ue._validate_assertions(0, w) is None  # 期望: 含可达锚放行
+         "assertions": [{"claim": "全部导航目标可达非404", "result": "pass",
+                         "evidence": "CDP 实访 6 个导航目标, 全部 HTTP 200 且 DOM 落地"}]}
+    assert ue._validate_assertions(0, w) is None  # 期望: 含可达锚且带实测证据放行
 
 
 def test_role_coverage_missing_role_rejected() -> None:
@@ -85,7 +86,8 @@ def test_check_full_evidence_passes(tmp_path: Path) -> None:
         "walkthroughs": [{"url": "http://x/", "role": "public",
                           "checked_at": int(time.time()),
                           "screenshots": [str(shot)],
-                          "assertions": [{"claim": "全部导航可达", "result": "pass"}]}],
+                          "assertions": [{"claim": "全部导航可达", "result": "pass",
+                                          "evidence": "CDP 实访导航栏 6 项, 逐项落地渲染"}]}],
     }), encoding="utf-8")
     assert ue._check_evidence([str(ui)]) is None  # 期望: 合法证据放行（tmp 仓无 dist, dom 锚降级）
 
@@ -131,8 +133,9 @@ def test_hard_assertion_hard_claim_accepted(tmp_path: Path) -> None:
     (d / "ui_hard_assertions.json").write_text(
         json.dumps({"staff": ["键盘", "一屏", "理解"]}), encoding="utf-8")
     w = {"role": "staff", "assertions": [
-        {"claim": "全程键盘零鼠标完成一次任务查看", "result": "pass"}]}
-    assert ue._hard_assertion_defect(0, w, tmp_path) is None  # 期望: 硬断言命中关键词放行
+        {"claim": "全程键盘零鼠标完成一次任务查看", "result": "pass",
+         "evidence": "CDP Input.dispatchKeyEvent 依次 Tab/Enter 走完 5 步, 全程未用鼠标"}]}
+    assert ue._hard_assertion_defect(0, w, tmp_path) is None  # 期望: 硬断言命中关键词且带实测证据放行
 
 
 def test_hard_assertion_no_config_pass_through(tmp_path: Path) -> None:
