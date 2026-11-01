@@ -312,7 +312,9 @@ def _has_commit_evidence(response: str) -> bool:
 
 def _on_pre_verify(**kwargs) -> dict:
     """Contract: Preconditions: 回合以文本收尾（核心侧 changed_paths 可为空
-    ——零写入回合同样咨询，见 turn_stop_gates._pre_verify_nudge）；
+    ——零写入回合经本回调的 pre_verify_zero_edit 声明同样咨询，
+    见 turn_stop_gates._pre_verify_nudge 与 hermes_cli.plugins.
+    pre_verify_zero_edit_requested）；
     Postconditions: ①零写入且本会话 todo 有 active 项（登记不等于完成）、
     ②最终回复尾部为请示式收尾、③改动了代码文件但回复无 commit 证据，
     三者任一命中且 attempt 未超上限时返回 {"action":"continue","message":...}
@@ -464,6 +466,11 @@ def _transform_llm_output(response_text: str = "", **kwargs) -> "str | None":
         "「必须先确认：」项呈报。当轮授权范围 = 用户当轮原话里明确要求产出的东西"
         "（含其伴生产物）；分析、设计、评审、调研类请求不等于建造授权。"
     )
+
+
+# 声明式 opt-in：零写入回合也咨询本回调（核心默认契约=零写入不咨询 pre_verify；
+# 机制见 hermes_cli.plugins.pre_verify_zero_edit_requested）
+_on_pre_verify.pre_verify_zero_edit = True  # type: ignore[attr-defined] # pyright: ignore[reportFunctionMemberAccess]
 
 
 def register(ctx: Any) -> None:

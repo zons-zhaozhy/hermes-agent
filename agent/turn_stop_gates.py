@@ -52,16 +52,18 @@ def _verify_on_stop_nudge(agent) -> Optional[str]:
 
 def _pre_verify_nudge(agent, final_response, attempt: int) -> Optional[str]:
     """A registered ``pre_verify`` hook may keep the agent going one more turn;
-    consulted on every text stop. ``changed_paths`` may be empty (zero-edit
-    turn) — each hook decides from its payload; when no hook is registered
-    there is no default continuation cost."""
+    consulted on text stops that edited files, plus zero-edit stops only when a
+    registered callback opts in via the ``pre_verify_zero_edit`` function
+    attribute (the default contract — verify what changed — stays untouched);
+    when no hook is registered there is no default continuation cost."""
     _edited = sorted(getattr(agent, "_turn_file_mutation_paths", set()) or [])
     try:
         from agent.verify_hooks import max_verify_nudges
         from hermes_cli.lifecycle import has_hook
-        from hermes_cli.plugins import get_pre_verify_continue_message
+        from hermes_cli.plugins import get_pre_verify_continue_message, pre_verify_zero_edit_requested
 
-        if has_hook("pre_verify") and attempt < max_verify_nudges():
+        if has_hook("pre_verify") and (_edited or pre_verify_zero_edit_requested()) \
+                and attempt < max_verify_nudges():
             # Posture is fixed for the session — resolve once + cache.
             coding = getattr(agent, "_resolved_is_coding", None)
             if coding is None:

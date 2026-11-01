@@ -1867,6 +1867,19 @@ def iter_hook_callbacks(hook_name: str) -> tuple[Callable, ...]:
     return get_plugin_manager().iter_hook_callbacks(hook_name)
 
 
+def pre_verify_zero_edit_requested() -> bool:
+    """True when a registered ``pre_verify`` callback opted into zero-edit stops via the
+    ``pre_verify_zero_edit = True`` function attribute. The stop-gate consult contract in
+    ``agent.turn_stop_gates._pre_verify_nudge`` leaves zero-edit turns unconsulted by default
+    (pre_verify verifies what changed); a callback that also guards stops with no edits —
+    e.g. finish_guard's todo-debt enforcement — declares this attribute, declaration-style
+    like ``hold_stream``."""
+    return any(
+        getattr(cb, "pre_verify_zero_edit", False)
+        for cb in iter_hook_callbacks("pre_verify")
+    )
+
+
 def fire_pre_command_hook(
     *, surface: str, command: str, alias_used: str, args_raw: str,
     session_key: Optional[str] = None, platform: Optional[str] = None,
