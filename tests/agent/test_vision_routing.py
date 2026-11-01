@@ -176,6 +176,17 @@ model:
   default: deepseek-v4-pro
 """)
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+        # Deterministic capability catalog: isolated_home has no disk cache, and the
+        # auto chain probes models.dev with allow_network=True (agent/image_routing.py
+        # _probe_models_dev) — a cold cache + failed fetch degrades to permissive,
+        # un-skipping the text-only main and returning a client (intermittent red,
+        # 2/4 single-test runs before this anchor). Pin the catalog so the skip
+        # contract is asserted, not the network.
+        monkeypatch.setattr(
+            "agent.models_dev.fetch_models_dev",
+            lambda *args, **kwargs: {"deepseek": {"models": {
+                "deepseek-v4-pro": {"modalities": {"input": ["text"]}}}}},
+        )
         _fresh_modules()
 
         from agent.auxiliary_client import resolve_vision_provider_client
