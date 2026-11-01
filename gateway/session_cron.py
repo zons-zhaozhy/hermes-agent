@@ -216,7 +216,11 @@ async def operation(authority, name, params, actor=None):
         raise RuntimeStoreError('invalid_params')
     ref = SessionRef(authority.profile_id, params['session_id'])
     authority.authorize(actor, ref, 'session:submit')
-    row = get_session_admission(authority.db, admission_id=params['admission_id'])
+    # Owner-loop guard: admission reads are synchronous SQLite — run them in a
+    # worker thread like every other ledger IO in this store (tracked_write/N50),
+    # or each status poll blocks the gateway event loop for the read's duration.
+    row = await asyncio.to_thread(
+        get_session_admission, authority.db, admission_id=params['admission_id'])
     from gateway.owner_identity import same_owner
     if row is None or row['target_session_id'] != ref.session_id or not same_owner(row['principal_id'], actor.subject):
         raise RuntimeStoreError('permission_denied')
@@ -231,7 +235,8 @@ async def operation(authority, name, params, actor=None):
     result, flags = None, {}
     if row['status'] == 'terminal':
         from gateway.session_results import admission_result
-        saved = admission_result(authority.db, row['admission_id'])
+        saved = await asyncio.to_thread(
+            admission_result, authority.db, row['admission_id'])
         result = saved['result'].get('cron_result') if saved else None
         flags = (saved['result'].get('cron_job_flags') or {}) if saved else {}
         if result is None:
