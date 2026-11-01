@@ -14,7 +14,7 @@
   6-9 范式级信号（改变问题定义/推理形态/系统架构的物种）
 
 用法:
-    python paradigm_triage.py [--papers-dir PATH] [--days N] [--top K] [--json]
+    python paradigm_triage.py [--papers-dir PATH] [--days N] [--top K] [--json] [--queue-file PATH]
     Ollama 不可用时降级为信号词预分诊并打 DEGRADED 标记（exit 0 仍出结果，
     但 stderr 明示降级——禁静默）。
 
@@ -30,8 +30,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 from pathlib import Path
@@ -193,11 +195,33 @@ def triage(papers_dir: Path, days: int, top: int, quiet: bool = False) -> dict[s
     return result
 
 
+def _write_queue_file(path: Path, result: dict[str, Any]) -> bool:
+    """队列落盘（tmp+os.replace 原子写），供日学习 job 以文件契约消费。
+
+    Contract:
+      Preconditions: result 为 triage() 返回结构；path 的父目录可创建或已存在
+      Postconditions: 成功返回 True；失败 WARNING 到 stderr 返回 False（不
+                      raise——stdout 主产出不受影响，调用方以非零退出码暴露）
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name, suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(result, fh, ensure_ascii=False, indent=1)
+        os.replace(tmp, str(path))
+        return True
+    except OSError as e:
+        print(f"WARN: 队列落盘失败 {path}: {e}", file=sys.stderr)
+        return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="范式级信号分诊（判断题→本地小模型）")
     parser.add_argument("--papers-dir", default=str(DEFAULT_PAPERS_DIR))
     parser.add_argument("--days", type=int, default=1, help="回看天数")
     parser.add_argument("--top", type=int, default=5, help="输出 top-K")
+    parser.add_argument("--queue-file", default=None,
+                        help="队列落盘路径（JSON 原子写）——日学习 job 消费的文件契约")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -207,6 +231,8 @@ def main() -> int:
         return 2
 
     result = triage(papers_dir, args.days, args.top)
+    if args.queue_file and not _write_queue_file(Path(args.queue_file), result):
+        return 3
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
