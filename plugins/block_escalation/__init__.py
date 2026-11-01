@@ -190,15 +190,38 @@ def _git_is_readonly(words: list, wi: int) -> bool:
     return sub in _GIT_READ_SUBCMDS
 
 
+def _unwrap_substitution(seg: str) -> "str | None":
+    """Contract: Preconditions: seg 为已 strip 非空命令段；Postconditions:
+    段为 ``NAME=$(cmd)`` 赋值或 ``$(cmd)`` 直接替换形态时返回内部 cmd
+    （尾部配对 ')' 剥一层，缺省不剥——段尾常被 shell 分隔符截断），
+    其余返回 None。变量名限定 shell 合法标识符（isidentifier），零正则。"""
+    inner_start = -1
+    eq = seg.find("=")
+    if eq > 0 and seg[:eq].isidentifier() and seg[eq + 1:eq + 3] == "$(":
+        inner_start = eq + 3
+    elif seg.startswith("$("):
+        inner_start = 2
+    if inner_start < 0 or inner_start >= len(seg):
+        return None
+    inner = seg[inner_start:].strip()
+    if inner.endswith(")"):
+        inner = inner[:-1].strip()
+    return inner or None
+
+
 def _segment_is_readonly(seg: str) -> bool:
     """Contract: Preconditions: seg 为命令段（已 strip）；Postconditions:
     返回该段是否可判定为只读——无落盘重定向，且段首词在白名单 / git 读
-    子命令 / sqlite3·psql 纯查询。零正则。"""
+    子命令 / sqlite3·psql 纯查询 / 命令替换赋值（VAR=$(只读命令)，解
+    包裹递归判定，不放松写检测）。零正则。"""
     seg = seg.strip()
     if not seg:
         return True
     if _redirects_write(seg):
         return False
+    unwrapped = _unwrap_substitution(seg)
+    if unwrapped is not None and unwrapped != seg:
+        return _segment_is_readonly(unwrapped)
     words = seg.split()
     if not words:
         return True
