@@ -882,10 +882,147 @@ def explicit_output_cap_middleware(**kwargs: Any) -> Optional[dict]:
             "reason": f"fill absent output cap from model.max_tokens={cap}"}
 
 
+# ── Provider output-cap ceiling (providers.<p>.models.<m>.max_output_tokens) ──
+#
+# The bigmodel/zai coding channel validates max_tokens against a hard
+# [1, 131072] band and answers anything above with HTTP 400 code 1210
+# ("max_tokens参数非法：限制数值范围[1,131072]") — confirmed for glm-5.2,
+# glm-5.3 and glm-5.3-flash. Recovery paths that compute a budget from the
+# context window (e.g. turn_overflow's window-minus-input estimate ≈ 250k on
+# a 400k-window model) then hit that server band on the next call: one
+# failed attempt per occurrence, self-healing only because the turn retry
+# consumes the ephemeral cap. The auxiliary client already strips the cap on
+# 1210; the main loop had no equivalent. This middleware clamps the FINAL
+# request cap (any source: config, subagent budget, recovery estimate) to
+# the per-model ceiling declared in config — absent key = no-op.
+
+_CEILING_CACHE_LOCK = threading.Lock()
+_CEILING_CACHE: dict[str, Any] = {"fingerprint": None, "value": None}
+
+
+def _collect_provider_ceilings(providers: Any) -> dict:
+    """Contract:
+    Preconditions: *providers* is the config ``providers`` mapping (any shape).
+    Postconditions: dict mapping lower-case "provider/model" to each entry's
+    positive-int ``max_output_tokens``; non-dict / absent entries skipped.
+    """
+    ceilings: dict = {}
+    if not isinstance(providers, dict):
+        return ceilings
+    for prov_name, prov_cfg in providers.items():
+        models = prov_cfg.get("models") if isinstance(prov_cfg, dict) else None
+        if not isinstance(models, dict):
+            continue
+        for model_name, model_cfg in models.items():
+            limit = (model_cfg or {}).get("max_output_tokens") \
+                if isinstance(model_cfg, dict) else None
+            if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
+                ceilings[f"{str(prov_name).lower()}/{str(model_name).lower()}"] = limit
+    return ceilings
+
+
+def _resolve_output_ceilings() -> dict:
+    """Contract:
+    Preconditions: config lives at get_hermes_home()/config.yaml.
+    Postconditions: cached-by-fingerprint provider/model ceiling dict from
+    ``providers.<p>.models.<m>.max_output_tokens``; {} when absent (config
+    load failure is warned, never swallowed into a half dict).
+    """
+    from hermes_constants import get_hermes_home
+
+    path = os.path.join(get_hermes_home(), "config.yaml")
+    fingerprint = _output_cap_fingerprint(path)
+    if fingerprint is None:
+        return {}
+    with _CEILING_CACHE_LOCK:
+        if _CEILING_CACHE["fingerprint"] == fingerprint:
+            return _CEILING_CACHE["value"]
+        from hermes_cli.config import load_config
+
+        try:
+            cfg = load_config() or {}
+        except Exception as exc:
+            logger.warning("output-cap-ceiling: config load failed, acting as disabled: %s",
+                           exc, exc_info=True)
+            return {}
+        ceilings = _collect_provider_ceilings(cfg.get("providers"))
+        _CEILING_CACHE.update(fingerprint=fingerprint, value=ceilings)
+        return ceilings
+
+
+def _request_cap(request: dict) -> Optional[int]:
+    """Contract:
+    Preconditions: *request* is a chat-completions payload dict.
+    Postconditions: the positive-int ``max_tokens`` when present, else None
+    (missing / non-positive / non-int caps are not clampable).
+    """
+    cap = request.get("max_tokens")
+    if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0:
+        return cap
+    return None
+
+
+def _ceiling_key(kwargs: Any, request: dict) -> Optional[tuple]:
+    """Contract:
+    Preconditions: *request* is a chat-completions payload; *kwargs* carries
+    the middleware's ``provider``.
+    Postconditions: (provider, model) lower-case non-empty pair, else None.
+    """
+    provider = str(kwargs.get("provider") or "").strip().lower()
+    model = str(request.get("model") or "").strip().lower()
+    if not provider or not model:
+        return None
+    return provider, model
+
+
+def _clamped_request(request: dict, cap: int, ceiling: int, provider: str, model: str) -> dict:
+    """Contract:
+    Preconditions: *cap* > *ceiling* > 0 for the named provider/model.
+    Postconditions: copy of *request* with ``max_tokens`` set to *ceiling*;
+    a WARNING is logged per clamp (never silent).
+    """
+    rewritten = dict(request)
+    rewritten["max_tokens"] = ceiling
+    logger.warning(
+        "output-cap-ceiling: clamped max_tokens %d -> %d for %s/%s "
+        "(server rejects caps above the configured ceiling)",
+        cap, ceiling, provider, model)
+    return rewritten
+
+
+def output_cap_ceiling_middleware(**kwargs: Any) -> Optional[dict]:
+    """Contract:
+    Preconditions: ``kwargs['request']`` is the final provider request dict
+    for one API call; ``api_mode`` absent means chat_completions.
+    Postconditions: returns ``{'request': <copy with clamped max_tokens>}``
+    only when the request's numeric max_tokens exceeds the configured
+    ceiling for provider/model; else None (request sent untouched —
+    including requests with no cap at all).
+    """
+    request = kwargs.get("request")
+    if not isinstance(request, dict) or not isinstance(request.get("messages"), list):
+        return None
+    api_mode = str(kwargs.get("api_mode") or "").strip().lower()
+    if api_mode not in ("", "chat_completions"):
+        return None
+    cap = _request_cap(request)
+    key = None if cap is None else _ceiling_key(kwargs, request)
+    if cap is None or key is None:
+        return None
+    provider, model = key
+    ceiling = _resolve_output_ceilings().get(f"{provider}/{model}")
+    if ceiling is None or cap <= ceiling:
+        return None
+    return {"request": _clamped_request(request, cap, ceiling, provider, model),
+            "source": "output-cap-ceiling",
+            "reason": f"clamp max_tokens {cap} to provider ceiling {ceiling}"}
+
+
 def register(ctx: Any) -> None:
     """Plugin entry point: register middleware + observer hook."""
     ctx.register_middleware("llm_request", adaptive_llm_request_middleware)
     ctx.register_middleware("llm_request", explicit_output_cap_middleware)
+    ctx.register_middleware("llm_request", output_cap_ceiling_middleware)
     ctx.register_middleware("llm_execution", adaptive_llm_execution_middleware)
     ctx.register_hook("post_tool_call", on_post_tool_call)
     logger.info("adaptive-reasoning registered (issues #74725 / #13663)")
