@@ -34,7 +34,6 @@ from typing import Any
 logger = logging.getLogger("hermes.plugins.finish_guard.todo_debt")
 
 _NAMESPACE = "todo_debt"
-_MAX_LISTED_ITEMS = 10
 _MAX_CONTENT_CHARS = 200
 _ACTIVE_STATUSES = ("pending", "in_progress")
 _SETTLED_STATUSES = ("completed", "cancelled")
@@ -167,14 +166,18 @@ def _update_ledger(sid: str, items: list[Any]) -> None:
 def _foreign_debts(sid: str) -> list[dict[str, Any]]:
     """收集非本会话槽位的未清项，最老优先。
 
-    Contract: Postconditions: 返回 [{slot, updated_at, item}]，按 updated_at
-    升序；本会话槽位（本轮刚登记的正常在途任务）不列入。
+    Contract: Postconditions: 返回 [{slot, updated_at, item}]，仅含 active
+    状态项（completed/cancelled 僵尸行滤除——存量账本混有旧格式销账留痕行，
+    不过滤会把已销账事项虚报成未消化）；按 updated_at 升序；本会话槽位
+    （本轮刚登记的正常在途任务）不列入。
     """
     rows: list[dict[str, Any]] = []
     for slot, block in _load_debt()["sessions"].items():
         if slot == sid:
             continue
         for item in block.get("items", []):
+            if str(item.get("status") or "") not in _ACTIVE_STATUSES:
+                continue
             rows.append({
                 "slot": slot,
                 "updated_at": int(block.get("updated_at") or 0),
@@ -182,6 +185,22 @@ def _foreign_debts(sid: str) -> list[dict[str, Any]]:
             })
     rows.sort(key=lambda r: r["updated_at"])
     return rows
+
+
+def own_pending_items(sid: str) -> list[dict[str, Any]]:
+    """读本会话自有槽位的未清项快照（供 pre_verify 状态判据消费）。
+
+    Contract: Preconditions: sid 为本会话 id；
+    Postconditions: 返回该槽位 active 状态项列表；文件缺失/无槽位/解析失败
+    返回 []（读取端观察者语义，异常 logger.exception 后降级为空）。
+    """
+    try:
+        block = _load_debt()["sessions"].get(sid, {})
+        return [it for it in block.get("items", [])
+                if str(it.get("status") or "") in _ACTIVE_STATUSES]
+    except Exception:
+        logger.exception("todo_debt own_pending_items failed")
+        return []
 
 
 def _format_age(updated_at: int) -> str:
@@ -203,11 +222,10 @@ def _render_debt_context(rows: list[dict[str, Any]]) -> str:
     lines = [
         f"- [账龄 {_format_age(r['updated_at'])}] {r['item'].get('content') or '(无内容)'}"
         f"（来源会话 {r['slot'][:12]}，id={r['item'].get('id')}）"
-        for r in rows[:_MAX_LISTED_ITEMS]
+        for r in rows
     ]
-    extra = f"（另有 {len(rows) - _MAX_LISTED_ITEMS} 项未列出）" if len(rows) > _MAX_LISTED_ITEMS else ""
     return (
-        f"【跨会话未清账 todo_debt】检测到 {len(rows)} 项已登记但从未消化的事项{extra}。\n"
+        f"【跨会话未清账 todo_debt】检测到 {len(rows)} 项已登记但从未消化的事项。\n"
         "这些事项登记进了会话内存态 TODO，会话结束即蒸发——本提醒是它们唯一的消费触发点：\n"
         + "\n".join(lines)
         + "\n处置纪律：开工前把上述事项 merge 进本会话 todo_list（保留原 id），"

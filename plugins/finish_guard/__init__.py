@@ -311,9 +311,11 @@ def _has_commit_evidence(response: str) -> bool:
 
 
 def _on_pre_verify(**kwargs) -> dict:
-    """Contract: Preconditions: 本回合改过文件（核心侧 changed_paths 非空才调）；
-    Postconditions: 最终回复尾部为请示式收尾、或改动了代码文件但回复无
-    commit 证据时，且 attempt 未超上限时返回 {"action":"continue","message":...}
+    """Contract: Preconditions: 回合以文本收尾（核心侧 changed_paths 可为空
+    ——零写入回合同样咨询，见 turn_stop_gates._pre_verify_nudge）；
+    Postconditions: ①零写入且本会话 todo 有 active 项（登记不等于完成）、
+    ②最终回复尾部为请示式收尾、③改动了代码文件但回复无 commit 证据，
+    三者任一命中且 attempt 未超上限时返回 {"action":"continue","message":...}
     强制续跑，否则返回 {} 放行。"""
     attempt = int(kwargs.get("attempt") or 0)
     if attempt >= _MAX_PRE_VERIFY_NUDGES:
@@ -321,6 +323,27 @@ def _on_pre_verify(**kwargs) -> dict:
     final_response = kwargs.get("final_response") or ""
     tail = _tail_text(final_response)
     changed_paths = list(kwargs.get("changed_paths") or [])
+    if not changed_paths:
+        from . import todo_debt
+        pending = todo_debt.own_pending_items(
+            str(kwargs.get("session_id") or kwargs.get("task_id") or ""))
+        if pending:
+            logger.warning(
+                "finish_guard: 本会话 todo %d 项未完成且本回合零文件写入"
+                "（attempt=%d），强制续跑", len(pending), attempt
+            )
+            n_pending = len(pending)
+            return {
+                "action": "continue",
+                "message": (
+                    f"[finish_guard] 本会话 todo 尚有 {n_pending} 项未完成，而本回合没有"
+                    "任何文件写入——登记不等于完成，禁止以请示/汇报代替执行。"
+                    "立即继续执行未完成项；确实不再做的项用 todo_list 标记 "
+                    "cancelled 并在回复中说明理由；需要用户输入时走 clarify "
+                    "提问渠道而非停轮空等；若用户已明确要求暂停或等待，在回复中"
+                    "引用用户原话说明后可保持停止。"
+                ),
+            }
     from . import ui_evidence
     l4 = ui_evidence.check(changed_paths, attempt, _MAX_PRE_VERIFY_NUDGES)
     if l4:

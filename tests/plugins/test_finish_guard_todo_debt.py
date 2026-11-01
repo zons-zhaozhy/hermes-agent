@@ -90,3 +90,38 @@ def test_non_todo_tool_no_side_effect():
     before = todo_debt._debt_path().exists()
     todo_debt.on_todo_write(tool_name="read_file", result="{}", session_id="s_x")
     assert todo_debt._debt_path().exists() == before  # 期望: 账本无变化
+
+
+def test_foreign_completed_rows_not_injected():
+    """T6：他账槽位 completed 僵尸行不注入（旧写入格式遗留），只注入 active 项。
+
+    存量账本混有带 note 的 completed 行（旧格式销账留痕），读取端不过滤会把
+    已销账事项渲染成「已登记但从未消化」，提醒数字虚高失去可信信号。
+    """
+    data = todo_debt._load_debt()
+    data["sessions"]["s_legacy"] = {
+        "updated_at": 1,
+        "items": [
+            {"id": "z1", "content": "已销账旧事项", "status": "completed", "note": "销账留痕"},
+            {"id": "z2", "content": "真未清事项Y", "status": "pending"},
+        ],
+    }
+    todo_debt._save_debt(data)
+    out = todo_debt.on_session_open(session_id="s_zfresh")
+    assert out is not None and "真未清事项Y" in out["context"]  # 期望: active 项注入
+    assert "已销账旧事项" not in out["context"]  # 期望: completed 僵尸行不注入
+    assert "检测到 1 项" in out["context"]  # 期望: 计数只算 active
+
+
+def test_all_active_foreign_rows_listed():
+    """T7：>10 项 active 全量列出禁截断——截断项无法被 merge 消费，结构上永远清不掉。"""
+    items = [{"id": f"d{i}", "content": f"债项{i:02d}", "status": "pending"}
+             for i in range(12)]
+    data = todo_debt._load_debt()
+    data["sessions"]["s_many"] = {"updated_at": 2, "items": items}
+    todo_debt._save_debt(data)
+    out = todo_debt.on_session_open(session_id="s_mfresh")
+    assert out is not None
+    for i in range(12):
+        assert f"债项{i:02d}" in out["context"]  # 期望: 全量可见可 merge
+    assert "未列出" not in out["context"]  # 期望: 无截断尾巴

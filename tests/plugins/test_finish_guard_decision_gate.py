@@ -93,3 +93,39 @@ def test_short_content_after_label_still_bare() -> None:
         response_text="两方案审查完毕，方案 A 零改动。请拍板。"
     )
     assert "[finish_guard]" in out  # 期望: 短属性词不构成定义，仍打标
+
+
+def test_pre_verify_zero_edit_with_own_pending_todos(tmp_path, monkeypatch) -> None:
+    """T8：零写入回合 + 本会话 todo 有 active 项 → 状态判据命中强制续跑。
+
+    用户主诉形态：方案输出后以「是否按X开工？如无异议我按序施工」停轮，
+    本回合零文件写入、句式黑名单不覆盖该形态——由 todo 账本状态判据兜住
+    （登记不等于完成）。
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from plugins.finish_guard import todo_debt
+
+    todo_debt._update_ledger("s_ownz", [
+        {"id": "w1", "content": "修复僵尸行", "status": "in_progress"},
+        {"id": "w2", "content": "修复截断", "status": "pending"},
+    ])
+    r = fg._on_pre_verify(
+        session_id="s_ownz",
+        attempt=0,
+        final_response="是否按上述三件开工？如无异议我按序施工。",
+        changed_paths=[],
+    )
+    assert r.get("action") == "continue"  # 期望: todo 未清+零写入 → 强制续跑
+    assert "todo" in r.get("message", "")  # 期望: 续跑消息指向未完成 todo
+
+
+def test_pre_verify_zero_edit_no_todo_passes(tmp_path, monkeypatch) -> None:
+    """T9负例：零写入且本会话无未清 todo → 放行（纯问答回合不受影响）。"""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    r = fg._on_pre_verify(
+        session_id="s_clean",
+        attempt=0,
+        final_response="这是对用户问题的直接回答，无未清事项。",
+        changed_paths=[],
+    )
+    assert r == {}  # 期望: 无状态欠账时零写入回合照常放行
