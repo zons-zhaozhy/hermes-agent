@@ -375,7 +375,7 @@ class GatewayGoalsMixin:
         authority = active_authority(self)
         _viewer_sid = getattr(source, "chat_id", None)
         if viewer_driven(authority, _viewer_sid):
-            self._log_viewer_driven_goal_deferral(authority, _viewer_sid)
+            await self._log_viewer_driven_goal_deferral(authority, _viewer_sid)
             return  # the classic CLI viewer judges and continues through ``session.automation``
         final_text = self._final_text_for_post_turn_hooks(agent_result, event)
         try:
@@ -409,7 +409,7 @@ class GatewayGoalsMixin:
         from gateway.session_control_actions import publish_async
         await publish_async(active_authority(self), source.chat_id, only_if_present=only_if_present)
 
-    def _log_viewer_driven_goal_deferral(self, authority: Any, session_id: Optional[str]) -> None:
+    async def _log_viewer_driven_goal_deferral(self, authority: Any, session_id: Optional[str]) -> None:
         """Best-effort INFO trace when a viewer-driven deferral leaves an active goal unjudged by
         the gateway: without this line the no-driver stall (viewer registered but never judging)
         is invisible at INFO level.
@@ -423,7 +423,7 @@ class GatewayGoalsMixin:
         if not session_id:
             return
         try:
-            row = authority.db.get_meta(f"goal:{session_id}")
+            row = await asyncio.to_thread(authority.db.get_meta, f"goal:{session_id}")
             state = json.loads(row) if isinstance(row, str) and row else None
             if isinstance(state, dict) and state.get("status") == "active":
                 logger.info(

@@ -36,9 +36,9 @@ def test_snapshot_reports_prepare_ahead_and_older_snapshots_still_package(tmp_pa
         value: collect_install_snapshot({"compression": {"prepare_ahead": value}})["compression_prepare_ahead"]
         for value in (True, "yes", "on", False, "false", None)
     }
-    assert states == {True: "on", "yes": "on", "on": "on", False: "off", "false": "off", None: "off"}
+    assert states == {True: "on", "yes": "on", "on": "on", False: "off", "false": "off", None: "on"}
     current = collect_install_snapshot({})
-    assert current["compression_prepare_ahead"] == "off", "absent reads off, as the agent's default"
+    assert current["compression_prepare_ahead"] == "on", "absent reads on, as the agent's default"
 
     store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
     before_upgrade = {k: v for k, v in current.items() if k != "compression_prepare_ahead"}

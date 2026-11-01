@@ -679,8 +679,8 @@ DEFAULT_CONFIG = {
         # front, before the first reply. Time-based complement to `threshold`; skipped when already at/below
         # threshold × target_ratio; honors the same cooldown/anti-thrash/lock guards. Example: 1800 = 30 min.
         "idle_compact_after_seconds": 0,
-        # Opt-in: write the next summary in the background near the trigger; compaction uses (or waits for) it if it still covers the same messages.
-        "prepare_ahead": False,
+        # Write the next summary in the background near the trigger; compaction uses (or waits for) it if it still covers the same messages.
+        "prepare_ahead": True,
     },
     # Anthropic prompt caching (Claude via OpenRouter or native API). cache_ttl: "5m" | "1h" | "auto"
     # (auto = 1h for human-paced sessions — cli/tui/desktop/messaging — and 5m for subagent, cron,
@@ -2099,19 +2099,10 @@ DEFAULT_CONFIG = {
         # Seconds a SIGTERM-interrupted agent unwinds before teardown (short: service stop budgets).
         "signal_interrupt_grace_timeout": 1,
         "service_install_choice": None,  # null | install | decline; never authorizes ordinary launch installation.
-        # Durable delivery-obligation ledger: final responses are recorded in state.db around the
-        # platform send; a gateway that died between finalize and platform ACK redelivers on next
-        # boot (ambiguous cases carry a "recovered reply — may be a duplicate" marker;
-        # at-least-once). Disable to lose in-flight final responses on crash/restart.
+        # Final responses are ledgered in state.db around platform send (at-least-once; see #90674).
         "delivery_ledger": True,
-        # Seconds to wait for one platform to connect at startup/reconnect; raise on "discord
-        # connect timed out" loops (many slash commands to sync). 0/negative = wait forever. Bridged
-        # to HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT, which wins if set explicitly.
-        # Seconds the gateway waits for a single messaging platform to finish connecting during startup (and
-        # on reconnect). Discord in particular can blow past the old fixed 30s when an account has many
-        # slash commands to sync (#19776: 90-173 skills → ~28-31s sync). Raise this if your gateway hits
-        # "discord connect timed out" / "Timeout waiting for connection to Discord" restart loops. ``0`` or
-        # negative disables the timeout entirely (wait indefinitely).
+        # Seconds to wait for one platform to connect at startup/reconnect (Discord sync can exceed 30s;
+        # #19776). Bridged to HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT, which wins if set. 0 = wait forever.
         "platform_connect_timeout": 30,
         # Event-loop liveness watchdog: a daemon thread probes the asyncio loop; after consecutive
         # missed probes it dumps all-thread stacks and hard-exits with the service-restart code so
@@ -2124,6 +2115,9 @@ DEFAULT_CONFIG = {
         "loop_watchdog_probe_timeout_s": 10.0,
         "loop_watchdog_max_strikes": 3,
         "loop_slow_callback_stack_s": 1.0,
+        # Runtime tripwire: SessionDB primitives on the gateway owner loop log a rate-limited stack
+        # ("warn") or fail fast ("raise"). The static owner-loop gate is the primary protection.
+        "owner_loop_db_guard": "warn",
         # Allow all users without allowlists (security opt-in).
         "allow_all_users": False,
         # Bot-to-bot loop guard: admitted bot messages per conversation before a cooldown.

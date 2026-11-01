@@ -142,7 +142,8 @@ async def admit_producer(adapter, event):
             # An identical delivery (provider retry, relay re-send) overlapping this one waits here, then
             # rechecks the ledger: the retry check, the hooks and the commit run once per delivery.
             async with _delivery_turn((authority.profile_id, principal, event.message_id)):
-                committed = payload, _committed(authority, principal, event.message_id)
+                committed = payload, await asyncio.to_thread(
+                    _committed, authority, principal, event.message_id)
                 return await _admit_once(authority, event, webhook, hooks, committed)
         except (Exception, asyncio.CancelledError) as exc:
             # Refused after preparing (a command-shaped rewrite, a drain during the hooks, a conflict),
@@ -245,7 +246,7 @@ async def _webhook_retry(authority, event, payload, rows):
     from hermes_state_runtime import get_session_admission
     if not rows:
         return None
-    row = get_session_admission(authority.db, admission_id=rows[0]['admission_id'])
+    row = await asyncio.to_thread(get_session_admission, authority.db, admission_id=rows[0]['admission_id'])
     retained = row['payload']['native_text_v1']
     if 'ingress_sha256' in retained:
         # Committed rewritten: the provider resends the delivery as received.
@@ -263,7 +264,7 @@ async def _webhook_retry(authority, event, payload, rows):
         raise RuntimeStoreError('admission_conflict')
     event._webhook_duplicate = True
     receipt = authority._receipt(row)
-    finalize_webhook(authority, receipt)
+    await asyncio.to_thread(finalize_webhook, authority, receipt)
     return receipt
 
 
@@ -293,17 +294,19 @@ async def recover_webhook_finalizations(authority):
     from gateway.session_contract import SessionRef
     from hermes_state_runtime import RuntimeStoreError, get_session_admission
 
-    rows = authority.db._read_all("""
-        SELECT a.admission_id FROM sessions AS s
-        JOIN session_admissions AS a ON a.target_session_id=s.id
-        WHERE s.source='webhook' AND s.ended_at IS NULL
-          AND a.status='terminal' AND a.generation IS NOT NULL
-          AND json_extract(a.payload_json, '$.native_text_v1.source.platform')='webhook'
-          AND json_extract(a.payload_json, '$.native_text_v1.automation') IS NULL
-        """)
+    def recovery_rows():
+        return authority.db._read_all("""
+            SELECT a.admission_id FROM sessions AS s
+            JOIN session_admissions AS a ON a.target_session_id=s.id
+            WHERE s.source='webhook' AND s.ended_at IS NULL
+              AND a.status='terminal' AND a.generation IS NOT NULL
+              AND json_extract(a.payload_json, '$.native_text_v1.source.platform')='webhook'
+              AND json_extract(a.payload_json, '$.native_text_v1.automation') IS NULL
+            """)
+    rows = await asyncio.to_thread(recovery_rows)
     results = {}
     for candidate in rows:
-        row = get_session_admission(authority.db, admission_id=candidate['admission_id'])
+        row = await asyncio.to_thread(get_session_admission, authority.db, admission_id=candidate['admission_id'])
         if row is None:
             continue
         sid = row['target_session_id']
@@ -315,8 +318,8 @@ async def recover_webhook_finalizations(authority):
             adapter = authority.runner._adapter_for_source(entry.origin) if entry.origin is not None else None
             target = authority.physical_target(SessionRef(authority.profile_id, sid))
             await check_native_route(authority.runner, row['payload'], target, entry.origin, adapter)
-            results[sid] = 'finalized' if finalize_webhook(
-                authority, authority._receipt(row)) else 'unchanged'
+            finalized = await asyncio.to_thread(finalize_webhook, authority, authority._receipt(row))
+            results[sid] = 'finalized' if finalized else 'unchanged'
         except (KeyError, RuntimeStoreError):
             results[sid] = 'unavailable'
     return results

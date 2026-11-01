@@ -79,7 +79,7 @@ class RelayMediaClient:
             return None
         path = Path(file_path)
         try:
-            data = path.read_bytes()
+            data = await asyncio.to_thread(path.read_bytes)
         except OSError:
             logger.warning("relay media upload: cannot read %s", file_path)
             return None

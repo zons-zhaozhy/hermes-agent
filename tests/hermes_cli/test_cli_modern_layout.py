@@ -147,29 +147,32 @@ def test_status_line_keeps_every_classic_status_bar_field(monkeypatch):
 
 
 @pytest.mark.parametrize("prompt", ["_connection_state", "_secret_state", "_sudo_state", "_clarify_state"])
-def test_tab_never_queues_what_a_prompt_owns(prompt):
-    """A connection form's masked field (or any prompt) owns the composer while a turn runs: Tab must
-    not queue its text as a chat message, which would print and save a secret in plain text."""
+def test_modern_busy_tab_is_never_a_queue_binding(prompt):
+    """Tab stays with completion/history; queued follow-ups go through queue-mode Enter or /queue.
+    A connection form's masked field (or any prompt) must especially never be queued by Tab."""
     from types import SimpleNamespace
-    from prompt_toolkit.application import Application
-    from prompt_toolkit.application.current import set_app
-    from prompt_toolkit.buffer import Buffer
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.keys import Keys
-    from prompt_toolkit.layout import BufferControl, Layout, Window
-    from hermes_cli.cli_modern_layout import modern_input_rules
+    from hermes_cli.cli_modern_layout import hint_pairs, modern_input_rules
 
     cli = SimpleNamespace(_agent_running=True, _tui_input_rule_height=lambda pos: 1)
     kb = KeyBindings()
     modern_input_rules(cli, kb)
-    tab = next(b for b in kb.bindings if b.keys == (Keys.ControlI,))
-    buf = Buffer(document=None)
-    buf.text = "REVIEW_CANARY_NOT_A_CREDENTIAL"
-    app = Application(layout=Layout(Window(BufferControl(buffer=buf))))
-    with set_app(app):
-        assert tab.filter()  # control: a plain busy composer does queue on Tab
-        setattr(cli, prompt, {"phase": "form"})
-        assert not tab.filter(), prompt
+    assert not [b for b in kb.bindings if b.keys == (Keys.ControlI,)]
+    setattr(cli, prompt, {"phase": "form"})
+    assert all(key != "tab" for key, _text in hint_pairs(cli)), prompt
+
+
+def test_tab_accepts_history_ghost_text():
+    """With Tab-to-queue gone, the composer Tab accepts the history ghost as editable input."""
+    from types import SimpleNamespace
+    from cli import HermesCLI
+
+    inserted = []
+    buf = SimpleNamespace(complete_state=None, suggestion=SimpleNamespace(text=" follow-up"),
+                          insert_text=lambda text: inserted.append(text))
+    HermesCLI._tui_handle_tab(SimpleNamespace(), SimpleNamespace(current_buffer=buf))
+    assert inserted == [" follow-up"]
 
 
 def test_long_user_message_soft_wraps_so_a_resize_reflows_it(monkeypatch):

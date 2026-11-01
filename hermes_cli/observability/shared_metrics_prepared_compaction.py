@@ -42,7 +42,7 @@ def prepare_ahead_state(config: Any) -> str:
 
     compression = config.get("compression") if isinstance(config, dict) else None
     value = compression.get("prepare_ahead") if isinstance(compression, dict) else None
-    return "on" if is_truthy_value(value, default=False) else "off"
+    return "on" if is_truthy_value(value, default=True) else "off"
 
 
 def wait_bucket(seconds: Any) -> str:

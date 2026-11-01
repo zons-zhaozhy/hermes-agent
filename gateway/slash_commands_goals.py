@@ -60,13 +60,19 @@ class GatewayGoalCommandsMixin:
         # executor hop; manager I/O must also stay off the messaging event loop.
         result = await self._run_in_executor_with_context(dispatch)
         if result.clear_pending:
-            self._clear_goal_continuations(event, result.clear_pending)
+            await self._clear_goal_continuations(event, result.clear_pending, mgr.session_id)
         if result.prompt:
             self._enqueue_goal_turn(event, result.prompt, label="command enqueue", kickoff=result.kickoff)
         return result.output
 
-    def _clear_goal_continuations(self, event: MessageEvent, verb: str) -> None:
+    async def _clear_goal_continuations(self, event: MessageEvent, verb: str,
+                                        session_id: str | None = None) -> None:
         try:
+            if session_id:
+                from gateway.session_authorities import active_authority
+                authority = active_authority(self)
+                if authority is not None:
+                    await authority.cancel_goal_continuations(session_id)
             adapter, quick_key = self._adapter_and_key_for(event)
             if adapter and quick_key:
                 self._clear_goal_pending_continuations(quick_key, adapter)

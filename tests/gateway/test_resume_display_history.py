@@ -173,6 +173,39 @@ async def test_a_long_archived_history_keeps_the_resume_reply_bounded(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_a_large_history_read_does_not_block_the_owner_loop(tmp_path, monkeypatch):
+    """``session.resume`` reads transcript rows in a worker while holding the stream lock there; the
+    owner loop must stay live for other callbacks (the 10-second WS stall behind this fix)."""
+    import threading
+    from gateway import session_local_recovery as recovery
+    authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
+    for n in range(12):
+        _append(authority.db, physical, f'Q{n} ' + 'x' * 100_000, f'A{n}')
+    real = recovery.local_history
+    started, release, fallback = threading.Event(), threading.Event(), threading.Event()
+
+    def slow_history(*args, **kwargs):
+        started.set()
+        release.wait(2)
+        return real(*args, **kwargs)
+
+    def probe_and_release():
+        if not started.wait(2):
+            release.set()
+            return
+        loop.call_soon_threadsafe(responsive.set)
+        if not responsive.wait(0.2):
+            fallback.set()
+        release.set()
+
+    responsive, loop = threading.Event(), asyncio.get_running_loop()
+    monkeypatch.setattr(recovery, 'local_history', slow_history)
+    threading.Thread(target=probe_and_release, name='history-read-probe', daemon=True).start()
+    await _resume(authority, actor, ref)
+    assert responsive.is_set() and not fallback.is_set(), 'the transcript fetch blocked the owner loop'
+
+
+@pytest.mark.asyncio
 async def test_a_row_appended_during_prepare_counts_against_the_archive_budget(tmp_path, monkeypatch):
     """A live row landing between the off-loop prepare and the locked read shrinks what the archive may
     use, as a fresh read would: the raced reply is no larger than the fresh one (review of #140971)."""

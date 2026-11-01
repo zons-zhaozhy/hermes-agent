@@ -1,6 +1,6 @@
-"""Opt-in prepared compaction (``compression.prepare_ahead``, default off).
+"""Prepared compaction (``compression.prepare_ahead``, default on).
 
-When the provider-reported prompt size comes within ``PREPARE_BAND_RATIO`` of
+When the provider-reported prompt size comes within ``PREPARE_BAND_RATIO`` (30%) of
 the compaction trigger, the turn loop (before a tool batch runs, and at turn
 end) starts ONE background pass. The pass plans the same window
 ``ContextCompressor.compress`` would plan and runs the existing summariser on a
@@ -51,9 +51,10 @@ from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# Start a pass once the real prompt count is within this fraction of the
-# compaction trigger (a band below ``threshold_tokens``).
-PREPARE_BAND_RATIO = 0.12
+# Start a pass once the real prompt count is within this fraction of the compaction trigger. Tool
+# rounds can add tens of thousands of tokens in one step, so a narrow band starts the summary too
+# close to the trigger and the first compaction still waits for most of the slow summary stream.
+PREPARE_BAND_RATIO = 0.30
 # Minimum pause after a failed pass (the summariser's own cooldown applies when longer).
 _FAILED_PASS_BACKOFF_SECONDS = 60.0
 # Background passes running across the process (a cancelled pass frees its slot as it unwinds; its

@@ -1,8 +1,8 @@
 # 上游同步防冲突账本（SSOT）
 
-最后核验: 2026-10-21 · main 站上 upstream/main 0b8dee00fa (590 提交合并), 落后 0
-重叠面 13 文件, 唯一冲突 gateway/run_notifications.py: 本地 6b9786e161 requeue 死信
-vs 官方 #140899 指数退避 hold——官方等价机制已上游化, 取官方侧, 本地定制+配套测试退役(见下)
+最后核验: 2026-11-01 · main 合并 upstream 016b76da3a (59 提交, 零冲突) f956a95fc3, 落后 0
+重叠面(树交集) 9 文件, 官方文件被 fork 改动 194 = 账本在册 36 + 1101 补记 158(见"存量定制面族谱"节)
+1101 轮: photon/adapter.py 上游 runtime-record 迁 profile 根目录(33 行)与 fork 定制 4 行自动合并共存, 双方意图保留
 (网络通道: SSH443/HTTPS 直连均被重置时, remote.upstream.url 临时切 gh-proxy.com 代理通道完成 lazy fetch, 完毕恢复)
 
 > 注意: `git rev-list --count main..upstream/main` 在官方导入完整历史后不再可信
@@ -63,7 +63,8 @@ f799fd8578 在官方 Linux CI "Python tests / Run tests" = success。
 
 | 文件 | 差异 | 冲突风险 | 处置 |
 |---|---|---|---|
-| plugins/** + tests/plugins/** | 113 文件纯新增 | 零（官方不存在的命名空间, 官方永不改） | 长期保留 |
+| plugins/** + tests/plugins/** fork 纯新增 | 100+ 文件纯新增命名空间（blame-shield、block_escalation、guards/ 等） | 零（官方不存在该命名空间） | 长期保留 |
+| plugins/ 内 fork 改官方文件 | platforms/photon 与 telegram adapter、image_gen/__init__、model-providers/zai、security-guidance/patterns（官方存在且持续演进） | 中（官方 10 月已连续触碰 platforms 适配器；photon 1101 轮实测可共存） | 上游触碰时逐行裁决 |
 | agent/tool_executor.py | 78 行: _run_pre_tool_batch_hooks/_first_batch_block/_extract_block_message + 两调用点; 发射器契约已改为"callback 崩溃/超时 fail-closed(见 plugins_dispatch), 仅 dispatch 传输层 fail-open" | 中（官方改 dispatch 逻辑时撞） | 见收窄路线 |
 | agent/auxiliary_client.py | 13 行新增(ef562cb74a): judge 超时后 _mark_provider_unhealthy 短TTL隔离(慢端点暂离池, 同429隔离类) | 中（官方改 aux 降级/健康逻辑时撞） | 等官方 aux 侧等价机制后清零; 曾漏记账本, 0924补 |
 | hermes_cli/plugins.py | VALID_HOOKS + pre_tool_batch 注释更新为 policy/fail-closed 契约 | 低（hook 名单追加式） | 等 upstream 化 |
@@ -132,3 +133,35 @@ scripts/run_tests.sh tests/agent/test_read_think_gate_wiring.py tests/agent/test
 python3 -c "import agent.tool_executor, hermes_cli.plugins; print('imports OK')"
 git push origin main
 git rev-list --count main..upstream/main   # 应为 0
+
+## 五、存量定制面族谱（1101 补记: fork 改官方文件但此前未入账的 158 项, 按族归并）
+
+> 口径: `git diff --name-only upstream/main..HEAD` ∩ upstream 树存在文件, 剔除账本已具名条目。
+> 逐项归属复核命令: `git log upstream/main..HEAD --oneline -- <file>`。
+
+| 族 | 数量 | 文件 |
+|---|---|---|
+| tests/hermes_cli | 25 | tests/hermes_cli/test_cli_goal_interrupt.py, tests/hermes_cli/test_cli_goal_parked_resume.py, tests/hermes_cli/test_cli_user_message_preview.py, tests/hermes_cli/test_desktop_swap_file_lock_retry.py, tests/hermes_cli/test_desktop_update_verify.py, tests/hermes_cli/test_doctor_journal_modes.py, tests/hermes_cli/test_doctor_wal_checkpoint_guard.py, tests/hermes_cli/test_gateway_automation.py 等 25 件 |
+| locales | 17 | locales/af.yaml, locales/ar.yaml, locales/de.yaml, locales/en.yaml, locales/es.yaml, locales/fr.yaml, locales/ga.yaml, locales/hu.yaml 等 17 件 |
+| tools | 16 | tools/budget_config.py, tools/code_execution_tool.py, tools/delegate_tool_progress.py, tools/file_operations.py, tools/file_tools.py, tools/mcp_tool_handlers.py, tools/mcp_tool_registration.py, tools/memory_tool_store.py 等 16 件 |
+| gateway | 15 | gateway/config.py, gateway/config_loader.py, gateway/hosted_rooms_gateway_import.py, gateway/run.py, gateway/run_runtime_init.py, gateway/run_startup.py, gateway/session_a2a.py, gateway/session_authority.py 等 15 件 |
+| hermes_cli | 13 | hermes_cli/cli_chat_turn_mixin.py, hermes_cli/cli_init_mixin.py, hermes_cli/cli_model_switch_mixin.py, hermes_cli/cli_modern_layout.py, hermes_cli/cli_stream_mixin.py, hermes_cli/cli_subagent_monitor.py, hermes_cli/cli_tui_mixin.py, hermes_cli/desktop_update_verify.py 等 13 件 |
+| agent | 12 | agent/codex_runtime.py, agent/conversation_compression.py, agent/curator.py, agent/curator_backup.py, agent/display.py, agent/periodic_scheduler.py, agent/relay_runtime.py, agent/skill_utils.py 等 12 件 |
+| (根目录) | 9 | .gitignore, hermes_state_maintenance.py, hermes_state_readpool.py, lefthook.yml, package-lock.json, pyproject.toml, ruff.pre-commit.toml, run_agent.py 等 9 件 |
+| cron | 7 | cron/scheduler.py, cron/scheduler_authority.py, cron/scheduler_delivery.py, cron/scheduler_liveness.py, cron/scheduler_provider.py, cron/scheduler_script.py, cron/scheduler_tick.py |
+| tests/gateway | 7 | tests/gateway/test_dingtalk.py, tests/gateway/test_dingtalk_reconnect_circuit_breaker.py, tests/gateway/test_hosted_mux_runtime.py, tests/gateway/test_hosted_rooms_gateway_import.py, tests/gateway/test_loop_liveness_watchdog.py, tests/gateway/test_session_authority_adopted_stop.py, tests/gateway/test_watch_notification_reset_pin.py |
+| tests/tools | 6 | tests/tools/test_budget_config.py, tests/tools/test_connector_bridge_wiring.py, tests/tools/test_delegate.py, tests/tools/test_process_registry.py, tests/tools/test_skills_tool.py, tests/tools/test_tool_result_storage.py |
+| tests/agent | 5 | tests/agent/test_auxiliary_error_classification.py, tests/agent/test_curator_backup.py, tests/agent/test_error_classifier.py, tests/agent/test_periodic_scheduler.py, tests/agent/test_skill_utils.py |
+| tests/cron | 5 | tests/cron/test_cron_inactivity_timeout.py, tests/cron/test_cron_recover_pause.py, tests/cron/test_cron_script.py, tests/cron/test_lifecycle_guard_profile_scan.py, tests/cron/test_misfire_catchup.py |
+| website/docs | 4 | website/docs/reference/mcp-config-reference.md, website/docs/user-guide/configuration.md, website/docs/user-guide/features/curator.md, website/docs/user-guide/features/mcp.md |
+| plugins/platforms | 3 | plugins/platforms/dingtalk/adapter.py, plugins/platforms/photon/adapter.py, plugins/platforms/weixin/adapter.py |
+| acp_adapter | 2 | acp_adapter/gateway_server.py, acp_adapter/tools.py |
+| scripts | 2 | scripts/check, scripts/run_tests_parallel.py |
+| tests/plugins | 2 | tests/plugins/test_a2a_plugin.py, tests/plugins/test_security_guidance_plugin.py |
+| tui_gateway | 2 | tui_gateway/hosted_room_driver.py, tui_gateway/session_compression.py |
+| plugins/image_gen | 1 | plugins/image_gen/openai/__init__.py |
+| plugins/model-providers | 1 | plugins/model-providers/zai/__init__.py |
+| plugins/security-guidance | 1 | plugins/security-guidance/patterns.py |
+| tests/fixtures | 1 | tests/fixtures/provider_wire_snapshot.json |
+| tests | 1 | tests/home_io_guard.py |
+| tests/tui_gateway | 1 | tests/tui_gateway/test_compaction_status.py |

@@ -937,6 +937,9 @@ class SessionDB(
         degradation: slower beats EMFILE, which the supervisor cannot see.
         ``reopen=False``: a read after ``close()`` raises instead of reopening the
         writer (an optional reader must not hold a home that is being deleted)."""
+        from owner_loop_guard import owner_loop_db_guard
+
+        owner_loop_db_guard("SessionDB._read_ctx")
         conn = self._checkout_read_conn()
         if conn is not None:
             try:
@@ -1015,6 +1018,9 @@ class SessionDB(
         BEGIN IMMEDIATE takes the WAL write lock up front so contention surfaces
         immediately; on locked/busy the Python lock is released, a jitter slept,
         and the WHOLE callback retried — *fn* must stay idempotent under retry."""
+        from owner_loop_guard import owner_loop_db_guard
+
+        owner_loop_db_guard("SessionDB._execute_write")
         if patience_s is None:
             patience_s = self._WRITE_PATIENCE_S
         deadline = time.monotonic() + patience_s
@@ -1646,6 +1652,9 @@ class SessionDB(
     def get_meta(self, key: str) -> Optional[str]:
         """Read state_meta[key] on self._lock (not _read_ctx): fts_rebuild_step reads progress before its
         write transaction and a WAL reader would not see it."""
+        from owner_loop_guard import owner_loop_db_guard
+
+        owner_loop_db_guard("SessionDB.get_meta")
         with self._lock:
             row = self._conn.execute("SELECT value FROM state_meta WHERE key = ?", (key,)).fetchone()
         return None if row is None else row[0]

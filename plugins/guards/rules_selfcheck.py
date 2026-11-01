@@ -163,6 +163,8 @@ test("允许: password from env",
      "DB_PASSWORD = os.environ.get('DB_PASSWORD')", None)
 test("允许: password = None",
      "DB_PASSWORD = None", None)
+test("允许: 公开 URL 非凭据（token_url 误中防护）",
+     "dingtalk_user_token_url = 'https://api.dingtalk.com/v1.0/oauth2/userAccessToken'", None)
 
 print("R010: 硬编码 IP")
 test("R010 192.168.x.x",

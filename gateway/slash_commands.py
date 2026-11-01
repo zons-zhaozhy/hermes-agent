@@ -1375,9 +1375,13 @@ class GatewaySlashCommandsMixin(
         pending.update({k: v for k, v in (("thread_id", src.thread_id), ("message_id", event.message_id),
                                           ("profile", getattr(src, "profile", None))) if v})
         _tmp_pending = pending_path.with_suffix(".tmp")
-        _tmp_pending.write_text(json.dumps(pending), encoding="utf-8")
-        _tmp_pending.replace(pending_path)
-        exit_code_path.unlink(missing_ok=True)
+
+        def _stage_update() -> None:
+            _tmp_pending.write_text(json.dumps(pending), encoding="utf-8")
+            _tmp_pending.replace(pending_path)
+            exit_code_path.unlink(missing_ok=True)
+
+        await asyncio.to_thread(_stage_update)
         try:
             _spawn_detached_update(hermes_cmd, output_path, exit_code_path)
         except Exception as e:

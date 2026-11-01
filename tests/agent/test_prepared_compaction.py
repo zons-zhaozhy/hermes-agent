@@ -1,8 +1,8 @@
-"""Opt-in prepared compaction (``compression.prepare_ahead``, agent/prepared_compaction.py).
+"""Prepared compaction (``compression.prepare_ahead``, agent/prepared_compaction.py).
 
 Behaviour contracts, with the summariser stubbed at its model boundary:
 
-* flag off (the default) leaves the whole compression path as it was: no state, no pass, inline summary;
+* flag off leaves the whole compression path as it was: no state, no pass, inline summary;
 * a pass never changes the live transcript or compressor, and runs under the caller's profile scope;
 * one pass per compaction: the candidate splices at its own boundary and every message after it, however
   many, stays verbatim in the tail, wherever the fresh plan would cut;
@@ -131,14 +131,14 @@ def test_config_flag_reaches_the_compressor_through_the_loader(tmp_path, monkeyp
     from hermes_cli.config import DEFAULT_CONFIG, load_config_readonly
 
     agent = SimpleNamespace(model="m", provider="openrouter", api_mode="chat_completions", quiet_mode=True)
-    assert DEFAULT_CONFIG["compression"]["prepare_ahead"] is False
-    assert _parse_compression_config(agent, load_config_readonly()).prepare_ahead is False
+    assert DEFAULT_CONFIG["compression"]["prepare_ahead"] is True
+    assert _parse_compression_config(agent, load_config_readonly()).prepare_ahead is True
 
     home = tmp_path / "profile"
     home.mkdir()
-    (home / "config.yaml").write_text("compression:\n  prepare_ahead: true\n", encoding="utf-8")
+    (home / "config.yaml").write_text("compression:\n  prepare_ahead: false\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
-    assert _parse_compression_config(agent, load_config_readonly()).prepare_ahead is True
+    assert _parse_compression_config(agent, load_config_readonly()).prepare_ahead is False
 
 
 # --------------------------------------------------------------------------- the pass
@@ -648,7 +648,8 @@ def _loop_response(*, prompt_tokens: int, tool_call_id: str | None = None, conte
 def test_turn_that_crosses_the_trigger_splices_the_summary_prepared_during_its_tools(prepare_ahead):
     """Real run_conversation with the provider and tool boundaries mocked; config via the real loader.
 
-    Response 1 lands in the band: with the flag, the pass runs while that batch's tool executes.
+    Response 1 lands in the (constant-sized) band: with the flag, the pass runs while that batch's
+    tool executes.
     Response 2 crosses the trigger, so the loop compacts after the second batch: a splice with the
     flag (and no second pass), an inline summary without it.
     """
@@ -657,10 +658,9 @@ def test_turn_that_crosses_the_trigger_splices_the_summary_prepared_during_its_t
 
     from run_agent import AIAgent
 
-    if prepare_ahead:
-        Path(os.environ["HERMES_HOME"], "config.yaml").write_text(
-            "compression:\n  prepare_ahead: true\n", encoding="utf-8",
-        )
+    Path(os.environ["HERMES_HOME"], "config.yaml").write_text(
+        f"compression:\n  prepare_ahead: {str(prepare_ahead).lower()}\n", encoding="utf-8",
+    )
     tool_defs = [{"type": "function", "function": {
         "name": "web_search", "description": "search", "parameters": {"type": "object", "properties": {}},
     }}]

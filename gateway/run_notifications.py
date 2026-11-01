@@ -401,7 +401,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         if not notify_path.exists():
             return None
         try:
-            data = json.loads(notify_path.read_text(encoding="utf-8-sig"))
+            data = json.loads(await asyncio.to_thread(
+                notify_path.read_text, encoding="utf-8-sig"))
             platform_str = data.get("platform")
             chat_id = data.get("chat_id")
             thread_id = data.get("thread_id")
@@ -533,7 +534,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if not path.exists():
                 return
             try:
-                data = json.loads(path.read_text(encoding="utf-8-sig"))
+                data = json.loads(await asyncio.to_thread(path.read_text, encoding="utf-8-sig"))
                 delivered = {tuple(target) for target in data.get("delivered_targets", [])}
                 # Owed targets come from config, not live transports: a removed home or an opt-out
                 # (gateway_restart_notification=false) must not keep the marker alive forever.

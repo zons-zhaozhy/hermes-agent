@@ -25,7 +25,9 @@ REPO = Path(__file__).resolve().parents[2]
 _GUARD_SCRIPTS = (
     "scripts/check-windows-footguns.py", "scripts/check_bash_shebangs.py",
     "scripts/check_no_tmp_literals.py", "scripts/check_detached_spawns.py",
+    "scripts/check_tool_classification.py",
     "scripts/check_config_yaml_writers.py", "scripts/check_config_yaml_readers.py",
+    "scripts/ci/check_owner_loop_io.py",
     "scripts/ci/check_os_marker_fakes.py", "scripts/check-case-collisions.py",
     "scripts/ci/check_lazy_deps_imports.py", "scripts/ci/check_profile_archive_boundary.py",
     "scripts/ci/check_agents_md_size.py", "scripts/ci/check_blob_size.py",
@@ -82,6 +84,7 @@ def _init(path: Path) -> Path:
     _git(path, "config", "user.name", "t")
     (path / ".gitignore").write_text(".venv\n", encoding="utf-8")
     shutil.copy(REPO / "pyproject.toml", path / "pyproject.toml")
+    shutil.copy(REPO / "ruff.toml", path / "ruff.toml")
     return path
 
 
@@ -96,7 +99,7 @@ def _add_engine(repo: Path, checker: bool = True) -> list[str]:
         shutil.copy2(REPO / "scripts/check", repo / "scripts/check")
         shutil.copytree(REPO / "scripts/code_health", repo / "scripts/code_health",
                         ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
-    return ["agent", "scripts", "tests"]
+    return ["agent", "scripts", "tests", "ruff.toml"]
 
 
 def _engine_repo(tmp_path: Path) -> Path:

@@ -1494,7 +1494,7 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         codex_responses_native=responses_native,
         codex_responses_compact_threshold=compact_threshold,
         idle_compact_after_seconds=idle_compact_after_seconds,
-        prepare_ahead=is_truthy_value(cfg.get("prepare_ahead"), default=False),
+        prepare_ahead=is_truthy_value(cfg.get("prepare_ahead"), default=True),
     )
 
 

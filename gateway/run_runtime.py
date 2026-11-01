@@ -205,7 +205,7 @@ async def initialize_gateway_runtime(runner):
     # Publish this boot's verdict (an empty map clears a previous run's parked set).
     _record_parked_profiles(parked_profile_map(runner))
     runner.session_ticket_store = TicketStore(instance_id, registry.profile_ids())
-    release_unknown_turn_markers(runner)
+    await asyncio.to_thread(release_unknown_turn_markers, runner)
 
 
 def release_unknown_turn_markers(runner):
@@ -453,7 +453,8 @@ async def serve_profile_runtime(runner, name, home):
     the profile's store is unusable; the caller parks it (and releases the reservation). Its
     queued native rows are recovered once its adapters connect (``recover_served_native_rows``)."""
     from gateway.session_authorities import owner_scope
-    from gateway.session_hosted_service import _ensure_hosted_service, start_ready_hosted_services
+    from gateway.session_hosted_service import (
+        _ensure_hosted_service, start_ready_hosted_services_async)
     from gateway.session_local_recovery import recover_local_sessions
     from gateway.platforms.webhook_ingress import recover_webhook_finalizations
     home = await asyncio.to_thread(Path(home).resolve)
@@ -473,9 +474,9 @@ async def serve_profile_runtime(runner, name, home):
         with owner_scope(authority):
             _drop_retired_local_adapter(authority)
             await recover_bot_mailbox(authority)
-            recover_local_sessions(authority, schedule=True)
             await recover_webhook_finalizations(authority)
-            _recover_published_api_turns(runner, authority)
+            recover_local_sessions(authority, schedule=True)
+            await _recover_published_api_turns(runner, authority)
         if getattr(runner, 'session_control_server', None) is not None:
             await _ensure_hosted_service(runner, authority)
     except BaseException:
@@ -483,7 +484,7 @@ async def serve_profile_runtime(runner, name, home):
             registry.remove(home)
         raise
     _publish_served_set(runner)
-    start_ready_hosted_services(runner)
+    await start_ready_hosted_services_async(runner)
     return authority
 
 
@@ -500,7 +501,7 @@ def _drop_retired_local_adapter(authority):
         del adapters[Platform.LOCAL]
 
 
-def _recover_published_api_turns(runner, authority):
+async def _recover_published_api_turns(runner, authority):
     """Boot recovers queued API turns when the launch API adapter is published
     (``recover_api_turns``); a profile served after that runs the same pass on its own store."""
     from gateway.config import Platform
@@ -675,11 +676,14 @@ async def recover_profile_native_sessions(runner, authority):
     """Bind one authority's queued native rows to the adapters connected now."""
     from gateway.session_authorities import owner_scope
     with owner_scope(authority):
-        pending = {row['target_session_id'] for row in authority.db._read_all(
-            "SELECT DISTINCT target_session_id FROM session_admissions WHERE status IN ('queued','unknown')")}
-        bindings = [(owner, entry.origin, runner._adapter_for_source(entry.origin))
-                    for entry in runner.session_store.list_sessions() if entry.origin is not None
-                    for owner in [authority.logical_owner(entry.session_id)] if owner in pending]
+        def pending_bindings():
+            pending = {row['target_session_id'] for row in authority.db._read_all(
+                "SELECT DISTINCT target_session_id FROM session_admissions WHERE status IN ('queued','unknown')")}
+            bindings = [(owner, entry.origin, runner._adapter_for_source(entry.origin))
+                        for entry in runner.session_store.list_sessions() if entry.origin is not None
+                        for owner in [authority.logical_owner(entry.session_id)] if owner in pending]
+            return pending, bindings
+        pending, bindings = await asyncio.to_thread(pending_bindings)
         outcome = await authority.recover_native_sessions(bindings)
         from gateway.session_detached import recover_detached_sessions
         outcome.update(dict.fromkeys(recover_detached_sessions(authority, pending - set(outcome)), 'detached'))

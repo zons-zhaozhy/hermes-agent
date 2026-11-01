@@ -172,7 +172,7 @@ class GatewayUpdateNotificationsMixin:
                 return
             await asyncio.sleep(poll_interval)
         if paths.any_pending() and not paths.exit_code.exists():
-            paths.exit_code.write_text("124", encoding="utf-8")
+            await asyncio.to_thread(paths.exit_code.write_text, "124", encoding="utf-8")
             await self._send_update_notification()
 
     @staticmethod
@@ -253,19 +253,20 @@ class GatewayUpdateNotificationsMixin:
                 last_stream_time = loop.time()
                 await self._send_update_output(target, text)
 
-        def _read_new_output() -> None:
+        async def _read_new_output() -> None:
             nonlocal buffer, bytes_sent
             if paths.output.exists():
                 with suppress(OSError):
-                    chunk, bytes_sent = self._read_update_output_since(paths.output, bytes_sent)
+                    chunk, bytes_sent = await asyncio.to_thread(
+                        self._read_update_output_since, paths.output, bytes_sent)
                     buffer += chunk
 
         while loop.time() < deadline:
             if paths.exit_code.exists():
-                _read_new_output()
+                await _read_new_output()
                 await _flush_buffer()
                 with _log_suppressed(logging.WARNING, "Update final notification failed: %s"):
-                    exit_code = self._update_exit_code(paths)
+                    exit_code = await asyncio.to_thread(self._update_exit_code, paths)
                     await target.send(
                         t("gateway.update.finished") if exit_code == 0 else _update_failed_notice()
                     )
@@ -281,7 +282,8 @@ class GatewayUpdateNotificationsMixin:
                 getattr(_pending_state, "persistent", None), "update_prompt_pending", False
             ):
                 try:
-                    prompt_data = json.loads(paths.prompt.read_text(encoding="utf-8-sig"))
+                    prompt_data = json.loads(await asyncio.to_thread(
+                        paths.prompt.read_text, encoding="utf-8-sig"))
                     prompt_text = prompt_data.get("prompt", "")
                     if prompt_text:
                         await _flush_buffer()  # user sees context before the prompt
@@ -291,7 +293,7 @@ class GatewayUpdateNotificationsMixin:
             await asyncio.sleep(poll_interval)
         if not paths.exit_code.exists():
             logger.warning("Update watcher timed out after %.0fs", timeout)
-            paths.exit_code.write_text("124", encoding="utf-8")
+            await asyncio.to_thread(paths.exit_code.write_text, "124", encoding="utf-8")
             await _flush_buffer()
             with suppress(Exception):
                 await target.send(t("gateway.update.timed_out"))
@@ -326,13 +328,13 @@ class GatewayUpdateNotificationsMixin:
                         return True
             elif not paths.claimed.exists():
                 return True
-            pending = json.loads(paths.claimed.read_text(encoding="utf-8-sig"))
+            pending = json.loads(await asyncio.to_thread(paths.claimed.read_text, encoding="utf-8-sig"))
             platform_str = pending.get("platform")
             chat_id = pending.get("chat_id")
             if not paths.exit_code.exists():
                 return _defer("Update notification deferred: update still running")
-            exit_code = self._update_exit_code(paths)
-            output = paths.output.read_bytes().decode("utf-8", errors="replace") if paths.output.exists() else ""
+            exit_code = await asyncio.to_thread(self._update_exit_code, paths)
+            output = (await asyncio.to_thread(paths.output.read_bytes)).decode("utf-8", errors="replace") if paths.output.exists() else ""
             platform = Platform(platform_str)
             adapter = self._authorization_adapter(platform, self._marker_profile(pending))
             if chat_id and not adapter:

@@ -34,7 +34,7 @@ def layout_from_config(display: dict) -> bool:
 
 
 def busy_input_mode_from_config(display: dict) -> str:
-    """``display.busy_input_mode``; unset interrupts in both layouts (Tab still queues in this one)."""
+    """``display.busy_input_mode``; unset interrupts in both layouts."""
     return str((display or {}).get("busy_input_mode") or "interrupt").strip().lower()
 
 
@@ -326,10 +326,7 @@ def hint_pairs(cli) -> list[tuple[str, str]]:
         return []
     if getattr(cli, "_agent_running", False):
         enter = {"steer": "steer", "queue": "queue"}.get(getattr(cli, "busy_input_mode", ""), "interrupt")
-        pairs = [("enter", t(f"cli.modern.hint_{enter}"))]
-        if enter != "queue":
-            pairs.append(("tab", t("cli.modern.hint_queue")))
-        return pairs + [("ctrl+c", t("cli.modern.hint_stop"))]
+        return [("enter", t(f"cli.modern.hint_{enter}")), ("ctrl+c", t("cli.modern.hint_stop"))]
     return [("/", t("cli.modern.hint_commands")), ("@", t("cli.modern.hint_files")), ("!", t("cli.modern.hint_shell"))]
 
 
@@ -394,33 +391,15 @@ def _status_line_fragments(cli) -> list:
 
 
 def modern_input_rules(cli, kb):
-    """The composer's rules for this layout (the top one carries live status), plus Tab-to-queue."""
-    from prompt_toolkit.filters import Condition
+    """The composer's rules for this layout; the top one carries live status.
+
+    Tab is deliberately left to the composer's generic completion/history-ghost handler. Busy
+    follow-ups queue through queue-mode Enter or ``/queue``; Tab never submits or saves text.
+    """
     from prompt_toolkit.layout import FormattedTextControl, Window
 
     top = Window(FormattedTextControl(lambda: _render_safely(top_rule_fragments, cli)),
                  height=lambda: cli._tui_input_rule_height("top"), wrap_lines=False)
     bottom = Window(char="─", height=lambda: cli._tui_input_rule_height("bottom"), style=rule_style)
-
-    def _can_queue() -> bool:
-        from prompt_toolkit.application import get_app
-        from cli import _looks_like_slash_command
-        from hermes_cli.cli_subagent_monitor import modal_prompt_active
-        buf = get_app().current_buffer
-        text = buf.text.strip()
-        return bool(getattr(cli, "_agent_running", False) and text and buf.complete_state is None
-                    and not _looks_like_slash_command(text) and not text.startswith("!")
-                    and not modal_prompt_active(cli))
-
-    @kb.add("tab", filter=Condition(_can_queue), eager=True)
-    def _queue_while_busy(event):
-        # Not _tui_handle_enter: its paste/continuation rules would turn this key into a newline.
-        buf = event.app.current_buffer
-        text, images = buf.text.strip(), list(cli._attached_images)
-        cli._attached_images.clear()
-        cli._tui_enter_while_busy(text, images, (text, images) if images else text, mode="queue")
-        cli._inline_pastes(buf)
-        buf.reset(append_to_history=True)
-        event.app.invalidate()
 
     return top, bottom

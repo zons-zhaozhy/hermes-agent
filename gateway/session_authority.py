@@ -41,6 +41,16 @@ native_write_started = ContextVar('native_write_started', default=False)
 messaging_admission = ContextVar('messaging_admission', default=None)
 
 
+def _is_goal_continuation_request(request_id: str) -> bool:
+    """A local goal wake's durable identity is a JSON ``["goal-continuation", ...]`` list."""
+    import json
+    try:
+        parsed = json.loads(request_id)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(parsed, list) and bool(parsed) and parsed[0] == 'goal-continuation'
+
+
 @dataclass
 class LiveSession:
     source: object
@@ -342,7 +352,7 @@ class SessionAuthority:
         skipped; for a viewer that pages the transcript itself (Desktop over REST).
         *replay_from*: ``(epoch, sequence)`` this connection's reconnect replay answered (SessionEvents.catch_up)."""
         self.authorize(actor, ref, 'session:read')
-        from gateway.session_local_recovery import local_history, prepare_history, transcript_target
+        from gateway.session_local_recovery import prepare_history
         # The lineage read stays off the loop and the lock; without history the target is resolved under it.
         prepared = await prepare_history(self, ref) if history else None
         from gateway.session_onboarding import keep_from_discard
@@ -351,16 +361,36 @@ class SessionAuthority:
         await keep_from_discard(self, ref.session_id)
         # A delete or eviction can land during those awaits: re-check, so it answers not_found, never a KeyError.
         self.authorize(actor, ref, 'session:read')
+        snapshot = await asyncio.to_thread(self._join_stream_locked, actor, ref, loop=asyncio.get_running_loop(),
+                                           prepared=prepared, history=history, replay_from=replay_from)
         live = self.sessions[ref.session_id]
+        from gateway.session_viewer_close import cancel_persisted_close
+        await asyncio.to_thread(cancel_persisted_close, self, ref.session_id)  # the viewer cancels it
+        from gateway.session_deferred_pick import reask_on_attach
+        await reask_on_attach(self, ref, live)
+        return snapshot
+
+    def _join_stream_locked(self, actor, ref, *, loop, prepared, history, replay_from):
+        """Join the stream and build its snapshot in a worker thread.
+
+        A long transcript is several SQLite ``fetchall()`` calls. Under the old synchronous ``with
+        event_stream.lock`` body those calls ran on the owner loop and starved WebSocket writes while
+        the CLI read them as a disconnect. The lock must still serialize join/read against publish, so
+        the entire critical section moves to the worker; fanout admission and timer cancellation are
+        explicitly cross-thread safe.
+        """
+        from gateway.session_local_recovery import local_history, transcript_target
         from gateway.session_queued_controls import pending_rows
+        live = self.sessions[ref.session_id]
         with live.event_stream.lock:
             handle = self._handle(ref)  # before the viewer joins: a delete committed meanwhile is not_found
             subscription = next((key for key, member in live.subscribers.items()
                                  if member == actor), None) or uuid.uuid4().hex
             live.subscribers[subscription] = actor
             self.pending_closes.pop(ref.session_id, None)
-            from gateway.session_viewer_close import cancel_orphan_close
-            cancel_orphan_close(self, ref.session_id)
+            orphan_timer = self.orphan_closes.pop(ref.session_id, None)
+            if orphan_timer is not None:
+                loop.call_soon_threadsafe(orphan_timer.cancel)
             from tools.async_delegation import allow_for_session
             allow_for_session((self.profile_id, ref.session_id))  # a closed session's work may start again
             transport = self.events.get(actor.transport_id)
@@ -376,14 +406,9 @@ class SessionAuthority:
                 history, target = self.unless_deleted(ref, lambda: tuple(local_history(self, ref, prepared))), None
             else:
                 history, target = (), self.unless_deleted(ref, lambda: transcript_target(self, ref))
-            snapshot = SubscriptionSnapshot(subscription, handle, epoch, sequence, history,
+            return SubscriptionSnapshot(subscription, handle, epoch, sequence, history,
                                         tuple(self._pending_receipt(r) for r in pending_rows(self, ref)), prompts,
                                         transcript_target=target)
-        from gateway.session_viewer_close import cancel_persisted_close
-        await asyncio.to_thread(cancel_persisted_close, self, ref.session_id)  # the viewer cancels it
-        from gateway.session_deferred_pick import reask_on_attach
-        await reask_on_attach(self, ref, live)
-        return snapshot
 
     def _retire_overflowed(self, session_id, transport):
         """The fanout dropped this peer's backlog: its subscription is over even though the
@@ -794,6 +819,33 @@ class SessionAuthority:
         if row is None or row['status'] != 'started':
             raise RuntimeStoreError('stale_generation')
         return row
+
+    async def cancel_goal_continuations(self, session_id: str) -> int:
+        """Cancel still-queued local goal wakes after /goal pause or clear.
+
+        The command has already authorized the user and goal state is now paused/cleared; leaving
+        the durable wakes behind would replay autonomy turns ahead of real queued input. Cancellation
+        failures on one race-claimed row are left to the caller's FIFO semantics.
+        """
+        ref = SessionRef(self.profile_id, session_id)
+        pending = await asyncio.to_thread(list_session_admissions, self.db, session_id=session_id)
+        cancelled = 0
+        for row in pending:
+            if row['status'] != 'queued' or not _is_goal_continuation_request(row['request_id']):
+                continue
+            from gateway.session_ingress_media import release_admission_media
+            from gateway.session_runtime_workers import track_mutation
+            try:
+                task = track_mutation(
+                    self, self._commit_cancel(ref, row['admission_id'], self._pending_receipt(row)))
+                await asyncio.shield(task)
+                await asyncio.to_thread(release_admission_media, self.db, row['admission_id'])
+            except RuntimeStoreError as exc:
+                if exc.reason not in {'stale_generation', 'admission_started'}:
+                    raise
+                continue
+            cancelled += 1
+        return cancelled
 
     async def _commit_cancel(self, ref, admission_id, before):
         if before.status == 'queued':

@@ -202,9 +202,9 @@ acknowledge it before continuing. Do not resend the queued input.
 Added multiply; pytest isn't installed here, so I ran the tests directly: 2 passed.
 ─ 15.0s · edited 1 file +4 -0 · read 2 files · 8:27 AM
 ── ⠹ Running tests · 14s ─────────────────────────── Add multiply to calc.py ─
-❯ type to redirect this turn · Tab queues it for after
+❯ type to redirect this turn · /queue
 ──────────────────────────────────────────────────────────────────────────────
- gpt-5-mini · ctx [░░░░░░░░] 4% · ~/project (main)     enter interrupt · tab queue · ctrl+c stop
+ gpt-5-mini · ctx [░░░░░░░░] 4% · ~/project (main)     enter interrupt · ctrl+c stop
 ```
 
 - A 40-column bar opens each user message and answer (accent) and each reasoning block (dim); reasoning streams live as in classic and ends with a `∴ Thought for 3s · <title>` line. `❯` your message, a finished tool call led by its emoji (`📖 Read`, `💻 $`; `✗` in red when it failed, with its exit code; a refused `skill_manage` write keeps its emoji and shows the reason dim, since the agent retries it itself), `│` an edit's diff under its row, `☤` the answer, and `─` the turn's summary line.
@@ -276,7 +276,7 @@ On macOS, `F6`/`F7` mean the physical function keys, not the media/system contro
 | `Ctrl+R` / `F7` | Toggle the live work dock between its multi-row preview and a single summary line without moving composer focus. `Ctrl+R` is the reliable fallback when macOS reserves the function-key row. Besides subagents and background processes, the dock shows a standing `/goal` (active, parked or paused, with turns used) on its top row and the prompts waiting in `/queue` on its bottom rows. |
 | `Ctrl+D` | Exit (on an empty prompt; with text it deletes under the cursor). While the gateway runs a turn, it exits and leaves the turn running: the gateway finishes it, ends the session afterwards, and `hermes --resume` shows the reply. A turn that asks a question (approval or clarify) meanwhile waits for its timeout or for you to resume. Use `Ctrl+C` to stop the turn instead. |
 | `Ctrl+Z` | Suspend Hermes to background (Unix only). Run `fg` in the shell to resume. |
-| `Tab` | Accept auto-suggestion (ghost text) or autocomplete slash commands. While the agent is working in the `modern` layout, `Tab` on a typed message queues it for the next turn |
+| `Tab` | Accept the history ghost suggestion as editable input, or autocomplete slash commands. It never submits or queues a busy follow-up |
 | `!<command>` | **Shell mode** — run a shell command yourself without spending a model turn (e.g. `!git status`, `!pytest -x`). See below. |
 
 **Multiline paste preview.** When you paste a multi-line block, the CLI echoes a compact single-line preview (`[pasted: 47 lines, 1,842 chars — press Enter to send]`) instead of dumping the whole payload into the scrollback. The full content is still what gets sent; this is just display polish.

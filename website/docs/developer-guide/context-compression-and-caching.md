@@ -297,7 +297,7 @@ compression:
   codex_responses_native: false  # Opt-in server compaction: gpt-5.6 on OpenAI/Codex; Astra on Codex OAuth
   codex_responses_compact_threshold: null  # Server compaction trigger; only used when codex_responses_native: true
   in_place: true             # Compact on the same session id, no rotation (default: true)
-  prepare_ahead: false       # Opt-in: prepare the next summary in the background (default: false)
+  prepare_ahead: true        # Prepare the next summary in the background (default: true)
 
 # Summarization model/provider configured under auxiliary:
 auxiliary:
@@ -326,7 +326,7 @@ auxiliary:
 | `codex_responses_native` | `false` | bool | Opt in to OpenAI's server-side compaction on the Responses API. Engages for gpt-5.6-family models on the direct OpenAI API or a ChatGPT Codex subscription, and `gpt-6-astra` (including its `-900k` picker alias) on official Codex OAuth (see below) |
 | `codex_responses_compact_threshold` | `null` | `null` or positive integer | Server-side compaction trigger, read **only when `codex_responses_native: true`** — it never changes when local compression fires; the local trigger is `threshold` (ratio) capped by `threshold_tokens`. `null` follows the resolved local compression trigger with an 8,192 token safety margin. A positive integer remains absolute and only clamps downward when required. Invalid values use automatic behavior. Automatic mode falls back to `200000` when no usable local trigger exists |
 | `in_place` | `true` | bool | Compact on the same session id instead of rotating to a new one (see below) |
-| `prepare_ahead` | `false` | bool | Opt-in: near the trigger, write the next summary in the background and splice it at the next automatic compaction when it still covers the same messages (see below) |
+| `prepare_ahead` | `true` | bool | Within 30% of the trigger, write the next summary in the background and splice it at the next automatic compaction when it still covers the same messages (see below) |
 
 ### In-place compaction (single stable session id)
 
@@ -671,11 +671,11 @@ The `_previous_summary` field on the compressor instance stores the last summary
 text for this purpose. A deterministic fallback summary is stored there too, since
 it is the handoff the transcript now carries.
 
-### Prepared compaction (opt-in)
+### Prepared compaction
 
-With `compression.prepare_ahead: true` (read at agent construction, so it takes effect on the next
-session or gateway agent rebuild), `agent/prepared_compaction.py` writes the next summary before
-the trigger fires. When the last provider-reported prompt count is within 12% of the trigger
+Prepared compaction is on by default (read at agent construction, so a config change takes effect on the next
+session or gateway agent rebuild); `agent/prepared_compaction.py` writes the next summary before
+the trigger fires. When the last provider-reported prompt count is within 30% of the trigger
 (`threshold_tokens`) below it, the turn loop starts one background pass, before a tool batch runs or
 at turn end. Turn-end passes are skipped for cron runs, delegated children and one-shot sessions
 (`hermes chat -q`, `-z`), whose agents end with the turn. The pass plans the same window `compress()` plans (`_plan_compaction_window`) and calls

@@ -859,7 +859,7 @@ def finalize_turn(
                 review_skills=_should_review_skills,
             )
 
-    # Opt-in (compression.prepare_ahead): near the trigger, write the next compaction summary
+    # With compression.prepare_ahead (default on): near the trigger, write the next compaction summary
     # between turns. No-op otherwise; never raises.
     from agent.prepared_compaction import maybe_prepare
     maybe_prepare(agent, messages, origin="turn-end")

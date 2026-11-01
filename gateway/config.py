@@ -66,6 +66,7 @@ def _env_multiplex_profiles_override() -> bool | None:
 
 # What the runner does when the last messaging adapter goes down (GatewayConfig.on_all_adapters_down).
 ON_ALL_ADAPTERS_DOWN_POLICIES = ("exit", "stay_alive")
+OWNER_LOOP_DB_GUARD_MODES = ("off", "warn", "raise")
 
 
 def _env_on_all_adapters_down_override() -> str | None:
@@ -638,6 +639,9 @@ class GatewayConfig:
     loop_watchdog_max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
     # Diagnostic threshold for a same-stack event-loop callback; logs a Python stack, never exits.
     loop_slow_callback_stack_s: float = 1.0
+    # Runtime tripwire for SessionDB primitives invoked on this owner loop. ``warn`` logs a
+    # rate-limited stack; ``raise`` fails fast for fault injection; ``off`` disables the probe.
+    owner_loop_db_guard: str = "warn"
     # What happens when the LAST messaging adapter goes down. ``exit`` (default) shuts the gateway
     # down with the failure verdict so a supervising service manager (systemd/launchd) restarts it;
     # ``stay_alive`` keeps the process running and leaves recovery to the reconnect watcher — for
@@ -662,6 +666,7 @@ class GatewayConfig:
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
         "loop_watchdog_max_strikes", "loop_slow_callback_stack_s", "unauthorized_dm_behavior",
         "unauthorized_dm_decline_message",
+        "owner_loop_db_guard",
     )
 
     def __post_init__(self) -> None:
@@ -798,6 +803,9 @@ class GatewayConfig:
             loop_watchdog_probe_timeout_s=bounded_float("loop_watchdog_probe_timeout_s", DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, 1.0, 600.0),
             loop_watchdog_max_strikes=max_strikes,
             loop_slow_callback_stack_s=slow_callback_stack_s,
+            owner_loop_db_guard=_normalize_choice(
+                pick("owner_loop_db_guard"), set(OWNER_LOOP_DB_GUARD_MODES), "warn"
+            ),
             on_all_adapters_down=on_all_adapters_down,
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=_normalize_choice(data.get("unauthorized_dm_behavior"), UNAUTHORIZED_DM_BEHAVIORS, "pair"),

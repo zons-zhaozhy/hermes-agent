@@ -198,7 +198,7 @@ async def automation(connection, ref, params):
     authority = connection.authority
     live = authority.sessions[ref.session_id]
     from gateway.session_ancillary import physical_target
-    target = physical_target(authority, ref)
+    target = await asyncio.to_thread(physical_target, authority, ref)
     if not hasattr(authority, "viewer_automation"):
         authority.viewer_automation = {}
     authority.viewer_automation[ref.session_id] = connection
@@ -217,9 +217,12 @@ async def automation(connection, ref, params):
         from gateway.session_commands import _session_workspace
         with _profile_runtime_scope(home), _session_workspace(runner, live.source):
             return invoke(runner, kind, target, call, args, kwargs)
-    rows = lambda: tuple(authority.db.get_meta(f"{k}:{target}") for k in ("goal", "loop", "heartbeat"))
+    async def rows():
+        return await asyncio.to_thread(lambda: tuple(
+            authority.db.get_meta(f"{k}:{target}") for k in ("goal", "loop", "heartbeat")
+        ))
     # A "read" can still write: is_waiting / goal_blocks_tick clear a satisfied goal barrier.
-    before = rows() if call in _READS else None
+    before = await rows() if call in _READS else None
     # The judge and gates block for seconds: off the loop, with the caller's context (profile scope).
     result = await asyncio.to_thread(run)
     if kind == "heartbeat" and call in _WATCHDOG_CALLS and (call == "due_prompt" or result.get("value") is not None):
@@ -227,7 +230,7 @@ async def automation(connection, ref, params):
         if not hasattr(authority, "viewer_heartbeat"):
             authority.viewer_heartbeat = {}
         authority.viewer_heartbeat[ref.session_id] = connection
-    if before is None or rows() != before:
+    if before is None or await rows() != before:
         # The classic CLI drives this session's automation: other viewers (Ink, Desktop) repaint from the event.
         from gateway.session_control_actions import publish
         publish(authority, ref.session_id)

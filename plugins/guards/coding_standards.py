@@ -280,6 +280,10 @@ def _check_hardcoded_secret(tree: ast.AST, lines: list[str], skip_tests: bool = 
                 # 真密钥不会取这种形态（无混合大小写/数字盐/符号）
                 if _ENV_NAME_RE.fullmatch(val):
                     continue
+                # 公开 URL 不是凭据——OAuth 端点等公开文档化地址（含
+                # token 字样的 URL 字段名如 xxx_token_url 会误中本规则）
+                if val.startswith(("http://", "https://")):
+                    continue
                 violations.append(Violation(
                     rule_id="R007", line=node.lineno, col=node.col_offset,
                     severity="error",

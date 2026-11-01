@@ -766,6 +766,9 @@ class GatewayStartupMixin:
             if guard is not None:
                 with _log_suppressed(logging.DEBUG, "Failed to %s", what, exc_info=True):
                     getattr(guard, method)()
+        from owner_loop_guard import unregister_owner_loop
+
+        unregister_owner_loop()
 
     async def _consume_clean_shutdown_marker(self, marker_path) -> int:
         """Discard orphan turn markers before consuming a clean-exit receipt. Raises (fail closed):
@@ -962,6 +965,9 @@ class GatewayStartupMixin:
             self._gateway_loop = None
         if self._gateway_loop is not None:
             self._start_loop_liveness_guards(self._gateway_loop)
+            from owner_loop_guard import register_owner_loop
+
+            register_owner_loop(mode=getattr(self.config, "owner_loop_db_guard", "warn"))
             # Loop live: the loop-liveness watchdog takes over from the startup watchdog. Disarm even
             # when loop guards are config-disabled; only inside this branch (no live loop = stay armed).
             with _log_suppressed(logging.DEBUG, "Startup watchdog disarm failed", exc_info=True):

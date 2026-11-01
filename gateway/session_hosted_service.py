@@ -243,7 +243,7 @@ async def ensure_hosted_service(runner):
         raise RuntimeStoreError('profile_mismatch')
     for authority in serving_authorities(runner):
         await _ensure_hosted_service(runner, authority)
-    start_ready_hosted_services(runner)
+    await start_ready_hosted_services_async(runner)
     return active.hosted_room_service
 
 
@@ -279,6 +279,16 @@ def start_ready_hosted_services(runner):
             service.start()
     from gateway.hosted_rooms_gateway_import import import_after_ready
     import_after_ready(serving_authorities(runner))
+
+
+async def start_ready_hosted_services_async(runner):
+    """Run the shared-store readiness probe in a worker.
+
+    ``_hosted_room_worker_watcher`` reaches this every second. On a multiplexed host the shared
+    store may be busy or multi-GB; taking its read on the owner loop froze WebSocket writes long
+    enough for the liveness watchdog to restart the whole gateway.
+    """
+    await asyncio.to_thread(start_ready_hosted_services, runner)
 
 
 async def stop_hosted_service(runner, timeout=5):

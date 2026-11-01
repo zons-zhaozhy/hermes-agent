@@ -1083,15 +1083,17 @@ class GatewayAdapterLifecycleMixin:
         from gateway.run_startup import recover_left_core_in
         await asyncio.to_thread(recover_left_core_in, profile_home, hydrate_secrets=False)
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
-            profile_runtime_cfg = _load_gateway_config()
+            profile_runtime_cfg = await asyncio.to_thread(_load_gateway_config)
             from hermes_cli.plugins import discover_plugins, get_plugin_manager
-            discover_plugins()
+            await asyncio.to_thread(discover_plugins)
             self._subscribe_plugin_rewire(get_plugin_manager(), profile_name, profile_home)
             # This profile's `hooks:` block: start() registered before any profile scope existed.
             self._register_config_hooks(
                 "shell-hook/webhook registration failed for profile '%s'", profile_name, level=logging.WARNING,
             )
-            profile_cfg = load_gateway_config()
+            # Plugin discovery/import runs inside this loader. On a multiplex host it can join
+            # loader workers for seconds; that belongs off the owner loop or WS writes stall.
+            profile_cfg = await asyncio.to_thread(load_gateway_config)
             violation = _own_policy_open_startup_violation(profile_cfg)
         self._snapshot_profile_busy_modes(profile_name, profile_runtime_cfg)
         if violation:
@@ -1440,7 +1442,7 @@ class GatewayAdapterLifecycleMixin:
         # Hydrate external secret sources off-loop so they cannot starve heartbeats.
         await asyncio.to_thread(hydrate_profile_secret_sources, profile_home)
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
-            profile_config = load_gateway_config().platforms.get(platform)
+            profile_config = (await asyncio.to_thread(load_gateway_config)).platforms.get(platform)
             if profile_config is None or not profile_config.enabled:
                 return None, None
             # Startup credential gate mirror: a removed credential must not rebuild.
