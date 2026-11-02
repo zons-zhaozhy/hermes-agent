@@ -114,8 +114,14 @@ def _hard_assertion_defect(idx: int, w: dict, root: Path) -> str | None:
     if not isinstance(cfg, dict):
         return None
     role = str(w.get("role", ""))
-    keywords = cfg.get(role)
-    if not isinstance(keywords, list) or not keywords:
+    # 关键词 = "all" 通配键（约束所有角色，如体验三件套通用硬断言）与 role 专属键合并，
+    # 任一命中即算——合并只增宽可命中词不增严，无 "all" 键时与旧语义全同（向后兼容）。
+    keywords: list = []
+    for key in ("all", role):
+        val = cfg.get(key)
+        if isinstance(val, list) and val:
+            keywords.extend(str(kw) for kw in val if str(kw) not in keywords)
+    if not keywords:
         return None
     assertions = w.get("assertions") or []
     claims = [str(a.get("claim", "")) for a in assertions if isinstance(a, dict)]

@@ -244,3 +244,29 @@ class TestHardAssertionEvidence:
         (repo / ".hermes").mkdir(parents=True, exist_ok=True)
         w = {"role": "staff", "assertions": [{"claim": "键盘可达", "result": "pass"}]}
         assert ui_evidence._hard_assertion_defect(0, w, repo) is None  # 期望: 未声明项目零影响（向后兼容）
+
+    def _mk_all(self, tmp_path: Path, cfg: dict, claim: str, role: str) -> tuple[Path, dict]:
+        repo = tmp_path / "repo"
+        (repo / ".hermes").mkdir(parents=True, exist_ok=True)
+        (repo / ".hermes" / "ui_hard_assertions.json").write_text(json.dumps(cfg), encoding="utf-8")
+        w = {"role": role, "url": "http://127.0.0.1:8130/",
+             "checked_at": int(time.time()),
+             "assertions": [{"claim": claim, "result": "pass",
+                             "evidence": "CDP 实测记录"}]}
+        return repo, w
+
+    def test_all_wildcard_enforces_undeclared_role(self, tmp_path):
+        repo, w = self._mk_all(tmp_path, {"all": ["步数"]}, "页面渲染正常无报错", "first_user")
+        defect = ui_evidence._hard_assertion_defect(0, w, repo)
+        assert defect is not None and "硬断言" in defect  # 期望: all 键对未声明 role 生效——纯软断言被拦（通用词应约束所有角色）
+
+    def test_all_wildcard_hit_with_evidence_passes(self, tmp_path):
+        repo, w = self._mk_all(tmp_path, {"all": ["步数"]}, "任务步数实测 3 步完成", "first_user")
+        assert ui_evidence._hard_assertion_defect(0, w, repo) is None  # 期望: all 键命中且带 evidence → 放行（命中词+实测证据=合格断言）
+
+    def test_all_and_role_keywords_merge(self, tmp_path):
+        cfg = {"all": ["步数"], "staff": ["键盘"]}
+        repo, w = self._mk_all(tmp_path, cfg, "键盘可达全链", "staff")
+        assert ui_evidence._hard_assertion_defect(0, w, repo) is None  # 期望: role 命中自身声明词即放行（all 合并不阻断 role 原语义）
+        repo2, w2 = self._mk_all(tmp_path, cfg, "任务步数实测 3 步", "staff")
+        assert ui_evidence._hard_assertion_defect(0, w2, repo2) is None  # 期望: role 条目也可命中 all 通用词（合并=任一命中即算）
