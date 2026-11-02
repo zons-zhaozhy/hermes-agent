@@ -334,7 +334,9 @@ class SessionAuthority:
 
     async def resolve(self, actor, ref):
         self.authorize(actor, ref, 'session:read')
-        return self._handle(ref)
+        # Owner-loop guard: _handle does synchronous SessionDB reads (get_session +
+        # admission rows); run it in a worker thread like the tracked_write paths.
+        return await asyncio.to_thread(self._handle, ref)
 
     def unless_deleted(self, ref, read):
         """``read()``; a refusal because *ref* was deleted after ``authorize`` passed is ``not_found``.
