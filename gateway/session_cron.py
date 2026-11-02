@@ -197,7 +197,11 @@ async def operation(authority, name, params, actor=None):
         from gateway.session_authorities import owner_scope
         # The job id, jobs file and gateway config belong to the OWNING profile.
         with owner_scope(authority):
-            ref, request_id = _create(authority, actor, params)
+            # Owner-loop guard: _create does SessionDB reads (session row, receipt
+            # catch-up) and config/job file reads synchronously; run it in a worker
+            # thread (tracked_write precedent). owner_scope stays on the loop side and
+            # spans the await, so the worker runs the whole create under the scope.
+            ref, request_id = await asyncio.to_thread(_create, authority, actor, params)
         from functools import partial
         from gateway.session_runtime_workers import tracked_write
         if isinstance(ref, dict):
