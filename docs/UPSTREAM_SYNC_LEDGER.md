@@ -134,6 +134,19 @@ python3 -c "import agent.tool_executor, hermes_cli.plugins; print('imports OK')"
 git push origin main
 git rev-list --count main..upstream/main   # 应为 0
 
+### 1102 矫正记录
+
+- b37661ba13（1101 轮账本提交）实际包含 54 文件（409+/213-）：1101 轮 `git stash apply` 冲突时 git 将无冲突恢复文件全部暂存，随后账本 commit 连带提交了归属会话当时的工作区 WIP。提交信息「docs(ledger)」与内容不符。内容本体为归属会话完整工作（其后继 6 提交在其上持续精炼：f5b688e7f9/3bc0a387a2/7b17134e94/5d148be8ee/2cc3d2f9d9/0985aa13bc），保留不重写。教训入技能：stash apply 冲突后必须 `git status` 区分暂存态，提交前核对 `git diff --cached --stat`。
+
+### 1102 补记 4 项（1102 对账报告实证漏记，归属复核 git log 已验）
+
+| 文件 | 定制内容 | 归属提交 |
+|---|---|---|
+| agent/turn_finalizer.py | finalize_turn 4 行定制 | 1101 WIP（经 b37661ba13 入库） |
+| gateway/session_ingress.py | SQLite 移出 owner loop 诊断 6 行 | 7b34e3a917 |
+| gateway/slash_commands_model.py | 切换持久化失败响亮可见 4 行 | 72344632e2 |
+| tools/terminal_tool_guards.py | block_escalation 错误/阻塞分流 10 行 | ce9faf8ce0 |
+
 ## 五、存量定制面族谱（1101 补记: fork 改官方文件但此前未入账的 158 项, 按族归并）
 
 > 口径: `git diff --name-only upstream/main..HEAD` ∩ upstream 树存在文件, 剔除账本已具名条目。
