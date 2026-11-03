@@ -138,6 +138,16 @@ git rev-list --count main..upstream/main   # 应为 0
 
 - b37661ba13（1101 轮账本提交）实际包含 54 文件（409+/213-）：1101 轮 `git stash apply` 冲突时 git 将无冲突恢复文件全部暂存，随后账本 commit 连带提交了归属会话当时的工作区 WIP。提交信息「docs(ledger)」与内容不符。内容本体为归属会话完整工作（其后继 6 提交在其上持续精炼：f5b688e7f9/3bc0a387a2/7b17134e94/5d148be8ee/2cc3d2f9d9/0985aa13bc），保留不重写。教训入技能：stash apply 冲突后必须 `git status` 区分暂存态，提交前核对 `git diff --cached --stat`。
 
+### 1103 补记 5 项（交集内文件, 族谱行截断展开致未具名, 归属已 git log 复核）
+
+| 文件 | 归属 |
+|---|---|
+| agent/agent_init.py | 1101 WIP（经 b37661ba13 入库） |
+| gateway/relay/media.py | 1101 WIP（经 b37661ba13 入库） |
+| gateway/run_adapters.py | 1101 WIP（经 b37661ba13 入库） |
+| gateway/session_controls.py | 7b34e3a917（SQLite 移出 owner loop） |
+| tests/hermes_cli/test_cli_modern_layout.py | 1101 WIP（经 b37661ba13 入库） |
+
 ### 1102 补记 4 项（1102 对账报告实证漏记，归属复核 git log 已验）
 
 | 文件 | 定制内容 | 归属提交 |
