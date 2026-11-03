@@ -63,27 +63,28 @@ def test_render_platform_excluded(
 def test_aggregate_maps_signatures_with_counts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """映射命中进段且带实测次数;未映射签名不进段。"""
+    """护栏前缀消息进段且带实测次数+消息原文;无前缀噪音不进段。"""
     _wire(
         monkeypatch,
         tmp_path,
-        [("[SlowSearchGuard] terminal 中检测到无保护的递归 grep", 3),
-         ("[DBSafety] DB 操作铁律拦截：SQL 查询前必须先确认 schema", 2),
-         ("[RandomOtherGuard] 完全无关的拦截文案", 5)],
+        [("[SlowSearchGuard] terminal 中检测到无保护的递归 grep, 请限定子目录", 3),
+         ("[DBSafety] SQL 查询前必须先确认 schema", 2),
+         ("callback timed out 通道超时噪音", 5)],
     )
     out = dt.render({"platform": "cli"})
-    assert "slow_search(3次)" in out  # 期望: 命中签名按次数聚合
-    assert "SQL 前 schema(2次)" in out  # 期望: 第二类命中也进段
-    assert "RandomOtherGuard" not in out  # 期望: 未映射签名宁缺毋滥
+    assert "- SlowSearchGuard(3次):" in out  # 期望: 护栏标识+次数聚合
+    assert "[SlowSearchGuard] terminal 中检测到无保护的递归 grep" in out  # 期望: 消息原文(修复指引)进段
+    assert "- DBSafety(2次):" in out  # 期望: 第二护栏也进段
+    assert "callback timed out" not in out  # 期望: 无 [护栏] 前缀的噪音不进段
     assert "[高频拦截教训" in out  # 期望: 带日期头
 
 
 def test_unmapped_only_returns_empty(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """全部未映射 → 空段（不输出原始错误文案）。"""
-    _wire(monkeypatch, tmp_path, [("[Whatever] x", 9)])
-    assert dt.render({"platform": "cli"}) == ""  # 期望: 无映射命中时空串
+    """全部为无前缀消息 → 空段（基础设施噪音不进提示段）。"""
+    _wire(monkeypatch, tmp_path, [("callback timed out", 9)])
+    assert dt.render({"platform": "cli"}) == ""  # 期望: 无护栏前缀空串
 
 
 def test_fresh_cache_short_circuits(

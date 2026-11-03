@@ -33,21 +33,25 @@ logger = logging.getLogger(__name__)
 _BUDGET_CHARS = 600
 _TIP_LIMIT = 5
 _FRESH_SECONDS = 7 * 86400
-# 签名关键词 → (短标签, 一句话正解)。正解内容与对应子护栏拦截消息的
-# 修复指引同源,新增子护栏时同步维护本表。
-_TIP_MAP: tuple[tuple[str, tuple[str, str]], ...] = (
-    ("SlowSearchGuard", ("slow_search", "全仓递归文本扫描改用 search_files 工具;确需 grep 限定子目录并加 --include/--exclude-dir")),
-    ("diff", ("diff 对照", "写工具调用前同轮正文先贴 diff;新文件先 git add -N + git diff")),
-    ("四轴", ("四轴证据", "写代码前正文逐项列出影响面/原意图/根因/风险（时效 30 分钟）")),
-    ("ReadThink", ("写前调查", "写代码前先 read_file 目标文件+search_files 同类实现（terminal 只读命令也计数）")),
-    ("DBSafety", ("SQL 前 schema", "执行 SQL 前先 \\dt/\\d 确认表名字段名;写库前 ps eww+lsof 对账实连库")),
-    ("casebook", ("病例库", "OntoX 家族写操作前先查 education/casebook/INDEX.md")),
-    ("pre_write", ("先读后写", "patch/write_file 前同会话先 read_file 目标文件")),
-    ("callback timed out", ("护栏超时", "属护栏故障误拦,原样重试同一调用即可,勿换通道")),
-    ("SKILL_PRUNED", ("技能重载", "先 skill_view(name=...) 重载全文再写")),
-    ("scope_gate", ("新目录树", "仓库内新开目录树须当轮用户原话授权")),
-    ("先查重", ("新建查重", "新建 .py 前 search_files 全库查同名/同功能实现")),
-)
+
+
+def _guard_label(msg: str) -> str:
+    """从拦截消息提取护栏标识（``[XxxGuard] …`` 前缀形态）。
+
+    拦截消息原文自带修复指引（护栏拦截文案既有约定）,动态段直接消费
+    原文——新增子护栏零同步成本（2026-11-03 用户点名根治静态映射表）。
+    无 ``[标识]`` 前缀的消息（回调超时等基础设施噪音）跳过,不进段。
+
+    Contract:
+      Postconditions: 有前缀返回去括号标识; 无前缀返回空串; 永不抛异常。
+    """
+    s = msg.strip()
+    if not s.startswith("["):
+        return ""
+    end = s.find("]")
+    if end <= 1:
+        return ""
+    return s[1:end]
 
 
 def _cache_path() -> Path:
@@ -76,10 +80,10 @@ def _aggregate_tips() -> str:
     conn = sqlite3.connect(f"file:{_db_path()}?mode=ro", uri=True, timeout=3)
     try:
         rows = conn.execute(
-            "SELECT substr(error_message, 1, 60) AS sig, COUNT(*) AS c "
+            "SELECT substr(error_message, 1, 120) AS msg, COUNT(*) AS c "
             "FROM tool_outcomes WHERE status='blocked' "
             "AND timestamp >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-7 days') "
-            "GROUP BY sig ORDER BY c DESC LIMIT 40"
+            "GROUP BY msg ORDER BY c DESC LIMIT 40"
         ).fetchall()
     finally:
         try:
@@ -88,12 +92,14 @@ def _aggregate_tips() -> str:
             logger.warning("dynamic_tips: conn.close() 失败", exc_info=True)
     used: set[str] = set()
     lines: list[str] = []
-    for sig, count in rows:
-        for key, (label, tip) in _TIP_MAP:
-            if key in sig and label not in used:
-                used.add(label)
-                lines.append(f"- {label}({count}次): {tip}")
-                break
+    for msg, count in rows:
+        label = _guard_label(msg)
+        if not label or label in used:
+            continue
+        used.add(label)
+        first_line = msg.strip().splitlines()[0] if msg.strip() else ""
+        tip = first_line[:90]
+        lines.append(f"- {label}({count}次): {tip}")
         if len(lines) >= _TIP_LIMIT:
             break
     if not lines:

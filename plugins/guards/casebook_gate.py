@@ -353,24 +353,19 @@ def _is_ontox_target(path: str, cwd: str = "") -> bool:
 
 
 def _redirect_targets(cmd: str) -> list[str]:
-    """提取 > / >> 重定向的目标 token 列表。
+    """提取 > / >> 重定向的文件写目标 token 列表。
 
-    Contract: Postconditions: 只返回 > / >> 之后紧邻的 token（可能为空表）;
-      2>&1 合并流不是文件目标（跳过）; 引号不闭合无法 token 化时返回空表。
+    2026-11-03 C3 收敛: 委托唯一事实源 guards.terminal_semantics
+    （字符扫描）。对齐升级: fd 粘连形态（``2>file`` shlex 不拆词）同被
+    提取为写目标;sink/数字字面量/fd 复制/进程替换不再进目标列;
+    引号不闭合时不再因 shlex 抛异常而清零（owner 天然容错）。
+
+    Contract: Postconditions: 只返回构成文件写的目标 token（可能为空表）;
+      归属判定（是否 OntoX 路径）由上层 _is_ontox_target 收口。
     """
-    targets: list[str] = []
-    try:
-        import shlex
+    from plugins.guards.terminal_semantics import redirect_file_targets
 
-        tokens = shlex.split(cmd, posix=True)
-    except ValueError:
-        return targets
-    for i, tok in enumerate(tokens):
-        if tok in (">", ">>") and i + 1 < len(tokens):
-            nxt = tokens[i + 1]
-            if not nxt.startswith("&"):  # 2>&1 形态非文件目标
-                targets.append(nxt)
-    return targets
+    return redirect_file_targets(cmd)
 
 
 def _target_from_terminal(cmd: str, cwd: str = "") -> str:

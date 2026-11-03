@@ -268,39 +268,14 @@ def _terminal_writes_file(command: str) -> bool:
         if pat in command:
             return True
 
-    # 2. shell 重定向——检测 > 或 >> 后面跟文件路径
-    #    排除：> /dev/null, > /dev/stdout, 2>&1, >&2, > &-
-    _REDIRECT_SINKS = ("/dev/null", "/dev/stdout", "/dev/stderr")
-    idx = 0
-    while True:
-        gt_pos = command.find(">", idx)
-        if gt_pos == -1:
-            break
-        # 跳过 >& 和 2>& 等操作符
-        after = command[gt_pos + 1:]
-        if after.startswith("&"):
-            idx = gt_pos + 1
-            continue
-        # 取 > 后面的目标
-        target = after.lstrip("> ").strip()
-        # 如果目标以文件路径特征开头，且不是已知 sink
-        if target and not any(target.startswith(s) for s in _REDIRECT_SINKS):
-            # 检查是否像文件路径
-            first_token = target.split()[0] if target.split() else target
-            # 引号内 SQL（"...WHERE price > 9.99"）的尾引号会黏在 token 上——
-            # 先剥引号再做形态判定。
-            first_token = first_token.strip("\"'")
-            # 纯数字字面量（含小数）不是路径——2026-11-03 反方审查 D2 根修：
-            # SQL 比较符 WHERE price > 9.99 的 9.99 含 "." 曾被判重定向
-            # 写文件目标，导致只读 SQL 取证被拦。
-            if first_token.replace(".", "", 1).isdigit():
-                idx = gt_pos + 1
-                continue
-            if (first_token.startswith(("/", "~", "\"", "'", "./", "../"))
-                    or "." in first_token  # file.py, config.yaml
-                    or first_token.endswith((".py", ".js", ".ts", ".json", ".yaml", ".yml", ".toml", ".sh", ".md", ".txt", ".sql"))):
-                return True
-        idx = gt_pos + 1
+    # 2. shell 重定向——唯一事实源 guards.terminal_semantics（宽口径: 非
+    #    sink 目标即写,含 >> 与无扩展名目标;fd 复制/进程替换/数字字面量
+    #    由 owner 排除）。2026-11-03 C3 收敛: 此前私有扫描为窄口径（要求
+    #    目标含路径形态）,`echo hi > out` 漏判为只读。
+    from plugins.guards.terminal_semantics import redirect_writes_file
+
+    if redirect_writes_file(command):
+        return True
 
     # 3. cp/mv——要求前面有管道或空格（排除 grep 'cp '），且目标像文件路径
     for cmd_prefix in (" cp ", " mv "):

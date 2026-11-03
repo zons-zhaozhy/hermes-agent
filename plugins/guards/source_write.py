@@ -256,33 +256,26 @@ def _is_python_inline_write(command: str) -> bool:
 def _extract_redirect_target(command: str) -> Optional[str]:
     """Extract the target file path from a shell redirect (> or tee).
 
-    Uses str methods only — no regex (R2 safety).
+    2026-11-03 C3 收敛: 重定向目标提取委托唯一事实源
+    guards.terminal_semantics。语义升级（对齐 owner 口径）:
+      - append（>>）同为写目标——旧实现跳过 >> 形态;
+      - sink（/dev/null 族）与数字字面量不再被当作目标;
+      - 多重重定向取第一个文件写目标——旧实现停在首个 token,
+        `> /dev/null 2>&1; echo x > real.py` 会漏检 real.py。
+    tee 不属于重定向原子,保留独立通道。
 
     Contract:
       Preconditions: command is non-empty string
       Postconditions: returns file path string or None
     """
-    # Find ">" or "tee" and extract the next token
-    lower = command.lower()
-    # Strategy 1: find > and extract path after it
-    pos = 0
-    while True:
-        idx = lower.find(">", pos)
-        if idx < 0:
-            break
-        # Skip >> (append redirect)
-        if idx + 1 < len(lower) and lower[idx + 1] == ">":
-            pos = idx + 2
-            continue
-        # Extract token after >
-        rest = command[idx + 1:].lstrip()
-        path = _extract_first_token(rest)
+    from plugins.guards.terminal_semantics import redirect_file_targets
+
+    for path in redirect_file_targets(command):
         if path and not path.startswith("-"):
             return path
-        pos = idx + 1
 
-    # Strategy 2: find "tee" and extract path after it
-    idx = lower.find("tee")
+    # tee 通道（tee 的目标不由重定向语法承载）
+    idx = command.lower().find("tee")
     if idx >= 0:
         rest = command[idx + 3:].lstrip()
         path = _extract_first_token(rest)

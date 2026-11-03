@@ -184,10 +184,25 @@ diff_debt 17,517 / four_axis 5,356 / tool_safety-read 1,897 / pre_write 2,673。
 292 次/diff 对照 97 次/护栏超时 84 次。
 
 设计约束：7 天缓存周期内输出恒定（不破坏会话缓存前缀；越期由既有
-section_reinjection 版本指纹补注）；只读连接、任何数据面故障 fail-open
-空段或旧缓存兜底；未映射签名不进段（宁缺毋滥，正解与拦截消息修复指引
-同源，新增子护栏时同步维护 _TIP_MAP）。层级优先级保持不变：
-modify 自动改写 > 事前提示 > 事后拦截。
+section_reinjection 版本指纹补注——动态段文本已并入补注指纹与注入体，
+在跑会话同达）；只读连接、任何数据面故障 fail-open 空段或旧缓存兜底。
+2026-11-03 用户点名根治静态映射表：动态段不再维护签名→正解映射，直接
+消费拦截消息原文（护栏拦截文案自带修复指引是既有约定）——新增子护栏
+零同步成本；无 `[护栏名]` 前缀的消息（回调超时等基础设施噪音）不进段。
+层级优先级保持不变：modify 自动改写 > 事前提示 > 事后拦截。
+
+### C3 解析器收敛进展（2026-11-03 第二批落地）
+
+唯一事实源 `plugins/guards/terminal_semantics.py`（Redirect 数据类 +
+parse_redirects/redirect_writes_file/redirect_file_targets/
+looks_like_path,语义基底取六套中最全的 block_escalation 实现）。
+消费方已切换 4 处：read_think_gate/gate._terminal_writes_file（窄口径
+→宽口径,`echo hi > out` 不再漏判）、source_write._extract_redirect_target
+（`>>` append 与多重重定向漏检修复）、casebook_gate._redirect_targets
+（fd 粘连形态提取+shlex 引号异常清除）、block_escalation._redirects_write
+（委托,数字字面量排除对齐）。配套 test_terminal_semantics.py 9 例。
+第二批待收敛：patch-first sed 写形态、block_escalation._READ_CMDS 白名单
+迁入 owner 常量区。
 
 ### 已知路线图（独立工程项，非本轮范围）
 

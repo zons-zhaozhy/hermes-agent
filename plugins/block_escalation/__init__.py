@@ -139,16 +139,13 @@ def _next_redirect_sink(seg: str, gt: int) -> tuple:
 def _redirects_write(seg: str) -> bool:
     """Contract: Preconditions: seg 为 str；Postconditions: 存在落盘重定向
     （> file / >> file，丢弃 >/dev/null 族与进程替换 >(）时返回 True。
-    零正则，纯 str 方法。"""
-    i = 0
-    while True:
-        gt = seg.find(">", i)
-        if gt == -1:
-            return False
-        append, fd_dup, is_procsub, sink, i = _next_redirect_sink(seg, gt)
-        if (append or not fd_dup) and not is_procsub \
-                and sink not in _HARMLESS_SINKS:
-            return True
+    2026-11-03 C3 收敛: 实现委托唯一事实源 guards.terminal_semantics。
+    语义对齐: owner 口径在原实现（append/非 fd_dup/非进程替换/非 sink）
+    之上增加空目标与数字字面量（SQL 比较符 price > 9.99）排除,只读
+    分类更准。"""
+    from plugins.guards.terminal_semantics import redirect_writes_file
+
+    return redirect_writes_file(seg)
 
 
 def _head_index(words: list) -> int:
