@@ -21,6 +21,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
+from importlib import import_module as _import_module
 from typing import Any, Mapping, Optional
 
 from plugins._llm_judge import llm_judge_json, llm_judge_multi
@@ -156,8 +158,27 @@ def detect_alias_drift(
     return hits
 
 
+def _judge_reply_side(text: str):
+    """共享回复侧合并判定（reply-certainty-checker 的 judge_reply_side）：同一回复文本进程内只判一次。
+
+    运行时插件模块名 = hermes_plugins.<slug>（连字符转下划线，
+    见 hermes_cli/plugins.py _directory_module_name）；依次尝试两个命名空间。
+    """
+    for modname in ("hermes_plugins.reply_certainty_checker",
+                    "plugins.reply_certainty_checker"):
+        try:
+            mod = sys.modules.get(modname) or _import_module(modname)
+            return mod.judge_reply_side(text)
+        except Exception as e:
+            logger.debug("reply-side merge via %s unavailable: %s", modname, e)
+    return None
+
+
 def _judge_output_quality(text: str) -> Optional[dict[str, Any]]:
     """judge 判开放集称谓混用 + 生造压缩复合词；None=fail-open。
+
+    与 certainty/boundary/宣告配对同文本合并判定（judge_reply_side 的
+    naming_drift/jargon_coined 键）；合并通道不可用时回退本插件独立 judge。
 
     Contract:
       Preconditions: text 为非空 str
@@ -165,6 +186,10 @@ def _judge_output_quality(text: str) -> Optional[dict[str, Any]]:
     """
     if len(text) < 20:
         return None
+    merged = _judge_reply_side(text)
+    if merged is not None:
+        return {"naming_drift": merged.get("naming_drift"),
+                "jargon_coined": merged.get("jargon_coined")}
     result = llm_judge_multi(
         task="terminology_drift",
         system=_JUDGE_SYSTEM,

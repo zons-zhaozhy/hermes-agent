@@ -22,13 +22,13 @@ logger = logging.getLogger(__name__)
 _NAMESPACE = "reply_certainty_checker"
 _MAX_JUDGE_CALLS = 30
 
-# —— 回复侧合并判定（certainty + boundary + 消项闭环 共用一次 LLM 调用）——
-# 各插件同为 transform_llm_output、同一回复文本，合并成一次 multi judge，
+# —— 回复侧合并判定（certainty + boundary + 消项闭环 + 宣告配对 + 术语漂移 共用一次 LLM 调用）——
+# 各插件同为回复文本输入（transform_llm_output 与下一轮 pre_llm_call），合并成一次 multi judge，
 # 判定语义与各自独立时完全一致，仅省掉串行调用（与用户侧
 # yinyang+devil 合并同范式）。
 
 REPLY_SIDE_SYSTEM = (
-    "你是回复纪律审查员。对下面这段 AI 最终回复同时判定四个维度：\\n"
+    "你是回复纪律审查员。对下面这段 AI 最终回复同时判定七个维度：\\n"
     "1. uncertain：是否包含'未标注验证来源的技术性模糊断言'——即用"
     "'可能/应该/大概率/也许'等修饰技术事实、且没有紧跟实测证据"
     "（如[实测]/日志/测试结果）。社交用语（'你可能需要…'）和已标注"
@@ -41,19 +41,32 @@ REPLY_SIDE_SYSTEM = (
     "已完成、全部通过、已交付）。只答 true/false。\\n"
     "4. has_boundary：是否披露了未验证边界（列出了未测路径/环境/"
     "已知风险/局限/未覆盖等待验证项）。\\n"
+    "5. violation：回复是否违反「宣告-动手配对」纪律——宣告了具体的行动意图"
+    "（建议实施/准备去做/接下来就做/等某事完成后动手/不说就按某方案办），"
+    "且既没有已动手的证据（工具调用、代码修改、命令执行、真实结果输出），"
+    "也未把该行动明确列为「必须先确认/须拍板」事项。陈述事实、回答问题、"
+    "汇报已完成工作、纯提问澄清需求、明确说须拍板并附默认方案的都不违反。\\n"
+    "6. naming_drift：是否同一概念混用不同称谓/词形（同义词互换、同一对象"
+    "中英混称、名词形态不一致）。\\n"
+    "7. jargon_coined：是否把完整词组硬压成含糊缩写/未定义先行词/行话未定义"
+    "（首次出现的术语无定义无完整形式、用自造词或行话替代标准说法且读者"
+    "无法从字面理解）。引用代码标识符、文件路径、引号内原文引用、对不同事物"
+    "的合理区分、已在本段定义清楚后继续使用的术语都不算。\\n"
     "只回答一个 JSON 对象，含全部键："
     '{\\\"uncertain\\\": true/false, \\\"needs_audit\\\": true/false, '
-    '\\\"done_claim\\\": true/false, \\\"has_boundary\\\": true/false}'
+    '\\\"done_claim\\\": true/false, \\\"has_boundary\\\": true/false, '
+    '\\\"violation\\\": true/false, \\\"naming_drift\\\": true/false, \\\"jargon_coined\\\": true/false}'
 )
 
-REPLY_SIDE_KEYS = ["uncertain", "needs_audit", "done_claim", "has_boundary"]
+REPLY_SIDE_KEYS = ["uncertain", "needs_audit", "done_claim", "has_boundary",
+                  "violation", "naming_drift", "jargon_coined"]
 
 # 进程级结果缓存：同一段回复（sha1 前 16 位）只判一次，certainty/boundary 共享。
 _REPLY_SIDE_CACHE: dict[str, dict[str, Optional[bool]]] = {}
 
 
 def judge_reply_side(text: str) -> dict[str, Optional[bool]]:
-    """一次调用同时判 uncertain/needs_audit 两维度；异常 → 全 None。
+    """一次调用同时判 uncertain/needs_audit/done_claim/has_boundary/violation/naming_drift/jargon_coined；异常 → 全 None。
 
     同一回复文本进程内只发起一次真实调用（缓存命中直接返回），供
     reply-certainty-checker / completion-boundary-audit 两个
@@ -61,7 +74,7 @@ def judge_reply_side(text: str) -> dict[str, Optional[bool]]:
 
     Contract:
       Preconditions: text 为非空 str
-      Postconditions: 返回 dict 恰含两键（True/False/None）；绝不 raise
+      Postconditions: 返回 dict 恰含全部键（True/False/None）；绝不 raise
     """
     import hashlib
 
@@ -75,6 +88,7 @@ def judge_reply_side(text: str) -> dict[str, Optional[bool]]:
         system=REPLY_SIDE_SYSTEM,
         text=text[:4000],
         keys=REPLY_SIDE_KEYS,
+        max_tokens=200,  # 七个键的 JSON 回复需要比默认 64 更宽的输出预算
     )
     _REPLY_SIDE_CACHE[h] = result
     return result

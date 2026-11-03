@@ -437,7 +437,8 @@ class PluginDispatchMixin:
                 if self._hook_running_callbacks.get(gate_key) is token:
                     self._hook_abandoned.setdefault(suppression_key, set()).add(gate_key)
             logger.warning(
-                "Hook '%s' callback %s timed out after %gs — skipping", hook_name, callback_name, timeout)
+                "Hook '%s' callback %s (%s) timed out after %gs — skipping",
+                hook_name, callback_name, getattr(cb, "__module__", "unknown plugin"), timeout)
             return _HOOK_SKIPPED
         if "exc" in failure:
             raise failure["exc"]

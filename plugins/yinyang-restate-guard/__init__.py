@@ -33,12 +33,12 @@ from plugins._shared_state import get_session_state
 logger = logging.getLogger(__name__)
 
 
-# —— 用户侧合并判定（yinyang + devil 共用一次 LLM 调用）——
-# 两插件同为 pre_llm_call、同一 user_message 输入，合并成一次 multi judge。
+# —— 用户侧合并判定（yinyang + devil-advocate + scope_gate 共用一次 LLM 调用）——
+# 三插件同为 pre_llm_call、同一 user_message 输入，合并成一次 multi judge。
 # 判定语义与各自独立时完全一致，仅省掉一次串行调用。
 
 USER_SIDE_SYSTEM = (
-    "你是对话信号哨兵。对下面这条用户消息同时判定两个维度：\\n"
+    "你是对话信号哨兵。对下面这条用户消息同时判定三个维度：\\n"
     "1. challenge：消息是否在质疑、反驳或纠正 AI 的某个说法/结论/行为"
     "（含直接指出错误、表达不认同、要求纠正）。"
     "单纯提问、补充信息、闲聊、下达新任务不算；"
@@ -53,11 +53,15 @@ USER_SIDE_SYSTEM = (
     "（产物错了重打、提交错了回滚）；仅当动作本身伴随新的架构选型/"
     "契约拍板/不可逆删除/对外承诺时才算。"
     "（本判据与 devil-advocate-audit._JUDGE_SYSTEM 须同步修改。）\\n"
+    "3. authorized：这条【用户指令】是否授权助手在代码仓库里新建代码产物"
+    "（新建应用/新建目录树/新建模块/新建文件这类构造动作）。"
+    "用户要求实现/开发/搭建/新建/创建/落地某个代码产物 → true；"
+    "用户要求分析/设计/规划/评估/审查/讨论/汇报/查看/写文档/改现有代码 → false。\\n"
     "只回答一个 JSON 对象，含全部键："
-    "{\\\"challenge\\\": true/false, \\\"decision\\\": true/false}"
+    "{\\\"challenge\\\": true/false, \\\"decision\\\": true/false, \\\"authorized\\\": true/false}"
 )
 
-USER_SIDE_KEYS = ["challenge", "decision"]
+USER_SIDE_KEYS = ["challenge", "decision", "authorized"]
 
 # 进程级结果缓存：同一消息（sha1 前 16 位）只判一次，yinyang/devil 共享。
 # 插件均在同一进程内运行；缓存无淘汰（每会话 judge 硬上限 30 条兜底）。

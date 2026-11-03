@@ -18,6 +18,8 @@ Contract:
 from __future__ import annotations
 
 import logging
+import sys
+from importlib import import_module as _import_module
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger("hermes.plugins.declare_act_guard")
@@ -84,13 +86,35 @@ def _gate_ok(state: dict, text: str) -> bool:
     return state.get("last_text", "") != text[:200]
 
 
+def _judge_reply_side(text: str):
+    """共享回复侧合并判定（reply-certainty-checker 的 judge_reply_side）：同一回复文本进程内只判一次。
+
+    运行时插件模块名 = hermes_plugins.<slug>（连字符转下划线，
+    见 hermes_cli/plugins.py _directory_module_name）；依次尝试两个命名空间。
+    """
+    for modname in ("hermes_plugins.reply_certainty_checker",
+                    "plugins.reply_certainty_checker"):
+        try:
+            mod = sys.modules.get(modname) or _import_module(modname)
+            return mod.judge_reply_side(text)
+        except Exception as e:
+            logger.debug("reply-side merge via %s unavailable: %s", modname, e)
+    return None
+
+
 def _judge_violation(text: str) -> Optional[bool]:
     """LLM 语义判定「宣告了却未动手且未列拍板」。失败返回 None。
+
+    与 certainty/boundary/术语漂移同文本合并判定（judge_reply_side 的 violation 键）；
+    合并通道不可用时回退本插件独立 judge（llm_judge_bool 原路径）。
 
     Contract:
       Preconditions: text 为非空 str
       Postconditions: 返回 True/False/None；绝不 raise
     """
+    merged = _judge_reply_side(text)
+    if merged is not None and merged.get("violation") is not None:
+        return merged["violation"]
     from plugins._llm_judge import llm_judge_bool
 
     system = (

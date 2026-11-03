@@ -50,6 +50,8 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
+from importlib import import_module as _import_module
 from typing import Any, Optional
 
 from plugins._shared_state import get_session_state
@@ -285,14 +287,36 @@ def _latest_user_text(history: Any) -> str:
     return ""
 
 
+def _judge_user_side(text: str) -> Optional[dict[str, Any]]:
+    """共享用户侧合并判定（yinyang 的 judge_user_side）：challenge/decision/authorized 一次调用、同文本共享缓存。
+
+    运行时插件模块名 = hermes_plugins.<slug>（连字符转下划线，
+    见 hermes_cli/plugins.py _directory_module_name）；依次尝试两个命名空间。
+    """
+    for modname in ("hermes_plugins.yinyang_restate_guard",
+                    "plugins.yinyang_restate_guard"):
+        try:
+            mod = sys.modules.get(modname) or _import_module(modname)
+            return mod.judge_user_side(text)
+        except Exception as e:
+            logger.debug("user-side merge via %s unavailable: %s", modname, e)
+    return None
+
+
 def _judge_authorized(user_text: str) -> Optional[bool]:
     """LLM 语义判定：用户原话是否授权在仓库内新建代码产物。
+
+    与 yinyang/devil-advocate 同文本合并判定（judge_user_side 的 authorized 键）；
+    合并通道不可用时回退本插件独立 judge。
 
     Contract:
       Preconditions: user_text 非空字符串。
       Postconditions: 返回 True/False/None；None 表示判定失败或不可用
                       （调用方据此 fail-open 放行并留痕）。
     """
+    merged = _judge_user_side(user_text)
+    if merged is not None and merged.get("authorized") is not None:
+        return merged["authorized"]
     from plugins._llm_judge import llm_judge_bool
 
     system = (

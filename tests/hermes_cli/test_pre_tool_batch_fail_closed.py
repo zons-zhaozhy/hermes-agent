@@ -65,6 +65,27 @@ class TestPreToolBatchFailClosed:
         assert "pre_tool_batch" in directive["message"]
         hold.set()
 
+    def test_timeout_warning_names_callback_module(self, monkeypatch, caplog):
+        """A timed-out callback's WARNING carries its module, so one hung guard among
+        many same-named ``on_pre_tool_call`` callbacks is attributable to its plugin
+        (the fail-closed block copy itself stays operator-stable)."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
+        )
+        mgr = PluginManager()
+        mgr._hook_timeout_suppression_seconds = 0.0
+        hold = threading.Event()
+
+        def stuck_guard(**_kwargs):
+            hold.wait(timeout=10.0)
+
+        mgr._hooks["pre_tool_batch"] = [stuck_guard]
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr.invoke_hook("pre_tool_batch", tool_calls=[])
+        hold.set()
+        assert "stuck_guard" in caplog.text
+        assert f"({stuck_guard.__module__})" in caplog.text
+
     def test_healthy_callback_still_decides(self):
         """Fail-closed is failure-path only: a healthy gate's allow/block
         verdicts pass through unchanged."""
