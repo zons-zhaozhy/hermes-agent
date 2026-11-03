@@ -84,14 +84,22 @@ def _render_preflight_section(session_info: Mapping[str, Any]) -> str:
 
     Contract:
       Preconditions: session_info 为 core 冻结的只读映射,含 platform 键。
-      Postconditions: 常规会话返回段库内 guards_preflight 文本+在岗状态行；
-        排除平台返回 ""。
+      Postconditions: 常规会话返回段库内 guards_preflight 文本+在岗状态行
+        +动态提示段（拦截账本聚合,fail-open）；排除平台返回 ""。
     """
     if str(session_info.get("platform") or "") in _EXCLUDED_PLATFORMS:
         return ""
     from plugins.prompt_sections import load_section  # 延迟导入: 仅段渲染路径需要
 
-    return load_section("guards_preflight") + _guards_status_line()
+    # 动态提示段: 近 7 天高频拦截签名→一句话正解（双保险闭环——事后拦截
+    # 的教训回流事前提示,新会话第一次就做对）。任何数据面故障返回空串。
+    from plugins.guards import dynamic_tips
+
+    return (
+        load_section("guards_preflight")
+        + _guards_status_line()
+        + dynamic_tips.render(session_info)
+    )
 
 
 def _render_blacklist_section(session_info: Mapping[str, Any]) -> str:

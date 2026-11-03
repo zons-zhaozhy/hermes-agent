@@ -174,6 +174,21 @@ diff_debt 17,517 / four_axis 5,356 / tool_safety-read 1,897 / pre_write 2,673。
 | D13/D15 | block_escalation 意图指纹聚合面；四轴双状态源 | 独立工程项，见路线图 |
 | D14 | finish_guard L2 续跑交互税 | 有 `_MAX_PRE_VERIFY_NUDGES` 上限兜底，保留观察 |
 
+### 双保险闭环：拦截账本 → 动态提示段（2026-11-03 用户定调落地）
+
+「事后拦截不如事先明确提示」——事前提示降发生率、事后拦截兜底，两层都要；
+缺的是数据回流：拦截账本里的教训从未进入提示段。已落地
+`plugins/guards/dynamic_tips.py`：guards_preflight 段尾追加「高频拦截教训」
+动态段（近 7 天 blocked 签名聚合 → 静态映射表命中 → ≤5 条一句话正解，
+≤600 字符）。端到端实测首刷输出：slow_search 1,307 次/SQL 前 schema
+292 次/diff 对照 97 次/护栏超时 84 次。
+
+设计约束：7 天缓存周期内输出恒定（不破坏会话缓存前缀；越期由既有
+section_reinjection 版本指纹补注）；只读连接、任何数据面故障 fail-open
+空段或旧缓存兜底；未映射签名不进段（宁缺毋滥，正解与拦截消息修复指引
+同源，新增子护栏时同步维护 _TIP_MAP）。层级优先级保持不变：
+modify 自动改写 > 事前提示 > 事后拦截。
+
 ### 已知路线图（独立工程项，非本轮范围）
 
 - **六套 terminal 写意图解析器收敛**：source_write / patch-first / diff_debt
