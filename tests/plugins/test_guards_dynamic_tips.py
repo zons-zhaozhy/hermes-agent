@@ -124,3 +124,24 @@ def test_stale_cache_used_when_aggregate_fails(
     monkeypatch.setattr(dt, "_db_path", lambda: tmp_path / "nope.db")
     monkeypatch.setattr(dt, "_cache_path", lambda: cache)
     assert "OLD_TIP" in dt.render({"platform": "cli"})  # 期望: 旧缓存兜底
+
+
+def test_reinjection_fingerprint_includes_dynamic_tips(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """动态段 7 天周期翻转 → 补注指纹变化 → 在跑会话收到新动态段。
+
+    期望值来源: 双保险闭环必须同达新旧会话——动态段不在段库文件里,
+    补注通道须单独并入其指纹,否则周期翻转只在下个新会话生效。
+    """
+    from plugins.discipline import section_reinjection as sr
+
+    _wire(monkeypatch, tmp_path, [])
+    sid = "test-dyn-reinject"
+    sr._session_state.pop(sid, None)
+    monkeypatch.setattr(dt, "peek", lambda: "DYN_V1")
+    assert sr._on_pre_llm_call(session_id=sid) == {}  # 期望: 首轮登记不注入
+    assert sr._on_pre_llm_call(session_id=sid) == {}  # 期望: 指纹未变不注入
+    monkeypatch.setattr(dt, "peek", lambda: "DYN_V2")
+    out = sr._on_pre_llm_call(session_id=sid)
+    assert "DYN_V2" in out["context"]  # 期望: 动态段变化即对在跑会话补注

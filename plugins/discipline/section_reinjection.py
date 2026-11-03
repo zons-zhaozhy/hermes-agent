@@ -66,26 +66,41 @@ def _should_inject(state: dict[str, Any], version: str) -> tuple[bool, bool, boo
 
 
 def _on_pre_llm_call(**kwargs: Any) -> dict[str, Any]:
-    """按「指纹变更 + 周期补注」节奏注入段库全文（首轮不注入, 见模块说明）。"""
-    version = fingerprint()
-    if not version:
+    """按「指纹变更 + 周期补注」节奏注入段库全文（首轮不注入, 见模块说明）。
+
+    指纹含动态提示段（guards/dynamic_tips 缓存文本 md5）: 动态段挂在
+    guards_preflight 渲染器尾部、不落段库文件,不并入指纹则其 7 天周期
+    翻转后在跑会话永远收不到新教训——事后拦截的回流必须同达新旧会话。
+    """
+    import hashlib
+
+    base = fingerprint()
+    if not base:
         return {}
+    from plugins.guards import dynamic_tips  # 延迟导入: 补注路径并动态段
+
+    dyn = dynamic_tips.peek()
+    version = f"{base}|dyn:{hashlib.md5(dyn.encode('utf-8')).hexdigest()[:8]}" if dyn else base
     session_id = str(kwargs.get("session_id") or "")
     state = _session_state.setdefault(session_id, {"version": "", "calls": 0, "seeded": False})
     state["calls"] = int(state["calls"]) + 1
     inject, changed, periodic = _should_inject(state, version)
     if not inject:
         return {}
-    digest = render_all(_MAX_DIGEST_CHARS)
+    budget = _MAX_DIGEST_CHARS - (len(dyn) + 1 if dyn else 0)
+    digest = render_all(budget)
     if not digest:
         logger.warning("section-reinjection: 段库指纹存在但段文本为空, 本轮不注入")
         return {}
+    if dyn:
+        digest = digest + "\n" + dyn
     logger.info(
-        "section-reinjection: 注入守卫段 (v%s, %d chars, 变更=%s, 周期=%s)",
+        "section-reinjection: 注入守卫段 (v%s, %d chars, 变更=%s, 周期=%s, 动态段=%s)",
         version,
         len(digest),
         changed,
         periodic,
+        bool(dyn),
     )
     return {"context": _PREFIX_TEMPLATE.format(version=version) + digest}
 

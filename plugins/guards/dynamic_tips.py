@@ -128,6 +128,21 @@ def _store_cache(text: str, now: float) -> None:
     os.replace(tmp, cache)
 
 
+def peek() -> str:
+    """读动态段缓存文本（不聚合、不触库、不写缓存）——供补注通道并入指纹。
+
+    Contract:
+      Postconditions: 缓存缺失/损坏/读取失败 → 空串（fail-open）;
+        正常返回缓存内文本（无论新旧——刷新由新会话渲染器触发,
+        在跑会话只消费,保证补注路径零查询开销）。
+    """
+    try:
+        return _load_cached(time.time(), float("inf"))
+    except Exception:
+        logger.warning("dynamic_tips: peek 失败", exc_info=True)
+        return ""
+
+
 def render(session_info: Mapping[str, Any]) -> str:
     """guards_preflight 段尾追加的动态提示段。
 
