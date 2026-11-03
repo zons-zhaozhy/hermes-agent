@@ -733,7 +733,19 @@ class DingTalkAdapter(BasePlatformAdapter):
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Send a reply via AI Card (when configured) or DingTalk session webhook markdown."""
         metadata = metadata or {}
-        logger.debug("[%s] send() chat_id=%s card_enabled=%s", self.name, chat_id, bool(self._card_template_id and self._card_sdk))
+        # ``[[at-all]]``: repo-commit announcements @ everyone (profile skill convention). Strip the
+        # marker here — before truncation — so it can never leak as literal text nor be cut in half;
+        # it converts to ``at.isAtAll`` in the webhook payload. AI Card has no @-all equivalent, so a
+        # marked message must take the webhook path even when a card is configured.
+        at_all = False
+        stripped_tail = content.rstrip() if content else ""
+        if stripped_tail.endswith("[[at-all]]"):
+            content = stripped_tail[: -len("[[at-all]]")].rstrip()
+            at_all = True
+        if at_all and not content:
+            return SendResult(success=False, error="[[at-all]] marker on an empty message")
+        logger.debug("[%s] send() chat_id=%s card_enabled=%s at_all=%s", self.name, chat_id,
+                     bool(self._card_template_id and self._card_sdk), at_all)
         session_webhook = metadata.get("session_webhook") or (self._get_valid_webhook(chat_id) or ("",))[0]
         if not session_webhook:
             logger.warning("[%s] No valid session_webhook for chat_id=%s", self.name, chat_id)
@@ -745,7 +757,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         # tool-progress, commentary and stream first-sends leave it None. It decides (1) finalize-on-create
         # (intermediate cards stay open so edits don't flicker) and (2) whether to fire the Done reaction.
         is_final_reply = reply_to is not None
-        if self._card_template_id and current_message and self._card_sdk:
+        if self._card_template_id and current_message and self._card_sdk and not at_all:
             await self._close_streaming_siblings(chat_id)  # close lingering tool-progress cards before creating a new one
             result = await self._create_and_stream_card(chat_id, current_message, content, finalize=is_final_reply)
             if result and result.success:
@@ -757,9 +769,14 @@ class DingTalkAdapter(BasePlatformAdapter):
             logger.warning("[%s] AI Card send failed, falling back to webhook", self.name)
         logger.debug("[%s] Sending via webhook", self.name)
         payload = {"msgtype": "markdown", "markdown": {"title": self._preview_title(content), "text": self._normalize_markdown(content[: self.MAX_MESSAGE_LENGTH])}}
+        at_field: dict[str, Any] = {}
         target = self._reply_targets.get(reply_to) if reply_to else None
         if target and target[0]:
-            payload["at"] = {"atUserIds": [target[0]]}  # @提问人: reply_to 锚定其入站消息,多人连问不 @ 错人
+            at_field["atUserIds"] = [target[0]]  # @提问人: reply_to 锚定其入站消息,多人连问不 @ 错人
+        if at_all:
+            at_field["isAtAll"] = True  # @所有人: 知会全员 git pull,来自末尾 [[at-all]] 标记
+        if at_field:
+            payload["at"] = at_field
         try:
             resp = await self._http_client.post(session_webhook, json=payload, timeout=15.0)
             if resp.status_code < 300:

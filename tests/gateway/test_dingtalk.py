@@ -178,6 +178,117 @@ class TestSend:
         assert "at" not in payload  # 期望: 未锚定提问人的消息不带 at
 
     @pytest.mark.asyncio
+    async def test_send_at_all_marker_stripped_and_is_at_all(self):
+        """末尾 [[at-all]] 标记剥离为 at.isAtAll,正文零字面残留。"""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "OK"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+
+        result = await adapter.send(
+            "chat-123", "处置完成报告正文\n\n[[at-all]]",
+            metadata={"session_webhook": "https://dingtalk.example/webhook"},
+        )
+        assert result.success is True  # 期望: 标记消息正常发出
+        payload = mock_client.post.call_args[1]["json"]
+        assert payload["markdown"]["text"] == "处置完成报告正文"  # 期望: 标记剥离,无字面 [[at-all]]
+        assert payload["at"] == {"isAtAll": True}  # 期望: 标记转为 @所有人
+
+    @pytest.mark.asyncio
+    async def test_send_at_all_marker_with_questioner_mentions_both(self):
+        """repo 提交报告同时锚定提问人与 @所有人:atUserIds 与 isAtAll 并存。"""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._reply_targets["mid-3"] = ("staff-7", "刘军")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "OK"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+
+        result = await adapter.send(
+            "chat-123", "修改完成\n[[at-all]]", reply_to="mid-3",
+            metadata={"session_webhook": "https://dingtalk.example/webhook"},
+        )
+        assert result.success is True
+        payload = mock_client.post.call_args[1]["json"]
+        assert payload["at"] == {"atUserIds": ["staff-7"], "isAtAll": True}  # 期望: 双锚点并存
+
+    @pytest.mark.asyncio
+    async def test_send_at_all_marker_only_rejected(self):
+        """仅标记无正文=空消息,报错阻断不发送。"""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+
+        mock_client = AsyncMock()
+        adapter._http_client = mock_client
+
+        result = await adapter.send(
+            "chat-123", "[[at-all]]",
+            metadata={"session_webhook": "https://dingtalk.example/webhook"},
+        )
+        assert result.success is False  # 期望: 报错阻断
+        assert result.error is not None and "empty" in result.error
+        mock_client.post.assert_not_called()  # 期望: 零出站
+
+    @pytest.mark.asyncio
+    async def test_send_at_all_marker_mid_text_left_verbatim(self):
+        """非末尾的 [[at-all]] 不剥离不转换——约定仅认末尾标记。"""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "OK"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+
+        result = await adapter.send(
+            "chat-123", "正文含 [[at-all]] 字样在中间",
+            metadata={"session_webhook": "https://dingtalk.example/webhook"},
+        )
+        assert result.success is True
+        payload = mock_client.post.call_args[1]["json"]
+        assert "[[at-all]]" in payload["markdown"]["text"]  # 期望: 原文保留
+        assert "at" not in payload  # 期望: 不触发 @任何人
+
+    @pytest.mark.asyncio
+    async def test_send_at_all_marker_bypasses_ai_card(self):
+        """配置了 AI Card 时,带标记消息仍走 webhook——card 无 @所有人能力。"""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._card_template_id = "tpl-1"
+        adapter._card_sdk = MagicMock()
+        adapter._message_contexts["chat-123"] = MagicMock()
+
+        card_spy = AsyncMock(return_value=None)
+        adapter._create_and_stream_card = card_spy
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "OK"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+
+        result = await adapter.send(
+            "chat-123", "修改完成\n[[at-all]]",
+            metadata={"session_webhook": "https://dingtalk.example/webhook"},
+        )
+        assert result.success is True
+        card_spy.assert_not_called()  # 期望: card 路径被跳过
+        payload = mock_client.post.call_args[1]["json"]
+        assert payload["at"] == {"isAtAll": True}  # 期望: webhook 承载 @所有人
+
+    @pytest.mark.asyncio
     async def test_send_image_renders_markdown_image(self):
         from plugins.platforms.dingtalk.adapter import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
