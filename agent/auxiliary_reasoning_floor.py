@@ -49,9 +49,10 @@ def floor_reasoning_config(reasoning_config: Any) -> dict[str, Any]:
 
 def with_reasoning_floor(kwargs: dict[str, Any]) -> Optional[dict[str, Any]]:
     """Copy of *kwargs* with every thinking-OFF encoding lifted to ``REASONING_FLOOR_EFFORT``:
-    top-level ``reasoning_effort``, ``extra_body.reasoning`` (OpenRouter shape) and the adapter's private
-    ``_reasoning_config``. ``None`` when nothing was disabled, so the ladder never re-sends an unchanged
-    request."""
+    top-level ``reasoning_effort``, body-level ``extra_body.reasoning_effort`` (the shape the judge
+    lanes send), ``extra_body.reasoning`` (OpenRouter shape) and the adapter's private
+    ``_reasoning_config``. ``None`` when nothing was disabled, so the ladder never re-sends an
+    unchanged request."""
     changed = False
     retry = dict(kwargs)
     if str(retry.get("reasoning_effort", "")).strip().lower() in _DISABLED_EFFORTS:
@@ -62,12 +63,18 @@ def with_reasoning_floor(kwargs: dict[str, Any]) -> Optional[dict[str, Any]]:
         changed = True
     extra_body = retry.get("extra_body")
     if isinstance(extra_body, dict):
-        reasoning = extra_body.get("reasoning")
+        body = dict(extra_body)
+        reasoning = body.get("reasoning")
         if _is_disabled(reasoning) or (
             isinstance(reasoning, dict) and str(reasoning.get("effort", "")).strip().lower() in _DISABLED_EFFORTS
         ):
-            retry["extra_body"] = {**extra_body, "reasoning": {"enabled": True, "effort": REASONING_FLOOR_EFFORT}}
+            body["reasoning"] = {"enabled": True, "effort": REASONING_FLOOR_EFFORT}
             changed = True
+        if str(body.get("reasoning_effort", "")).strip().lower() in _DISABLED_EFFORTS:
+            body["reasoning_effort"] = REASONING_FLOOR_EFFORT
+            changed = True
+        if changed and body != extra_body:
+            retry["extra_body"] = body
     return retry if changed else None
 
 
@@ -124,3 +131,27 @@ def known_reasoning_floor(
         task or "call", _route_key(provider, base_url) or "provider", model or "model", REASONING_FLOOR_EFFORT,
     )
     return floor_reasoning_config(reasoning_config)
+
+
+def known_reasoning_floor_extra_body(
+    extra_body: Optional[dict[str, Any]], provider: Optional[str], base_url: Optional[str],
+    model: Optional[str], task: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Body-level counterpart of :func:`known_reasoning_floor`: a disabled
+    ``extra_body.reasoning_effort`` is lifted to the floor when this (route, model) is already known
+    to refuse a disable (memoised by an earlier 400, or flagged mandatory by its model catalog), so
+    every later aux call starts at the floor instead of paying the guaranteed 400 first. Returned
+    unchanged when the body carries no disabled effort or the route is unknown."""
+    if not isinstance(extra_body, dict):
+        return extra_body
+    if str(extra_body.get("reasoning_effort", "")).strip().lower() not in _DISABLED_EFFORTS:
+        return extra_body
+    if (_route_key(provider, base_url), str(model or "")) not in _FLOORED_ROUTES and not _catalog_marks_mandatory(
+        provider, base_url, model,
+    ):
+        return extra_body
+    logger.info(
+        "Auxiliary %s: %s (%s) cannot disable reasoning; sending body-level effort=%s up front",
+        task or "call", _route_key(provider, base_url) or "provider", model or "model", REASONING_FLOOR_EFFORT,
+    )
+    return {**extra_body, "reasoning_effort": REASONING_FLOOR_EFFORT}

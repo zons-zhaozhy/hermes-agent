@@ -37,7 +37,9 @@ from agent.auxiliary_error_shapes import (
     _botocore_error, _exc_http_status, _is_invalid_aux_response_error, _is_statusless_structured_provider_error,
 )
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
-from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
+from agent.auxiliary_reasoning_floor import (
+    known_reasoning_floor_extra_body, remember_reasoning_floor, with_reasoning_floor,
+)
 from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
@@ -6662,6 +6664,10 @@ def _build_call_kwargs(
         kwargs["no_progress_timeout"] = no_progress_timeout
     effective_base = base_url or (_current_custom_base_url() if provider == "custom" else "")
     extra_body = _with_custom_endpoint_extra_body(extra_body, provider, model, effective_base)
+    # A route already known to refuse a reasoning disable (memoised by an earlier 400, or flagged
+    # mandatory by its catalog) starts at the floor for the body-level encoding too, so a
+    # thinking-off auxiliary call never pays the guaranteed 400 first.
+    extra_body = known_reasoning_floor_extra_body(extra_body, provider, effective_base, model, task)
     # Per-model fixed/omitted temperature, then Opus 4.7+ sampling bans: it rejects any
     # non-default temperature/top_p/top_k, so drop silently rather than 400 when the aux model flips.
     fixed_temperature = _fixed_temperature_for_model(model, effective_base, provider)

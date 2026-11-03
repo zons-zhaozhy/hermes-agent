@@ -76,6 +76,50 @@ def test_field_rejection_still_strips_instead_of_stepping_up():
     assert not auxiliary_reasoning_floor._FLOORED_ROUTES
 
 
+# Live body from the official DeepSeek API (2026-11-03): its only two chat models are
+# thinking-mandatory, so the judge lanes' body-level ``reasoning_effort: "none"`` is refused.
+_DEEPSEEK_ALWAYS_THINKING_400 = (
+    "Error code: 400 - {'error': {'code': '1210', 'message': 'This model always engages in thinking "
+    "and cannot be disabled; please use low, high, or max'}}"
+)
+
+
+def _call_body_off(client):
+    """The judge-lane shape: thinking-off encoded in the request body, no reasoning_config."""
+    with (
+        patch("agent.auxiliary_client._resolve_task_provider_model",
+              return_value=("custom", "deepseek-flash", "https://api.deepseek.com", "sk-x", None)),
+        patch("agent.auxiliary_client._get_cached_client", return_value=(client, "deepseek-flash")),
+        patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
+        patch("agent.auxiliary_client._try_payment_fallback", return_value=None),
+    ):
+        return call_llm(
+            task="reply_side_guards", messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning_effort": "none"},
+        )
+
+
+def test_body_level_effort_rejection_steps_up_to_the_floor_and_remembers_the_route():
+    """A thinking-mandatory model refuses the body-level disable: the retry carries the floor in the
+    same body-level field, and the next call on that route starts at the floor without a 400."""
+    client = MagicMock()
+    client.base_url = "https://api.deepseek.com"
+    client.chat.completions.create.side_effect = [
+        RuntimeError(_DEEPSEEK_ALWAYS_THINKING_400), {"ok": True}, {"ok": True},
+    ]
+
+    assert _call_body_off(client) == {"ok": True}
+    first, retry = (c.kwargs for c in client.chat.completions.create.call_args_list[:2])
+    assert first["extra_body"]["reasoning_effort"] == "none"
+    assert retry["extra_body"]["reasoning_effort"] == auxiliary_reasoning_floor.REASONING_FLOOR_EFFORT
+    assert auxiliary_reasoning_floor._FLOORED_ROUTES
+
+    assert _call_body_off(client) == {"ok": True}
+    assert client.chat.completions.create.call_count == 3
+    upfront = client.chat.completions.create.call_args_list[2].kwargs
+    assert upfront["extra_body"]["reasoning_effort"] == auxiliary_reasoning_floor.REASONING_FLOOR_EFFORT
+
+
 # Live body from the firstVDS qwencloud route (Alibaba token-plan, deepseek-v4.1-flash, 2026-09-21):
 # a closed level set that starts at ``minimal``, so the thinking-off encoding ``none`` is refused by
 # value rather than by field name.
