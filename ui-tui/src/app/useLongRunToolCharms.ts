@@ -7,9 +7,14 @@ import { turnController } from './turnController.js'
 import { useTurnSelector } from './turnStore.js'
 import { getUiState } from './uiStore.js'
 
-const DELAY_MS = 8_000
-const INTERVAL_MS = 10_000
-const MAX_CHARMS_PER_TOOL = 2
+const FIRST_DELAY_MS = 8_000
+const FAST_INTERVAL_MS = 10_000
+// Two quick acknowledgements, then a slower-but-continuous cadence. A long
+// deploy/test can legitimately run for minutes; stopping after two updates
+// turns the UI back into a black box exactly when users start wondering
+// whether the session died.
+const FAST_UPDATES_PER_TOOL = 3
+const SLOW_INTERVAL_MS = 45_000
 
 interface Slot {
   count: number
@@ -44,13 +49,14 @@ export function useLongRunToolCharms() {
       }
 
       for (const tool of tools) {
-        if (!tool.startedAt || now - tool.startedAt < DELAY_MS) {
+        if (!tool.startedAt || now - tool.startedAt < FIRST_DELAY_MS) {
           continue
         }
 
         const slot = slots.current.get(tool.id) ?? { count: 0, lastAt: 0 }
+        const interval = slot.count < FAST_UPDATES_PER_TOOL ? FAST_INTERVAL_MS : SLOW_INTERVAL_MS
 
-        if (slot.count >= MAX_CHARMS_PER_TOOL || now - slot.lastAt < INTERVAL_MS) {
+        if (now - slot.lastAt < interval) {
           continue
         }
 

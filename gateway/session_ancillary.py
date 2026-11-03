@@ -46,9 +46,14 @@ async def subagent_control(connection, ref, params, *, steer):
         raise RuntimeStoreError('not_found')
     authorize(connection, ref, params, 'session:control')
     live, sub = connection.authority.sessions[ref.session_id], params['subagent_id']
-    with live.event_stream.lock:
-        _require_current_route(connection.authority, ref)
-        child = next((r['agent'] for r in _owner_objects(connection.authority, ref)[1] if r.get('subagent_id') == sub), None)
+
+    def find_child_locked():
+        with live.event_stream.lock:
+            _require_current_route(connection.authority, ref)
+            return next((r['agent'] for r in _owner_objects(connection.authority, ref)[1]
+                         if r.get('subagent_id') == sub), None)
+
+    child = await asyncio.to_thread(find_child_locked)
     if not steer:
         from agent.interrupt_compat import request_hard_interrupt
         return {'found': child is not None and bool(request_hard_interrupt(child, f'Interrupted via Desktop ({sub})')),
