@@ -14,11 +14,19 @@ import pytest
 
 
 def _ensure_feishu_mocks():
-    if importlib.util.find_spec("lark_oapi") is None and "lark_oapi" not in sys.modules:
+    def _missing(name: str) -> bool:
+        try:
+            return importlib.util.find_spec(name) is None and name not in sys.modules
+        except ValueError:
+            # Another test may have installed a bare ModuleType mock (whose __spec__ is None);
+            # find_spec raises instead of returning None for such entries — treat as installed.
+            return False
+
+    if _missing("lark_oapi"):
         mod = MagicMock()
         for name in ("lark_oapi", "lark_oapi.api.im.v1", "lark_oapi.event", "lark_oapi.event.callback_type"):
             sys.modules.setdefault(name, mod)
-    if importlib.util.find_spec("aiohttp") is None and "aiohttp" not in sys.modules:
+    if _missing("aiohttp"):
         aio = MagicMock()
         sys.modules.setdefault("aiohttp", aio)
         sys.modules.setdefault("aiohttp.web", aio.web)
