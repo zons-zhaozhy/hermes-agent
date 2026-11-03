@@ -107,6 +107,13 @@ def _is_bare_pytest(command: str) -> bool:
     # 纯探针放行
     if _PROBE_FLAGS & set(tokens):
         return False
+    # 命令前缀显式豁免声明放行（拦截消息 :136 自教通道）：前缀只设子进程
+    # env，_plugin_disabled 的进程级 env 读不到——声明本身即合法豁免意图，
+    # 放行并留痕（排障用途，日志可审计）。
+    if any(t.startswith("TEST_DISCIPLINE_DISABLE=") for t in tokens):
+        logger.warning(
+            "test_discipline: 命令前缀显式声明 TEST_DISCIPLINE_DISABLE（排障豁免，放行留痕）")
+        return False
     is_pytest = tokens[0].endswith("pytest") or _is_module_invocation(tokens)
     if not is_pytest:
         return False
