@@ -179,9 +179,10 @@ diff_debt 17,517 / four_axis 5,356 / tool_safety-read 1,897 / pre_write 2,673。
 「事后拦截不如事先明确提示」——事前提示降发生率、事后拦截兜底，两层都要；
 缺的是数据回流：拦截账本里的教训从未进入提示段。已落地
 `plugins/guards/dynamic_tips.py`：guards_preflight 段尾追加「高频拦截教训」
-动态段（近 7 天 blocked 签名聚合 → 静态映射表命中 → ≤5 条一句话正解，
-≤600 字符）。端到端实测首刷输出：slow_search 1,307 次/SQL 前 schema
-292 次/diff 对照 97 次/护栏超时 84 次。
+动态段（近 7 天 blocked 消息原文聚合 → `[护栏名]` 前缀提取 → ≤5 条
+带修复指引原文，≤600 字符）。去映射版端到端实测首刷输出：
+SlowSearchGuard 1,305 次/patch-first 228 次/护栏聚合 227 次/
+PreWriteGuard 158 次/SourceCodeWriteGuard 124 次。
 
 设计约束：7 天缓存周期内输出恒定（不破坏会话缓存前缀；越期由既有
 section_reinjection 版本指纹补注——动态段文本已并入补注指纹与注入体，
@@ -191,7 +192,7 @@ section_reinjection 版本指纹补注——动态段文本已并入补注指纹
 零同步成本；无 `[护栏名]` 前缀的消息（回调超时等基础设施噪音）不进段。
 层级优先级保持不变：modify 自动改写 > 事前提示 > 事后拦截。
 
-### C3 解析器收敛进展（2026-11-03 第二批落地）
+### C3 解析器收敛进展（2026-11-03 第一批已落地）
 
 唯一事实源 `plugins/guards/terminal_semantics.py`（Redirect 数据类 +
 parse_redirects/redirect_writes_file/redirect_file_targets/
@@ -206,11 +207,10 @@ looks_like_path,语义基底取六套中最全的 block_escalation 实现）。
 
 ### 已知路线图（独立工程项，非本轮范围）
 
-- **六套 terminal 写意图解析器收敛**：source_write / patch-first / diff_debt
-  范围判定 / gate._terminal_writes_file / casebook._terminal_write_targets /
-  block_escalation._READ_CMDS 各持一份启发式=各有一份误报面（反方定性的
-  真正架构债）。E4 已开第一枪（gate 判定成为 devil 复用源）；全量收敛需
-  逐套语义对照+等价测试，独立立项实施——注意反方警告：误拦形态是长尾，
-  集中式判据一次设计穷尽不了，收敛必须配逐插件回归测试。
+- **六套 terminal 写意图解析器收敛**（第一批已落地，见上文 C3 小节）：
+  owner=`plugins/guards/terminal_semantics.py`，4 处消费方已切换；余第二批
+  （patch-first sed 写形态、block_escalation._READ_CMDS 白名单迁入 owner
+  常量区）。注意反方警告：误拦形态是长尾，集中式判据一次设计穷尽不了，
+  收敛必须配逐插件回归测试。
 - **block_escalation 意图指纹精细化**（区分护栏差异，避免一次修复不到位
   即 L3）；**四轴双状态源合一**（marker 文件与 diff_debt 进程内账本）。

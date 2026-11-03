@@ -15,6 +15,10 @@ duplicate-check / source_code_write_guard / coding-standards-guard)收拢为
   skill_pruned_gate 技能剪枝机械拦截(skill_view 查得 [SKILL_PRUNED] 占位符
                   且未重载全文期间拦写通道)+在岗状态行(注入段可见 import 失败名单)
 
+包内非护栏模块(不在 _SUB_GUARD_NAMES,无 pre_tool_call 注册):
+  terminal_semantics 重定向写语义唯一事实源(供各守卫复用判定)
+  dynamic_tips    动态提示段渲染器(消费拦截账本生成高频教训段)
+
 分层依据与裁定规则见 docs/guard-system-architecture.md。
 
 Contract:
@@ -31,7 +35,7 @@ from typing import Any, Mapping
 logger = logging.getLogger(__name__)
 
 # 逐个导入: 任一子模块 import 失败仅记录日志并跳过(独立降级,见模块 Contract)——
-# 单条 from-import 会让一个 ImportError 连坐全套 11 守卫(2026-10-21 审计发现)。
+# 单条 from-import 会让一个 ImportError 连坐全套守卫(2026-10-21 审计发现)。
 # 常量供导入循环与在岗状态行共用(单一事实源)。
 _SUB_GUARD_NAMES = ("tool_blacklist", "four_axis", "pre_write", "duplicate_check", "source_write",
                     "coding_standards", "diff_debt", "casebook_gate", "batch_write", "scope_gate",
