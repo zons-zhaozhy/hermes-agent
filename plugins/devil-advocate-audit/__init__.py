@@ -212,7 +212,20 @@ _DELEGATE_JUDGE_SYSTEM = (
     "你是委派任务分类器。判断下面这个 delegate_task 委派的 goal 是否属于"
     "'反方审查/唱反调/挑漏洞/独立审查某方案'类任务——即目的是质疑、批判、"
     "找缺陷、对抗性验证既有方案。普通的只读查询、数据收集、并行跑腿、"
-    "只回答 JSON：{\\\"review\\\": true} 或 {\\\"review\\\": false}"
+    "只回答 JSON：{\"review\": true} 或 {\"review\": false}"
+)
+
+# armed 冻结的二级判据（2026-11-03 用户指令落地）：反方审查子代理执行慢、
+# 必要时才用——armed 冻结（逼派子代理）只保留给不可逆/对外/生产级动作；
+# 重大但可回滚的决策（架构选型、大规模重构、方案定稿）降级为非阻断提醒，
+# 由模型自行在回复中做结构性自审（结论-反对意见-风险清单），不再冻结会话。
+_ARM_JUDGE_SYSTEM = (
+    "你是动作回退性判定器。判断这条会话消息描述的决策动作是否属于"
+    "'不可逆/对外/生产级'类别：上生产部署、删除或覆盖不可恢复数据、"
+    "对外承诺（报价/签约/对外发布/对外承诺交付）、支付花钱、"
+    "不可恢复的批量操作。可回滚的工程动作（代码重构、架构选型、"
+    "方案定稿、配置调整、可重跑的任务、git 可回滚的任何改动）一律不算。"
+    "只回答 JSON：{\"irreversible\": true} 或 {\"irreversible\": false}"
 )
 
 _REMINDER = (
@@ -278,6 +291,23 @@ def _is_major_decision(text: str) -> Optional[bool]:
         task="devil_advocate_audit",
         system=_JUDGE_SYSTEM,
         text=text,
+    )
+
+
+def _is_irreversible(text: str) -> Optional[bool]:
+    """armed 二级判定：决策动作是否不可逆/对外/生产级；失败 None（不 armed）。
+
+    Contract:
+      Preconditions: text is non-empty str
+      Postconditions: 返回 True/False/None；绝不 raise；None 按 False 处理
+        （判定通道故障时不冻结，只提醒——护栏自身故障不得变成用户阻塞）。
+    """
+    assert text, "text must be non-empty"
+    return llm_judge_bool(
+        task="devil_advocate_irreversible",
+        system=_ARM_JUDGE_SYSTEM,
+        text=text,
+        true_key="irreversible",
     )
 
 
@@ -479,6 +509,11 @@ def on_pre_llm_call(**kwargs) -> Optional[dict[str, Any]]:
         if unattended:
             # 无人值守：不武装，只提醒（防止上面注释所述死锁）
             return {"context": _REMINDER}
+        # 1103 用户令：armed 冻结（逼派反方子代理）只保留给不可逆/对外/生产级
+        # 动作；重大但可回滚的决策降级为非阻断提醒——模型自行做结构性自审，
+        # 子代理只在必要时用。判定通道故障（None）同样不冻结。
+        if _is_irreversible(text) is not True:
+            return {"context": _REMINDER}
         st["armed"] = True
         return {"context": _REMINDER}
     except Exception as e:
@@ -513,28 +548,16 @@ def _process_manage_passes(args: Any) -> bool:
 def _terminal_passes(args: Any) -> bool:
     """terminal armed 期放行判定（只读命令放行，写/落地/任意代码执行仍冻结）。
 
-    任意代码执行形态一律冻结（fail-closed）：解释器 token（含跑既有脚本
-    ——脚本内容可任意写文件/推送）、`./相对路径` 可执行、`.sh` 脚本。
-    审批层（approval_detection）只检 -e/-c/heredoc flag 形态，跑既有脚本
-    属其正常执行域不检——armed 语义=冻结一切不可静态证明只读的执行，
-    比审批层宽是立法本意。armed 期短（派出反方审查即解除），粗判定误伤
-    代价仅为数轮延迟。主防线（gate.py）不共用此语义。
+    只读语义唯一实现=gate 模块 ``_terminal_is_investigation``（解释器/
+    ``./相对可执行``/``.sh`` 脚本/文件写形态 → 非只读），armed 侧在其上
+    叠加落地 SQL 检查——两处禁各写一份判定。
     """
     command = str(args.get("command") or "") if isinstance(args, dict) else ""
     if not command:
         return False
-    tokens = command.lower().split()
-    interpreter_tokens = ("python3", "python", "bash", "sh", "zsh",
-                          "node", "perl", "ruby")
-    if any(tok in tokens for tok in interpreter_tokens):
-        return False  # 解释器执行任意代码（内联/heredoc/跑脚本）→ 冻结
-    if any(tok.startswith("./") for tok in tokens):
-        return False  # 相对路径可执行文件 → 冻结
-    if any(tok.endswith(".sh") for tok in tokens):
-        return False  # shell 脚本 → 冻结
-    from plugins.read_think_gate_host import _terminal_writes_file
+    from plugins.read_think_gate_host import _terminal_is_investigation
 
-    return not _terminal_writes_file(command) and not _terminal_lands_decision(
+    return _terminal_is_investigation(command) and not _terminal_lands_decision(
         command
     )
 

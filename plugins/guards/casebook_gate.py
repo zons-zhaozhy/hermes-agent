@@ -219,14 +219,36 @@ def _default_targets(seg: str, toks: list[str]) -> list[str]:
     return targets
 
 
+def _is_redirect_token(tok: str) -> bool:
+    """token 是否为 shell 重定向语法形态（`2>file`/`>>file`/`<file`/`2>&1`/裸 `>`）。
+
+    判定：首个 ``<``/``>`` 之前为空或纯数字即重定向语法（fd 前缀），
+    否则是普通 token（含 ``>`` 的病态文件名按普通 token 处理）。
+
+    Contract:
+      Postconditions: 纯字符串判定不抛异常; ``2>/dev/null`` → True,
+        ``>>log`` → True, ``a>b``（文件名）→ False。
+    """
+    if tok in (">", ">>", "<"):
+        return True
+    for i, ch in enumerate(tok):
+        if ch in "<>":
+            return tok[:i] == "" or tok[:i].isdigit()
+    return False
+
+
 def _segment_write_targets(seg: str) -> list[str]:
     """按命令头分派单段内「写目标角色」的 token 列表。
 
     Contract:
       Postconditions: 只返回构成写目标的 token（源/脚本路径/表达式/输入
-        文件不进目标集）; 空表=本段无写目标（只读段）。
+        文件/重定向语法 token 不进目标集）; 空表=本段无写目标（只读段）。
+
+    2026-11-03 根修：角色解析前剥离重定向形态 token——实测 ``cp A B
+    2>/dev/null`` 的 cp 目的地被解析成 ``2>/dev/null``（fd 前缀形态
+    shlex 不拆词），误当 OntoX 写目标拦截（同因 2 次）。
     """
-    toks = _segment_tokens(seg)
+    toks = [t for t in _segment_tokens(seg) if not _is_redirect_token(t)]
     if not toks:
         return []
     head = toks[0]
@@ -572,6 +594,9 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
 
     if _casebook_probed(sid):
         return None
+    # 兑现拦截消息第 3 项「直接重试即放行」与 docstring「每会话最多拦一次」：
+    # 拦截本身记一次 nagged probe——纯重试即通过（引导一次，非无限门禁）。
+    _record_probe(sid, f"nagged-once:{target}")
     return _block_message(target)
 
 

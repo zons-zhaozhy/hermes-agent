@@ -1,8 +1,9 @@
 """slow_search 子护栏判据契约测试。
 
 Regression: 委派转录实测(2026-10-24) 4/25 单反方子代理各白等满 420s 工具超时，
-均为无保护递归 grep；本护栏拦该形态，豁免通道=--exclude-dir / timeout 包裹 /
-# slowgrep-ok 行内注释。
+均为无保护递归 grep；2026-11-03 起本护栏由拦截改为自动加固定化
+（timeout 120 包裹 + --exclude-dir 四件套）后放行——判据不变，
+豁免通道不变，仅处置从 block 改为 modify。
 """
 
 from plugins.guards.slow_search import detect_doomed_grep, on_pre_tool_call
@@ -52,7 +53,25 @@ def test_allows_protected_forms() -> None:
 
 
 def test_hook_only_for_terminal() -> None:
-    blocked = on_pre_tool_call(tool_name="terminal", args={"command": "grep -rn foo ."})
-    assert blocked is not None and blocked["action"] == "block"  # 期望: terminal 命中被拦
+    mod = on_pre_tool_call(tool_name="terminal", args={"command": "grep -rn foo ."})
+    assert mod is not None and mod["action"] == "modify"  # 期望: terminal 命中改写为 modify，不再 block
+    hardened = mod["args"]["command"]
+    assert hardened.startswith("timeout 120 grep")  # 期望: timeout 包裹段头
+    assert "--exclude-dir=node_modules" in hardened and "--exclude-dir=.git" in hardened  # 期望: exclude 守卫就位
+    assert hardened.endswith("foo .")  # 期望: 原参数保留
     assert on_pre_tool_call(tool_name="execute_code", args={"code": "grep -rn foo ."}) is None  # 期望: 非terminal工具放行
     assert on_pre_tool_call(tool_name="terminal", args={}) is None  # 期望: 无命令放行
+
+
+def test_hook_harden_preserves_surrounding_segments() -> None:
+    mod = on_pre_tool_call(tool_name="terminal", args={"command": "ls -la && grep -rn foo . ; echo done"})
+    assert mod is not None and mod["action"] == "modify"  # 期望: 组合命令仅命中段被改写
+    cmd = mod["args"]["command"]
+    assert cmd.startswith("ls -la && timeout 120 grep")  # 期望: 前段原样保留、命中段被包裹
+    assert cmd.endswith("echo done")  # 期望: 后段原样保留
+
+
+def test_hook_never_blocks() -> None:
+    for cmd in SHOULD_BLOCK:
+        result = on_pre_tool_call(tool_name="terminal", args={"command": cmd})
+        assert result is None or result["action"] != "block", f"不得拦截: {cmd}"  # 期望: 判据命中也只改写不拦截

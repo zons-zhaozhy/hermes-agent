@@ -1,4 +1,4 @@
-"""guards.slow_search — intercept doomed recursive grep in terminal commands.
+"""guards.slow_search — auto-harden doomed recursive grep in terminal commands.
 
 Motivation: subagents (and the main agent) run bare recursive grep over large
 monorepos. Measured on delegation transcripts (2026-10-24): 4 of 25 adversarial
@@ -8,7 +8,15 @@ subagent tasks each burned the full 420 s default tool timeout
 retried with a different keyword — worst case 1025 s of a 1472 s task spent on
 doomed/slow greps.
 
-Blocked shape (ALL must hold for a shell segment):
+2026-11-03 rework (block → auto-rewrite): the block form cost one wasted API
+round per hit — measured 1,385 blocks in 7 days (18% of all blocks), the single
+largest interceptor. The correction is fully mechanical, so this guard now
+REWRITES the command instead of blocking it: each doomed grep segment gets
+``timeout 120`` wrapping and ``--exclude-dir`` guards appended, then proceeds.
+Protection strength is unchanged (worst case still bounded by 120 s); zero
+rounds are wasted. Waiver ``# slowgrep-ok: <reason>`` skips the rewrite.
+
+Detection shape (ALL must hold for a shell segment):
   1. segment head is ``grep`` (direct command; ``git grep``/``rg`` pass)
   2. a recursive flag (``-r``-prefixed short option) is present
   3. segment is NOT wrapped in ``timeout``
@@ -16,13 +24,11 @@ Blocked shape (ALL must hold for a shell segment):
   5. positional path targets are not all temp/cache paths
   6. no inline waiver comment ``# slowgrep-ok: <reason>``
 
-Escape hatches: add ``--exclude-dir`` or wrap in ``timeout``, or annotate the
-command with ``# slowgrep-ok: <reason>``.
-
 Contract:
   Preconditions: plugin system fires pre_tool_call with tool_name/args.
-  Postconditions: returns None (allow) or {"action": "block", "message": str};
-    never raises; pure string analysis, no subprocess.
+  Postconditions: returns None (allow unchanged) or
+    {"action": "modify", "args": {"command": hardened}}; never raises; pure
+    string analysis, no subprocess; blocks are never returned.
 """
 
 from __future__ import annotations
@@ -87,6 +93,43 @@ def _segment_is_doomed(seg: str, tokens: list[str]) -> bool:
     return True
 
 
+_HARDEN_EXCLUDES = (
+    "--exclude-dir=node_modules",
+    "--exclude-dir=.venv",
+    "--exclude-dir=.git",
+    "--exclude-dir=dist",
+)
+
+_HARDEN_TIMEOUT_S = 120
+
+
+def _harden_segment(seg: str) -> str:
+    """改写单个 doomed grep 段：timeout 包裹 + 追加 --exclude-dir 守卫。
+
+    flags 插在 grep 段头之后（管道符前），保证 ``timeout 120 grep ... | head``
+    语义为 timeout 只作用于 grep。段内含管道时 shlex 重排仍保持参数次序语义。
+
+    Contract:
+      Preconditions: seg 为命中判定（doomed）的 shell 段文本。
+      Postconditions: 返回加固定化后的段文本；不抛异常。
+    """
+    try:
+        import shlex
+
+        tokens = shlex.split(seg.splitlines()[0], posix=True)
+    except (ValueError, IndexError):
+        tokens = seg.split()
+    if not tokens:
+        return seg
+    hardened = ["timeout", str(_HARDEN_TIMEOUT_S), tokens[0], *_HARDEN_EXCLUDES, *tokens[1:]]
+    try:
+        import shlex
+
+        return shlex.join(hardened)
+    except ValueError:
+        return " ".join(hardened)
+
+
 def detect_doomed_grep(command: str) -> Optional[str]:
     """检测无保护的递归 grep，命中返回该段文本，未命中返回 None。
 
@@ -103,23 +146,13 @@ def detect_doomed_grep(command: str) -> Optional[str]:
     return None
 
 
-_BLOCK_MESSAGE = (
-    "[SlowSearchGuard] terminal 中检测到无保护的递归 grep（无 timeout 包裹、无 --exclude-dir），已拦截。\n"
-    "实测此类命令在大仓上单条可跑满 420 秒工具超时（扫描 node_modules/dist），白等零产出。\n"
-    "替代方案（按优先级）：\n"
-    "  1. search_files 工具（rg 内核，自动跳过 node_modules/.git，毫秒级）\n"
-    "  2. git grep -n \"<pattern>\"（只搜 tracked 文件，秒级）\n"
-    "  3. 确需 grep：timeout 60 grep -rn --exclude-dir=node_modules --exclude-dir=.venv \"<pattern>\" <具体子目录>\n"
-    "豁免通道：任选其一即放行——加 --exclude-dir、用 timeout 包裹、或行内注释 # slowgrep-ok: <理由>"
-)
-
-
 def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
-    """pre_tool_call hook: block unprotected recursive grep.
+    """pre_tool_call hook: auto-harden unprotected recursive grep (never block).
 
     Contract:
       Preconditions: kwargs contains tool_name (str) and args (dict with command key).
-      Postconditions: returns None (allow) or {"action":"block","message":str}.
+      Postconditions: returns None (allow unchanged) or
+        {"action": "modify", "args": {"command": <hardened>}}; never blocks.
     """
     tool_name = kwargs.get("tool_name", "")
     if tool_name != "terminal":
@@ -134,12 +167,13 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
     if hit is None:
         return None
 
+    hardened = command.replace(hit, _harden_segment(hit), 1)
     logger.warning(
-        "guards.slow_search: blocked doomed recursive grep (command length=%d, hit=%s)",
-        len(command),
-        hit,
+        "guards.slow_search: auto-hardened doomed recursive grep (timeout=%ss, excludes=%s)",
+        _HARDEN_TIMEOUT_S,
+        ",".join(_HARDEN_EXCLUDES),
     )
-    return {"action": "block", "message": _BLOCK_MESSAGE}
+    return {"action": "modify", "args": {"command": hardened}}
 
 
 def register(ctx: Any) -> None:

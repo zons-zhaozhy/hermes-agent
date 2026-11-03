@@ -71,6 +71,39 @@ def test_probe_via_search_then_write_allowed(env: tuple[Path, Path]) -> None:
     assert v is None  # 期望: 检索证据在先——规则满足即放行（None=放行）
 
 
+def test_retry_after_block_passes(env: tuple[Path, Path]) -> None:
+    """拦截消息承诺「直接重试即放行」——拦截后纯重试（无任何探针）必须通过。
+
+    独立期望来源：拦截消息第 3 项与 docstring「每会话首次 OntoX 写操作最多拦截一次」。
+    """
+    ontox, _cb = env
+    _clear_probes()
+    first = casebook_gate.on_pre_tool_call(
+        tool_name="patch", args={"path": f"{ontox}/apps/aml/main.py"}, session_id="s1"
+    )
+    assert first is not None and first["action"] == "block"  # 期望: 首次拦截
+    second = casebook_gate.on_pre_tool_call(
+        tool_name="patch", args={"path": f"{ontox}/apps/aml/main.py"}, session_id="s1"
+    )
+    assert second is None  # 期望: 纯重试即放行——承诺通道可达
+
+
+def test_fd_redirect_not_write_target(env: tuple[Path, Path]) -> None:
+    """`cp A B 2>/dev/null` 的 `2>/dev/null` 是重定向语法，不是 cp 写目标。
+
+    独立期望来源：shell 语义——fd 前缀重定向不产生文件写目标；
+    2026-11-03 实测误拦 2 次（目标被解析成 2>/dev/null）。
+    """
+    ontox, _cb = env
+    _clear_probes()
+    assert casebook_gate._is_redirect_token("2>/dev/null")  # 期望: fd 前缀重定向形态
+    assert casebook_gate._is_redirect_token("2>&1")  # 期望: 合并流形态
+    assert not casebook_gate._is_redirect_token("apps/aml/main.py")  # 期望: 普通路径不是重定向
+    cmd = f"cp /tmp/a.sql {ontox}/db/b.sql 2>/dev/null; true"
+    targets = casebook_gate._terminal_write_targets(cmd)
+    assert "2>/dev/null" not in targets  # 期望: 重定向语法不进写目标集
+
+
 def test_probe_via_read_index_allowed(env: tuple[Path, Path]) -> None:
     ontox, cb = env
     _clear_probes()

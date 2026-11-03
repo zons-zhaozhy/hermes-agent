@@ -41,6 +41,7 @@ _FOUR_AXIS_LABELS = _gate._FOUR_AXIS_LABELS
 _build_history_summary = _gate._build_history_summary
 _judge_investigation = _gate._judge_investigation
 _terminal_writes_file = _gate._terminal_writes_file
+_terminal_is_investigation = _gate._terminal_is_investigation
 detect_complexity = _gate.detect_complexity
 _complexity_cache = _gate._complexity_cache
 

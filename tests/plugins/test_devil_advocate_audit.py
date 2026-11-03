@@ -49,6 +49,7 @@ def plugin(monkeypatch):
     """加载插件并 stub 掉所有 LLM judge 与 yinyang 合并通道（零网络）。"""
     mod = _load_plugin()
     monkeypatch.setattr(mod, "_is_major_decision", lambda text: True)
+    monkeypatch.setattr(mod, "_is_irreversible", lambda text: True)
     monkeypatch.setattr(mod, "_user_waived", lambda text: False)
     monkeypatch.setattr(mod, "_delegate_is_review", lambda goals: True)
     monkeypatch.setattr(mod, "_judge_user_side", lambda message: None)
@@ -97,7 +98,7 @@ class TestCronNoDeadlock:
         assert directive is None
 
     def test_interactive_platform_still_arms(self, plugin):
-        """交互平台（cli）拦截语义保持：重大决策仍 armed 冻结。"""
+        """交互平台（cli）拦截语义保持：不可逆重大决策仍 armed 冻结。"""
         sid = "cli-test-1"
         plugin.on_pre_llm_call(
             session_id=sid, task_id="t3", user_message="决定上生产部署方案A",
@@ -106,12 +107,31 @@ class TestCronNoDeadlock:
         # 期望: armed 置位（红牌注入由 on_pre_llm_call 返回值承担）
         from plugins._shared_state import get_session_state
 
-        assert get_session_state(sid, plugin._NAMESPACE).get("armed") is True  # 期望: True,依据=cli平台重大决策消息必armed
+        assert get_session_state(sid, plugin._NAMESPACE).get("armed") is True  # 期望: True,依据=cli平台生产部署类消息必armed
         directive = plugin.on_pre_tool_call(
             session_id=sid, tool_name="execute_code", args={"code": "print(1)"},
         )
         # 期望: block,依据=execute_code是任意代码执行落地通道;冻结面收敛(2026-10-27)后terminal只读命令放行,载体由terminal date换为execute_code意图不变
         assert directive is not None and directive.get("action") == "block"
+
+    def test_reversible_major_decision_reminder_only(self, plugin, monkeypatch):
+        """1103 用户令：可回滚的重大决策（如大规模重构）不 armed，只提醒。
+
+        独立期望来源：用户 1103 指令「反方审查子代理执行很慢，必要的时候才用」
+        ——armed 冻结（逼派子代理）仅保留给不可逆/对外/生产级动作。
+        """
+        monkeypatch.setattr(plugin, "_is_irreversible", lambda text: False)
+        sid = "cli-test-12"
+        result = plugin.on_pre_llm_call(
+            session_id=sid, task_id="t4",
+            user_message="重新架构门禁体系，全面重构护栏插件",
+            platform="cli",
+        )
+        from plugins._shared_state import get_session_state
+
+        st = get_session_state(sid, plugin._NAMESPACE)
+        assert not st.get("armed")  # 期望: 可回滚重大决策不冻结
+        assert result is not None and result.get("context")  # 期望: 仍注入非阻断提醒
 
 
 class TestProcessManageReadonlySplit:

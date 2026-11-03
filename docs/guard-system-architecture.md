@@ -117,3 +117,34 @@ diff_debt 17,517 / four_axis 5,356 / tool_safety-read 1,897 / pre_write 2,673。
 无分支、_intent_fingerprint 恒 ()、error_discipline 仅执法 terminal）；其中 item 3
 （four_axis TTL）与 item 5（不变量冲突）证伪不成立——marker 每 turn 清除+turn 内
 重写实测成立，DevilAdvocate 拦读已于 10-22 修复（afb2cee4e6）。
+
+## 八、拦截效率重构（2026-11-03 数据驱动，用户令：门禁要高效/零误拦/不重复拦）
+
+数据画像（outcomes.db 全量 + 近 7/30 天）：
+
+- 全期 747,072 次调用被拦 56,975 次（7.6%）；近 30 天 7,149 个 turn 被拦、
+  平均每被拦 turn 被拦 4.76 次、最高单 turn 221 次——效率损失主因是
+  「拦截→浪费一整轮 API→重试→再拦」循环，不是回调链本身（纯 Python 判定毫秒级）。
+- 近 7 天最大拦截源=SlowSearchGuard 1,385 次（18%）；其次 diff 欠账闸门、DBSafety。
+- pre_tool_call 回调超时（默认 30s，fail-closed 即拦）30 天 84 次——护栏自身
+  故障变成用户误拦。
+
+本轮五修（commit 同批）：
+
+| # | 误拦/低效源 | 根因 | 根修 |
+|---|---|---|---|
+| E1 | SlowSearchGuard 近 7 天 1,385 次拦截 | 修正完全可机械推导却走拦截通道 | block → modify：自动加 `timeout 120` 包裹 + `--exclude-dir` 四件套后放行；保护强度不变（最坏仍被 120s 截断），拦截归零 |
+| E2 | casebook_gate 把 `2>/dev/null` 当写目标（实测同因 2 次拦截） | 角色解析前未剥重定向形态 token（fd 前缀 shlex 不拆词） | `_segment_write_targets` 前置 `_is_redirect_token` 剥离 |
+| E3 | casebook_gate「拦一次即放行」承诺落空（纯重试永再拦） | 拦截不记 probe，承诺无实现 | 拦截即记 `nagged-once` probe——兑现 docstring「每会话最多拦一次」 |
+| E4 | read_think_gate 只读 terminal 命令（ls/sqlite3 查询/git log）不计入调查证据（实测拦 1 轮） | `READ_ONLY_INVESTIGATION_TOOLS` 枚举白名单不含 terminal | gate 新增 `_terminal_is_investigation` 唯一判定（解释器/`./`可执行/`.sh`/写形态之外=取证）；devil-advocate `_terminal_passes` 改复用同判定（单一事实源） |
+| E5 | armed 冻结面过宽：任何重大决策冻结整会话逼派反方子代理（用户 1103 点名子代理慢、必要时才用） | armed 无二级回退性判定 | 新增 `_is_irreversible` judge——不可逆/对外/生产级才 armed；可回滚重大决策降级为非阻断提醒 |
+| E6 | 回调超时 30s fail-closed（30 天 84 次误拦窗口） | 默认超时过长 | config `plugins.hook_callback_timeout: 30→5`（窗口缩 6 倍；超时 fail-closed 为上游行为不改核心） |
+
+新不变量（守卫改动对表）：
+
+3. **修正优先于拦截**：拦截消息里教的所有机械修正（加参数/换命令/包裹
+   timeout），若可从被拦载荷直接推导，必须走 modify 自动改写而非 block——
+   一次拦截=一轮 API 白跑。拦截仅保留给「修正不可机械推导」的形态
+   （如缺调查证据、缺反方审查）。
+4. **拦截承诺必须可兑现**：拦截消息里写的每个解锁通道（含「直接重试即放行」）
+   必须有对应实现路径；写承诺前先核豁免判定的实际作用域与状态记录点。

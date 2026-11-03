@@ -193,6 +193,40 @@ _TERMINAL_WRITE_PATTERNS_HIGH: tuple[str, ...] = (
     "tee '",       # tee 写引号包裹的路径
 )
 
+# 解释器 token——出现即视为任意代码执行通道，不算只读取证
+# （gate 调查计数与 devil-advocate-audit armed 冻结共用，单一事实源）。
+_TERMINAL_INTERPRETER_TOKENS: tuple[str, ...] = (
+    "python3", "python", "bash", "sh", "zsh", "node", "perl", "ruby",
+)
+
+
+def _terminal_is_investigation(command: str) -> bool:
+    """terminal 命令是否为只读取证（调查证据计数用）。
+
+    判据：解释器执行 / ``./相对可执行`` / ``.sh`` 脚本 / 文件写形态
+    之外 → 只读取证。与 devil-advocate-audit armed 冻结放行共用本判定
+    （armed 侧额外叠加落地 SQL 检查）。本判定是「terminal 只读语义」的
+    唯一实现——armed 侧与调查计数侧禁各写一份。
+
+    2026-11-03 根修：READ_ONLY_INVESTIGATION_TOOLS 枚举白名单不含
+    terminal，只读 ls/sqlite3 查询/git log 永不计入调查证据——实测只读
+    ls+sqlite3 取证命令被拦一整轮（枚举式白名单默认拒绝缺陷）。
+
+    Contract:
+      Preconditions: command 为字符串（可为空）。
+      Postconditions: 纯字符串判定不抛异常; 解释器/脚本/写形态 → False。
+    """
+    if not command:
+        return False
+    tokens = command.lower().split()
+    if any(tok in _TERMINAL_INTERPRETER_TOKENS for tok in tokens):
+        return False
+    if any(tok.startswith("./") for tok in tokens):
+        return False
+    if any(tok.endswith(".sh") for tok in tokens):
+        return False
+    return not _terminal_writes_file(command)
+
 
 def _terminal_writes_file(command: str) -> bool:
     """检测 terminal 命令是否包含文件写入操作。
@@ -921,8 +955,9 @@ class ReadThinkGate:
             items.append(
                 f"① 只读调查 {done}/{needed}：还差 {needed - done} 次。计数工具："
                 "read_file / search_files / web_search / web_extract / "
-                "browser_exec / vision_analyze / session_search / skill_view"
-                "（terminal 不计数；read_file 失败调用不计数）。"
+                "browser_exec / vision_analyze / session_search / skill_view，"
+                "以及只读 terminal 命令（ls/git log/sqlite3 查询等；写文件/"
+                "解释器/脚本形态不计数；read_file 失败调用不计数）。"
             )
         if not self._has_diverse_investigation(profile):
             items.append(
@@ -999,6 +1034,15 @@ class ReadThinkGate:
         # 追踪所有 READ_ONLY_INVESTIGATION_TOOLS 的调用，不只 read_file 路径。
         if tool_args:
             for tn, ta in zip(tool_names, tool_args):
+                if tn == "terminal":
+                    # terminal 不在 READ_ONLY_INVESTIGATION_TOOLS——只读命令
+                    # 单独按 _terminal_is_investigation 计入（2026-11-03 根修）。
+                    if not isinstance(ta, dict):
+                        continue
+                    cmd = str(ta.get("command", ""))
+                    if cmd and _terminal_is_investigation(cmd):
+                        self._investigation_evidence.append(f"terminal(readonly): {cmd[:80]}")
+                    continue
                 if tn not in READ_ONLY_INVESTIGATION_TOOLS or not isinstance(ta, dict):
                     continue
                 if tn == "read_file":
@@ -1052,8 +1096,14 @@ class ReadThinkGate:
 
         has_mutating = any(t in self._gated_tools for t in tool_names) or terminal_writing_files
         # ── 漏洞 5 修复：只对白名单中的调查工具计数 ──
+        # 2026-11-03 扩展：只读 terminal 命令同样计入（枚举白名单缺口根修）。
         has_read_only_investigation = any(
             t in READ_ONLY_INVESTIGATION_TOOLS for t in tool_names
+        ) or bool(tool_args) and any(
+            tn == "terminal"
+            and isinstance(ta, dict)
+            and _terminal_is_investigation(str(ta.get("command", "")))
+            for tn, ta in zip(tool_names, tool_args)
         )
         content_text = assistant_content or ""
         content_len = len(content_text)
