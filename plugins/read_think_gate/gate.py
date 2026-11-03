@@ -287,6 +287,15 @@ def _terminal_writes_file(command: str) -> bool:
         if target and not any(target.startswith(s) for s in _REDIRECT_SINKS):
             # 检查是否像文件路径
             first_token = target.split()[0] if target.split() else target
+            # 引号内 SQL（"...WHERE price > 9.99"）的尾引号会黏在 token 上——
+            # 先剥引号再做形态判定。
+            first_token = first_token.strip("\"'")
+            # 纯数字字面量（含小数）不是路径——2026-11-03 反方审查 D2 根修：
+            # SQL 比较符 WHERE price > 9.99 的 9.99 含 "." 曾被判重定向
+            # 写文件目标，导致只读 SQL 取证被拦。
+            if first_token.replace(".", "", 1).isdigit():
+                idx = gt_pos + 1
+                continue
             if (first_token.startswith(("/", "~", "\"", "'", "./", "../"))
                     or "." in first_token  # file.py, config.yaml
                     or first_token.endswith((".py", ".js", ".ts", ".json", ".yaml", ".yml", ".toml", ".sh", ".md", ".txt", ".sql"))):

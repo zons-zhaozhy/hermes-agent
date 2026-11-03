@@ -62,7 +62,14 @@ _INTERPRETER_HEADS = frozenset({"python", "python3", "perl", "ruby", "node"})
 # 无写特征的纯读脚本不做字面量提取——2026-10-19 误拦根修：dataless 盘点
 # 只读脚本 print(f'...{t/1e6:.1f}MB') 的格式说明符斜杠被当路径分隔符，
 # 相对拼根恒真，纯读诊断被拦（目标列显示为 f-string 片段）。
-_PY_WRITE_FEATURES = ("open(", ".write", "write_text")
+# 2026-11-03 反方审查 D4 根修：open( 不再是无条件写特征——只读
+# json.load(open('x')) 被误拦（实测）；open( 仅在同载荷出现写模式字面量
+# 时才计写特征（'w'/'a'/'x'/'w+'/'a+'/'x+'/'r+'）。
+_PY_WRITE_FEATURES = (".write", "write_text")
+_PY_OPEN_WRITE_MODES = (
+    "'w'", "\"w\"", "'a'", "\"a\"", "'x'", "\"x\"",
+    "'w+'", "\"w+\"", "'a+'", "\"a+\"", "'x+'", "\"x+\"", "'r+'", "\"r+\"",
+)
 
 
 def _split_segments(cmd: str) -> list[str]:
@@ -198,7 +205,7 @@ def _interpreter_payload(toks: list[str]) -> str:
     return " ".join(toks)
 
 
-def _default_targets(seg: str, toks: list[str]) -> list[str]:
+def _default_targets(seg: str, toks: list[str], cwd: str = "") -> list[str]:
     """其它命令头：仅重定向目标是写目标; 解释器 -c 追加字面量提取。
 
     Contract:
@@ -213,7 +220,7 @@ def _default_targets(seg: str, toks: list[str]) -> list[str]:
     if toks and toks[0].rsplit("/", 1)[-1] in _INTERPRETER_HEADS:
         payload = _interpreter_payload(toks)
         if _payload_has_write_feature(payload):
-            lit = _extract_first_ontox_path(payload)
+            lit = _extract_first_ontox_path(payload, cwd)
             if lit:
                 targets.append(lit)
     return targets
@@ -237,7 +244,7 @@ def _is_redirect_token(tok: str) -> bool:
     return False
 
 
-def _segment_write_targets(seg: str) -> list[str]:
+def _segment_write_targets(seg: str, cwd: str = "") -> list[str]:
     """按命令头分派单段内「写目标角色」的 token 列表。
 
     Contract:
@@ -260,18 +267,19 @@ def _segment_write_targets(seg: str) -> list[str]:
         return _tee_targets(toks)
     if head == "sed":
         return _sed_targets(toks)
-    return _default_targets(seg, toks)
+    return _default_targets(seg, toks, cwd)
 
 
-def _terminal_write_targets(cmd: str) -> list[str]:
+def _terminal_write_targets(cmd: str, cwd: str = "") -> list[str]:
     """全命令（多段）的写目标合集。
 
     Contract:
-      Postconditions: 恒返回列表; 空表=命令无任何写目标（只读命令）。
+      Postconditions: 恒返回列表; 空表=命令无任何写目标（只读命令）;
+        相对目标由消费方按 cwd 判定归属（2026-11-03 D5 根修）。
     """
     out: list[str] = []
     for seg in _split_segments(cmd):
-        out.extend(_segment_write_targets(seg))
+        out.extend(_segment_write_targets(seg, cwd))
     return out
 
 
@@ -310,14 +318,19 @@ def _plugin_disabled() -> bool:
     }
 
 
-def _is_ontox_target(path: str) -> bool:
+def _is_ontox_target(path: str, cwd: str = "") -> bool:
     """写目标是否落在 OntoX 家族仓库内。
 
     Contract:
-      Postconditions: 相对路径按 OntoX 根解析后判定; 绝对路径直接前缀判定;
+      Postconditions: 绝对路径直接前缀判定; 相对路径按 cwd（命令实际工作
+        目录）解析后判定，cwd 缺失 → False（fail-open）;
         OntoX 根未配置时返回 False（fail-open）;
         无斜杠裸词（echo/cp/变量引用/命令名）不是路径形态 → False
         （2026-10-10 误报根修：裸词拼根恒真导致只读 SELECT 被误拦）。
+
+    2026-11-03 反方审查 D5 根修：相对路径此前无条件拼 OntoX 根恒真——
+    在无关仓（如 hermes fork）工作目录下的相对路径也被判 OntoX 写目标
+    （实测拦截）。改为按命令 workdir 解析，与 shell 实际语义一致。
     """
     if not path or "/" not in path:
         return False
@@ -329,7 +342,9 @@ def _is_ontox_target(path: str) -> bool:
     # 盘点脚本与 metrics 台账追加被拦（实测 2 形态）。
     p = Path(path).expanduser()
     if not p.is_absolute():
-        p = Path(ontox_root) / p
+        if not cwd:
+            return False
+        p = Path(cwd) / p
     try:
         p.resolve().relative_to(Path(ontox_root).resolve())
         return True
@@ -358,12 +373,13 @@ def _redirect_targets(cmd: str) -> list[str]:
     return targets
 
 
-def _target_from_terminal(cmd: str) -> str:
+def _target_from_terminal(cmd: str, cwd: str = "") -> str:
     """从 terminal 命令里提取第一个落在 OntoX 根内的写目标。
 
     Contract:
       Postconditions: 非写命令或写目标均不在 OntoX 根内 → 空串;
-        命令含 casebook 关键词（检索病例库自身）→ 空串（豁免）。
+        命令含 casebook 关键词（检索病例库自身）→ 空串（豁免）;
+        相对目标按 cwd 解析（无 cwd fail-open，2026-11-03 D5 根修）。
 
     判据收紧史：2026-10-10 裸词拼根恒真 + SQL > 比较符两处根修;
     2026-10-17 第三轮——全 token 角色不分（cp 源/脚本路径/sed 表达式
@@ -371,8 +387,8 @@ def _target_from_terminal(cmd: str) -> str:
     """
     if "casebook" in cmd:
         return ""
-    for t in _terminal_write_targets(cmd):
-        if _is_ontox_target(t):
+    for t in _terminal_write_targets(cmd, cwd):
+        if _is_ontox_target(t, cwd):
             return t
     return ""
 
@@ -381,10 +397,13 @@ def _payload_has_write_feature(code: str) -> bool:
     """解释器载荷是否含写调用特征（两通道共用的单一事实源）。
 
     Contract:
-      Postconditions: 任一 _PY_WRITE_FEATURES 子串命中 → True;
-        纯读脚本（os.walk/lstat/print 等）→ False。
+      Postconditions: .write/write_text 子串命中 → True; open( 仅在同载荷
+        出现写模式字面量（_PY_OPEN_WRITE_MODES）时 → True; 只读脚本
+        （os.walk/lstat/print/open 默认读模式）→ False。
     """
-    return any(f in code for f in _PY_WRITE_FEATURES)
+    if any(f in code for f in _PY_WRITE_FEATURES):
+        return True
+    return "open(" in code and any(m in code for m in _PY_OPEN_WRITE_MODES)
 
 
 def _looks_like_path(s: str) -> bool:
@@ -399,19 +418,20 @@ def _looks_like_path(s: str) -> bool:
     return not any(ch.isspace() or ch in "{}" for ch in s)
 
 
-def _extract_first_ontox_path(code: str) -> str:
+def _extract_first_ontox_path(code: str, cwd: str = "") -> str:
     """从 execute_code 代码里提取第一个落在 OntoX 根内的路径字面量。
 
     Contract:
       Postconditions: 找不到返回空串（调用方 fail-open）; 格式串/URL
         字面量不构成候选（2026-10-19 根修：{t/1e6:.1f} 类斜杠占位
-        曾被相对拼根恒真升级为写目标）。
+        曾被相对拼根恒真升级为写目标）; 相对字面量按 cwd 解析、
+        无 cwd fail-open（2026-11-03 D5 根修）。
     """
     import re  # re-ok: 字符串字面量提取
 
     hits = re.findall(r'[\"\']([^\"\']+)[\"\']', code)  # re-ok: 引号配对提取,str方法无法表达
     for h in hits:
-        if _looks_like_path(h) and _is_ontox_target(h):
+        if _looks_like_path(h) and _is_ontox_target(h, cwd):
             return h
     return ""
 
@@ -537,12 +557,15 @@ def _resolve_write_target(tool_name: str, args: dict[str, Any]) -> str:
     """统一入口：按工具类型解析写目标，非写工具返回空。
 
     Contract:
-      Postconditions: 返回空串=非门控对象（调用方放行）。
+      Postconditions: 返回空串=非门控对象（调用方放行）; terminal 相对
+        目标按命令 workdir 解析（2026-11-03 D5 根修）。
     """
     if tool_name in _WRITE_TOOLS:
         return _target_from_write_tool(tool_name, args)
     if tool_name == "terminal":
-        return _target_from_terminal(str(args.get("command", "")))
+        return _target_from_terminal(
+            str(args.get("command", "")), str(args.get("workdir", "") or "")
+        )
     return ""
 
 
@@ -589,7 +612,9 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
     args = kwargs.get("args") or {}
 
     target = _resolve_write_target(tool_name, args)
-    if not target or not _is_ontox_target(target):
+    if not target or not _is_ontox_target(
+        target, str(args.get("workdir", "") or "")
+    ):
         return None
 
     if _casebook_probed(sid):

@@ -33,6 +33,18 @@ def test_negative_simple_task_not_escalated():
     assert out in ("simple", "normal")  # 期望: 非复杂=简单任务不设调查门槛
 
 
+def test_sql_numeric_comparison_not_file_write():
+    """反方审查 D2：SQL 比较符后的数字字面量不是重定向写目标。
+
+    独立期望来源：`WHERE price > 9.99` 中 9.99 是数值字面量；
+    2026-11-03 前含 "." 即判写导致只读 SQL 取证被拦。
+    """
+    guard = _load_guard()
+    assert guard._terminal_writes_file('sqlite3 db "SELECT 1 FROM t WHERE price > 9.99"') is False  # 期望: 数字字面量不计写
+    assert guard._terminal_writes_file("echo hi > out.txt") is True  # 期望: 真重定向到文件仍计写
+    assert guard._terminal_writes_file("psql -c 'SELECT count(*) FROM t WHERE amt > 100.5'") is False  # 期望: psql 数字比较同形态不计写
+
+
 def test_negative_ordinary_message_normal():
     guard = _load_guard()
     assert guard._fallback_detect("现在几点了") == "normal"  # 期望: normal=常规查询默认档

@@ -88,6 +88,34 @@ def test_retry_after_block_passes(env: tuple[Path, Path]) -> None:
     assert second is None  # 期望: 纯重试即放行——承诺通道可达
 
 
+def test_payload_open_readonly_not_write_feature(env: tuple[Path, Path]) -> None:
+    """反方审查 D4：只读 open( 不计写特征（2026-11-03 实测误拦）。
+
+    独立期望来源：open 默认读模式；仅写模式字面量/'write' 调用计写特征。
+    """
+    assert casebook_gate._payload_has_write_feature("import json; json.load(open('x.json'))") is False  # 期望: 只读 open 不计写特征
+    assert casebook_gate._payload_has_write_feature("open('x.json', 'w')") is True  # 期望: 写模式 open 计写特征
+    assert casebook_gate._payload_has_write_feature("f.write('x')") is True  # 期望: .write 调用计写特征
+
+
+def test_relative_target_resolved_by_workdir(env: tuple[Path, Path]) -> None:
+    """反方审查 D5：相对路径按命令工作目录解析，不再拼 OntoX 根恒真。
+
+    独立期望来源：shell 语义——相对路径相对 cwd 解析；无关仓（hermes
+    fork）下的相对路径不是 OntoX 写目标。
+    """
+    ontox, _cb = env
+    _clear_probes()
+    assert casebook_gate._is_ontox_target("apps/aml/main.py", cwd=str(ontox)) is True  # 期望: cwd=OntoX 根时相对路径命中
+    assert casebook_gate._is_ontox_target("apps/aml/main.py") is False  # 期望: 无 cwd fail-open（不再拼根）
+    v = casebook_gate.on_pre_tool_call(
+        tool_name="terminal",
+        args={"command": "cp a.md b.md", "workdir": "/Users/stan/code/ai/github/fork/hermes-agent"},
+        session_id="s1",
+    )
+    assert v is None  # 期望: 非 OntoX 工作目录的相对写目标放行（此前拼根恒真误拦）
+
+
 def test_fd_redirect_not_write_target(env: tuple[Path, Path]) -> None:
     """`cp A B 2>/dev/null` 的 `2>/dev/null` 是重定向语法，不是 cp 写目标。
 
@@ -411,15 +439,22 @@ def test_interpreter_c_write_outside_fstring_slash_not_blocked(
 def test_interpreter_c_relative_literal_write_still_blocked(
     env: tuple[Path, Path],
 ) -> None:
-    """解释器 -c 相对路径字面量写 OntoX → 路径过滤不误伤真相对路径 → 拦截。"""
+    """解释器 -c 相对路径字面量写 OntoX → 路径过滤不误伤真相对路径 → 拦截。
+
+    D5 根修后相对字面量按命令 workdir 解析：cwd=OntoX 根时仍拦截；
+    无 workdir 则 fail-open（见 test_relative_target_resolved_by_workdir）。
+    """
+    ontox, _cb = env
     _clear_probes()
     v = casebook_gate.on_pre_tool_call(
         tool_name="terminal",
-        args={"command": "python3 -c \"open('apps/aml/x.py','w')\""},
+        args={"command": "python3 -c \"open('apps/aml/x.py','w')\"", "workdir": str(ontox)},
         session_id="s1",
     )
-    assert v is not None  # 期望: 相对路径字面量仍构成 OntoX 写目标→拦截
+    assert v is not None  # 期望: cwd=OntoX 根时相对路径字面量仍构成写目标→拦截
     assert v["action"] == "block"  # 期望: 拦截动作字面量=block（规则语义）
+
+
 def test_probe_marker_survives_memory_reset(env: tuple[Path, Path]) -> None:
     """跨进程语义：内存态清空（=另一进程判定）后磁盘 marker 仍是有效证据。
 
