@@ -1,6 +1,6 @@
 # 上游同步防冲突账本（SSOT）
 
-最后核验: 2026-11-01 · main 合并 upstream 016b76da3a (59 提交, 零冲突) f956a95fc3, 落后 0
+最后核验: 2026-11-03 · main 合并 upstream c314285f07 (77 提交, 零冲突) c4a3246345, 落后 0
 重叠面(树交集) 9 文件, 官方文件被 fork 改动 194 = 账本在册 36 + 1101 补记 158(见"存量定制面族谱"节)
 1101 轮: photon/adapter.py 上游 runtime-record 迁 profile 根目录(33 行)与 fork 定制 4 行自动合并共存, 双方意图保留
 (网络通道: SSH443/HTTPS 直连均被重置时, remote.upstream.url 临时切 gh-proxy.com 代理通道完成 lazy fetch, 完毕恢复)
@@ -156,6 +156,23 @@ git rev-list --count main..upstream/main   # 应为 0
 | gateway/session_ingress.py | SQLite 移出 owner loop 诊断 6 行 | 7b34e3a917 |
 | gateway/slash_commands_model.py | 切换持久化失败响亮可见 4 行 | 72344632e2 |
 | tools/terminal_tool_guards.py | block_escalation 错误/阻塞分流 10 行 | ce9faf8ce0 |
+
+### 1103 同步记录
+
+- merge c4a3246345 (77 提交, 74 文件 3428+/328-, 零冲突)。预交集 2 文件
+  (turn_facade_lease/delegate_tool) 均自动合并, 定制签名逐项核对存活:
+  tool_executor/_run_pre_tool_batch_hooks×3, session_viewer_automation×4,
+  coding_context/_NON_CODING_SKILL_CATEGORIES, LEASE_WAIT_SECONDS=300,
+  browser inflight_session_scope, delegate_tool 限制行。
+- 合并前工作区 2 未提交文件(session_ancillary.py 锁外移 + useLongRunToolCharms.ts
+  节奏改进)以保护性提交 2c2edcf6d9 入库(上游未触碰两文件, 零冲突)。
+- 三验: read_think_gate 16/16 绿(run_tests.sh), imports OK, desktop vitest
+  144/144 绿(capabilities+updates-overlay.report)。
+- workspace 副本: 现存 8 份(2 installs), merge 改动包(agent/gateway/hermes_cli/
+  pm/tools)rsync 同步(副本单向落后坐实, 0 副本独有文件), 逐环境 venv 中立目录
+  env -i 探针 8/8 通过(解析到各自 workspace 副本且含新模块 pm/carried_extras)。
+  注意: 探针须从中立 cwd 跑——python -c 会把 cwd 注入 sys.path, 在 fork 仓内跑
+  会假绿为 fork 直连。
 
 ## 五、存量定制面族谱（1101 补记: fork 改官方文件但此前未入账的 158 项, 按族归并）
 
