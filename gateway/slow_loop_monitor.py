@@ -35,6 +35,19 @@ def _signature(frame) -> _StackSignature:
     return _StackSignature(tuple(places))
 
 
+def _is_idle_wait(frame) -> bool:
+    """Contract: Preconditions: frame 为被监控线程当前栈顶帧；Postconditions:
+    栈顶为标准库 selectors 模块的 select 等待时返回 True——那是事件循环的
+    空闲等待形态（等待 IO/定时器），不是 callback 占用；其余返回 False。"""
+    import selectors as _selectors
+
+    code = frame.f_code
+    return (
+        code.co_filename == getattr(_selectors, "__file__", "")
+        and code.co_name == "select"
+    )
+
+
 class SlowLoopStackMonitor:
     """Log the event-loop stack when one callback remains at the same call site."""
 
@@ -83,6 +96,12 @@ class SlowLoopStackMonitor:
         while not self._stop.wait(self.sample_interval_seconds):
             frame = sys._current_frames().get(self.thread_id)
             if frame is None:
+                current = None
+                continue
+            if _is_idle_wait(frame):
+                # 空闲等待（select 等待 IO/定时器）不是占用：签名重置，
+                # 防止空闲时长被累计成「occupied」误报（2026-11-04 三起
+                # 74.6s/33.9s/46.8s 报告栈顶全为 selectors.select）。
                 current = None
                 continue
             signature = _signature(frame)
