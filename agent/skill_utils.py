@@ -26,8 +26,13 @@ PLATFORM_MAP = {"macos": "darwin", "linux": "linux", "windows": "win32"}
 # (cron logs, business records); they may be symlinked out of the skills tree, and
 # the scanners walk with followlinks=True, so naming them here is what keeps the
 # walk from descending into multi-thousand-file runtime trees.
+
+# Where profile-distribution installs stage and set aside a dir they swap in (same parent, so the
+# rename stays atomic); a backup a lock keeps there must never be discovered as a second copy.
+DIST_SWAP_DIR = ".hermes-dist"
+
 EXCLUDED_SKILL_DIRS = frozenset((
-    ".git", ".github", ".hub", ".archive", ".curator_backups", ".locks",
+    ".git", ".github", ".hub", ".archive", ".curator_backups", ".locks", DIST_SWAP_DIR,
     ".venv", "venv", "node_modules", "site-packages", "__pycache__",
     ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
     "state", "data",

@@ -720,7 +720,7 @@ export const esOverrides = {
       advancedOutput: 'Límites de salida',
       advancedDelegation: 'Subagentes',
       advancedDesktop: 'Escritorio e inicio',
-      gatewayConnection: 'Esta ventana',
+      gatewayConnection: 'Gateway principal',
       gatewayDevices: 'Conexiones guardadas',
       gatewayManagedUpdates: 'Actualizaciones remotas',
       gatewayManagedUpdatesUnavailable:
@@ -4487,7 +4487,9 @@ export const esOverrides = {
       ultra: 'Ultra',
       sendsOnRoute: (level: string) => `envía ${level} en esta ruta`,
       updateFailed: 'No se pudo actualizar la opción del modelo',
-      fastFailed: 'No se pudo actualizar el modo rápido'
+      fastFailed: 'No se pudo actualizar el modo rápido',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'No se pudo actualizar Daybreak'
     },
     gatewayMenu: {
       gateway: 'Gateway',
@@ -4660,6 +4662,14 @@ export const esOverrides = {
     terminalNew: 'Nueva terminal',
     terminalCloseOthers: 'Cerrar las demás',
     terminalCloseAll: 'Cerrar todo',
+    terminalNewOn: 'Nueva terminal en…',
+    terminalGatewayRemoved: 'Gateway eliminado',
+    terminalGatewayRemovedBody:
+      'Se eliminó el gateway donde se ejecutaba esta terminal, así que no puede reabrirse. Cierra esta pestaña.',
+    terminalGatewayNoShellBody:
+      'Este gateway no ofrece acceso a shell, así que esta terminal no puede reabrirse. Cierra esta pestaña.',
+    terminalDisconnectedBody:
+      'Terminal desconectada. Pulsa Intro para iniciar una nueva shell; el historial se conserva.',
     addToChat: 'Añadir al chat'
   },
   preview: {

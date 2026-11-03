@@ -717,7 +717,7 @@ export const deOverrides = {
       advancedOutput: 'Ausgabelimits',
       advancedDelegation: 'Subagenten',
       advancedDesktop: 'Desktop & Start',
-      gatewayConnection: 'Dieses Fenster',
+      gatewayConnection: 'Primäres Gateway',
       gatewayDevices: 'Gespeicherte Verbindungen',
       gatewayManagedUpdates: 'Remote-Updates',
       gatewayManagedUpdatesUnavailable:
@@ -4503,7 +4503,9 @@ export const deOverrides = {
       ultra: 'Ultra',
       sendsOnRoute: (level: string) => `sendet ${level} auf dieser Route`,
       updateFailed: 'Aktualisierung der Modelloptie schlug fehl',
-      fastFailed: 'Aktualisierung des Schnell-Modus schlug fehl'
+      fastFailed: 'Aktualisierung des Schnell-Modus schlug fehl',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Aktualisierung von Daybreak schlug fehl'
     },
     gatewayMenu: {
       gateway: 'Gateway',
@@ -4676,6 +4678,14 @@ export const deOverrides = {
     terminalNew: 'Neues Terminal',
     terminalCloseOthers: 'Andere schließen',
     terminalCloseAll: 'Alle schließen',
+    terminalNewOn: 'Neues Terminal auf…',
+    terminalGatewayRemoved: 'Entfernter Gateway',
+    terminalGatewayRemovedBody:
+      'Der Gateway, auf dem dieses Terminal lief, wurde entfernt; es kann nicht wieder geöffnet werden. Schließe diesen Tab.',
+    terminalGatewayNoShellBody:
+      'Dieser Gateway bietet keinen Shell-Zugang; dieses Terminal kann nicht wieder geöffnet werden. Schließe diesen Tab.',
+    terminalDisconnectedBody:
+      'Terminal getrennt. Drücke Enter, um eine neue Shell zu starten; der Verlauf bleibt erhalten.',
     addToChat: 'Zum Chat hinzufügen'
   },
   preview: {
