@@ -90,6 +90,17 @@ def _fresh_modules():
     _drop_reload_targets()
 
 
+def _seed_models_dev(monkeypatch, registry: dict) -> None:
+    """Serve ``registry`` as the in-memory models.dev catalog (fresh, so no fetch is attempted).
+
+    Capability verdicts come from models.dev; left unseeded, the test read whatever models.dev
+    served live, and offline every model was "capability unknown"."""
+    from agent import models_dev
+
+    monkeypatch.setattr(models_dev, "_models_dev_cache", registry)
+    monkeypatch.setattr(models_dev, "_models_dev_cache_time", float("inf"))
+
+
 # ---------------------------------------------------------------------------
 # Fix 1: provider=openai → custom + api.openai.com/v1
 # ---------------------------------------------------------------------------
@@ -176,17 +187,11 @@ model:
   default: deepseek-v4-pro
 """)
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
-        # Deterministic capability catalog: isolated_home has no disk cache, and the
-        # auto chain probes models.dev with allow_network=True (agent/image_routing.py
-        # _probe_models_dev) — a cold cache + failed fetch degrades to permissive,
-        # un-skipping the text-only main and returning a client (intermittent red,
-        # 2/4 single-test runs before this anchor). Pin the catalog so the skip
-        # contract is asserted, not the network.
-        monkeypatch.setattr(
-            "agent.models_dev.fetch_models_dev",
-            lambda *args, **kwargs: {"deepseek": {"models": {
-                "deepseek-v4-pro": {"modalities": {"input": ["text"]}}}}},
-        )
+        _seed_models_dev(monkeypatch, {"deepseek": {"id": "deepseek", "models": {"deepseek-v4-pro": {
+            "id": "deepseek-v4-pro", "attachment": False,
+            "modalities": {"input": ["text"], "output": ["text"]},
+            "limit": {"context": 1048576, "output": 393216},
+        }}}})
         _fresh_modules()
 
         from agent.auxiliary_client import resolve_vision_provider_client
@@ -205,6 +210,11 @@ model:
   default: claude-sonnet-4-6
 """)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        _seed_models_dev(monkeypatch, {"anthropic": {"id": "anthropic", "models": {"claude-sonnet-4-6": {
+            "id": "claude-sonnet-4-6", "attachment": True,
+            "modalities": {"input": ["text", "image", "pdf"], "output": ["text"]},
+            "limit": {"context": 1000000, "output": 64000},
+        }}}})
         _fresh_modules()
 
         from agent.auxiliary_client import resolve_vision_provider_client
