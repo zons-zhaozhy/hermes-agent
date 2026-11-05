@@ -695,14 +695,14 @@ async def recover_profile_native_sessions(runner, authority):
     return outcome
 
 
-def publish_gateway_runtime_ready(runner):
+async def publish_gateway_runtime_ready(runner):
     descriptor = runner.session_runtime_descriptor
     if runner.session_api.task.done() or not runner._running or runner._draining:
         raise RuntimeError('gateway stopped before session API readiness')
     descriptor.update(state='ready', capabilities=[
         'session-authority-v1', 'durable-admission-v1', 'event-replay-v1'])
-    from gateway.session_hosted_service import start_ready_hosted_services
-    start_ready_hosted_services(runner)
+    from gateway.session_hosted_service import start_ready_hosted_services_async
+    await start_ready_hosted_services_async(runner)
 
 
 async def wait_gateway_runtime(runner):

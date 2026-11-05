@@ -205,7 +205,7 @@ async def test_native_http_preserves_gated_auth_and_actual_socket_boundary(tmp_p
         async with httpx.AsyncClient(base_url=f'http://127.0.0.1:{port}', trust_env=False) as client:
             assert (await client.get('/api/config', headers=headers(mint()))).status_code == 503
             assert await runner.start()
-            publish_gateway_runtime_ready(runner)
+            await publish_gateway_runtime_ready(runner)
             assert web.app.state.auth_required is True
             bearer = {'Authorization': 'Bearer ' + session.access_token}
             cookie = {'Cookie': f'{SESSION_AT_COOKIE}={session.access_token}'}

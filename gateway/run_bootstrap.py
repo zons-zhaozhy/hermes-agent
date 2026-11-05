@@ -877,7 +877,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         from gateway.run_runtime import publish_gateway_runtime_ready, wait_gateway_runtime
         try:
             # READY only once adapters, cron and housekeeping run; missing systemd state just disables watchdog.
-            publish_gateway_runtime_ready(runner)
+            await publish_gateway_runtime_ready(runner)
             runner._start_systemd_watchdog()
             if idle_exit:
                 from gateway.run_idle_exit import arm_unmanaged_idle_exit

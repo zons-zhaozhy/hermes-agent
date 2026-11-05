@@ -277,7 +277,7 @@ def test_startup_preserves_queued_work_until_ready(mux, monkeypatch):
         runner._running = True
         # Only listener-liveness metadata is needed; the private socket is real.
         runner.session_api = SimpleNamespace(task=loop.create_future())
-        publish_gateway_runtime_ready(runner)
+        await publish_gateway_runtime_ready(runner)
     call(ready())
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:

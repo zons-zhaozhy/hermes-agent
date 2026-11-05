@@ -39,7 +39,7 @@ async def probe(peer, creator):
         assert bootstrap is not None
         await start_gateway_runtime_api(runner)
         assert await runner.start()
-        publish_gateway_runtime_ready(runner)
+        await publish_gateway_runtime_ready(runner)
         assert web_server.app.state.auth_required is True
         descriptor = await asyncio.to_thread(control, home, 'identify')
         authority = runner.session_authority
