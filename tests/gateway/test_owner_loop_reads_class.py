@@ -237,6 +237,151 @@ async def test_startup_detached_recovery_reads_admissions_off_loop(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_startup_native_recovery_reads_admissions_off_loop(tmp_path, monkeypatch):
+    from gateway import session_authority
+
+    _db, authority = _authority(tmp_path, monkeypatch)
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+    real = session_authority.list_session_admissions
+
+    def recorded(*args, **kwargs):
+        threads.append(threading.get_ident())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(session_authority, 'list_session_admissions', recorded)
+    outcome = await authority.recover_native_sessions([('s', SimpleNamespace(), None)])
+
+    assert outcome == {'s': 'not_found'}
+    assert threads and loop_thread not in threads
+
+
+@pytest.mark.asyncio
+async def test_startup_native_recovery_reads_compression_tip_off_loop(tmp_path, monkeypatch):
+    from gateway import session_envelope
+    from hermes_state_runtime import admit_session_input
+
+    db, authority = _authority(tmp_path, monkeypatch)
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    admit_session_input(
+        db, epoch=authority.epoch, principal_id='human', session_id='s', request_id='native',
+        payload={'text': 'native', 'native_text_v1': {'source': {}, 'route': 'route'}})
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+    real = authority.physical_target
+
+    def recorded(ref):
+        threads.append(threading.get_ident())
+        return real(ref)
+
+    async def checked_route(*args, **kwargs):
+        return SimpleNamespace(), 'route'
+
+    monkeypatch.setattr(authority, 'physical_target', recorded)
+    monkeypatch.setattr(session_envelope, 'check_native_route', checked_route)
+    outcome = await authority.recover_native_sessions([('s', SimpleNamespace(), object())])
+
+    assert outcome == {'s': 'ready'}
+    assert threads and loop_thread not in threads
+
+
+@pytest.mark.asyncio
+async def test_native_route_recovery_lookup_runs_off_loop(monkeypatch):
+    from datetime import UTC, datetime
+    from types import SimpleNamespace as NS
+
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+    from gateway.session_envelope import check_native_route
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id='chat', user_id='human')
+    adapter = object()
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+
+    def lookup(route):
+        threads.append(threading.get_ident())
+        return NS(session_id='s')
+
+    store = NS(
+        _generate_session_key=lambda candidate: 'chat-key',
+        lookup_by_session_key=lookup,
+    )
+    runner = NS(
+        config=NS(multiplex_profiles=False),
+        session_store=store,
+        _adapter_flag=lambda *args, **kwargs: False,
+        _adapter_profile_for_source=lambda candidate: None,
+        _is_user_authorized_for_source=lambda *args, **kwargs: True,
+        _adapter_for_source=lambda candidate: adapter,
+    )
+    encoded_source = source.to_dict()
+    encoded_source['is_bot'] = source.is_bot
+    payload = {'text': 'hello', 'native_text_v1': {
+        'source': encoded_source, 'route': 'chat-key',
+        'timestamp': datetime.now(UTC).isoformat(),
+        'event': {'message_id': 'm1'},
+    }}
+
+    recovered_source, route = await check_native_route(runner, payload, 's', source, adapter)
+
+    assert recovered_source.to_dict() == source.to_dict()
+    assert route == 'chat-key'
+    assert threads and loop_thread not in threads
+
+
+@pytest.mark.asyncio
+async def test_automation_route_preflight_runs_off_loop(monkeypatch):
+    from gateway import session_automation
+    from gateway.session_envelope import check_native_route
+
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+
+    def recorded(*args, **kwargs):
+        threads.append(threading.get_ident())
+        return 'source', 'route'
+
+    monkeypatch.setattr(session_automation, 'check_automation_route', recorded)
+    outcome = await check_native_route(
+        SimpleNamespace(), {'native_text_v1': {'automation': {}}}, 's', SimpleNamespace(), object())
+
+    assert outcome == ('source', 'route')
+    assert threads and loop_thread not in threads
+
+
+@pytest.mark.asyncio
+async def test_startup_local_automation_preflight_runs_off_loop(tmp_path, monkeypatch):
+    from gateway import session_automation, session_envelope
+    from hermes_state_runtime import admit_session_input
+
+    db, authority = _authority(tmp_path, monkeypatch)
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    admit_session_input(
+        db, epoch=authority.epoch, principal_id='automation:route', session_id='s', request_id='native',
+        payload={'text': 'native', 'native_text_v1': {'source': {}, 'route': 'route'}})
+    admit_session_input(
+        db, epoch=authority.epoch, principal_id='automation:route', session_id='s', request_id='automation',
+        payload={'text': 'automation', 'local_automation_v1': {}})
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+
+    def recorded(*args, **kwargs):
+        threads.append(threading.get_ident())
+
+    async def checked_route(*args, **kwargs):
+        return SimpleNamespace(), 'route'
+
+    monkeypatch.setattr(session_automation, 'check_local_automation', recorded)
+    monkeypatch.setattr(session_envelope, 'check_native_route', checked_route)
+    monkeypatch.setattr(authority, 'physical_target', lambda ref: ref.session_id)
+    outcome = await authority.recover_native_sessions([('s', SimpleNamespace(), object())])
+
+    assert outcome == {'s': 'ready'}
+    assert threads and loop_thread not in threads
+
+
+@pytest.mark.asyncio
 async def test_startup_detached_lineage_read_runs_off_loop(tmp_path, monkeypatch):
     from types import SimpleNamespace as NS
 

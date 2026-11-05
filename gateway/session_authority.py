@@ -721,11 +721,13 @@ class SessionAuthority:
             try:
                 if counts[sid] != 1:
                     raise RuntimeStoreError('admission_conflict')
-                rows = list_session_admissions(self.db, session_id=sid, pending_only=False)
+                rows = await asyncio.to_thread(
+                    list_session_admissions, self.db, session_id=sid, pending_only=False)
                 native = [row for row in rows if 'native_text_v1' in row['payload']]
                 if not native:
                     raise RuntimeStoreError('not_found')
-                target = self.physical_target(SessionRef(self.profile_id, sid))
+                target = await asyncio.to_thread(
+                    self.physical_target, SessionRef(self.profile_id, sid))
                 source, route = await check_native_route(self.runner, native[-1]['payload'], target,
                                                     available_source, adapter)
                 for row in rows:
@@ -735,7 +737,8 @@ class SessionAuthority:
                         await check_native_route(self.runner, row['payload'], target, available_source, adapter)
                     elif 'local_automation_v1' in row['payload']:
                         from gateway.session_automation import check_local_automation
-                        check_local_automation(
+                        await asyncio.to_thread(
+                            check_local_automation,
                             self, SessionRef(self.profile_id, sid), row, route=route)
                     else:
                         from gateway.session_operator import check_local_input

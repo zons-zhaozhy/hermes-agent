@@ -330,7 +330,8 @@ async def check_native_route(runner, payload, session_id, available_source, adap
     """Read-only preflight: route/auth rejection must never consume a queued row."""
     if 'automation' in payload['native_text_v1']:
         from gateway.session_automation import check_automation_route
-        return check_automation_route(runner, payload, session_id, available_source, adapter)
+        return await asyncio.to_thread(
+            check_automation_route, runner, payload, session_id, available_source, adapter)
     event = restore_native(payload, runner)
     # Validate the stored sender without recapturing files or trusting the binding caller.
     from gateway.session_ingress_context import reauthorize_roles
@@ -342,7 +343,7 @@ async def check_native_route(runner, payload, session_id, available_source, adap
     if (store._generate_session_key(event.source) != route
             or store._generate_session_key(available_source) != route):
         raise RuntimeStoreError('admission_conflict')
-    entry = store.lookup_by_session_key(route)
+    entry = await asyncio.to_thread(store.lookup_by_session_key, route)
     if entry is None or entry.session_id != session_id:
         raise RuntimeStoreError('admission_conflict')
     if adapter is None or runner._adapter_for_source(event.source) is not adapter:
