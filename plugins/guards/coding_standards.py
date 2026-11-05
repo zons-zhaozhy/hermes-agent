@@ -48,9 +48,10 @@ ACTIVATION: ON by default. Set CODING_STANDARDS_GUARD_DISABLE=1 to turn off.
 from __future__ import annotations
 
 import ast
+import itertools
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -1099,6 +1100,78 @@ def _check_test_assertion_level(tree: ast.AST, lines: list[str], target: str = "
     return []
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# R025: 环境变量键名必须可溯源（防凭记忆/类比猜键名）
+# ═══════════════════════════════════════════════════════════════════════
+
+def _is_upper_snake(key: str) -> bool:
+    """Contract:
+    Preconditions: key 为字符串字面量值
+    Postconditions: True 仅当键为全大写含下划线形态（ATOMATCH_JDBC_URL 类）
+    """
+    return key.isupper() and "_" in key and not key.startswith("_")
+
+
+def _env_update_dict_keys(tree: ast.AST) -> Iterator[ast.Constant]:
+    """产出 `x.update({...})` 调用中 dict 字面量的字符串键节点。
+
+    Contract:
+    Preconditions: tree 为可遍历 AST
+    Postconditions: 仅产出 ast.Constant 键节点，非字符串键跳过
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if (isinstance(node.func, ast.Attribute) and node.func.attr == "update"
+                and node.args and isinstance(node.args[0], ast.Dict)):
+            for k in node.args[0].keys:
+                if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                    yield k
+
+
+def _env_subscript_keys(tree: ast.AST) -> Iterator[ast.Constant]:
+    """产出 `os.environ["K"] = v` 下标赋值的字符串键节点。
+
+    Contract:
+    Preconditions: tree 为可遍历 AST
+    Postconditions: 仅产出字符串常量键节点
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if (isinstance(target, ast.Subscript)
+                and isinstance(target.slice, ast.Constant)
+                and isinstance(target.slice.value, str)):
+            yield target.slice
+
+
+def _check_env_key_source(tree: ast.AST, lines: list[str]) -> list[Violation]:
+    """R025: env 写入键名缺 # idsrc: 来源标记 — 猜键名白跑一轮。
+
+    行内已有 `# idsrc: <来源>`（或 `# idsrc-ok: <理由>`）即放行。
+    """
+    violations: list[Violation] = []
+    for k in itertools.chain(_env_update_dict_keys(tree),
+                             _env_subscript_keys(tree)):
+        if not _is_upper_snake(k.value):
+            continue
+        line_text = lines[k.lineno - 1] if k.lineno - 1 < len(lines) else ""
+        if "idsrc" in line_text:
+            continue
+        violations.append(Violation(
+            rule_id="R025", line=k.lineno, col=k.col_offset,
+            severity="error",
+            message=(
+                f"环境变量键 '{k.value}' 缺来源标记 — 键名必须查源码/文档得来，"
+                f"禁凭记忆猜（1105 事故：JDBC 键名四连猜各白跑一轮）。"
+                f"行内加 `# idsrc: <来源文件:行号>` 或 `# idsrc-ok: <理由>`"
+            ),
+            snippet=_snippet(lines, k.lineno),
+        ))
+    return violations
+
+
 _RULES = [
     # ── 吞异常系列（5 条）──
     ("R001-R005", _check_except_pass,             "except handler 只有 pass — 吞异常铁律"),
@@ -1130,6 +1203,8 @@ _RULES = [
     ("R023",      _check_log_collect_timestamp,     "日志采集缺时间戳 — 有而不取，豁免=ts-ok"),
     # ── 测试断言系列（1 条）──
     ("R024",      _check_test_assertion_level,      "测试断言层级不足 — 仅状态码无值级断言，豁免=testlv-ok"),
+    # ── 键名溯源系列（1 条）──
+    ("R025",      _check_env_key_source,            "env 写入键名缺来源标记 — 禁猜键名，豁免=idsrc"),
 ]
 
 
