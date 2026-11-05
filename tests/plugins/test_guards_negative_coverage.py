@@ -18,14 +18,18 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from plugins.guards import _SUB_GUARD_NAMES
+
 REPO = Path(__file__).resolve().parents[2]
-GUARDS_DIR = REPO / "plugins" / "guards"
 PLUGINS_DIR = REPO / "plugins"
 
 # assert 字符串常量中的拦截语义证据（block=硬拦, hint=软拦 R5, 拦/拦截=中文形态）
 BLOCK_WORDS = frozenset({"block", "blocked", "hint", "拦", "拦截"})
 # 测试函数名中的负例语义证据
-NEGATIVE_NAME_WORDS = ("blocked", "escape", "negative", "defer_pushout", "fail_open", "fail_closed")
+NEGATIVE_NAME_WORDS = (
+    "blocked", "escape", "negative", "defer_pushout", "fail_open", "fail_closed",
+    "flagged", "inject",
+)
 
 # 存量缺口基线（棘轮只准降）。新 guard 落地必须自带负例测试，不进此清单。
 # 第一轮实测（2026-10-25）：33 项 guard 资产中 21 项缺负例覆盖。
@@ -34,13 +38,14 @@ NEGATIVE_COVERAGE_BASELINE: frozenset[str] = frozenset()
 
 
 def _guard_submodule_assets() -> list[str]:
-    """枚举 guards 插件子模块资产名。
+    """枚举 guards 插件已注册子护栏资产名。
 
     Contract:
         Preconditions: plugins/guards/ 目录存在
-        Postconditions: 返回非 __ 开头的 .py 文件名集合（含 guards/ 前缀）
+        Postconditions: 返回 _SUB_GUARD_NAMES 中的执法子模块（含 guards/
+          前缀）；共享策略/渲染模块不是 guard 资产
     """
-    return [f"guards/{f.stem}" for f in sorted(GUARDS_DIR.glob("*.py")) if not f.name.startswith("__")]
+    return [f"guards/{name}" for name in _SUB_GUARD_NAMES]
 
 
 def _guard_plugin_assets() -> list[str]:
