@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [planning, architecture, design, change-control, investigation, approval, workflow]
-    related_skills: [spike, writing-plans, grill-me, test-driven-development]
+    related_skills: [spike, repository-investigation, writing-plans, test-driven-development]
 ---
 
 # Brainstorming Skill
@@ -85,6 +85,9 @@ Resolve discoverable facts yourself with `read_file`, `search_files`, `terminal`
 Ask the user one decision question at a time only when the answer cannot be found and two
 reasonable choices would materially change the result. Do not ask for facts the environment
 can answer.
+
+For an unfamiliar subsystem or broad refactor, load `repository-investigation` first and carry
+its evidence map into the design.
 
 ### 4. Apply the authorization matrix
 

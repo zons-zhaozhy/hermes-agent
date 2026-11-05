@@ -16,15 +16,29 @@ logger = logging.getLogger(__name__)
 
 _EXCLUDED_PLATFORMS = frozenset({"cron", "subagent", "batch"})
 _MAX_TRACKED_SESSIONS = 512
+WORKFLOW_ROUTES: tuple[tuple[str, str], ...] = (
+    ("新功能/重构/接口迁移", "brainstorming"),
+    ("工程调查/结构/调用链", "repository-investigation"),
+    ("故障/报错/性能异常", "systematic-debugging"),
+    ("行为变更/缺陷修复", "test-driven-development"),
+    ("等待/轮询/异步就绪", "condition-based-waiting"),
+    ("隔离改造/脏工作区", "using-git-worktrees"),
+    ("已批准的多步架构方案", "writing-plans"),
+    ("按已写计划执行", "executing-plans"),
+    ("收到评审反馈", "receiving-code-review"),
+    ("实现后/提交前评审", "requesting-code-review"),
+    ("完成/集成/清理分支", "finishing-a-development-branch"),
+    ("代码规模/语言构成", "codebase-inspection"),
+    ("宣称完成/修复/通过前", "verification-before-completion"),
+)
+WORKFLOW_SKILLS = frozenset(skill for _situation, skill in WORKFLOW_ROUTES)
 _ROUTING_HINT = (
     "[工程工作流路由·非阻断] 若本会话进入工程工作，先完整读取对应 skill，再动手："
-    "新功能/重构/接口或数据迁移→skill_view(name='brainstorming')；"
-    "故障/报错/性能异常→skill_view(name='systematic-debugging')；"
-    "行为变更或缺陷修复→skill_view(name='test-driven-development')；"
-    "已批准的多步架构方案→skill_view(name='writing-plans')，随后按计划执行→executing-plans；"
-    "收到评审反馈→skill_view(name='receiving-code-review')；代码规模/语言构成→codebase-inspection；"
-    "宣称完成/修复/通过前→skill_view(name='verification-before-completion')。"
-    "被护栏拦截时，把拦截原因当作证据进入 systematic-debugging，禁止换工具重复尝试。"
+    + "".join(
+        f"{situation}→skill_view(name='{skill}')；"
+        for situation, skill in WORKFLOW_ROUTES
+    )
+    + "被护栏拦截时，把拦截原因当作证据进入 systematic-debugging，禁止换工具重复尝试。"
 )
 _injected_sessions: OrderedDict[str, None] = OrderedDict()
 

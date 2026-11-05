@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [planning, implementation-plan, spec, tdd, interfaces, verification]
-    related_skills: [brainstorming, executing-plans, test-driven-development]
+    related_skills: [brainstorming, executing-plans, test-driven-development, using-git-worktrees]
 ---
 
 # Writing Plans Skill
@@ -170,7 +170,9 @@ Fix issues inline.
 
 ### 10. Hand off
 
-After saving the plan, load `executing-plans`. Do not begin implementation as part of planning.
+After saving the plan, load `executing-plans`. Its executor starts with
+`using-git-worktrees` when isolation is required or the checkout needs protection. Do not begin
+implementation as part of planning.
 
 ## Pitfalls
 

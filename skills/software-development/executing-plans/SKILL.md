@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [plan-execution, implementation, checkpoints, tdd, verification, change-control]
-    related_skills: [writing-plans, test-driven-development, systematic-debugging, requesting-code-review]
+    related_skills: [writing-plans, test-driven-development, systematic-debugging, requesting-code-review, using-git-worktrees, finishing-a-development-branch]
 ---
 
 # Executing Plans Skill
@@ -62,6 +62,9 @@ plan's assumptions.
 Read the plan and the cited spec. For each task, inspect the current versions of every file
 named by that task immediately before editing. Do not patch from memory or from the plan's
 quoted old text when the file has changed.
+
+If the plan or checkout requires isolation, load `using-git-worktrees` before editing and
+establish its verified baseline.
 
 ### 2. Review before execution
 
@@ -139,6 +142,10 @@ Stop before each such effect and show the exact target and action.
 Run the plan's final verification commands. Load
 `skill_view("verification-before-completion")` before summarizing success. Report what was
 verified, what was not, and any remaining blocker from fresh command output.
+
+When the user asks to integrate, clean up, or hand off the branch, load
+`finishing-a-development-branch`; plan completion itself does not authorize merge, push, PR,
+publication, or cleanup.
 
 ## Pitfalls
 
