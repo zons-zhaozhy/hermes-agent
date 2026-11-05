@@ -8,14 +8,13 @@ from __future__ import annotations
 
 import sys
 import uuid
-import importlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from plugins._shared_state import clear_session
-
-lazy_blocker = importlib.import_module("plugins.lazy-blocker")
+from plugins import finish_guard
+from plugins.finish_guard import lazy_blocker
 
 
 def _history(text: str) -> list[dict]:
@@ -94,5 +93,37 @@ def test_non_deferral_and_evidence_history_do_not_inject() -> None:
             turn_id=1,
             conversation_history=_history("挂起；替代通道已用本地测试实测"),
         ) is None
+    finally:
+        clear_session(session_id)
+
+
+class _OwnerCtx:
+    def __init__(self) -> None:
+        self.hooks: dict[str, list] = {}
+
+    def register_hook(self, name: str, callback) -> None:
+        self.hooks.setdefault(name, []).append(callback)
+
+
+def test_finish_guard_owner_registers_lazy_blocker() -> None:
+    session_id = f"lazy-owner-{uuid.uuid4()}"
+    ctx = _OwnerCtx()
+    finish_guard.register(ctx)
+
+    try:
+        contexts = [
+            result["context"]
+            for callback in ctx.hooks["pre_llm_call"]
+            if (
+                result := callback(
+                    session_id=session_id,
+                    turn_id=1,
+                    conversation_history=_history("问题挂起"),
+                )
+            )
+            and "context" in result
+        ]
+
+        assert any("【懒病拦截 lazy-blocker】" in context for context in contexts)
     finally:
         clear_session(session_id)

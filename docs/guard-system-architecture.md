@@ -269,4 +269,6 @@ block_escalation 实现）。
   `guards.patch_first`，独立 manifest/hook surface 删除，owner 注册契约
   在位）；`blame-shield`→`discipline` 已完成（行为迁入
   `discipline.blame_shield`，独立 manifest/hook surface 删除，owner 注册契约
-  在位）；后续为 `lazy-blocker`/`completion-boundary-audit`→`finish_guard`。
+  在位）；`lazy-blocker`→`finish_guard` 已完成（行为迁入
+  `finish_guard.lazy_blocker`，独立 manifest/hook surface 删除，owner 注册契约
+  在位）；后续为 `completion-boundary-audit`→`finish_guard`。
