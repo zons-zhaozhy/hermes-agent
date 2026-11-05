@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 
+from hermes_cli.gate_plane import GATE_POLICIES, GATE_SUITE_NAMES
 from utils import fast_safe_load
 from hermes_cli.plugin_capabilities import parse_declared_capabilities as _parse_declared_capabilities
 
@@ -36,6 +37,7 @@ _KNOWN_MANIFEST_FIELDS: set[str] = {
     "manifest_version", "api_version", "requires_plugins", "python_dependencies", "config_schema",
     "license", "homepage", "tags", "capabilities", "emits", "listens", "hermes", "depends",
     "requires_hermes", "python_runtime", "provides_locales", "provides_middleware", "requires_auth", "oauth", "config_keys",
+    "gate_suites", "gate_policy",
 }
 
 # Highest manifest schema version this Hermes understands.
@@ -105,6 +107,38 @@ def _manifest_list(data: Mapping, key: str, field_name: str, what: str, coerce: 
         else:
             out.append(coerced)
     return out
+
+
+def _manifest_gate_suites(data: Mapping, key: str) -> list[str]:
+    """Validate optional guard taxonomy declarations; invalid entries are dropped."""
+    suites: list[str] = []
+    raw_items = _manifest_field_of_type(data, key, "gate_suites", list, "a list")
+    for item in raw_items or []:
+        suite = str(item).strip().lower() if isinstance(item, str) else ""
+        if suite not in GATE_SUITE_NAMES:
+            logger.warning(
+                "Plugin %s: gate_suites entry %r is not one of %s; dropping it",
+                key, item, ", ".join(sorted(GATE_SUITE_NAMES)),
+            )
+            continue
+        if suite not in suites:
+            suites.append(suite)
+    return suites
+
+
+def _manifest_gate_policy(data: Mapping, key: str) -> str:
+    """Validate guard health policy, failing safe to the more conservative value."""
+    raw = data.get("gate_policy")
+    if raw is None:
+        return "required"
+    policy = str(raw).strip().lower() if isinstance(raw, str) else ""
+    if policy in GATE_POLICIES:
+        return policy
+    logger.warning(
+        "Plugin %s: gate_policy %r is not one of %s; treating as 'required'",
+        key, raw, ", ".join(sorted(GATE_POLICIES)),
+    )
+    return "required"
 
 
 def _config_key_path(item: object) -> Optional[str]:
@@ -188,6 +222,8 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> dict[str, Any]:
     )
     schema = _config_schema_entries(key, _manifest_field_of_type(data, key, "config_schema", Mapping, "a mapping"))
     tags = [str(t) for t in (_manifest_field_of_type(data, key, "tags", list, "a list") or [])]
+    gate_suites = _manifest_gate_suites(data, key)
+    gate_policy = _manifest_gate_policy(data, key)
     config_keys = manifest_config_keys(data, key)
     # Forward compat: unknown fields warn (never fail); v1 manifests only at debug.
     unknown = sorted(set(data.keys()) - _KNOWN_MANIFEST_FIELDS)
@@ -200,6 +236,7 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> dict[str, Any]:
         "manifest_version": mv, "api_version": api, "requires_plugins": deps, "python_dependencies": pydeps,
         "config_schema": schema, "license": str(data.get("license") or ""),
         "homepage": str(data.get("homepage") or ""), "tags": tags, "config_keys": config_keys,
+        "gate_suites": gate_suites, "gate_policy": gate_policy,
     }
 
 
@@ -405,6 +442,10 @@ class PluginManifest:
     license: str = ""
     homepage: str = ""
     tags: list[str] = field(default_factory=list)
+    # Guard taxonomy is descriptive; runtime hook registration remains authoritative for health.
+    gate_suites: list[str] = field(default_factory=list)
+    # Health policy: absent metadata means the conservative legacy behavior (`required`).
+    gate_policy: str = "required"
     # Event-bus declarations, advisory (discoverability only): ``emits`` bare names published under
     # ``<key>:``; ``listens`` fully-qualified ``<plugin>:<event>`` names.
     emits: list[str] = field(default_factory=list)

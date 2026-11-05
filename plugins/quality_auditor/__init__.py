@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 _MIN_RESPONSE_CHARS = 50
 
 
-def _extract_tool_stats(conversation_history) -> tuple[int, list[str]]:
+def _extract_tool_stats(conversation_history: object) -> tuple[int, list[str]]:
     """Derive (tool_call_count, tool_names) from the turn's transcript.
 
     The post_llm_call hook carries the full conversation history; assistant
@@ -74,19 +74,22 @@ def _extract_tool_stats(conversation_history) -> tuple[int, list[str]]:
     passed ``api_call_count``).
 
     Contract:
-      Postconditions: returns (count, names) with count >= 0, count ==
-      len(names), names unique, and every element a non-empty str.
+      Postconditions: returns (count, names) with count >= 0, count equal to
+      invocation count, names unique in first-seen order, and every element a
+      non-empty str.
     """
-    if not conversation_history:
+    history = conversation_history if isinstance(conversation_history, list) else []
+    if not history:
         return 0, []
     # Find the LAST user row — everything after it is the current turn.
     last_user_idx = -1
-    for i, msg in enumerate(conversation_history):
+    for i, msg in enumerate(history):
         if isinstance(msg, dict) and msg.get("role") == "user":
             last_user_idx = i
     count = 0
     names: list[str] = []
-    for msg in conversation_history[last_user_idx + 1:]:
+    seen: set[str] = set()
+    for msg in history[last_user_idx + 1:]:
         if not isinstance(msg, dict) or msg.get("role") != "assistant":
             continue
         calls = msg.get("tool_calls") or []
@@ -98,9 +101,11 @@ def _extract_tool_stats(conversation_history) -> tuple[int, list[str]]:
             fn = call.get("function") or {}
             name = fn.get("name") if isinstance(fn, dict) else None
             if name:
-                names.append(str(name))
+                tool_name = str(name)
                 count += 1
-    assert len(names) == count and len(set(names)) == len(names)
+                if tool_name not in seen:
+                    seen.add(tool_name)
+                    names.append(tool_name)
     return count, names
 
 

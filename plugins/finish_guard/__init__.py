@@ -442,9 +442,8 @@ def _on_pre_verify(**kwargs) -> dict:
 def _transform_llm_output(response_text: str = "", **kwargs) -> "str | None":
     """Contract: Preconditions: response_text 为本回合 LLM 输出（核心键名）；
     Postconditions: L1/L2 未兜住且尾部命中请示式、或全文根因宣称无证据、
-    或拍板请求不自包含时返回打标文本（用户可见留痕），否则返回 None
-    （核心契约 first non-None wins：不改写必须返回 None，返回原文会
-    占据槽位短路其后 transform 插件）。"""
+    或拍板请求不自包含时返回打标文本（用户可见留痕），否则返回 None。
+    transform 链会继续执行后续插件；不改写时必须返回 None，不能伪报成功。"""
     output = response_text or ""
     if not output.strip():
         return None

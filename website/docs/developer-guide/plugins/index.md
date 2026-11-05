@@ -624,6 +624,8 @@ this Hermes understands still loads with a warning.
 | `license` | str | SPDX-style license id (e.g. `MIT`). |
 | `homepage` | str | Project URL. |
 | `tags` | list of str | Free-form discovery tags (e.g. `[gateway, telegram]`). |
+| `gate_suites` | list | Guard taxonomy declaration: one or more of `intent`, `execution`, `output`, `completion`, and `integrity`. A guard may span phases. For bundled guards this is cross-checked against declared Gate Plane hooks; runtime hook registration remains authoritative, so metadata cannot hide an executable suite. Invalid entries warn and are dropped. |
+| `gate_policy` | str | Guard health policy: `required` (baseline; disabled, failed, or hollow registration makes its suites `unknown`) or `advisory` (opt-in; deliberate disable stays visible but healthy, while load failure or a hollow registration still makes its suites `unknown`). Invalid values warn and fail safe to `required`. |
 | `provides_locales` | list | Language pack declaration: ids (`- pl`) or `{id, endonym, rtl}` mappings whose `locales/<id>[.tui\|.desktop].yaml` the loader registers automatically — see [Ship a language pack](#ship-a-language-pack). |
 | `requires_auth` | list of str | Providers whose sign-in the plugin uses through Hermes (today: `openai-codex`). Required by `credentialed_provider_request`; shown at install and in `hermes plugins show`. See [Use the user's Codex sign-in](#use-the-users-codex-sign-in-core-made-requests). |
 | `oauth` | list of mappings | OAuth clients the plugin uses through Hermes: `id`, `authorize_url`, `token_url`, `scopes`, `client_id_env`, optional `client_secret_env`, `hosts`, optional `authorize_params`. Signed in with `hermes auth add <plugin>:<id>`, used through `credentialed_provider_request`. See [Use your own OAuth client](#use-your-own-oauth-client-google-and-other-apis). |
@@ -637,6 +639,8 @@ api_version: 1
 license: MIT
 homepage: https://github.com/owner/my-plugin
 tags: [gateway, demo]
+gate_suites: [intent, output]
+gate_policy: advisory
 requires_plugins:
   - id: other-plugin
     version_range: ">=1.0,<2"
@@ -1520,6 +1524,8 @@ A `transform_llm_output` hook rewrites the finished reply, which the user has us
 def register(ctx):
     ctx.register_hook("transform_llm_output", redact, hold_stream=True)
 ```
+
+When several plugins register `transform_llm_output`, Hermes runs them in registration order. Each callback receives the prior rewrite as `response_text` and the immutable `original_response_text`; returning `None` leaves the chain unchanged.
 
 Every session in the profile that loads the plugin then stops streaming its replies: the user sees the typing or thinking indicator, and then only your rewritten final, on the surfaces listed in the reference. Commentary between tool calls is dropped for those turns, and if your hook raises or times out the user gets a short "reply withheld" notice instead of the original. Leave the flag off for cosmetic transforms (footers, styling) so replies keep streaming. Details per surface: [Holding the reply until it is rewritten](../../user-guide/features/hooks.md#hold-stream).
 

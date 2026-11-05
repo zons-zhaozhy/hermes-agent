@@ -28,37 +28,24 @@ Contract:
 
 from __future__ import annotations
 
+import importlib
 import logging
 from typing import Any, Callable, Mapping
 
-from plugins.discipline import (
-    curl_safety,
-    db_safety,
-    error_discipline,
-    log_first,
-    no_bypass,
-    no_guessing,
-    no_pushback,
-    rule_reinjection,
-    section_reinjection,
-    test_discipline,
-    tool_safety,
-)
-
 logger = logging.getLogger(__name__)
 
-_SUB_GUARDS = (
-    ("no_guessing", no_guessing),
-    ("db_safety", db_safety),
-    ("error_discipline", error_discipline),
-    ("curl_safety", curl_safety),
-    ("log_first", log_first),
-    ("tool_safety", tool_safety),
-    ("no_bypass", no_bypass),
-    ("no_pushback", no_pushback),
-    ("rule_reinjection", rule_reinjection),
-    ("test_discipline", test_discipline),
-    ("section_reinjection", section_reinjection),
+_SUB_GUARD_NAMES = (
+    "no_guessing",
+    "db_safety",
+    "error_discipline",
+    "curl_safety",
+    "log_first",
+    "tool_safety",
+    "no_bypass",
+    "no_pushback",
+    "rule_reinjection",
+    "test_discipline",
+    "section_reinjection",
 )
 
 # 有拦截、无前置提示且属「高频×可预判」的子护栏——段文本见段库
@@ -88,11 +75,16 @@ def _render_section(section_id: str) -> Callable[[Mapping[str, Any]], str]:
 
 def register(ctx: Any) -> None:
     """套件入口——逐子护栏注册 + 注册文件型段(单个失败不连坐)。"""
-    for name, mod in _SUB_GUARDS:
+    for name in _SUB_GUARD_NAMES:
         try:
+            mod = importlib.import_module(f"{__name__}.{name}")
             mod.register(ctx)
         except Exception:
-            logger.warning("discipline: sub-guard %s failed to register", name, exc_info=True)
+            logger.warning(
+                "discipline: sub-guard %s failed to import/register; siblings continue",
+                name,
+                exc_info=True,
+            )
     for section_id in _SECTION_IDS:
         try:
             ctx.register_system_prompt_section(section_id, _render_section(section_id))

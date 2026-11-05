@@ -10,3 +10,7 @@ hooks:
   - on_session_end
 tags:
   - guard
+gate_suites:
+  - intent
+  - execution
+gate_policy: required

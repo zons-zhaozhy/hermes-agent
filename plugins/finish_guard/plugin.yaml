@@ -10,3 +10,9 @@ hooks:
   - post_tool_call
 tags:
   - guard
+gate_suites:
+  - intent
+  - execution
+  - output
+  - completion
+gate_policy: required

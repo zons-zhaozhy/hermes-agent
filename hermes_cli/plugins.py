@@ -55,8 +55,9 @@ from hermes_cli.plugins_dispatch import (
     _HOOK_CALLBACK_TIMEOUT_SECS, _HOOK_TIMEOUT_SUPPRESSION_SECONDS, _MAX_HOOK_CALLBACK_TIMEOUT_SECS,
     _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE, PluginDispatchMixin, PluginSystemPromptSection,
     RenderedPluginSystemPromptSection, _EventSubscription, format_system_prompt_sections,
-    is_valid_system_prompt_section_id, resolve_plugin_command_result,
+    get_pre_verify_continue_message, is_valid_system_prompt_section_id, resolve_plugin_command_result,
 )
+from hermes_cli.gate_plane import GatePlane, build_gate_report
 from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
 from hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
@@ -108,7 +109,7 @@ _install_plugin_debug_handler()
 
 VALID_HOOKS: set[str] = {
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
-    # transform_llm_output: return a replacement string (first non-None wins) or None.
+    # transform_llm_output: return a replacement string to update the running chain, or None.
     "transform_llm_output", "pre_llm_call", "post_llm_call",
     # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
     # normalized text/lifecycle and cannot transform the stream.
@@ -1110,6 +1111,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # metadata), portable MCP servers, auxiliary tasks, approval transports, Slack action handlers
         # (matcher, callback, plugin_name), platform handler factories (lowercase platform -> list).
         self._plugins: dict[str, LoadedPlugin] = {}
+        self.gate_plane = GatePlane()
         self._hooks: dict[str, list[Callable]] = {}
         # Fallback hooks registered by a memory provider before general discovery.
         self._memory_hook_registrations: dict[tuple[str, str], list[PluginRegistration]] = {}
@@ -1170,6 +1172,12 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # and contributed tool names (so `hermes plugins list` still attributes them).
         self._predeclared_modules: dict[str, types.ModuleType] = {}
         self._predeclared_tools: dict[str, list[str]] = {}
+
+    def gate_plane_report(self, session_id: str | None = None) -> dict[str, Any]:
+        """Return this profile's guard declarations, registrations, and recent evidence."""
+        return build_gate_report(
+            self._plugins.values(), self.gate_plane, session_id=session_id,
+        )
 
     @property
     def has_gateway_message_injector(self) -> bool:
@@ -2062,27 +2070,6 @@ def _dispatch_pre_tool_call_hooks(
     block_msg = _resolve_block_from_details(
         details, tool_name, **{k: hook_kwargs.get(k, "") for k in ("turn_id", "tool_call_id", "session_id")})
     return (block_msg, details.modified_args)
-
-
-def get_pre_verify_continue_message(
-    *, session_id: str = "", platform: str = "", model: str = "", coding: bool = False,
-    attempt: int = 0, final_response: str = "", changed_paths: Optional[list[str]] = None,
-) -> Optional[str]:
-    """Check ``pre_verify`` hooks for ``{"action": "continue", "message"}`` (or Claude-Code Stop
-    ``{"decision": "block", "reason"}``) to keep the turn going; first non-empty message wins, any
-    other return lets the turn finish. ``coding``/``attempt`` let hooks scope and self-throttle."""
-    hook_results = invoke_hook(
-        "pre_verify", session_id=session_id, platform=platform, model=model, coding=coding,
-        attempt=attempt, final_response=final_response, changed_paths=list(changed_paths or []),
-    )
-    for result in hook_results:
-        if not isinstance(result, dict):
-            continue
-        action = str(result.get("action") or result.get("decision") or "").strip().lower()
-        message = result.get("message") or result.get("reason")
-        if action in ("continue", "block") and isinstance(message, str) and message.strip():
-            return message.strip()
-    return None
 
 
 def get_plugin_error_classification(

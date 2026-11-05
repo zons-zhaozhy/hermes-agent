@@ -34,6 +34,7 @@ from hermes_cli.plugins_cmd_git import (
     _read_install_metadata, _run_plugin_git, _safe_git_error, _scrub_cloned_origin, _update_install_record,
     _write_install_metadata, pinned_revision,
 )
+from hermes_cli.plugins_cmd_gates import cmd_gates
 from hermes_cli.plugins_cmd_install import (
     _check_manifest_version, _consent_python_deps, _display_after_install, _install_plugin_core,
     _install_plugin_python_deps, _prompt_plugin_env_vars, _python_dependency_summary,
@@ -925,6 +926,44 @@ def _plugin_status(name: str, enabled: set, disabled: set, key: str = "", *, sou
     return "not enabled"
 
 
+def _config_activation_conflict(
+    name: str,
+    key: str,
+    status: str,
+    *,
+    config: dict[str, Any] | None = None,
+) -> Optional[str]:
+    """Explain a plugin-local enabled flag that cannot activate the plugin.
+
+    Plugin activation has one authority: ``plugins.enabled``/``plugins.disabled``.
+    Older plugin-local ``<section>.enabled: true`` values remain readable by the
+    plugin once loaded, but cannot add it to the central allow-list or override
+    its disable list. Surfacing that contradiction prevents an operator from
+    believing a gate is active.
+    """
+    if status == "enabled":
+        return None
+    if config is None:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly() or {}
+    candidates = {name, key.split("/")[-1]}
+    for candidate in sorted(c for c in candidates if c):
+        section_name = candidate.replace("-", "_")
+        section = config.get(section_name)
+        if isinstance(section, dict) and section.get("enabled") is True:
+            authority = (
+                f"plugins.disabled contains {candidate!r}"
+                if status == "disabled"
+                else f"plugins.enabled does not contain {candidate!r}"
+            )
+            return (
+                f"{section_name}.enabled=true is ignored because "
+                f"{authority}; enable the plugin instead."
+            )
+    return None
+
+
 # ── Provider category config accessors ──────────────────────────────────────────────────────
 
 
@@ -1126,6 +1165,8 @@ _PLUGIN_ACTIONS = {
         allow_tool_override=_tri_state_flag(args, "allow_tool_override", "no_allow_tool_override")),
     "disable": lambda args: cmd_disable(args.name),
     "capabilities": lambda args: cmd_capabilities(getattr(args, "name", None)),
+    "gates": lambda args: cmd_gates(
+        getattr(args, "session", None), json_output=getattr(args, "json", False)),
     "list": lambda args: cmd_list(args),
     "ls": lambda args: cmd_list(args),
     "doctor": lambda args: cmd_plugin_doctor(args.target, ci=getattr(args, "ci", False)),

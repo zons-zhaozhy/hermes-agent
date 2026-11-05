@@ -11,3 +11,8 @@ description: |
 author: hermes-agent (enforcement plugin)
 hooks:
   - transform_llm_output
+tags:
+  - guard
+gate_suites:
+  - output
+gate_policy: advisory

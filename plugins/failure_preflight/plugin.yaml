@@ -6,3 +6,6 @@ hooks:
   - pre_llm_call
 tags:
   - guard
+gate_suites:
+  - intent
+gate_policy: advisory

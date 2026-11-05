@@ -9,3 +9,8 @@ hooks:
   - transform_llm_output
 tags:
   - guard
+gate_suites:
+  - intent
+  - execution
+  - output
+gate_policy: required

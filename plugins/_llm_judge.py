@@ -26,6 +26,8 @@ from __future__ import annotations
 import json
 import logging
 import math
+import threading
+import time
 import unicodedata
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -206,6 +208,67 @@ def _normalize_readout(
 # ── 能力探测缓存（按 task）：实证不支持 logprobs 的后端不再重复尝试 ────────────
 _SUPPORT_CACHE: dict[str, bool] = {}
 
+_JUDGE_RETRY_SECONDS = 300.0
+_JUDGE_RETRY_MAX_SECONDS = 3600.0
+_JUDGE_CIRCUIT: dict[tuple[str, str], tuple[int, float]] = {}
+_JUDGE_CIRCUIT_LOCK = threading.Lock()
+
+
+def _judge_circuit_key(task: str) -> tuple[str, str]:
+    """Identity of one profile's auxiliary model task.
+
+    One Hermes process can serve several profiles. A broken judge model in one
+    profile must not suppress calls in another, so the process-global circuit is
+    partitioned by the context-local Hermes home as well as the task.
+    """
+    from hermes_constants import hermes_home_key
+
+    return hermes_home_key(), task or "default"
+
+
+def _judge_circuit_open(task: str) -> bool:
+    """Whether this task's last failed judge call is still inside its retry cooldown."""
+    key = _judge_circuit_key(task)
+    now = time.monotonic()
+    with _JUDGE_CIRCUIT_LOCK:
+        state = _JUDGE_CIRCUIT.get(key)
+        if state is None:
+            return False
+        retry_after = state[1]
+        if now < retry_after:
+            return True
+        return False
+
+
+def _record_judge_failure(task: str) -> None:
+    """Open a bounded exponential circuit so a broken task is not retried by every gate."""
+    key = _judge_circuit_key(task)
+    now = time.monotonic()
+    with _JUDGE_CIRCUIT_LOCK:
+        previous = _JUDGE_CIRCUIT.get(key)
+        failures = (previous[0] if previous is not None else 0) + 1
+        retry_seconds = min(
+            _JUDGE_RETRY_SECONDS * (2 ** min(failures - 1, 4)),
+            _JUDGE_RETRY_MAX_SECONDS,
+        )
+        _JUDGE_CIRCUIT[key] = (failures, now + retry_seconds)
+        if len(_JUDGE_CIRCUIT) > 128:
+            _JUDGE_CIRCUIT.pop(next(iter(_JUDGE_CIRCUIT)))
+    if previous is None or now >= previous[1]:
+        logger.warning(
+            "llm_judge(%s): circuit open for %.0fs after failure #%d (profile=%s)",
+            key[1], retry_seconds, failures, key[0],
+        )
+
+
+def _record_judge_success(task: str) -> None:
+    """Close a task's circuit after a usable verdict."""
+    key = _judge_circuit_key(task)
+    with _JUDGE_CIRCUIT_LOCK:
+        state = _JUDGE_CIRCUIT.pop(key, None)
+    if state is not None:
+        logger.info("llm_judge(%s): circuit closed after a usable verdict (profile=%s)", key[1], key[0])
+
 
 def reset_capability_cache() -> None:
     """清空 logprobs 能力缓存（测试与配置变更后使用）。
@@ -214,6 +277,16 @@ def reset_capability_cache() -> None:
         Postconditions: 缓存为空，下一次判定会重新探测。
     """
     _SUPPORT_CACHE.clear()
+
+
+def reset_judge_circuit() -> None:
+    """清空所有 profile/task 的 judge 熔断状态（测试与模型配置变更后使用）。
+
+    Contract:
+        Postconditions: 下一次判定会立即重新尝试辅助模型调用。
+    """
+    with _JUDGE_CIRCUIT_LOCK:
+        _JUDGE_CIRCUIT.clear()
 
 
 def _capability_known(task: str) -> Optional[bool]:
@@ -287,6 +360,9 @@ def _text_verdict(task: str, system: str, text: str, true_key: str,
         Preconditions: system/text 非空。
         Postconditions: 返回 TypedDecision（source="text"），失败 → verdict=None 且 source="none"。
     """
+    if _judge_circuit_open(task):
+        logger.debug("llm_judge_text(%s): circuit open; returning UNKNOWN", task)
+        return TypedDecision(verdict=None, source="none", detail="判定通道已熔断")
     try:
         from agent.auxiliary_client import call_llm
         resp = call_llm(
@@ -302,12 +378,16 @@ def _text_verdict(task: str, system: str, text: str, true_key: str,
         )
         content = (resp.choices[0].message.content or "").replace(" ", "").lower()
         if f'"{true_key}":true' in content:
+            _record_judge_success(task)
             return TypedDecision(verdict=True, label="true", source="text")
         if f'"{true_key}":false' in content:
+            _record_judge_success(task)
             return TypedDecision(verdict=False, label="false", source="text")
+        _record_judge_failure(task)
         return TypedDecision(verdict=None, source="none", detail="文本通道未解析出判定")
     except Exception as e:
         logger.warning("llm_judge_text(%s) failed: %s", task, e, exc_info=True)
+        _record_judge_failure(task)
         return TypedDecision(verdict=None, source="none", detail=f"文本通道异常: {e}")
 
 
@@ -373,8 +453,12 @@ def llm_decision_typed(task: str, system: str, text: str,
                         默认 False = 不改变既有布尔语义。
     """
     assert system and text, "system and text must be non-empty"
+    if _judge_circuit_open(task):
+        logger.debug("llm_decision_typed(%s): circuit open; returning UNKNOWN", task)
+        return TypedDecision(verdict=None, source="none", detail="判定通道已熔断")
     decision = _try_logprobs(task, system, text, true_key, timeout, use_logprobs)
     if decision is not None:
+        _record_judge_success(task)
         return _apply_low_confidence_policy(decision, low_confidence_pass)
     return _text_verdict(task, system, text, true_key, timeout, max_tokens)
 
@@ -507,6 +591,9 @@ def llm_judge_multi(task: str, system: str, text: str,
     assert system and text, "system and text must be non-empty"
     assert keys and len(set(keys)) == len(keys), "keys must be non-empty unique"
     fail: dict[str, Optional[bool]] = {k: None for k in keys}
+    if _judge_circuit_open(task):
+        logger.debug("llm_judge_multi(%s): circuit open; returning UNKNOWN", task)
+        return fail
     try:
         from agent.auxiliary_client import call_llm
         eb = dict(extra_body) if extra_body else {}
@@ -523,9 +610,15 @@ def llm_judge_multi(task: str, system: str, text: str,
             extra_body=eb,
         )
         content = resp.choices[0].message.content or ""
-        return _parse_bool_keys(content, keys)
+        parsed = _parse_bool_keys(content, keys)
+        if any(verdict is not None for verdict in parsed.values()):
+            _record_judge_success(task)
+        else:
+            _record_judge_failure(task)
+        return parsed
     except Exception as e:
         logger.warning("llm_judge_multi(%s) failed: %s", task, e, exc_info=True)
+        _record_judge_failure(task)
         return fail
 
 
@@ -547,6 +640,9 @@ def llm_judge_json(task: str, system: str, text: str, keys: list[str],
     assert system and text, "system and text must be non-empty"
     assert keys and len(set(keys)) == len(keys), "keys must be non-empty unique"
     empty: dict[str, Any] = {k: [] for k in keys}
+    if _judge_circuit_open(task):
+        logger.debug("llm_judge_json(%s): circuit open; returning empty", task)
+        return empty
     try:
         from agent.auxiliary_client import call_llm
         resp = call_llm(
@@ -569,13 +665,16 @@ def llm_judge_json(task: str, system: str, text: str, keys: list[str],
                 parsed = json.loads(content[start:content.rfind("}") + 1])
             except json.JSONDecodeError:
                 logger.info("llm_judge_json(%s): non-JSON reply ignored", task)
-        if not isinstance(parsed, dict):
+        if not isinstance(parsed, dict) or not any(key in parsed for key in keys):
+            _record_judge_failure(task)
             return empty
         out: dict[str, Any] = {}
         for k in keys:
             v = parsed.get(k)
             out[k] = [str(x).strip() for x in v if str(x).strip()] if isinstance(v, list) else []
+        _record_judge_success(task)
         return out
     except Exception as e:
         logger.warning("llm_judge_json(%s) failed: %s", task, e, exc_info=True)
+        _record_judge_failure(task)
         return empty

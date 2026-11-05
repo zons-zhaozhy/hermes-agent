@@ -16,6 +16,23 @@
 裁定原则：同一层同性质才收拢进同一套件；跨层不合并。子模块 register 逐个调用，
 单个失败仅告警不连坐。
 
+## 一之一、Guard taxonomy 与健康策略（2026-11-05）
+
+Bundled guard 的 `plugin.yaml` 显式声明两个 additive 字段：
+
+- `gate_suites`: `intent / execution / output / completion / integrity` 的列表。一个 guard 可跨
+  阶段；taxonomy 只做归属与后续重组依据，运行时 suite 归属仍以真实声明的 Gate Plane hook
+  与注册状态为准，元数据不能隐藏可执行面。
+- `gate_policy`: `required` 表示工程基线；缺席、加载失败或空注册使相关 suite `unknown`。
+  `advisory` 表示专项/辅助能力；刻意 disabled 只在 `inactive_advisory` 诊断道展示，不拉低
+  健康，但一旦 enabled，加载失败或空注册仍进入 `missing` 并使 suite `unknown`。
+
+基线 owner：`read-think-gate`、`guards`、`discipline`、`block_escalation`、
+`completion-boundary-audit`、`finish_guard`、`guard-sentinel`、`engine-invariants`。
+旧/第三方 `tags: [guard]` 插件未声明 metadata 时按保守策略处理：由 hook 推导 suite 且视为
+`required`。后续行为归并只允许按本 taxonomy 分批迁入既有 owner suite；先迁/补契约测试，
+再改实现，不留兼容壳。
+
 ## 二、两条注入通道（事前）
 
 1. **system prompt 稳定段**（`ctx.register_system_prompt_section(id, renderer)`）
@@ -192,25 +209,34 @@ section_reinjection 版本指纹补注——动态段文本已并入补注指纹
 零同步成本；无 `[护栏名]` 前缀的消息（回调超时等基础设施噪音）不进段。
 层级优先级保持不变：modify 自动改写 > 事前提示 > 事后拦截。
 
-### C3 解析器收敛进展（2026-11-03 第一批已落地）
+### C3 解析器收敛完成（2026-11-05）
 
 唯一事实源 `plugins/guards/terminal_semantics.py`（Redirect 数据类 +
 parse_redirects/redirect_writes_file/redirect_file_targets/
-looks_like_path,语义基底取六套中最全的 block_escalation 实现）。
+looks_like_path/sed_writes_file/is_read_command,语义基底取六套中最全的
+block_escalation 实现）。
 消费方已切换 4 处：read_think_gate/gate._terminal_writes_file（窄口径
 →宽口径,`echo hi > out` 不再漏判）、source_write._extract_redirect_target
 （`>>` append 与多重重定向漏检修复）、casebook_gate._redirect_targets
 （fd 粘连形态提取+shlex 引号异常清除）、block_escalation._redirects_write
-（委托,数字字面量排除对齐）。配套 test_terminal_semantics.py 9 例。
-第二批待收敛：patch-first sed 写形态、block_escalation._READ_CMDS 白名单
-迁入 owner 常量区。
+（委托,数字字面量排除对齐）。配套 test_terminal_semantics.py 原 9 例。
+2026-11-05 第二批：`patch-first` 已改为消费 `sed_writes_file`，只读
+`sed -n ...p`、复合命令中的写 sed、以及 execute_code 内嵌 sed 使用同一
+判据。第三批：`block_escalation._READ_CMDS` 迁入 owner 的
+`READ_COMMANDS/is_read_command`，并先经 `sed_writes_file` 排除 `sed -i`
+等写形态，消除「升级计数把 sed -i 误判只读」的交界漏洞。owner 回归增至
+12 例，block_escalation 相关回归 18 例。
+
+### 行为归并前置基线（2026-11-05）
+
+五个此前无直接契约的 guard 已建立行为测试：`lazy-blocker`（5 例）、
+`patch-first`（5 例）、`persistence-enforcer`（7 例）、
+`pre-response-review`（5 例）、`quality_auditor`（5 例）。本批修复
+`patch-first` 复合/内嵌 sed 漏拦、`pre-response-review` profile 越界与
+静默降级、`quality_auditor` 同名工具统计误崩；另两项目前为基线确认，
+不得据此直接按文件名合并，后续重组仍需按 suite owner 与行为等价迁移。
 
 ### 已知路线图（独立工程项，非本轮范围）
 
-- **六套 terminal 写意图解析器收敛**（第一批已落地，见上文 C3 小节）：
-  owner=`plugins/guards/terminal_semantics.py`，4 处消费方已切换；余第二批
-  （patch-first sed 写形态、block_escalation._READ_CMDS 白名单迁入 owner
-  常量区）。注意反方警告：误拦形态是长尾，集中式判据一次设计穷尽不了，
-  收敛必须配逐插件回归测试。
 - **block_escalation 意图指纹精细化**（区分护栏差异，避免一次修复不到位
   即 L3）；**四轴双状态源合一**（marker 文件与 diff_debt 进程内账本）。

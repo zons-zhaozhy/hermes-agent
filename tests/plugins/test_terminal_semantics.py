@@ -60,6 +60,28 @@ def test_looks_like_path() -> None:
     assert ts.looks_like_path("'quoted.json'") is True  # 期望: 剥引号后判定
 
 
+def test_sed_write_semantics() -> None:
+    """sed 写语义唯一事实源：只读打印豁免，替换/原地编辑构成写。"""
+    assert ts.sed_writes_file("sed -i 's/a/b/' src.py") is True
+    assert ts.sed_writes_file("sed 's/a/b/' src.py") is True
+    assert ts.sed_writes_file("sed -n '10,20p' src.py") is False
+    assert ts.sed_writes_file("sed -n '/pattern/p' src.py") is False
+
+
+def test_sed_semantics_never_raises_on_malformed() -> None:
+    for command in ("'", "sed -n '10,20p", "sed -i", "sed s/a/b/"):
+        ts.sed_writes_file(command)  # 期望: 残缺命令不抛异常
+
+
+def test_read_command_name_owner() -> None:
+    assert ts.is_read_command("cat") is True
+    assert ts.is_read_command("rg") is True
+    assert ts.is_read_command("/usr/bin/stat") is True
+    assert ts.is_read_command("rm") is False
+    assert ts.is_read_command("mv") is False
+    assert ts.is_read_command("python") is False
+
+
 def test_never_raises_on_malformed() -> None:
     for seg in ("'", 'echo "unclosed > x', "a > ", ">" * 10, "a>&", "a >("):
         ts.parse_redirects(seg)  # 期望: 残缺形态不抛异常

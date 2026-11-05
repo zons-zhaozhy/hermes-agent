@@ -22,6 +22,7 @@ import time
 logger = logging.getLogger(__name__)
 
 from hermes_constants import get_scratch_dir
+from plugins.guards.terminal_semantics import sed_writes_file
 
 _STATE_FILE = str(get_scratch_dir() / ".hermes_patch_first_pending")
 
@@ -47,43 +48,21 @@ sed 仅允许用于只读查找：
 - execute_code 中用 open(path, 'w') 写文件（不落盘）
 """
 
-# sed 写入操作标记（有限集合）
-_SED_WRITE_MARKERS = (
-    "sed -i",         # sed 原地修改
-    "sed 's/",        # sed 替换（非只读 -n -p）
-    'sed "s/',        # sed 替换双引号形式
-    "sed s/",         # sed 替换无引号
-)
-
-
 def _is_sed_write(tool_name: str, args: dict) -> bool:
-    """判断是否为 sed 写入操作（排除只读用法）。"""
+    """判断是否为 sed/Python 写操作（sed 语义委托唯一事实源）。"""
     if tool_name == "terminal":
         command = args.get("command", "")
         if not isinstance(command, str):
             return False
-
-        # 排除只读模式：sed -n 不修改文件
-        if "-n" in command and " -p" in command:
-            return False
-        # 排除纯 grep/查找
-        if command.strip().startswith("grep"):
-            return False
-
-        for marker in _SED_WRITE_MARKERS:
-            if marker in command:
-                return True
-        return False
+        return sed_writes_file(command)
 
     if tool_name == "execute_code":
         code = args.get("code", "")
         if not isinstance(code, str):
             return False
-        # execute_code 中 sed 替换
-        for marker in _SED_WRITE_MARKERS:
-            if marker in code:
-                return True
-        # execute_code 中 open(path, 'w') 提醒
+        if sed_writes_file(code):
+            return True
+        # Python 写文件通道：sed 语义 owner 不重复持有 open 规则。
         if "open(" in code and ", 'w'" in code:
             return True
         if 'open(' in code and ', "w"' in code:

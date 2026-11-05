@@ -17,5 +17,6 @@ ENV_OVERRIDES = (
 AUTHZ = {
     "allowed_users_env": "DINGTALK_ALLOWED_USERS",
     "allow_all_env": "DINGTALK_ALLOW_ALL_USERS",
+    "group_allowed_chats_env": "DINGTALK_GROUP_ALLOWED_CHATS",
     "allowlist_suppresses_pairing": True,
 }

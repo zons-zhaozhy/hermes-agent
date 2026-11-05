@@ -19,3 +19,6 @@ hooks:
   - post_llm_call
 tags:
   - guard
+gate_suites:
+  - integrity
+gate_policy: required

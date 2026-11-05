@@ -11,3 +11,7 @@ hooks:
   - on_session_reset
 tags:
   - guard
+gate_suites:
+  - intent
+  - execution
+gate_policy: required

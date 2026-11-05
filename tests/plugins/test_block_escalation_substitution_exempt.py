@@ -44,6 +44,11 @@ def test_unwrap_does_not_relax_write_detection() -> None:
     assert not be._command_is_readonly(cmd)  # 期望: False — 解包裹后 rm 仍按写意图计数
 
 
+def test_sed_write_semantics_is_not_readonly_exempt() -> None:
+    assert be._command_is_readonly("sed -n '1p' state.md")  # 期望: quiet 打印只读
+    assert not be._command_is_readonly("sed -i 's/a/b/' state.md")  # 期望: owner 判写，禁豁免
+
+
 def test_chained_substitution_readonly_probe_is_exempt() -> None:
     cmd = ("date '+%F %T'; echo '=== A ==='; N=$(sqlite3 -readonly "
            "~/.hermes/state.db \"SELECT COUNT(*) FROM messages\"); echo rows=$N")

@@ -7,3 +7,6 @@ hooks:
   - pre_tool_call
 tags:
   - guard
+gate_suites:
+  - execution
+gate_policy: advisory

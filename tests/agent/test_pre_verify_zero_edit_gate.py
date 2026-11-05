@@ -19,6 +19,7 @@ def _agent(**over: Any) -> SimpleNamespace:
     base = dict(
         _turn_file_mutation_paths=set(),
         session_id="s0",
+        session_cwd="/workspace/project",
         platform="cli",
         model="m",
         _resolved_is_coding=True,
@@ -93,3 +94,21 @@ def test_edited_turn_consult_unchanged() -> None:
         out = _pre_verify_nudge(agent, "edited", 0)
     assert out == "run tests"  # 期望: 有写入回合照常续跑
     assert consult.call_args.kwargs["changed_paths"] == ["src/a.py"]  # 期望: 路径排序透传
+    assert consult.call_args.kwargs["cwd"] == "/workspace/project"  # 证据账本必须绑定当前 workspace
+
+
+def test_pre_verify_dispatch_failure_does_not_accept_completion() -> None:
+    """An infrastructure failure before the hook decision must keep the turn alive."""
+    agent = _agent(_turn_file_mutation_paths={"src/a.py"})
+    with (
+        patch("agent.verify_hooks.max_verify_nudges", return_value=3),
+        patch("hermes_cli.lifecycle.has_hook", return_value=True),
+        patch(
+            "hermes_cli.plugins.get_pre_verify_continue_message",
+            side_effect=RuntimeError("plugin dispatcher unavailable"),
+        ),
+    ):
+        out = _pre_verify_nudge(agent, "done", 0)
+
+    assert out is not None
+    assert "pre_verify" in out and "UNKNOWN" in out

@@ -19,6 +19,7 @@ import types
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
 
+from hermes_cli.gate_plane import GATE_HOOKS, GateStatus, result_status
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION
 
 logger = logging.getLogger("hermes_cli.plugins")
@@ -56,8 +57,11 @@ _HOOK_CALL_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
     "pre_command": ("session_key",), "post_compaction": ("session_id",),
 }
 
-# Policy hooks: timeout / still-running must fail closed (block the tool / the batch).
-_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {"pre_tool_call", "pre_tool_batch"}
+# Policy hooks: timeout / still-running must fail closed. The intent gate runs before any
+# inference; the verification gate runs before accepting a completion claim.
+_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {
+    "pre_tool_call", "pre_tool_batch", "pre_llm_call", "pre_verify",
+}
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
 _HOOK_CALLER_THREAD_HOOKS: set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
@@ -68,6 +72,10 @@ _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call plugin callback timed out 
 
 # The one hook whose callback rewrites the reply the user would otherwise see streaming.
 STREAM_HOLDING_HOOK = "transform_llm_output"
+_TRANSFORM_FAILURE_MARKER = (
+    "\n\n[插件门禁不可用 / UNKNOWN] 回复改写链中的 {callbacks} 超时或失败；"
+    "该门禁未完成判定，不能视为通过。"
+)
 
 
 def stream_held() -> bool:
@@ -253,6 +261,32 @@ def resolve_plugin_command_result(result: Any) -> Any:
     return outcome.get("value")
 
 
+def get_pre_verify_continue_message(
+    *, session_id: str = "", platform: str = "", model: str = "", coding: bool = False, attempt: int = 0,
+    final_response: str = "", changed_paths: Optional[list[str]] = None, cwd: str = "",
+) -> Optional[str]:
+    """Check ``pre_verify`` hooks for a continuation directive.
+
+    ``{"action": "continue", "message"}`` (or Claude-Code Stop ``{"decision": "block",
+    "reason"}``) keeps the turn going; first non-empty message wins, any other return lets the
+    turn finish. ``coding``/``attempt`` let hooks scope and self-throttle.
+    """
+    from hermes_cli.plugins import invoke_hook
+
+    hook_results = invoke_hook(
+        "pre_verify", session_id=session_id, platform=platform, model=model, coding=coding,
+        attempt=attempt, final_response=final_response, changed_paths=list(changed_paths or []), cwd=cwd,
+    )
+    for result in hook_results:
+        if not isinstance(result, dict):
+            continue
+        action = str(result.get("action") or result.get("decision") or "").strip().lower()
+        message = result.get("message") or result.get("reason")
+        if action in ("continue", "block") and isinstance(message, str) and message.strip():
+            return message.strip()
+    return None
+
+
 class PluginDispatchMixin:
     @staticmethod
     def _hook_callback_kwargs(callback: Callable, payload: dict[str, Any]) -> dict[str, Any]:
@@ -280,6 +314,32 @@ class PluginDispatchMixin:
         """
         return resolve_plugin_command_result(callback(**cls._hook_callback_kwargs(callback, payload)))
 
+    def _record_gate_event(
+        self,
+        hook_name: str,
+        callback: Callable,
+        kwargs: dict[str, Any],
+        status: GateStatus,
+        *,
+        detail: str = "",
+        duration_ms: float = 0.0,
+    ) -> None:
+        """Store safe policy-hook evidence; diagnostics must never alter enforcement."""
+        if hook_name not in GATE_HOOKS:
+            return
+        try:
+            self.gate_plane.record(
+                hook_name,
+                callback,
+                session_id=str(kwargs.get("session_id") or ""),
+                call_id=_hook_call_identity(kwargs, hook_name) or "",
+                status=status,
+                detail=detail,
+                duration_ms=duration_ms,
+            )
+        except Exception:
+            logger.warning("Gate Plane failed to record '%s' callback", hook_name, exc_info=True)
+
     def invoke_hook(self, hook_name: str, **kwargs: Any) -> list[Any]:
         """Call all callbacks for *hook_name*; return their non-``None`` results.
 
@@ -298,7 +358,51 @@ class PluginDispatchMixin:
         # unrelated adapter payloads into one monolithic compatibility contract.
         if hook_name != "gateway_platform_event":
             kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
+        if hook_name == STREAM_HOLDING_HOOK:
+            return self._run_output_transform_chain(kwargs)
         return self._run_hook_callbacks(hook_name, self._hooks.get(hook_name, []), kwargs)
+
+    def _run_output_transform_chain(self, kwargs: dict[str, Any]) -> list[Any]:
+        """Compose reply rewrites in registration order.
+
+        Every callback sees the current text and the immutable ``original_response_text``.
+        The next callback therefore sees the previous gate's rewrite instead of competing
+        for a single first-non-empty slot. A failed transform contributes a visible UNKNOWN
+        marker; silently dropping that gate would turn infrastructure failure into success.
+        """
+        original = str(kwargs.get("response_text") or "")
+        current = original
+        failed_callbacks: list[Callable] = []
+        for cb in self._hooks.get(STREAM_HOLDING_HOOK, []):
+            payload = {
+                **kwargs,
+                "response_text": current,
+                "original_response_text": original,
+            }
+            callback_failures: list = []
+            results = self._run_hook_callbacks(
+                STREAM_HOLDING_HOOK, [cb], payload, callback_failures,
+            )
+            failed_callbacks.extend(callback_failures)
+            rewrite = next(
+                (r for r in results if isinstance(r, str) and r),
+                None,
+            )
+            if rewrite is not None:
+                current = rewrite
+        return self._finish_output_transform_chain(original, current, failed_callbacks)
+
+    @staticmethod
+    def _finish_output_transform_chain(
+        original: str, current: str, failed_callbacks: list[Callable],
+    ) -> list[Any]:
+        """Make transform failures visible and expose only a changed final text."""
+        if failed_callbacks:
+            names = ", ".join(
+                getattr(cb, "__name__", repr(cb)) for cb in failed_callbacks
+            )
+            current += _TRANSFORM_FAILURE_MARKER.format(callbacks=names)
+        return [current] if current != original else []
 
     def _run_hook_callbacks(self, hook_name: str, callbacks: Any, kwargs: dict[str, Any],
                             failed: Optional[list] = None) -> list[Any]:
@@ -310,10 +414,16 @@ class PluginDispatchMixin:
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
         for cb in callbacks:
+            started = time.perf_counter()
             try:
                 if use_timeout:
                     ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
                     if ret is _HOOK_SKIPPED:
+                        self._record_gate_event(
+                            hook_name, cb, kwargs, GateStatus.UNKNOWN,
+                            detail="callback skipped or timed out",
+                            duration_ms=(time.perf_counter() - started) * 1000,
+                        )
                         if failed is not None:
                             failed.append(cb)
                         if fail_closed:  # policy hook: fail closed with a block directive
@@ -321,10 +431,22 @@ class PluginDispatchMixin:
                         continue
                 else:
                     ret = self._invoke_hook_callback(cb, kwargs)
+                status = result_status(ret)
+                action = str(ret.get("action", "")).lower() if isinstance(ret, Mapping) else ""
+                self._record_gate_event(
+                    hook_name, cb, kwargs, status,
+                    detail=f"action={action}" if action else "",
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                )
                 if ret is not None:
                     results.append(ret)
             except (Exception, SystemExit) as exc:  # health: allow BLE001 -- moved from invoke_hook: plugin callbacks are untrusted; each failure is reported and isolated
                 self._report_hook_failure(hook_name, cb, kwargs, exc)
+                self._record_gate_event(
+                    hook_name, cb, kwargs, GateStatus.UNKNOWN,
+                    detail=f"{type(exc).__name__}: {exc}",
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                )
                 if failed is not None:
                     failed.append(cb)
                 if fail_closed:  # a guard that raised made no decision: same veto as a timeout
@@ -605,19 +727,37 @@ class PluginDispatchMixin:
             return tuple(self._hooks.get(STREAM_HOLDING_HOOK, []))
 
     def run_held_transforms(self, callbacks: tuple[Callable, ...], **kwargs: Any) -> tuple[Optional[str], bool]:
-        """Run a held turn's snapshotted transforms: ``(rewrite, failed)``. ``rewrite`` is the first
-        non-empty string; ``failed`` is True when none came back and a callback raised or timed out,
-        so the caller must not deliver the original."""
+        """Run a held turn's snapshotted transforms: ``(rewrite, failed)``.
+
+        Rewrites compose in registration order. ``failed`` is True when any callback raised or
+        timed out, so the caller must not deliver the original untransformed reply.
+        """
         from agent.safe_worker_policy import safe_worker_enabled
 
         if safe_worker_enabled():
             return None, False
         kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
-        failed: list = []
-        for ret in self._run_hook_callbacks(STREAM_HOLDING_HOOK, callbacks, kwargs, failed):
-            if isinstance(ret, str) and ret:
-                return ret, False
-        return None, bool(failed)
+        original = str(kwargs.get("response_text") or "")
+        current = original
+        failed_callbacks: list[Callable] = []
+        for cb in callbacks:
+            payload = {
+                **kwargs,
+                "response_text": current,
+                "original_response_text": original,
+            }
+            callback_failures: list = []
+            results = self._run_hook_callbacks(
+                STREAM_HOLDING_HOOK, [cb], payload, callback_failures,
+            )
+            failed_callbacks.extend(callback_failures)
+            rewrite = next(
+                (r for r in results if isinstance(r, str) and r),
+                None,
+            )
+            if rewrite is not None:
+                current = rewrite
+        return (current if current != original else None), bool(failed_callbacks)
 
     async def ainvoke_hook(self, hook_name: str, **kwargs: Any) -> list[Any]:
         """:meth:`invoke_hook` for callers that are already on an event loop.
@@ -633,29 +773,121 @@ class PluginDispatchMixin:
         from hermes_cli.plugins import _resolve_hook_callback_timeout
         if hook_name != "gateway_platform_event":
             kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
+        if hook_name == STREAM_HOLDING_HOOK:
+            return await self._arun_output_transform_chain(kwargs)
         results: list[Any] = []
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
         for cb in self._hooks.get(hook_name, []):
             callback_name = getattr(cb, "__name__", repr(cb))
+            started = time.perf_counter()
             try:
                 ret = cb(**self._hook_callback_kwargs(cb, kwargs))
                 if inspect.isawaitable(ret):
-                    ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
+                    try:
+                        ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
+                    except TimeoutError:
+                        logger.warning(
+                            "Hook '%s' callback %s timed out after %.0fs",
+                            hook_name, callback_name, timeout,
+                        )
+                        self._record_gate_event(
+                            hook_name, cb, kwargs, GateStatus.UNKNOWN,
+                            detail="callback skipped or timed out",
+                            duration_ms=(time.perf_counter() - started) * 1000,
+                        )
+                        if fail_closed:
+                            results.append({
+                                "action": "block",
+                                "message": _hook_timeout_block_message(hook_name),
+                            })
+                        continue
+                status = result_status(ret)
+                action = str(ret.get("action", "")).lower() if isinstance(ret, Mapping) else ""
+                self._record_gate_event(
+                    hook_name, cb, kwargs, status,
+                    detail=f"action={action}" if action else "",
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                )
                 if ret is not None:
                     results.append(ret)
             except TimeoutError:
-                logger.warning("Hook '%s' callback %s timed out after %.0fs", hook_name, callback_name, timeout)
-                if fail_closed:  # policy hook: fail closed with a block directive
-                    results.append({"action": "block", "message": _hook_timeout_block_message(hook_name)})
+                # An awaitable that itself raises TimeoutError is handled by the outer
+                # exception clause below; only wait_for expiry reached this branch before.
+                raise
             except (Exception, SystemExit) as exc:
                 # Same isolation + failure contract as the sync path (#111922 warn-once, #109624
                 # a raising policy guard fails closed).
                 self._report_hook_failure(hook_name, cb, kwargs, exc)
+                self._record_gate_event(
+                    hook_name, cb, kwargs, GateStatus.UNKNOWN,
+                    detail=f"{type(exc).__name__}: {exc}",
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                )
                 if fail_closed:
                     results.append(_policy_error_block_directive(hook_name, cb, exc))
         return results
+
+    async def _arun_output_transform_chain(self, kwargs: dict[str, Any]) -> list[Any]:
+        """Async counterpart of the ordered reply-transform chain."""
+        from hermes_cli.plugins import _resolve_hook_callback_timeout
+
+        original = str(kwargs.get("response_text") or "")
+        current = original
+        failed_callbacks: list[Callable] = []
+        timeout = _resolve_hook_callback_timeout()
+        use_timeout = _hook_uses_callback_timeout(STREAM_HOLDING_HOOK, timeout)
+        for cb in self._hooks.get(STREAM_HOLDING_HOOK, []):
+            payload = {
+                **kwargs,
+                "response_text": current,
+                "original_response_text": original,
+            }
+            callback_name = getattr(cb, "__name__", repr(cb))
+            started = time.perf_counter()
+            try:
+                ret = cb(**self._hook_callback_kwargs(cb, payload))
+                if inspect.isawaitable(ret):
+                    try:
+                        ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
+                    except TimeoutError:
+                        self._record_gate_event(
+                            STREAM_HOLDING_HOOK, cb, payload, GateStatus.UNKNOWN,
+                            detail="callback skipped or timed out",
+                            duration_ms=(time.perf_counter() - started) * 1000,
+                        )
+                        failed_callbacks.append(cb)
+                        continue
+                status = result_status(ret)
+                self._record_gate_event(
+                    STREAM_HOLDING_HOOK, cb, payload, status,
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "Hook '%s' callback %s timed out after %.0fs",
+                    STREAM_HOLDING_HOOK, callback_name, timeout,
+                )
+                self._record_gate_event(
+                    STREAM_HOLDING_HOOK, cb, payload, GateStatus.UNKNOWN,
+                    detail="callback skipped or timed out",
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                )
+                failed_callbacks.append(cb)
+                continue
+            except (Exception, SystemExit) as exc:  # health: allow BLE001 -- plugin callbacks are untrusted; failures are isolated and surfaced as UNKNOWN
+                self._report_hook_failure(STREAM_HOLDING_HOOK, cb, payload, exc)
+                self._record_gate_event(
+                    STREAM_HOLDING_HOOK, cb, payload, GateStatus.UNKNOWN,
+                    detail=f"{type(exc).__name__}: {exc}",
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                )
+                failed_callbacks.append(cb)
+                continue
+            if isinstance(ret, str) and ret:
+                current = ret
+        return self._finish_output_transform_chain(original, current, failed_callbacks)
 
     def iter_hook_callbacks(self, hook_name: str) -> tuple[Callable, ...]:
         """Return a stable snapshot of callbacks registered for a hook."""

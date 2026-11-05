@@ -14,3 +14,8 @@ author: stan
 hooks:
   - post_tool_call
   - pre_llm_call
+tags:
+  - guard
+gate_suites:
+  - intent
+gate_policy: advisory

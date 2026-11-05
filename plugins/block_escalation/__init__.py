@@ -25,25 +25,18 @@ import threading
 import time
 from pathlib import Path
 
+from plugins.guards.terminal_semantics import (
+    is_read_command,
+    redirect_writes_file,
+    sed_writes_file,
+)
+
 logger = logging.getLogger("hermes.plugin.block-escalation")
 
 _WINDOW_SECS = 1800          # 同意图重复被拦的判定时间窗
 _STREAK_LIMIT = 2            # 窗口内第 2 次即升级（用户拍板：连续 2 次同因=停）
 _STATE_CAP = 512             # 库内指纹行数上限（防膨胀，驱逐最旧）
 
-# 只读命令白名单：段首词命中且无落盘重定向时，该段判为只读。
-# 未列出的命令一律按写意图计数（保守方向：漏计升级 < 误伤防线）。
-_READ_CMDS = frozenset({
-    "ls", "stat", "file", "find", "grep", "rg", "ag", "cat", "head", "tail",
-    "wc", "echo", "printf", "date", "pwd", "whoami", "uname", "ps", "pgrep",
-    "lsof", "df", "du", "which", "type", "printenv", "id", "groups",
-    "hostname", "sw_vers", "sysctl", "uptime", "jq", "awk", "sed", "cut",
-    "sort", "uniq", "tr", "column", "diff", "cmp", "comm", "md5", "md5sum",
-    "shasum", "sha1sum", "sha256sum", "base64", "xxd", "strings", "nm",
-    "otool", "exiftool", "sleep", "true", "false", "test", "[", "cd",
-    "export", "set", "unset", "alias", "unalias", "wait", "mdfind", "mdls",
-    "pbpaste", "tree", "history", "vm_stat", "iostat", "netstat",
-})
 _WRAPPERS = frozenset({"sudo", "nohup", "command", "time", "nice", "env", "exec"})
 _GIT_READ_SUBCMDS = frozenset({
     "status", "log", "diff", "show", "rev-list", "branch", "blame",
@@ -55,7 +48,6 @@ _SQL_WRITE_VERBS = (
     "INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "REPLACE",
     "ATTACH", "DETACH", "VACUUM", "PRAGMA",
 )
-_HARMLESS_SINKS = frozenset({"/dev/null", "/dev/stderr", "/dev/stdout"})
 
 # 升级终止提示前缀。模块级常量供 cron/scheduler.py 探测：含此标记的
 # final_response 说明 agent 被拦截升级终止而非正常完成，scheduler 须按
@@ -143,8 +135,6 @@ def _redirects_write(seg: str) -> bool:
     语义对齐: owner 口径在原实现（append/非 fd_dup/非进程替换/非 sink）
     之上增加空目标与数字字面量（SQL 比较符 price > 9.99）排除,只读
     分类更准。"""
-    from plugins.guards.terminal_semantics import redirect_writes_file
-
     return redirect_writes_file(seg)
 
 
@@ -157,11 +147,9 @@ def _head_index(words: list) -> int:
         if w in _WRAPPERS:
             wi += 1
             continue
-        if "/" in w:
-            base = w.rsplit("/", 1)[-1]
-            if base in _READ_CMDS or base in _WRAPPERS:
-                wi += 1
-                continue
+        if ("/" in w and w.rsplit("/", 1)[-1] in _WRAPPERS):
+            wi += 1
+            continue
         return wi
     return wi
 
@@ -226,11 +214,13 @@ def _segment_is_readonly(seg: str) -> bool:
         return _fetch_is_readonly(words)
     wi = _head_index(words)
     head = words[wi] if wi < len(words) else ""
+    if head == "sed":
+        return not sed_writes_file(seg)
     if head == "git":
         return _git_is_readonly(words, wi)
     if head in ("sqlite3", "psql"):
         return _sql_is_readonly(words, wi)
-    return head in _READ_CMDS
+    return is_read_command(head)
 
 
 def _fetch_is_readonly(words: list) -> bool:
@@ -486,8 +476,8 @@ def _on_transform_llm_output(response_text: str = "", **kwargs) -> "str | None":
     """Contract: Preconditions: response_text 为本回合 LLM 输出（核心键名）；
     Postconditions: 存在已升级指纹（说明被拦后仍在尝试或继续输出）时追加
     带用户可见终止提示（ESCALATION_MARKER 前缀，cron scheduler 据此按
-    失败记账），否则返回 None（核心契约：first non-None wins——不改写
-    必须返回 None，返回原文会抢占槽位短路其后全部 transform 插件）。"""
+    失败记账），否则返回 None。transform 链会继续执行后续插件；不改写
+    时必须返回 None，不能伪报成功。"""
     output = response_text or ""
     sid = str(kwargs.get("session_id") or "")
     if not _escalated.get(sid):

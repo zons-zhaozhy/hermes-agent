@@ -149,13 +149,92 @@ def test_undisclosed_path_unchanged():
     assert msg is not None and "披露" in msg["context"]  # 期望: 仍是补披露红牌
 
 
-def test_judge_fail_open_leaves_state():
-    """judge 返回 None（fail-open）→ 状态零改动。"""
+def test_judge_unavailable_is_visible_unknown():
+    """judge 返回 None → 审计不可用必须可见，不能伪装成正常通过。"""
     mod = _load_plugin()
     audit, inject, state = _mk(mod, None, "cba-test")
-    audit(_LONG_TEXT, session_id="cba-test")
-    assert not state.get("pending_reminder")  # 期望: fail-open 不误伤
-    assert inject(session_id="cba-test") is None
+    out = audit(_LONG_TEXT, session_id="cba-test")
+    assert out is not None and "审计不可用" in out
+    assert state.get("audit_unavailable") is True
+    assert state.get("judge_failure_count") == 1
+    msg = inject(session_id="cba-test")
+    assert msg is not None and "审计不可用" in msg["context"]
+
+
+def test_judge_failure_opens_session_breaker():
+    """连续失败不得每轮白等同一个坏通道：熔断期内直接复用不可用状态。"""
+    mod = _load_plugin()
+    calls = []
+
+    def _failing_judge(text):
+        calls.append(text)
+
+    audit, _inject, state = _mk(mod, None, "cba-test")
+    mod._judge_reply_side = _failing_judge
+    first = audit(_LONG_TEXT, session_id="cba-test")
+    second = audit(_LONG_TEXT2, session_id="cba-test")
+    assert first is not None and second is not None
+    assert "审计不可用" in first and "审计不可用" in second
+    assert len(calls) == 1  # 第二次命中熔断，不再调用 judge
+    assert state.get("judge_failure_count") == 1
+
+
+def test_malformed_shared_judge_falls_back_to_multi_judge():
+    """A non-mapping shared verdict is one channel failing, not permission to skip audit."""
+    mod = _load_plugin()
+    audit, _inject, state = _mk(mod, "not-a-verdict", "cba-test")
+    calls = []
+
+    def _fallback(**kwargs):
+        calls.append(kwargs)
+        return {"done_claim": True, "has_boundary": False}
+
+    mod.llm_judge_multi = _fallback
+    assert audit(_LONG_TEXT, session_id="cba-test") is None
+    assert calls
+    assert state.get("pending_reminder") is True
+
+
+def test_partial_shared_judge_falls_back_to_multi_judge():
+    """One missing verdict key falls back instead of treating a half-answer as final."""
+    mod = _load_plugin()
+    audit, _inject, state = _mk(
+        mod, {"done_claim": True, "has_boundary": None}, "cba-test",
+    )
+
+    mod.llm_judge_multi = lambda **kwargs: {
+        "done_claim": True,
+        "has_boundary": False,
+    }
+    assert audit(_LONG_TEXT, session_id="cba-test") is None
+    assert state.get("pending_reminder") is True
+
+
+def test_audit_internal_error_is_visible_unknown():
+    """An exception inside audit bookkeeping must not restore the old silent fail-open."""
+    mod = _load_plugin()
+    audit, _inject, state = _mk(mod, None, "cba-test")
+
+    def _boom(_text):
+        raise RuntimeError("verdict parser crashed")
+
+    mod._resolve_verdict = _boom
+    out = audit(_LONG_TEXT, session_id="cba-test")
+    assert out is not None and "审计不可用" in out
+    assert state.get("audit_unavailable") is True
+
+
+def test_reminder_injection_failure_reaches_fail_closed_dispatch():
+    """The audit gate must not swallow its own pre_llm failure back into a silent allow."""
+    mod = _load_plugin()
+    _audit, inject, _state = _mk(mod, None, "cba-test")
+
+    def _state_broken(_sid):
+        raise RuntimeError("session state unavailable")
+
+    mod._state = _state_broken
+    with pytest.raises(RuntimeError, match="session state unavailable"):
+        inject(session_id="cba-test")
 
 
 def test_no_done_claim_no_pending():

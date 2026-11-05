@@ -806,6 +806,10 @@ def _ensure_session_row(agent: Any, pending_cli_message: Any) -> None:
 # ``turn_exit_reason`` of a turn a ``pre_llm_call`` hook vetoed before any inference request, and
 # the stored ``content`` of the vetoed user row (what the user typed is display-only metadata).
 PRE_LLM_BLOCK_EXIT_REASON = "blocked_by_plugin_pre_llm_call"
+PRE_LLM_UNAVAILABLE_BLOCK_MESSAGE = (
+    "[pre_llm_call 门禁不可用 / UNKNOWN] 插件意图门禁分发失败，"
+    "本轮未完成意图校验，已阻断推理。请检查插件加载日志。"
+)
 
 
 def _withhold_blocked_prompt(agent: Any, turn_user_msg: dict[str, Any], typed: Any) -> None:
@@ -905,8 +909,10 @@ def _collect_pre_llm_call_context(
                     logger.warning("hook context spill failed: %s", _spill_exc)
             _ctx_parts.append(_piece)
         return "\n\n".join(_ctx_parts)
-    except Exception as exc:
-        logger.warning("pre_llm_call hook failed: %s", exc)
+    except Exception:
+        logger.warning("pre_llm_call hook failed; blocking turn", exc_info=True)
+        if blocks is not None:
+            blocks.append(PRE_LLM_UNAVAILABLE_BLOCK_MESSAGE)
     return ""
 
 

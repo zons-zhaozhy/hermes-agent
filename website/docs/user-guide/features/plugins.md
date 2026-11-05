@@ -440,10 +440,17 @@ hermes plugins enable my-plugin              # add to allow-list
 hermes plugins disable my-plugin             # remove from allow-list + add to disabled (bundled platforms:
                                              # either spelling works, e.g. photon-platform or platforms/photon)
 hermes plugins capabilities [my-plugin]      # declared vs granted capabilities
+hermes plugins gates [--session ID] [--json] # guard suite health + recent unknown callback evidence
 hermes plugins check-updates                 # read-only: is any installed plugin outdated?
 hermes plugins adopt my-plugin               # track a self-cloned plugin dir (read its git origin)
 hermes plugins trust-update-url my-plugin    # confirm a changed update_url after review
 ```
+
+`hermes plugins gates` separates two health lanes. `missing` means a required guard is absent or
+an enabled guard failed to load or left a declared gate hook unregistered; those guards make the
+affected suites `unknown`. `advisory disabled` means an optional guard was deliberately left out;
+it remains visible but does not by itself make the suite unhealthy. Unknown callback evidence
+always degrades the affected suite.
 
 ### Update checks and provenance
 

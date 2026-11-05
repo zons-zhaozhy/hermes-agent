@@ -58,6 +58,40 @@ def _lists():
     return set(plugins.get("enabled") or []), set(plugins.get("disabled") or [])
 
 
+def test_disabled_plugin_with_enabled_config_section_is_flagged():
+    note = plugins_cmd._config_activation_conflict(
+        "read-think-gate",
+        "read-think-gate",
+        "disabled",
+        config={"read_think_gate": {"enabled": True}},
+    )
+
+    assert note is not None
+    assert "read_think_gate.enabled=true" in note
+    assert "plugins.disabled" in note
+
+
+def test_enabled_plugin_has_no_activation_conflict():
+    assert plugins_cmd._config_activation_conflict(
+        "read-think-gate",
+        "read-think-gate",
+        "enabled",
+        config={"read_think_gate": {"enabled": True}},
+    ) is None
+
+
+def test_uncatalogued_plugin_with_enabled_config_section_is_flagged():
+    note = plugins_cmd._config_activation_conflict(
+        "read-think-gate",
+        "read-think-gate",
+        "not enabled",
+        config={"read_think_gate": {"enabled": True}},
+    )
+
+    assert note is not None
+    assert "plugins.enabled" in note
+
+
 def test_disable_bundled_platform_by_manifest_name_gates_the_loader(home):
     """`hermes plugins disable photon-platform` must produce a key the loader's gate matches; the
     CLI wrote ``platforms/photon`` while discovery keyed the adapter ``photon-platform``."""

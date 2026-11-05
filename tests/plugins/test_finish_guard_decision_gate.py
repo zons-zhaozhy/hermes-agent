@@ -46,7 +46,7 @@ def test_selfcontained_ask_not_flagged() -> None:
         "但跨群记忆互通；方案 B：每项目一个 profile，彻底隔离，须逐群配置。"
         "建议选 B；默认动作=不回复则维持现状。"
     )
-    assert out is None  # 期望: None（first non-None wins 契约：不改写返回 None）
+    assert out is None  # 期望: None（不改写必须返回 None，后续 transform 仍会执行）
 
 
 def test_execution_report_not_flagged() -> None:

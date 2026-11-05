@@ -7,3 +7,6 @@ hooks:
 tags:
   - guard
   - testing
+gate_suites:
+  - completion
+gate_policy: advisory

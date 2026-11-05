@@ -4,6 +4,7 @@ Requires ``pip install "dingtalk-stream>=0.20" httpx``. config.yaml ``platforms.
 ``extra.client_id`` / ``extra.client_secret`` (or DINGTALK_CLIENT_ID / DINGTALK_CLIENT_SECRET)."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -235,6 +236,11 @@ def _csv_set(raw: Any) -> set[str]:
     raw = _decode_json_list_literal(raw)
     parts = raw if isinstance(raw, list) else str(raw).split(",")
     return {str(part).strip() for part in parts if str(part).strip()}
+
+
+def _identifier_digest(value: str) -> str:
+    """Stable non-reversible log hint for platform identifiers."""
+    return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()[:8]}" if value else "-"
 
 
 def dingtalk_deps_present() -> bool:
@@ -615,6 +621,10 @@ class DingTalkAdapter(BasePlatformAdapter):
         """Group chat whitelist; non-empty = hard gate even when @mentioned. DMs never filtered."""
         return self._csv_setting("allowed_chats", "DINGTALK_ALLOWED_CHATS")
 
+    def _dingtalk_group_allowed_chats(self) -> set[str]:
+        """Group chats whose members are authorized without adding each user to the DM allowlist."""
+        return self._csv_setting("group_allowed_chats", "DINGTALK_GROUP_ALLOWED_CHATS")
+
     def _compile_mention_patterns(self) -> list[re.Pattern]:
         """Compile optional regex wake-word patterns (config list, or env as JSON / lines / CSV)."""
         patterns = (self.config.extra or {}).get("mention_patterns")
@@ -629,7 +639,9 @@ class DingTalkAdapter(BasePlatformAdapter):
             return []
         return compile_mention_patterns(patterns, log_prefix=self.name, platform_label="dingtalk", display_label="DingTalk", logger_=logger)
 
-    def _is_user_allowed(self, sender_id: str, sender_staff_id: str) -> bool:
+    def _is_user_allowed(self, sender_id: str, sender_staff_id: str, *, chat_id: str = "", is_group: bool = False) -> bool:
+        if is_group and chat_id and chat_id in self._dingtalk_group_allowed_chats():
+            return True
         if not self._allowed_users or "*" in self._allowed_users:
             return True
         return bool(({(sender_id or "").lower(), (sender_staff_id or "").lower()} - {""}) & self._allowed_users)
@@ -691,7 +703,12 @@ class DingTalkAdapter(BasePlatformAdapter):
         is_group = str(getattr(message, "conversation_type", "1")) == "2"
         sender_nick = sender_nick or sender_id
         chat_id = conversation_id or sender_id
-        if not self._is_user_allowed(sender_id, sender_staff_id):
+        if not self._is_user_allowed(sender_id, sender_staff_id, chat_id=chat_id, is_group=is_group):
+            if is_group and getattr(message, "is_in_at_list", False):
+                logger.info(
+                    "[%s] Dropping @mention from non-allowlisted user sender=%s chat=%s",
+                    self.name, _identifier_digest(sender_staff_id or sender_id), _identifier_digest(chat_id),
+                )
             return logger.debug("[%s] Dropping message from non-allowlisted user staff_id=%s sender_id=%s", self.name, sender_staff_id, sender_id)
         if not self._should_process_message(message, self._extract_text(message) or "", is_group, chat_id):  # wake-word gate needs text early
             return logger.debug("[%s] Dropping group message that failed mention gate message_id=%s chat_id=%s", self.name, msg_id, chat_id)
@@ -1120,6 +1137,7 @@ def _nested_allowed_users(yaml_cfg: dict, dingtalk_cfg: dict):
 _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("require_mention", "DINGTALK_REQUIRE_MENTION", "lower"), ("mention_patterns", "DINGTALK_MENTION_PATTERNS", "json"),
     ("free_response_chats", "DINGTALK_FREE_RESPONSE_CHATS", "csv"), ("allowed_chats", "DINGTALK_ALLOWED_CHATS", "csv"),
+    ("group_allowed_chats", "DINGTALK_GROUP_ALLOWED_CHATS", "csv"),
     ("allowed_users", "DINGTALK_ALLOWED_USERS", "csv"),
 )
 
