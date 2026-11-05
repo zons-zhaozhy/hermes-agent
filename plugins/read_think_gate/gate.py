@@ -425,6 +425,9 @@ _CONFIRMATION_TERMS = (
 _EXECUTION_CONFIRMATION_TERMS = (
     "确认执行", "执行确认", "按方案执行", "按这个方案执行",
 )
+_CONFIRMATION_CHECK_TERMS = frozenset({
+    "确认一下", "请确认一下", "我确认一下", "确认下", "请确认下", "我确认下",
+})
 
 _PROPOSAL_TERMS = (
     *_MODIFY_TERMS,
@@ -444,6 +447,12 @@ def _message_text(content: object) -> str:
         for part in content
         if isinstance(part, dict) and part.get("type") == "text"
     ).strip()
+
+
+def _is_confirmation_check(message: str) -> bool:
+    """Recognize a request to verify details rather than approve execution."""
+    normalized = "".join(char for char in (message or "").strip().lower() if char.isalnum())
+    return normalized in _CONFIRMATION_CHECK_TERMS
 
 
 def _last_assistant_proposal(conversation_history: list[dict] | None) -> bool:
@@ -514,14 +523,17 @@ def _hard_intent(
     """Resolve intent when conversation evidence is stronger than semantics.
 
     Explicit prohibitions, explicit execution requests and a terse confirmation
-    of a concrete proposal are protocol facts. A semantic classifier may handle
-    ambiguous phrasing, but must not rewrite these verdicts.
+    of a concrete proposal are protocol facts; so is a terse request merely to
+    check details. A semantic classifier may handle ambiguous phrasing, but
+    must not rewrite these verdicts.
     """
     text = (user_message or "").strip().lower()
     if any(term in text for term in _EXPLICIT_NO_MODIFY_TERMS):
         return INTENT_READ_ONLY
     if any(term in text for term in _STRONG_MODIFY_TERMS):
         return INTENT_MODIFY
+    if _is_confirmation_check(text):
+        return INTENT_READ_ONLY
     if _is_confirmation(text, conversation_history):
         return INTENT_MODIFY
     return None

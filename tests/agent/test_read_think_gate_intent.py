@@ -262,18 +262,30 @@ def test_execution_confirmation_authorizes_the_proposed_modification(
     assert gate.user_intent == "modify"
 
 
-def test_confirmation_check_remains_read_only(tmp_path: Path) -> None:
+def test_confirmation_check_is_hard_read_only_intent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import plugins.read_think_gate_host as host
+
     history = [
         {
             "role": "assistant",
             "content": "方案：先补失败的回归测试，再修复解析器并运行相关测试。",
         }
     ]
-    gate = _strict_gate(tmp_path)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        host,
+        "_classify_intent_via_llm",
+        lambda message, history=None: calls.append(message) or host.INTENT_MODIFY,
+    )
+    gate = _intent_classifier_gate(tmp_path)
 
     gate.reset_for_turn("确认一下", history)
 
     assert gate.user_intent == "read_only"
+    assert calls == []
 
 
 def test_deterministic_intents_do_not_call_or_yield_to_semantic_classifier(
