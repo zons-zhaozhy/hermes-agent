@@ -209,7 +209,10 @@ async def operation(authority, name, params, actor=None):
             from gateway.session_local_recovery import restore_local_session
             from hermes_state_local import commit_local_session
             await tracked_write(authority, partial(commit_local_session, authority.db, epoch=authority.epoch, receipt=ref))
-            ref = restore_local_session(authority, ref['session_id'])
+            # Owner-loop guard: restore_local_session does synchronous SQLite reads
+            # (local_receipt, get_session, _read_ctx) — run it in a worker thread like
+            # the _create call above, or the restore blocks the gateway event loop.
+            ref = await asyncio.to_thread(restore_local_session, authority, ref['session_id'])
         receipt = await tracked_write(authority, partial(
             admit_session_input, authority.db, epoch=authority.epoch, principal_id=actor.subject,
             session_id=ref.session_id, request_id=request_id, payload={'text': params['extra_prompt'] or ''},

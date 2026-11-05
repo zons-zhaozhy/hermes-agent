@@ -258,7 +258,10 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
             # Idle follows the completion; its bot receipt wakeups are loop tasks. A delete
             # that committed while the write yielded already retired this live entry.
             if authority.sessions.get(ref.session_id) is live:
-                authority._publish_pending(ref)
+                # Owner-loop guard: _publish_pending does synchronous SessionDB reads
+                # (_handle → get_session + pending rows); run it off-loop like the
+                # settlement write above, or publication stalls every other session.
+                await asyncio.to_thread(authority._publish_pending, ref)
         except Exception:
             logger.exception(
                 'Settlement or publication of admission %s failed', admission_id)

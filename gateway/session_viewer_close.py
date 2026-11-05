@@ -291,7 +291,10 @@ async def settle_viewer_close(authority, session_id):
         return
     if not await _resolve_abandoned_unknown(authority, session_id, live, close):
         return  # left paused (a viewer came back, or the resolution was refused)
-    target = _physical_target(authority, session_id)
+    # Owner-loop guard: _physical_target does synchronous reads (local_receipt /
+    # get_compression_tip) — same off-loop treatment as the _busy and get_session
+    # calls right below, or this receipt read stalls the loop.
+    target = await asyncio.to_thread(_physical_target, authority, session_id)
     # Every await below can let a viewer reattach (attach drops the pending close) or another
     # settler run, so the close is re-checked after each one.
     if await asyncio.to_thread(_busy, authority, session_id, target):
