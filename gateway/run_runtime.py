@@ -688,7 +688,8 @@ async def recover_profile_native_sessions(runner, authority):
         pending, bindings = await asyncio.to_thread(pending_bindings)
         outcome = await authority.recover_native_sessions(bindings)
         from gateway.session_detached import recover_detached_sessions
-        outcome.update(dict.fromkeys(recover_detached_sessions(authority, pending - set(outcome)), 'detached'))
+        recovered_detached = await recover_detached_sessions(authority, pending - set(outcome))
+        outcome.update(dict.fromkeys(recovered_detached, 'detached'))
     for sid, verdict in outcome.items():
         logger.info('Native session startup recovery %s (%s): %s', sid, authority.profile_id, verdict)
     return outcome

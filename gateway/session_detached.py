@@ -169,22 +169,30 @@ def watch_routes(runner, store) -> None:
     store.route_named = route_named
 
 
-def recover_detached_sessions(authority, pending):
+async def recover_detached_sessions(authority, pending) -> list[str]:
     """Boot: schedule the queued input of conversations their chats moved past (an app prompt
     accepted during a restart's after-turn wait). The routing index names only each chat's current
     conversation, so native recovery never binds these, and no chat message will wake them."""
-    from gateway.session_contract import SessionRef
-    from gateway.session_route_recovery import restore_routed_session
+    from gateway.session_route_recovery import _mount_plan, mount_routed_session
     scheduled = []
     from hermes_state_runtime import list_session_admissions
     for session_id in sorted(pending):
-        if session_id in authority.sessions or not any(  # a lost (unknown) turn waits for /discard
-                row['status'] == 'queued' for row in list_session_admissions(authority.db, session_id=session_id)):
+        if session_id in authority.sessions:
             continue
-        if restore_routed_session(authority, session_id) is None:
+
+        def queued_mount_plan():
+            queued = any(row['status'] == 'queued'  # a lost (unknown) turn waits for /discard
+                         for row in list_session_admissions(authority.db, session_id=session_id))
+            return _mount_plan(authority, session_id) if queued else None
+
+        plan = await asyncio.to_thread(queued_mount_plan)
+        if plan is None:
+            continue
+        ref = mount_routed_session(authority, session_id, plan)
+        if ref is None:
             continue
         if authority.sessions[session_id].detached:
-            authority._schedule(SessionRef(authority.profile_id, session_id))
+            authority._schedule(ref)
             scheduled.append(session_id)
     return scheduled
 

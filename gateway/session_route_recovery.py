@@ -109,9 +109,13 @@ def _mount_plan(authority, sid):
 def restore_routed_session(authority, sid):
     """Publish *sid* as its lane would after a restart; None when this row is not one a route or a
     messaging-platform row can stand for."""
+    return mount_routed_session(authority, sid, _mount_plan(authority, sid))
+
+
+def mount_routed_session(authority, sid, plan):
+    """Publish a mount plan prepared off the owner loop."""
     from gateway.session_authority import LiveSession
     from gateway.session_contract import SessionRef
-    plan = _mount_plan(authority, sid)
     if plan is None:
         return None
     route, entry, routed = plan

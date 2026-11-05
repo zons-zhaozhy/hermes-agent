@@ -90,3 +90,37 @@ async def test_startup_local_receipt_scan_runs_off_loop(tmp_path, monkeypatch):
 
     assert len(threads) == 1
     assert threads and loop_thread not in threads
+
+
+@pytest.mark.asyncio
+async def test_startup_detached_recovery_reads_admissions_off_loop(tmp_path, monkeypatch):
+    from gateway import run_runtime
+    import hermes_state_runtime as state_runtime
+
+    _, authority = _authority(tmp_path, monkeypatch)
+    authority.runner.session_store = SimpleNamespace(list_sessions=list)
+
+    async def no_native_rows(bindings):
+        return {}
+
+    monkeypatch.setattr(authority, 'recover_native_sessions', no_native_rows)
+    monkeypatch.setattr(
+        authority.db, '_read_all',
+        lambda sql, params=(): [{'target_session_id': 'missing'}],
+    )
+    real = state_runtime.list_session_admissions
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+
+    def recorded(*args, **kwargs):
+        threads.append(threading.get_ident())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(state_runtime, 'list_session_admissions', recorded)
+    assert state_runtime.list_session_admissions is recorded
+
+    outcome = await run_runtime.recover_profile_native_sessions(authority.runner, authority)
+
+    assert outcome == {}
+    assert len(threads) == 1
+    assert threads and loop_thread not in threads
