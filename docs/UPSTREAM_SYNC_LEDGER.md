@@ -183,6 +183,26 @@ git rev-list --count main..upstream/main   # 应为 0
   注意: 探针须从中立 cwd 跑——python -c 会把 cwd 注入 sys.path, 在 fork 仓内跑
   会假绿为 fork 直连。
 
+### 1106 补记 15 项（fork-guard fresh audit 红灯复核）
+
+| 文件 | 定制内容 | 归属提交 |
+|---|---|---|
+| gateway/run_turn_runner.py | shared clarify 注册写入 owner loop 下沉 | b232236990 |
+| gateway/session_detached.py | detached 启动恢复与 lineage 读下沉 | 3fbbff1a15/882593041f2 |
+| gateway/session_envelope.py | native/automation route preflight 的 admission/routing 读下沉 | 9adf243b69 |
+| gateway/session_local_recovery.py | 本地恢复、adoption 与 close receipt 读下沉 | 3fbbff1a15/b31509c203 |
+| gateway/session_route_recovery.py | detached mount plan 与 lineage 读下沉 | 882593041f2 |
+| gateway/session_settlement_recovery.py | settlement 恢复读与 publication 下沉 | 4a73fc2498 |
+| gateway/session_viewer_close.py | viewer close 的 busy/idle/retirement 读下沉 | 4a73fc2498 |
+| hermes_state_local.py | 本地 receipt 配置内容寻址去重，兼容旧 inline 读 | 4e1abf0bfb |
+| hermes_state_local_lineage.py | branch/reset 读路径适配 config blob 解码 | 4e1abf0bfb |
+| hermes_state_mutation_branch.py | branch 事务写读适配 config blob 编解码 | 4e1abf0bfb |
+| hermes_state_mutation_prepared.py | prepared mutation 快照/提交适配 config blob | 4e1abf0bfb |
+| hermes_state_mutation_reset.py | reset 事务 receipt 解码适配 config blob | 4e1abf0bfb |
+| tests/gateway/test_bot_chat_unadoptable_local_title.py | Bot Chat 标题读下沉契约 | 4a73fc2498 |
+| tests/gateway/test_local_session_orphan_end.py | 本地 orphan/adoption 恢复契约 | 3fbbff1a15 |
+| tests/gateway/test_viewer_close_lifecycle.py | viewer close busy 检查契约 | 4a73fc2498 |
+
 ## 五、机器账本（SSOT）
 
 > 叙述表格只解释意图；本 YAML 块是 `fork-guard audit` 唯一机器事实源。
@@ -250,6 +270,7 @@ official_paths:
   - gateway/run_runtime.py
   - gateway/run_runtime_init.py
   - gateway/run_startup.py
+  - gateway/run_turn_runner.py
   - gateway/session_a2a.py
   - gateway/session_ancillary.py
   - gateway/session_api_turn.py
@@ -257,11 +278,17 @@ official_paths:
   - gateway/session_bot.py
   - gateway/session_controls.py
   - gateway/session_cron.py
+  - gateway/session_detached.py
+  - gateway/session_envelope.py
   - gateway/session_group_controls.py
   - gateway/session_hosted_rpc.py
   - gateway/session_hosted_service.py
   - gateway/session_ingress.py
+  - gateway/session_local_recovery.py
+  - gateway/session_route_recovery.py
+  - gateway/session_settlement_recovery.py
   - gateway/session_viewer_automation.py
+  - gateway/session_viewer_close.py
   - gateway/slash_commands.py
   - gateway/slash_commands_goals.py
   - gateway/slash_commands_model.py
@@ -295,7 +322,12 @@ official_paths:
   - hermes_cli/subcommands/plugins.py
   - hermes_cli/version_info.py
   - hermes_state.py
+  - hermes_state_local.py
+  - hermes_state_local_lineage.py
   - hermes_state_maintenance.py
+  - hermes_state_mutation_branch.py
+  - hermes_state_mutation_prepared.py
+  - hermes_state_mutation_reset.py
   - hermes_state_readpool.py
   - lefthook.yml
   - locales/af.yaml
@@ -361,6 +393,7 @@ official_paths:
   - tests/fixtures/prompt_surface/tools/skills_list.json
   - tests/fixtures/prompt_surface/tools/write_file.json
   - tests/fixtures/provider_wire_snapshot.json
+  - tests/gateway/test_bot_chat_unadoptable_local_title.py
   - tests/gateway/test_busy_followup_guard_release.py
   - tests/gateway/test_dingtalk.py
   - tests/gateway/test_dingtalk_reconnect_circuit_breaker.py
@@ -368,10 +401,12 @@ official_paths:
   - tests/gateway/test_goal_continuation_drain.py
   - tests/gateway/test_hosted_mux_runtime.py
   - tests/gateway/test_hosted_rooms_gateway_import.py
+  - tests/gateway/test_local_session_orphan_end.py
   - tests/gateway/test_loop_liveness_watchdog.py
   - tests/gateway/test_resume_display_history.py
   - tests/gateway/test_session_authority_adopted_stop.py
   - tests/gateway/test_session_viewer_automation.py
+  - tests/gateway/test_viewer_close_lifecycle.py
   - tests/gateway/test_startup_recovery_parks_profile.py
   - tests/gateway/test_watch_notification_reset_pin.py
   - tests/hermes_cli/test_banner.py
