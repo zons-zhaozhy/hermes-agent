@@ -92,6 +92,28 @@ async def test_last_viewer_close_commits_memory_and_finalizes_on_the_owner(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_last_viewer_close_runs_every_idle_busy_check_off_loop(tmp_path, monkeypatch):
+    import gateway.session_viewer_close as viewer_close
+
+    db, authority, _calls = await _owner(tmp_path, monkeypatch)
+    viewer, subscription = await _open(db, authority, tmp_path)
+    loop_thread = threading.get_ident()
+    threads = []
+    real_busy = viewer_close._busy
+
+    def recorded_busy(*args, **kwargs):
+        threads.append(threading.get_ident())
+        return real_busy(*args, **kwargs)
+
+    monkeypatch.setattr(viewer_close, '_busy', recorded_busy)
+    await _call(viewer, 'session.detach', session_id='chat', subscription_id=subscription,
+                end_reason='cli_close')
+
+    assert len(threads) == 2  # once before the end stamp, once before memory retirement
+    assert threads and all(thread != loop_thread for thread in threads)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('reason', ['new_session', 'tui_close'])  # classic CLI /new; Ink /new or resume switch
 async def test_a_viewer_new_resets_the_session_on_the_owner_after_finalize(tmp_path, monkeypatch, reason):
     db, authority, calls = await _owner(tmp_path, monkeypatch)

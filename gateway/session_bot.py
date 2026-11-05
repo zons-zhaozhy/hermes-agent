@@ -183,19 +183,24 @@ def _home(authority, actor, profile):
 
 async def _target(authority, actor):
     ref = lane = None
-    row = authority.db.get_session_by_title('Bot Chat')
-    if row is None or (displaced := displaceable_bot_chat(authority, row, actor.subject)) is not None:
+    row = await asyncio.to_thread(authority.db.get_session_by_title, 'Bot Chat')
+    displaced = None
+    if row is not None:
+        displaced = await asyncio.to_thread(displaceable_bot_chat, authority, row, actor.subject)
+    if row is None or displaced is not None:
         # None: a concurrent delivery created it first. A title held by an API conversation no FIFO
         # can own is moved aside first, under the same lock (MSG-21, #140769).
         ref = await _create_bot_chat(authority, actor, displace=None if row is None else displaced)
-    if ref is None and (row := authority.db.get_session_by_title('Bot Chat')) is None:
+    if ref is None:
+        row = await asyncio.to_thread(authority.db.get_session_by_title, 'Bot Chat')
+    if ref is None and row is None:
         # Moved aside since it was read: a lane's /new frees a handed-off Bot Chat's title off the
         # titled-create lock (``release_superseded_bot_chat``). None again: a concurrent delivery minted.
         if (ref := await _create_bot_chat(authority, actor)) is None:
-            row = authority.db.get_session_by_title('Bot Chat')
+            row = await asyncio.to_thread(authority.db.get_session_by_title, 'Bot Chat')
     if ref is None:
-        tip = authority.db.get_compression_tip(row['id'])
-        target = authority.db.get_session(tip)
+        tip = await asyncio.to_thread(authority.db.get_compression_tip, row['id'])
+        target = await asyncio.to_thread(authority.db.get_session, tip)
         if target is None:
             raise RuntimeStoreError('not_found')
         from gateway.session_local_migration import resolve_local_target
@@ -353,16 +358,20 @@ async def _create_bot_chat(authority, actor, *, displace=None):
     if lock is None:
         lock = authority._titled_create_lock = asyncio.Lock()
     async with lock:
-        held = authority.db.get_session_by_title('Bot Chat')
+        held = await asyncio.to_thread(authority.db.get_session_by_title, 'Bot Chat')
         if held is not None:
-            if displace is None or held['id'] != displace or displaceable_bot_chat(authority, held, actor.subject) != displace:
+            replacement = None
+            if held['id'] == displace:
+                replacement = await asyncio.to_thread(
+                    displaceable_bot_chat, authority, held, actor.subject)
+            if displace is None or held['id'] != displace or replacement != displace:
                 return None
             logger.warning("Bot Chat title held by %s, a conversation no FIFO can own: moving it aside", displace)
             # False: the title moved since the check. A lane's ``/new`` frees a handed-off Bot Chat's
             # title from the store's worker thread, outside this lock (``release_superseded_bot_chat``):
             # nobody holds it then, so this delivery mints the replacement.
             if (not await tracked_write(authority, partial(_displace_bot_chat, authority.db, displace))
-                    and authority.db.get_session_by_title('Bot Chat') is not None):
+                    and await asyncio.to_thread(authority.db.get_session_by_title, 'Bot Chat') is not None):
                 return None
         # The Bot Chat follows its profile whoever mints it (a Bot or cron delivery, a peer DM),
         # the same contract Desktop's create asks for. A later profile change reaches it.
@@ -873,7 +882,7 @@ async def _deliver(connection, params):
                 return answer
             if record is not None:
                 raise RuntimeStoreError('unknown_execution')
-            holder = authority.db.get_session_by_title('Bot Chat')
+            holder = await asyncio.to_thread(authority.db.get_session_by_title, 'Bot Chat')
             ref, live, entry = await _target(authority, actor)
             pinned = params.get('session_id', entry.session_id)
             if pinned != entry.session_id and not _moved_aside_by_this_door(authority, holder, pinned):

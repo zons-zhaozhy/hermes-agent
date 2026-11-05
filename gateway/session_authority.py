@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Iterable
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from functools import partial
@@ -492,6 +493,18 @@ class SessionAuthority:
         live = self.sessions[ref.session_id]
         self._publish_pending_snapshot(ref, *self._pending_publication(ref, live))
 
+    async def _publish_pending_off_loop(self, ref: SessionRef) -> None:
+        """Read a pending snapshot off-loop, then publish and wake recipients on the loop."""
+        from gateway.session_retirement import restore_retired, touch_restored
+        restored = ref.session_id not in self.sessions
+        if restored:
+            await asyncio.to_thread(restore_retired, self, ref.session_id)
+        live = self.sessions[ref.session_id]
+        publication = await asyncio.to_thread(self._pending_publication, ref, live)
+        self._publish_pending_snapshot(ref, *publication)
+        if restored:
+            touch_restored(self, ref.session_id)
+
     def _pending_publication(self, ref, live):
         """Read the viewer-facing FIFO snapshot; blocking storage I/O, no event publication."""
         from gateway.session_queued_controls import pending_rows
@@ -536,7 +549,7 @@ class SessionAuthority:
             if sid in self.sessions:
                 self._schedule(SessionRef(self.profile_id, sid))
 
-    def _pause(self, ref, reason):
+    def _release_paused_waiters(self, rows: Iterable[dict], reason: str) -> None:
         """The FIFO stopped without claiming its head. Committed rows stay queued for a later
         drain; process-local delivery/HTTP/producer waiters on this session are released,
         with the reason instead of a reply, so an adapter loop is never parked on a turn that
@@ -544,7 +557,7 @@ class SessionAuthority:
         ``session_busy`` is transient (a registered worker finishes and wakes the FIFO), so only
         the messaging delivery waiters are released for it; an API/webhook/Bot observer keeps
         waiting for the answer instead of reporting accepted work as a conflict."""
-        for row in list_session_admissions(self.db, session_id=ref.session_id):
+        for row in rows:
             admission_id = row['admission_id']
             if reason == 'session_busy' and admission_id not in self.native_waiters:
                 continue
@@ -552,6 +565,15 @@ class SessionAuthority:
             waiter = self.waiters.pop(admission_id, None)
             if waiter is not None and not waiter.done():
                 waiter.set_exception(RuntimeStoreError(reason))
+
+    def _pause(self, ref, reason):
+        self._release_paused_waiters(
+            list_session_admissions(self.db, session_id=ref.session_id), reason)
+
+    async def _pause_off_loop(self, ref: SessionRef, reason: str) -> None:
+        rows = await asyncio.to_thread(
+            list_session_admissions, self.db, session_id=ref.session_id)
+        self._release_paused_waiters(rows, reason)
 
     async def admit_automation(self, adapter, event, identity, replaces=None, fold=None):
         from gateway.session_automation import admit_automation
@@ -675,13 +697,13 @@ class SessionAuthority:
         current = self.logical_owner(entry.session_id) if entry is not None else session_id
         return current if current in self.sessions else session_id
 
-    def _admitted(self, ref, event, row):
+    async def _admitted(self, ref, event, row) -> AdmissionReceipt:
         if event is not None:
             event._gateway_accepted = True
             if row['status'] == 'queued' and (committed := getattr(event, '_on_commit', None)) is not None:
                 committed()  # a queued slash command's ack follows its commit (``_queue_command_turn``)
             mark_producer_admission(self, event, row)
-        self._publish_pending(ref)
+        await self._publish_pending_off_loop(ref)
         return self._receipt(row)
 
     def _schedule_admitted(self, ref, _receipt=None):
@@ -1266,11 +1288,11 @@ class SessionAuthority:
             self._publish_pending_snapshot(ref, *publication)
         return row
 
-    def _drain_stopping(self, ref, live):
+    async def _drain_stopping(self, ref, live) -> bool:
         """A drain about to wait (storage retry, classic slot) exits instead when the runtime drains,
         the profile retires or the live entry was replaced; committed rows stay queued."""
         if self.runner._draining or self.retiring or self.sessions.get(ref.session_id) is not live:
-            self._pause(ref, 'runtime_draining')
+            await self._pause_off_loop(ref, 'runtime_draining')
             return True
         return False
 
@@ -1338,14 +1360,14 @@ class SessionAuthority:
                                 continue
                     import logging
                     logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
-                    self._pause(ref, exc.reason)
+                    await self._pause_off_loop(ref, exc.reason)
                     return None
             except (OSError, sqlite3.OperationalError) as exc:
                 # A writer held past its patience or a full disk is transient, and every _schedule
                 # caller is event-driven: a dead drain would strand the committed head and hang its
                 # waiters until the next submit. Retry in place (like recover_failed_settlement),
                 # keeping waiters: releasing them fails requests that would run a moment later.
-                if self._drain_stopping(ref, live):
+                if await self._drain_stopping(ref, live):
                     return None
                 backoff = min(max(backoff * 2, _CLAIM_RETRY_MIN_S), _CLAIM_RETRY_MAX_S)
                 import logging
@@ -1356,7 +1378,7 @@ class SessionAuthority:
             backoff = 0.0
             if row != 'classic_busy':
                 return row, first
-            if self._drain_stopping(ref, live):
+            if await self._drain_stopping(ref, live):
                 return None
             await asyncio.sleep(_CLAIM_RETRY_MIN_S)
 
@@ -1390,7 +1412,7 @@ class SessionAuthority:
             from gateway.session_unattended_unknown import settle_unattended_unknown
             if await settle_unattended_unknown(self, ref):
                 return None, 'settled_unknown'
-            self._pause(ref, 'unknown_execution')
+            await self._pause_off_loop(ref, 'unknown_execution')
             raise
         except Exception:
             import logging
@@ -1410,7 +1432,7 @@ class SessionAuthority:
             if row is None and first is not None:
                 # A live worker (or a claim this drain does not own) blocks the head: the same
                 # pause episode, so its notice is not repeated for every message queued behind it.
-                self._pause(ref, 'session_busy')
+                await self._pause_off_loop(ref, 'session_busy')
                 return
             # The FIFO is moving again (or empty): the next pause is a new episode.
             live.pause_notified = False

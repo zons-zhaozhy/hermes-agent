@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -32,6 +33,115 @@ async def test_claim_preflight_reads_admissions_off_loop(tmp_path, monkeypatch):
 
     assert row['request_id'] == first['request_id'] == 'work'
     assert threads and loop_thread not in threads
+
+
+@pytest.mark.asyncio
+async def test_pause_on_unknown_claim_reads_admissions_off_loop(tmp_path, monkeypatch):
+    from gateway import session_authority, session_unattended_unknown
+    from hermes_state_runtime import RuntimeStoreError
+
+    db, authority = _authority(tmp_path, monkeypatch)
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+    real = session_authority.list_session_admissions
+
+    def recorded(*args, **kwargs):
+        threads.append(threading.get_ident())
+        return real(*args, **kwargs)
+
+    async def unknown_claim(*args, **kwargs):
+        raise RuntimeStoreError('unknown_execution')
+
+    async def attended_unknown(*args, **kwargs):
+        return False
+
+    with db:
+        receipt = await _submit(authority, 'lost')
+        waiter = authority.waiters.setdefault(
+            receipt.admission_id, asyncio.get_running_loop().create_future())
+        authority.native_waiters.add(receipt.admission_id)
+        monkeypatch.setattr(authority, '_claim_next', unknown_claim)
+        monkeypatch.setattr(
+            session_unattended_unknown, 'settle_unattended_unknown', attended_unknown)
+        monkeypatch.setattr(session_authority, 'list_session_admissions', recorded)
+
+        assert await authority._claim_with_retry(REF, authority.sessions['s']) is None
+
+    assert threads and loop_thread not in threads
+    assert receipt.admission_id not in authority.native_waiters
+    assert receipt.admission_id not in authority.waiters
+    assert waiter.done()
+    with pytest.raises(RuntimeStoreError, match='unknown_execution'):
+        waiter.result()
+
+
+@pytest.mark.asyncio
+async def test_admitted_pending_publication_reads_off_loop(tmp_path, monkeypatch):
+    db, authority = _authority(tmp_path, monkeypatch)
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+    real_handle = authority._handle
+
+    def recorded_handle(ref):
+        threads.append(threading.get_ident())
+        return real_handle(ref)
+
+    monkeypatch.setattr(authority, '_handle', recorded_handle)
+    with db:
+        receipt = await _submit(authority, 'queued')
+
+    assert receipt.status == 'queued'
+    assert threads and loop_thread not in threads
+
+
+@pytest.mark.asyncio
+async def test_committed_settlement_recovery_reads_result_off_loop(tmp_path, monkeypatch):
+    from gateway import session_results, session_settlement_recovery
+
+    db, authority = _authority(tmp_path, monkeypatch)
+    loop_thread = threading.get_ident()
+    threads = []
+    real_admission = session_settlement_recovery.get_session_admission
+    real_result = session_results.admission_result
+
+    def recorded_admission(*args, **kwargs):
+        threads.append(threading.get_ident())
+        return real_admission(*args, **kwargs)
+
+    def recorded_result(*args, **kwargs):
+        threads.append(threading.get_ident())
+        return real_result(*args, **kwargs)
+
+    async def execute(owner, ref, row):
+        owner.pending_results[row['admission_id']] = {
+            'result': {'final_response': 'done', 'completed': True}, 'usage': {}}
+        return 'done'
+
+    original_settle = session_settlement_recovery.settle_with_retry
+
+    async def commit_then_lose_receipt(*args, **kwargs):
+        await original_settle(*args, **kwargs)
+        settlement = kwargs.get('settlement', args[7])
+        settlement.clear()  # the owner forgot the commit receipt, as a lost response can
+        raise OSError('commit response lost')
+
+    monkeypatch.setattr(
+        'gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr(
+        session_settlement_recovery, 'settle_with_retry', commit_then_lose_receipt)
+    monkeypatch.setattr(session_results, 'admission_result', recorded_result)
+    monkeypatch.setattr(
+        session_settlement_recovery, 'get_session_admission', recorded_admission)
+    with db:
+        receipt = await _submit(authority, 'committed')
+        await asyncio.wait_for(authority.sessions['s'].task, 5)
+
+    row = real_admission(db, admission_id=receipt.admission_id)
+    assert row['status'] == 'terminal'
+    assert len(threads) == 2
+    assert threads and all(thread != loop_thread for thread in threads)
 
 
 @pytest.mark.asyncio
