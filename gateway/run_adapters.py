@@ -878,12 +878,14 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         logger.warning("Reconnect %s: %s, removing from retry queue", platform.value, reason)
         del self._failed_platforms[platform]
 
-    def _publish_primary_adapter(self, platform, adapter) -> None:
+    async def _publish_primary_adapter(self, platform, adapter) -> None:
         """Register a connected primary adapter and wire voice mode/input (transcription without /voice join)."""
         self.adapters[platform] = adapter
         if platform == Platform.API_SERVER:
-            from gateway.session_api_turn import recover_api_turns
-            recover_api_turns(adapter)
+            from gateway.session_api_turn import recover_api_turns_off_loop
+            # Recovery scans and rewrites each served profile's state.db; keep those
+            # SQLite reads off the loop; scheduling stays inside the async helper.
+            await recover_api_turns_off_loop(adapter)
         self._sync_voice_mode_state_to_adapter(adapter)
         self._bind_voice_input_callback(adapter)
 
@@ -899,7 +901,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
 
     async def _install_reconnected_adapter(self, platform, adapter) -> None:
         """Publish a freshly reconnected primary adapter and replay what it missed while down."""
-        self._publish_primary_adapter(platform, adapter)
+        await self._publish_primary_adapter(platform, adapter)
         self.delivery_router.adapters = self.adapters
         hand_over_held_inbound(self._failed_platforms.pop(platform).get("predecessor"), adapter)
         # connect() returning True does not mean the receive path is confirmed -- Telegram's degraded

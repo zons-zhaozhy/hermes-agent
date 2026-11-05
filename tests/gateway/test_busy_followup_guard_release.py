@@ -301,12 +301,12 @@ async def test_reconnect_during_busy_admission_runs_accepted_followup_once(
         adapter.release_reply.set()
         await asyncio.wait_for(asyncio.shield(first_turn), timeout=5)
         if swap == "before_enqueue":
-            runner._publish_primary_adapter(Platform.SIGNAL, replacement)
+            await runner._publish_primary_adapter(Platform.SIGNAL, replacement)
         held.release()
         await asyncio.wait_for(ack_entered.wait(), timeout=5)
         if swap == "after_enqueue":
             assert key in adapter._pending_messages  # accepted into the old adapter's slot
-            runner._publish_primary_adapter(Platform.SIGNAL, replacement)
+            await runner._publish_primary_adapter(Platform.SIGNAL, replacement)
         else:
             assert key in replacement._pending_messages
         ack_release.set()

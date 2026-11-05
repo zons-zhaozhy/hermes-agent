@@ -399,16 +399,25 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
 
 def _start_backend_liveness() -> None:
     """Backend heartbeat refresher + startup orphan sweep (idempotent, once per process); a
-    failure of either is logged and never blocks the connection."""
+    failure of either is logged and never blocks the connection. Both starters touch SessionDB,
+    so they run in workers and never block the WebSocket event loop."""
+    loop = asyncio.get_running_loop()
     for start, what in (
         (server._start_backend_heartbeat_refresher, "backend heartbeat refresher start"),
         (server._schedule_startup_orphan_sweep, "startup orphan sweep scheduling"),
     ):
-        try:
-            start()
-        # health: allow BLE001 -- liveness boundary; logs the traceback (exc_info) via _log, a name ruff does not treat as a logger
-        except Exception:
-            _log.warning("%s failed", what, exc_info=True)
+        def _done(task: asyncio.Task, what: str = what) -> None:
+            _LIVENESS_TASKS.discard(task)
+            if not task.cancelled() and task.exception() is not None:
+                # Liveness is best-effort; a failed starter must not break the connection.
+                _log.warning("%s failed", what, exc_info=task.exception())
+
+        task = loop.create_task(asyncio.to_thread(start))
+        _LIVENESS_TASKS.add(task)
+        task.add_done_callback(_done)
+
+
+_LIVENESS_TASKS: set[asyncio.Task] = set()
 
 
 class _SendFailed(Exception):

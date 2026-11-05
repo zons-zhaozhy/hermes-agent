@@ -164,7 +164,7 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
         host._sync_voice_mode_state_to_adapter = host._bind_voice_input_callback = lambda adapter: None
         api_adapter = SimpleNamespace(gateway_runner=runner)
         try:
-            host._publish_primary_adapter(Platform.API_SERVER, api_adapter)
+            asyncio.run(host._publish_primary_adapter(Platform.API_SERVER, api_adapter))
         except sqlite3.OperationalError as exc:
             pytest.fail(f"the retained store's read error stopped API adapter publication: {exc}")
         assert host.adapters[Platform.API_SERVER] is api_adapter

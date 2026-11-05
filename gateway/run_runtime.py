@@ -507,8 +507,10 @@ async def _recover_published_api_turns(runner, authority):
     from gateway.config import Platform
     api = (getattr(runner, 'adapters', None) or {}).get(Platform.API_SERVER)
     if api is not None:
-        from gateway.session_api_turn import recover_authority_api_turns
-        recover_authority_api_turns(api, authority)
+        from gateway.session_api_turn import _recover_authority_api_turns
+        ready = await asyncio.to_thread(_recover_authority_api_turns, api, authority)
+        for ref in ready:
+            authority._schedule(ref)
 
 
 async def recover_served_native_rows(runner):
