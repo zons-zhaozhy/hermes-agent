@@ -267,5 +267,6 @@ block_escalation 实现）。
   显式替换，不得降级刷绿。
 - 物理归并仍按小批次执行：`patch-first`→`guards` 已完成（行为迁入
   `guards.patch_first`，独立 manifest/hook surface 删除，owner 注册契约
-  在位）；后续为 `blame-shield`→`discipline`、
-  `lazy-blocker`/`completion-boundary-audit`→`finish_guard`。
+  在位）；`blame-shield`→`discipline` 已完成（行为迁入
+  `discipline.blame_shield`，独立 manifest/hook surface 删除，owner 注册契约
+  在位）；后续为 `lazy-blocker`/`completion-boundary-audit`→`finish_guard`。

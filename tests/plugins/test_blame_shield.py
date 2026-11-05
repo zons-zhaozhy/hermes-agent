@@ -8,14 +8,16 @@
   G1 门控方向：祈使句/续作指令/提问全部注入；问候/应答/致谢整句豁免。
   G2 注入内容：注入文本含第 4 检（理想化自检）。
 """
-import importlib
 import sys
 from pathlib import Path
+
+from plugins import discipline
+from plugins.discipline import blame_shield
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
-mod = importlib.import_module("plugins.blame-shield")
+mod = blame_shield
 
 
 def test_imperative_coding_command_injects():
@@ -53,3 +55,27 @@ def test_hook_delivers_idealization_check():
     ctx = out.get("context") or ""
     assert "理想化" in ctx  # 期望: 注入文本含第 4 检
     assert "分支" in ctx  # 期望: 第 4 检的五类分支面在场
+
+
+class _OwnerCtx:
+    def __init__(self) -> None:
+        self.hooks: dict[str, list] = {}
+
+    def register_hook(self, name: str, callback) -> None:
+        self.hooks.setdefault(name, []).append(callback)
+
+    def register_system_prompt_section(self, section_id: str, renderer) -> None:
+        return None
+
+
+def test_discipline_owner_registers_blame_shield_self_check() -> None:
+    ctx = _OwnerCtx()
+    discipline.register(ctx)
+
+    contexts = [
+        result.get("context", "")
+        for callback in ctx.hooks["pre_llm_call"]
+        if (result := callback(user_message="给这个表加个字段", session_id="blame-owner"))
+    ]
+
+    assert any("回复前自检" in context and "理想化" in context for context in contexts)

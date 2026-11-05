@@ -1,27 +1,13 @@
-"""
-推责/免责话术拦截插件
-======================
+"""Generation-time self-check for blame, hedging, laziness, and idealization."""
 
-机制：pre_llm_call hook，每次 LLM 生成前注入自检规则到 user message。
-
-设计原则：
-1. 不做事后剥离/遮掩——那是在掩盖问题
-2. 在 LLM 开始生成之前就植入自检要求，从源头消灭推责输出
-3. 注入的规则要求 LLM 对自己的回复做"偷懒/推诿/过度免责自检"
-4. 如果自检发现推责话术，LLM 必须自动重写回复，而不是简单删除
-
-为什么是 pre_llm_call 而不是 transform_llm_output：
-- transform_llm_output 只能返回字符串替换，无法触发重做
-- pre_llm_call 注入规则到 user message，让 LLM 在生成时就遵守
-- 这是从源头改变行为，不是事后修补
-"""
+from __future__ import annotations
 
 import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# 注入到 user message 的自检规则
-# 用中文，因为用户用中文交流
+
 _SELF_CHECK_RULE = """\
 [回复前自检——必检项，违反即自动重写]
 在输出回复之前，对回复内容执行以下自检：
@@ -41,7 +27,6 @@ _SELF_CHECK_RULE = """\
 自检不通过时，不是简单剥离违规划句，而是用正确的认知重写整段内容。
 """
 
-# 闲聊豁免集（封闭集）：整句剥离语气词/标点后命中的短应答不注入
 _CHAT_TOKENS = frozenset({
     "你好", "您好", "早", "早上好", "上午好", "中午好", "下午好", "晚上好",
     "好", "好的", "嗯", "嗯嗯", "哦", "噢", "哈", "哈哈", "呵呵", "行", "OK", "ok",
@@ -52,21 +37,19 @@ _CHAT_TOKENS = frozenset({
 
 
 def _is_task_message(user_message: str) -> bool:
-    """任务消息判定——默认注入，仅整句闲聊（封闭集）豁免。
+    """Return whether a message gets the generation-time self-check.
 
-    任务指令是开放集（祈使句/续作/提问形态不可枚举），白名单枚举必然漏——
-    「给这个表加个字段」类无问号祈使句曾零注入。故方向反转：默认注入，
-    只有整句剥离标点/语气词后落在闲聊封闭集内的短消息才豁免。
+    Task requests are open-ended, so the default is to inject. Only a whole
+    short message in the closed chat-acknowledgement set is exempt.
     """
     if not user_message:
         return False
     msg = str(user_message).strip()
     if not msg:
         return False
-    # 包含问号（中英文）→ 提问，注入
     if "?" in msg or "？" in msg:
         return True
-    # 整句闲聊豁免：剥离标点/空白/常见语气词后仍是闲聊词才豁免
+
     stripped = msg.strip("。，！!？?~～ \t\n")
     for tail in ("哈", "呀", "啦", "呢", "哦", "噢", "喽", "嘛", "吧", "嘿", "诶"):
         if stripped.endswith(tail) and len(stripped) > 1:
@@ -75,17 +58,20 @@ def _is_task_message(user_message: str) -> bool:
     return stripped not in _CHAT_TOKENS
 
 
-def _on_pre_llm_call(**kwargs) -> dict:
-    """pre_llm_call 回调：在任务/提问场景下注入自检规则。"""
+def _on_pre_llm_call(**kwargs: object) -> dict[str, str]:
+    """Inject the self-check before a task response is generated."""
     user_message = kwargs.get("user_message", "")
     if not _is_task_message(user_message):
-        return {}  # 纯闲聊不注入，避免干扰
+        return {}
 
-    logger.debug("blame-shield: 注入自检规则 (user_message前50字: %s)", user_message[:50])
+    logger.debug(
+        "discipline.blame_shield: inject self-check (first 50 chars=%s)",
+        str(user_message)[:50],
+    )
     return {"context": _SELF_CHECK_RULE}
 
 
-def register(ctx):
-    """插件入口。"""
+def register(ctx: Any) -> None:
+    """Register the blame-shield pre-LLM hook."""
     ctx.register_hook("pre_llm_call", _on_pre_llm_call)
-    logger.info("blame-shield 插件已注册——推责/免责话术拦截就绪")
+    logger.info("discipline.blame_shield registered——推责/免责自检注入就绪")
