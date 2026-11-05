@@ -22,6 +22,18 @@ def test_hermes_cache_tmpdir_is_safe_path():
     assert sw._is_safe_path(_SRC) is False    # 期望: False——仓库内源码路径仍拦
 
 
+def test_named_profile_hermes_cache_scratch_is_safe_path(tmp_path, monkeypatch):
+    """多 profile 网关中，命名 profile 的官方 scratch 与默认 profile 同语义。"""
+    root = tmp_path / ".hermes"
+    root.mkdir()
+    profile = root / "profiles" / "customer"
+    scratch = profile / "cache" / "scratch" / "probe.py"
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    assert sw._is_safe_path(str(scratch)) is True  # 期望: 官方临时区不按源码拦截
+    assert sw._is_safe_path(str(profile / "src" / "probe.py")) is False  # 期望: profile 内正式源码仍拦
+
+
 def test_commit_message_mentioning_inplace_pattern_allowed():
     """提交信息里提到 in-place 字样（数据非命令）→ 放行。"""
     cmd = 'git commit -m "只覆盖 open(...,\'w\')/重定向/sed -i 三类直写形态" -- tests/plugins/test_scope_gate.py'

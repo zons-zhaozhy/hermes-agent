@@ -28,6 +28,7 @@ import ast
 import logging
 import os
 import re  # re-ok: shell命令扫描器,正则即本体实现 # noqa: scanner plugin
+from pathlib import Path
 from typing import Any, Optional
 
 from plugins.guards.duplicate_check import _execute_code_write_targets  # 写形态识别单一事实源
@@ -413,6 +414,8 @@ def _is_safe_path(path: str) -> bool:
       Preconditions: path is non-empty string
       Postconditions: True iff path is a temp/build/cache path
     """
+    if _is_named_profile_cache_path(path):
+        return True
     lower = path.lower().replace("\\", "/")
     prefixes = _SAFE_PREFIXES + (_hermes_cache_prefix(),)
     for prefix in prefixes:
@@ -422,6 +425,22 @@ def _is_safe_path(path: str) -> bool:
         if dirname in lower:
             return True
     return False
+
+
+def _is_named_profile_cache_path(path: str) -> bool:
+    """Whether *path* is under a real named Hermes profile's cache directory."""
+    try:
+        from hermes_constants import named_profile_home
+
+        profile_home = named_profile_home(path)
+        if profile_home is None:
+            return False
+        candidate = Path(path).expanduser().resolve(strict=False)
+        cache = (profile_home / "cache").resolve(strict=False)
+        return candidate.is_relative_to(cache)
+    except (OSError, RuntimeError, ValueError):
+        logger.debug("named profile cache classification failed for %r", path, exc_info=True)
+        return False
 
 
 # ── Escape hatch ─────────────────────────────────────────────────────────

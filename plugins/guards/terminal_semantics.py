@@ -151,7 +151,7 @@ def looks_like_path(tok: str) -> bool:
 
 
 def parse_redirects(seg: str) -> list[Redirect]:
-    """解析一段 shell 文本里全部重定向流（字符扫描,容错残缺引号）。
+    """解析一段 shell 文本里全部重定向流（引号感知字符扫描,容错残缺引号）。
 
     Contract:
       Preconditions: seg 为 str。
@@ -160,12 +160,14 @@ def parse_redirects(seg: str) -> list[Redirect]:
         永不抛异常。
     """
     out: list[Redirect] = []
-    i = 0
+    positions = _unquoted_gt_positions(seg)
+    position_index = 0
     n = len(seg)
     while True:
-        gt = seg.find(">", i)
-        if gt == -1:
+        if position_index >= len(positions):
             return out
+        gt = positions[position_index]
+        position_index += 1
         append = seg[gt + 1: gt + 2] == ">"
         nxt = gt + (2 if append else 1)
         is_procsub = seg[gt + 1: gt + 2] == "("
@@ -177,7 +179,36 @@ def parse_redirects(seg: str) -> list[Redirect]:
             sink_end += 1
         fd_dup = (gt > 0 and seg[gt - 1] == "&") or seg[nxt: nxt + 1] == "&"
         out.append(Redirect(append, fd_dup, is_procsub, seg[j:sink_end]))
-        i = max(sink_end, gt + 1)
+        while position_index < len(positions) and positions[position_index] < sink_end:
+            position_index += 1
+
+
+def _unquoted_gt_positions(seg: str) -> tuple[int, ...]:
+    """Return ``>`` character positions that shell interpretation sees as syntax.
+
+    Quoted program text (including awk comparisons) and quoted literals are data,
+    not redirection. An unclosed quote makes the remainder data, preserving the
+    malformed-input contract without raising.
+    """
+    positions: list[int] = []
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(seg):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if quote is not None:
+            if char == quote:
+                quote = None
+            continue
+        if char in ("'", '"'):
+            quote = char
+        elif char == ">":
+            positions.append(index)
+    return tuple(positions)
 
 
 def redirect_writes_file(seg: str) -> bool:

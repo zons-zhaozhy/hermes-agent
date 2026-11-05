@@ -39,6 +39,16 @@ def test_sql_numeric_literal_not_target() -> None:
     assert ts.redirect_writes_file("psql -c 'SELECT count(*) FROM t WHERE amt > 100.5'") is False  # 期望: 小数同排除
 
 
+
+def test_quoted_comparison_and_literal_gt_not_redirects() -> None:
+    """引号内 shell 元字符是程序文本/字面量，不是重定向。"""
+    assert ts.redirect_writes_file(
+        "awk 'NR>=560 && NR<=700 && /public .*\\(/' src.java | head -3"
+    ) is False  # 期望: awk 比较符在单引号程序内
+    assert ts.redirect_writes_file('echo "write x > output.txt"') is False  # 期望: 引号内是字面量
+    assert ts.redirect_writes_file('echo "done" > output.txt') is True  # 期望: 引号外真实重定向仍拦截
+
+
 def test_targets_extraction() -> None:
     assert ts.redirect_file_targets("a > x.txt && b >> y.txt") == ["x.txt", "y.txt"]  # 期望: 按序提取写目标
     assert ts.redirect_file_targets("a 2>/dev/null; b > z.sql") == ["z.sql"]  # 期望: sink 不进目标列

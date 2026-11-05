@@ -190,6 +190,20 @@ def test_terse_confirmation_authorizes_the_proposed_modification(tmp_path: Path)
     assert gate.user_intent == "modify"
 
 
+def test_exact_confirmation_authorizes_the_proposed_modification(tmp_path: Path) -> None:
+    history = [
+        {
+            "role": "assistant",
+            "content": "方案：先补失败的回归测试，再修复解析器并运行相关测试。确认执行请回复：确认",
+        }
+    ]
+    gate = _strict_gate(tmp_path)
+
+    gate.reset_for_turn("确认", history)
+
+    assert gate.user_intent == "modify"
+
+
 def test_confirmation_cannot_authorize_without_a_proposal(tmp_path: Path) -> None:
     gate = _strict_gate(tmp_path)
 

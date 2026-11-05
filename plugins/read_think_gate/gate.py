@@ -462,6 +462,8 @@ def _is_confirmation(message: str, conversation_history: list[dict] | None) -> b
     normalized = "".join(char for char in text if char.isalnum())
     if not normalized or len(normalized) > 40 or "?" in text or "？" in text:
         return False
+    if normalized == "确认":
+        return _last_assistant_proposal(conversation_history)
     if any(term in text for term in _READ_ONLY_TERMS):
         return False
     if not any(term in text for term in _CONFIRMATION_TERMS):
@@ -492,10 +494,10 @@ def _fallback_detect_intent(
         return INTENT_AMBIGUOUS
     if asks_for_modification:
         return INTENT_MODIFY
-    if asks_for_explanation:
-        return INTENT_READ_ONLY
     if _is_confirmation(text, conversation_history):
         return INTENT_MODIFY
+    if asks_for_explanation:
+        return INTENT_READ_ONLY
     return INTENT_AMBIGUOUS
 
 
