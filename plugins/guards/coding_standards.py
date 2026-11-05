@@ -57,6 +57,10 @@ logger = logging.getLogger(__name__)
 
 from plugins.guards.tool_classification import STANDARD_WRITE_TOOLS as _WRITE_TOOLS
 
+# One-shot diagnostics should not churn against style-only rules. Safety and
+# correctness rules (exceptions, secrets, eval, silent fallbacks) stay blocking.
+_EPHEMERAL_STYLE_RULES = frozenset({"R021", "R022", "R023", "R024", "R025"})
+
 
 def _plugin_disabled() -> bool:
     return os.environ.get("CODING_STANDARDS_GUARD_DISABLE", "").lower() in {
@@ -1233,7 +1237,25 @@ def _run_all_checks(source: str, *, skip_tests: bool = False, target: str = "") 
 # Hook 实现
 # ═══════════════════════════════════════════════════════════════════════
 
-def _check_content(content: str, target: str) -> Optional[dict[str, Any]]:
+def _is_ephemeral_target(target: str) -> bool:
+    """Whether a write target is Hermes' official temporary/cache surface."""
+    if not target:
+        return False
+    try:
+        from plugins.guards.source_write import _is_safe_path
+
+        return _is_safe_path(os.path.expanduser(target))
+    except Exception:
+        logger.debug("scratch target classification failed for %r", target, exc_info=True)
+        return False
+
+
+def _check_content(
+    content: str,
+    target: str,
+    *,
+    ephemeral: bool = False,
+) -> Optional[dict[str, Any]]:
     """检查写入内容是否违反编码规范。"""
     if not content:
         return None
@@ -1242,6 +1264,8 @@ def _check_content(content: str, target: str) -> Optional[dict[str, Any]]:
 
     skip_tests = bool(target and ("tests/" in target.replace(os.sep, "/") or "/tests/" in target.replace(os.sep, "/")))
     violations = _run_all_checks(content, skip_tests=skip_tests, target=target)
+    if ephemeral:
+        violations = [v for v in violations if v.rule_id not in _EPHEMERAL_STYLE_RULES]
     if not violations:
         return None
 
@@ -1293,16 +1317,16 @@ def on_pre_tool_call(**kwargs) -> Optional[dict[str, Any]]:
     if tool_name == "write_file":
         content = args.get("content", "")
         target = args.get("path", "")
-        return _check_content(content, target)
+        return _check_content(content, target, ephemeral=_is_ephemeral_target(target))
 
     elif tool_name == "patch":
         new_string = args.get("new_string", "")
         target = args.get("path", "")
-        return _check_content(new_string, target)
+        return _check_content(new_string, target, ephemeral=_is_ephemeral_target(target))
 
     elif tool_name == "execute_code":
         code = args.get("code", "")
-        return _check_content(code, "")
+        return _check_content(code, "", ephemeral=True)
 
     return None
 

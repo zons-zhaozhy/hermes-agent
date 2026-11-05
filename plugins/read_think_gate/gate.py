@@ -17,8 +17,9 @@
 轮数、等待时间和“目标文件已读或不存在”都不是修改授权或调查完成证明。
 
 任务分级（复杂度自适应）：
-  LLM 语义分类（优先）：用 auxiliary client 调 flash 模型做一次分类。
-  关键词 fallback（降级）：LLM 不可用时用规则匹配。
+  硬证据意图（优先）：明确禁止/执行/确认由交互状态机判定。
+  LLM 语义分类（兜底）：仅处理缺少硬证据的复杂语境。
+  关键词 fallback（降级）：LLM 不可用时保守判定为 ambiguous/read-only/modify。
   三级：simple / normal / complex
 
 与 tool_guardrails 的区别：
@@ -421,6 +422,9 @@ _CONFIRMATION_TERMS = (
     "批准", "继续",
     "go ahead", "proceed", "do it", "approved", "sounds good",
 )
+_EXECUTION_CONFIRMATION_TERMS = (
+    "确认执行", "执行确认", "按方案执行", "按这个方案执行",
+)
 
 _PROPOSAL_TERMS = (
     *_MODIFY_TERMS,
@@ -464,6 +468,8 @@ def _is_confirmation(message: str, conversation_history: list[dict] | None) -> b
         return False
     if normalized == "确认":
         return _last_assistant_proposal(conversation_history)
+    if any(term in normalized for term in _EXECUTION_CONFIRMATION_TERMS):
+        return _last_assistant_proposal(conversation_history)
     if any(term in text for term in _READ_ONLY_TERMS):
         return False
     if not any(term in text for term in _CONFIRMATION_TERMS):
@@ -499,6 +505,26 @@ def _fallback_detect_intent(
     if asks_for_explanation:
         return INTENT_READ_ONLY
     return INTENT_AMBIGUOUS
+
+
+def _hard_intent(
+    user_message: str,
+    conversation_history: list[dict] | None,
+) -> str | None:
+    """Resolve intent when conversation evidence is stronger than semantics.
+
+    Explicit prohibitions, explicit execution requests and a terse confirmation
+    of a concrete proposal are protocol facts. A semantic classifier may handle
+    ambiguous phrasing, but must not rewrite these verdicts.
+    """
+    text = (user_message or "").strip().lower()
+    if any(term in text for term in _EXPLICIT_NO_MODIFY_TERMS):
+        return INTENT_READ_ONLY
+    if any(term in text for term in _STRONG_MODIFY_TERMS):
+        return INTENT_MODIFY
+    if _is_confirmation(text, conversation_history):
+        return INTENT_MODIFY
+    return None
 
 
 def _build_intent_context(
@@ -579,10 +605,13 @@ def _detect_user_intent(
     *,
     use_llm: bool,
 ) -> str:
-    """Resolve intent with semantic classification first and fail closed."""
+    """Resolve intent from hard conversation evidence, then semantics."""
     message = user_message or ""
     if not message.strip():
         return INTENT_AMBIGUOUS
+    hard_intent = _hard_intent(message, conversation_history)
+    if hard_intent is not None:
+        return hard_intent
     if use_llm:
         detected = _classify_intent_via_llm(message, conversation_history)
         if detected in _INTENT_VALUES:
@@ -885,9 +914,9 @@ class ReadThinkGateConfig:
     complexity_profiles: Mapping[str, Mapping[str, int]] | None = None
     # 是否用 LLM 做复杂度分类（默认 True，需 auxiliary client 可用）
     use_llm_classifier: bool = True
-    # Optional semantic intent classifier. Keep this opt-in: enabling it spends
-    # an additional auxiliary-model call at turn start.
-    use_llm_intent_classifier: bool = False
+    # Semantic classifier for phrases without hard conversation evidence. Hard
+    # intent is resolved first, so only an ambiguous turn spends this call.
+    use_llm_intent_classifier: bool = True
     # Optional semantic investigation judge. The deterministic evidence gate is
     # the default so a write does not silently add another paid model call.
     use_llm_judge: bool = False
@@ -910,7 +939,7 @@ class ReadThinkGateConfig:
             complexity_profiles=profiles_raw if isinstance(profiles_raw, Mapping) else None,
             use_llm_classifier=_as_bool(data.get("use_llm_classifier"), True),
             use_llm_intent_classifier=_as_bool(
-                data.get("use_llm_intent_classifier"), False
+                data.get("use_llm_intent_classifier"), True
             ),
             use_llm_judge=_as_bool(data.get("use_llm_judge"), False),
             gated_tools=tuple(

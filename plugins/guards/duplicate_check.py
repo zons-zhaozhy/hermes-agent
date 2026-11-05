@@ -118,6 +118,13 @@ def _normalize_new_py(path: str, cwd: str) -> str:
     except OSError as e:
         logger.warning("realpath 解析失败(%s): %s", path, e)
         return ""
+    try:
+        from plugins.guards.source_write import _is_safe_path
+
+        if _is_safe_path(real_full):
+            return ""
+    except Exception:
+        logger.debug("临时区判定失败，继续按项目目标查重: %s", real_full, exc_info=True)
     if os.path.exists(real_full) or not real_full.startswith(real_cwd + os.sep):
         return ""
     rel = os.path.relpath(real_full, real_cwd)

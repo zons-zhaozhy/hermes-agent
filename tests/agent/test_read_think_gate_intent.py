@@ -37,6 +37,21 @@ def _strict_gate(tmp_path: Path) -> ReadThinkGate:
     return gate
 
 
+def _intent_classifier_gate(tmp_path: Path) -> ReadThinkGate:
+    gate = ReadThinkGate(
+        ReadThinkGateConfig.from_mapping(
+            {
+                "enabled": True,
+                "complexity_adaptive": False,
+                "use_llm_judge": False,
+                "use_llm_intent_classifier": True,
+            }
+        ),
+        session_id=f"intent-llm-{tmp_path.name}",
+    )
+    return gate
+
+
 def _record_complete_investigation(gate: ReadThinkGate, target: Path, *, content: str) -> None:
     gate._read_only_count = 3
     gate._investigation_evidence = [
@@ -169,10 +184,32 @@ def test_default_intent_guard_does_not_add_a_model_call(
         "_classify_intent_via_llm",
         lambda message, history=None: calls.append(message),
     )
-    gate = ReadThinkGate(ReadThinkGateConfig(), session_id=f"no-cost-{tmp_path.name}")
+    gate = ReadThinkGate(
+        ReadThinkGateConfig.from_mapping({"use_llm_intent_classifier": False}),
+        session_id=f"no-cost-{tmp_path.name}",
+    )
     gate.reset_for_turn("修复这个文件里的错误")
 
     assert calls == []
+    assert gate.user_intent == "modify"
+
+
+def test_default_intent_classifier_handles_ambiguous_intent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import plugins.read_think_gate_host as host
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        host,
+        "_classify_intent_via_llm",
+        lambda message, history=None: calls.append(message) or host.INTENT_MODIFY,
+    )
+    gate = ReadThinkGate(ReadThinkGateConfig(), session_id=f"semantic-{tmp_path.name}")
+    gate.reset_for_turn("帮我处理一下这个")
+
+    assert calls == ["帮我处理一下这个"]
     assert gate.user_intent == "modify"
 
 
@@ -202,6 +239,105 @@ def test_exact_confirmation_authorizes_the_proposed_modification(tmp_path: Path)
     gate.reset_for_turn("确认", history)
 
     assert gate.user_intent == "modify"
+
+
+@pytest.mark.parametrize(
+    "message",
+    ("确认执行", "确认，执行", "同意执行", "批准执行", "确认，按这个方案执行"),
+)
+def test_execution_confirmation_authorizes_the_proposed_modification(
+    tmp_path: Path,
+    message: str,
+) -> None:
+    history = [
+        {
+            "role": "assistant",
+            "content": "方案：先补失败的回归测试，再修复解析器并运行相关测试。确认执行请回复：确认执行",
+        }
+    ]
+    gate = _strict_gate(tmp_path)
+
+    gate.reset_for_turn(message, history)
+
+    assert gate.user_intent == "modify"
+
+
+def test_confirmation_check_remains_read_only(tmp_path: Path) -> None:
+    history = [
+        {
+            "role": "assistant",
+            "content": "方案：先补失败的回归测试，再修复解析器并运行相关测试。",
+        }
+    ]
+    gate = _strict_gate(tmp_path)
+
+    gate.reset_for_turn("确认一下", history)
+
+    assert gate.user_intent == "read_only"
+
+
+def test_deterministic_intents_do_not_call_or_yield_to_semantic_classifier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import plugins.read_think_gate_host as host
+
+    calls: list[str] = []
+
+    def classify(message, history=None):
+        calls.append(message)
+        return host.INTENT_MODIFY
+
+    monkeypatch.setattr(host, "_classify_intent_via_llm", classify)
+    history = [
+        {
+            "role": "assistant",
+            "content": "方案：修复解析器并运行测试。确认执行请回复：确认执行",
+        }
+    ]
+    gate = _intent_classifier_gate(tmp_path)
+
+    gate.reset_for_turn("不要修改", history)
+    assert gate.user_intent == "read_only"
+    gate.reset_for_turn("确认执行", history)
+    assert gate.user_intent == "modify"
+
+    assert calls == []
+
+
+def test_semantic_classifier_resolves_ambiguous_intent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import plugins.read_think_gate_host as host
+
+    calls: list[str] = []
+
+    def classify(message, history=None):
+        calls.append(message)
+        return host.INTENT_MODIFY
+
+    monkeypatch.setattr(host, "_classify_intent_via_llm", classify)
+    gate = _intent_classifier_gate(tmp_path)
+
+    gate.reset_for_turn("帮我处理一下这个")
+
+    assert calls == ["帮我处理一下这个"]
+    assert gate.user_intent == "modify"
+
+
+def test_semantic_classifier_failure_falls_back_conservatively(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import plugins.read_think_gate_host as host
+
+    monkeypatch.setattr(host, "_classify_intent_via_llm", lambda message, history=None: None)
+    gate = _intent_classifier_gate(tmp_path)
+
+    gate.reset_for_turn("帮我处理一下这个")
+
+    assert gate.user_intent == "ambiguous"
 
 
 def test_confirmation_cannot_authorize_without_a_proposal(tmp_path: Path) -> None:
