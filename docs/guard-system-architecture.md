@@ -245,7 +245,25 @@ block_escalation 实现）。
 静默降级、`quality_auditor` 同名工具统计误崩；另两项目前为基线确认，
 不得据此直接按文件名合并，后续重组仍需按 suite owner 与行为等价迁移。
 
+### 状态源与拦截原因裁定（2026-11-05）
+
+两个原“独立工程项”已按语义拆开，而不是把不同事实证明成同一个状态：
+
+- `guards.session_policy` 是会话→platform 与 cron 豁免的唯一事实源；
+  `four_axis` 与 `diff_debt` 只消费该判定，unified cron 的 `local-*`
+  会话与 legacy `cron_*` 会话走同一规则。
+- `read-think-gate` 继续独占 pre-write 四轴证据 marker；`diff_debt` 继续
+  独占 post-write diff 欠账。两者是先后两道不同义务，不得合并成一个
+  boolean，也不得在 completion-owner 迁移中互相搬运。
+- `diff_debt` 在 session reset/end 只清本会话欠账与本批证据位，避免长驻
+  网关进程保留已结束会话状态；TTL 仍只作兜底而非生命周期事实源。
+- `block_escalation` 的 blocked 指纹包含稳定原因族：runtime guardrail code、
+  插件拦截文案护栏名，或归一化首行；同一目标被不同原因拦截不合并计数，
+  成功落地仍按目标交集清账。
+
 ### 已知路线图（独立工程项，非本轮范围）
 
-- **block_escalation 意图指纹精细化**（区分护栏差异，避免一次修复不到位
-  即 L3）；**四轴双状态源合一**（marker 文件与 diff_debt 进程内账本）。
+- required/profile 基线收敛：五个 required owner 缺席必须启用或经行为迁移
+  显式替换，不得降级刷绿。
+- 物理归并仍按小批次执行：`patch-first`→`guards`、`blame-shield`→
+  `discipline`、`lazy-blocker`/`completion-boundary-audit`→`finish_guard`。

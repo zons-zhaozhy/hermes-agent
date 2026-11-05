@@ -15,6 +15,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
+from plugins.guards import session_policy
+
 
 def _load_guard() -> Any:
     repo = Path(__file__).resolve().parents[2]
@@ -152,17 +154,17 @@ def test_gate_plugin_id_matches_manifest_name():
 def test_pre_llm_call_records_and_forgets_platform():
     guard = _load_guard()
     guard.on_pre_llm_call(session_id="", platform="cron")
-    assert not guard._SESSION_PLATFORMS  # 期望: 空 session_id 不登记
+    assert not session_policy.is_cron_session("local-abc")  # 期望: 空 session_id 不登记
     guard.on_pre_llm_call(session_id="local-abc", platform="cron")
-    assert guard._SESSION_PLATFORMS["local-abc"] == "cron"  # 期望: platform 逐字登记
+    assert session_policy.is_cron_session("local-abc")  # 期望: platform 逐字登记
     guard._forget_session_platform(session_id="local-abc")
-    assert "local-abc" not in guard._SESSION_PLATFORMS  # 期望: 会话结束即清除
+    assert not session_policy.is_cron_session("local-abc")  # 期望: 会话结束即清除
 
 
 def test_gateway_cron_local_session_exempt(monkeypatch, tmp_path: Path):
     guard = _load_guard()
     guard._gate_ctx = _ctx(lambda pid: True)  # 主防线插件在场（探测会报 active）
-    guard._SESSION_PLATFORMS["local-deadbeef"] = "cron"
+    session_policy.record_session_platform("local-deadbeef", platform="cron")
     monkeypatch.setattr(guard, "_read_marker", lambda sid: None)  # marker 永不写
     target = str(tmp_path / "cronjob.py")
     out = guard.on_pre_tool_call(tool_name="patch", args={"path": target},
@@ -173,7 +175,7 @@ def test_gateway_cron_local_session_exempt(monkeypatch, tmp_path: Path):
 def test_gateway_local_session_other_platform_blocks(monkeypatch, tmp_path: Path):
     guard = _load_guard()
     guard._gate_ctx = _ctx(lambda pid: True)
-    guard._SESSION_PLATFORMS["local-cafe"] = "dingtalk"  # 非 cron 平台的网关会话
+    session_policy.record_session_platform("local-cafe", platform="dingtalk")  # 非 cron 平台的网关会话
     monkeypatch.setattr(guard, "_read_marker", lambda sid: None)
     monkeypatch.setattr("hermes_cli.config.load_config_readonly", dict)
     target = str(tmp_path / "normal.py")

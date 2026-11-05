@@ -17,6 +17,7 @@ duplicate-check / source_code_write_guard / coding-standards-guard)收拢为
 
 包内非护栏模块(不在 _SUB_GUARD_NAMES,无 pre_tool_call 注册):
   terminal_semantics 重定向写语义唯一事实源(供各守卫复用判定)
+  session_policy   会话→platform 与 cron 豁免判定唯一事实源
   dynamic_tips    动态提示段渲染器(消费拦截账本生成高频教训段)
 
 分层依据与裁定规则见 docs/guard-system-architecture.md。
@@ -31,6 +32,8 @@ Contract:
 import importlib
 import logging
 from typing import Any, Mapping
+
+from plugins.guards import session_policy
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +125,7 @@ def _render_blacklist_section(session_info: Mapping[str, Any]) -> str:
 
 def register(ctx: Any) -> None:
     """套件入口——逐子护栏注册 + 注册文件型段(单个失败不连坐)。"""
+    session_policy.register(ctx)
     for name, mod in _SUB_GUARDS:
         try:
             mod.register(ctx)
