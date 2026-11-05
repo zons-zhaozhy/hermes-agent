@@ -60,7 +60,7 @@ def _check_guards(surface: str, session_id: str = "") -> None:
                     surface, name, declaration, issue, name,
                 )
         for item in report.get("manual_guards", ()):
-            if item.get("policy") != "required" or item.get("status") != "unknown":
+            if item.get("policy") != "required" or item.get("status") == "pass":
                 continue
             name = str(item.get("name", "unknown"))
             issue = str(item.get("reason", "unknown"))

@@ -82,6 +82,10 @@ class TestV2Parsing:
                 "gate_suites": ["intent", "output"],
                 "gate_policy": "advisory",
                 "gate_kind": "observer",
+                "gate_audit": {
+                    "subject": "repo:/tmp/project",
+                    "ttl_seconds": 60,
+                },
                 "requires_plugins": [
                     {"id": "other", "version_range": ">=1.0,<2"},
                     "bare-dep",
@@ -104,6 +108,10 @@ class TestV2Parsing:
         assert m.gate_suites == ["intent", "output"]
         assert m.gate_policy == "advisory"
         assert m.gate_kind == "observer"
+        assert m.gate_audit == {
+            "subject": "repo:/tmp/project",
+            "ttl_seconds": 60,
+        }
         assert m.requires_plugins == [
             {"id": "other", "version_range": ">=1.0,<2"},
             {"id": "bare-dep", "version_range": None},
@@ -151,6 +159,7 @@ class TestV2Parsing:
                 "gate_suites": ["intent", "banana"],
                 "gate_policy": "sometimes",
                 "gate_kind": "sometimes",
+                "gate_audit": {"subject": "", "ttl_seconds": 0},
             },
         )
         _enable(hermes_home, ["sloppy"])
@@ -167,9 +176,11 @@ class TestV2Parsing:
         assert m.gate_suites == ["intent"]
         assert m.gate_policy == "required"
         assert m.gate_kind == "manual"
+        assert m.gate_audit == {}
         assert "gate_suites" in caplog.text
         assert "gate_policy" in caplog.text
         assert "gate_kind" in caplog.text
+        assert "gate_audit" in caplog.text
 
     def test_gate_kind_infers_from_legacy_guard_hooks(self, hermes_home):
         _write_plugin(

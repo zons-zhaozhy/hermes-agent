@@ -8,10 +8,11 @@ from hermes_cli.gate_plane import GATE_SUITES
 
 
 def cmd_gates(session_id: str | None = None, *, json_output: bool = False) -> None:
-    """Print gate-suite health and recent unknown callback evidence.
+    """Print gate-suite health, manual receipts, and recent unknown callback evidence.
 
     The command is read-only: it renders the profile-scoped manager report and never
-    performs plugin discovery, filesystem writes, or network access.
+    performs filesystem writes or network access. Manual evidence comes from durable
+    plugin state and never turns an imported manual guard into runtime protection.
     """
     from hermes_cli.plugins import _ensure_plugins_discovered
 

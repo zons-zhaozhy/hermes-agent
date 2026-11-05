@@ -44,7 +44,7 @@ _KNOWN_MANIFEST_FIELDS: set[str] = {
     "license", "homepage", "tags", "capabilities", "emits", "listens", "hermes", "depends",
     "requires_hermes", "python_runtime", "provides_locales", "provides_middleware", "requires_auth", "oauth", "config_keys",
     "gate_suites", "gate_policy",
-    "gate_kind",
+    "gate_kind", "gate_audit",
 }
 
 # Highest manifest schema version this Hermes understands.
@@ -171,6 +171,25 @@ def _manifest_gate_kind(
     return inferred
 
 
+def _manifest_gate_audit(data: Mapping, key: str) -> dict[str, Any]:
+    """Validate a manual guard's audit subject and freshness TTL."""
+    raw = data.get("gate_audit")
+    if raw is None:
+        return {}
+    subject = raw.get("subject") if isinstance(raw, Mapping) else None
+    ttl = raw.get("ttl_seconds") if isinstance(raw, Mapping) else None
+    valid_subject = isinstance(subject, str) and bool(subject.strip())
+    valid_ttl = isinstance(ttl, int) and not isinstance(ttl, bool) and ttl > 0
+    if not (valid_subject and valid_ttl):
+        logger.warning(
+            "Plugin %s: gate_audit must be {subject: non-empty string, "
+            "ttl_seconds: positive integer}; ignoring",
+            key,
+        )
+        return {}
+    return {"subject": subject.strip(), "ttl_seconds": ttl}
+
+
 def _config_key_path(item: object) -> Optional[str]:
     """A ``config_keys`` entry: a dotted path at least two segments deep (``memory.retaindb``), else None.
     A bare section (``agent``) would silence typo notices for the whole section."""
@@ -257,6 +276,7 @@ def _parse_manifest_v2_fields(
     gate_suites = _manifest_gate_suites(data, key)
     gate_policy = _manifest_gate_policy(data, key)
     gate_kind = _manifest_gate_kind(data, key, provides_hooks)
+    gate_audit = _manifest_gate_audit(data, key)
     config_keys = manifest_config_keys(data, key)
     # Forward compat: unknown fields warn (never fail); v1 manifests only at debug.
     unknown = sorted(set(data.keys()) - _KNOWN_MANIFEST_FIELDS)
@@ -270,7 +290,7 @@ def _parse_manifest_v2_fields(
         "config_schema": schema, "license": str(data.get("license") or ""),
         "homepage": str(data.get("homepage") or ""), "tags": tags, "config_keys": config_keys,
         "gate_suites": gate_suites, "gate_policy": gate_policy,
-        "gate_kind": gate_kind,
+        "gate_kind": gate_kind, "gate_audit": gate_audit,
     }
 
 
@@ -482,6 +502,8 @@ class PluginManifest:
     gate_policy: str = "required"
     # Protection mechanics: runtime decisions, runtime observation, or manual audit.
     gate_kind: str = "manual"
+    # Manual audit evidence scope and freshness; empty means no receipt source is declared.
+    gate_audit: dict[str, Any] = field(default_factory=dict)
     # Event-bus declarations, advisory (discoverability only): ``emits`` bare names published under
     # ``<key>:``; ``listens`` fully-qualified ``<plugin>:<event>`` names.
     emits: list[str] = field(default_factory=list)

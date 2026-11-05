@@ -939,6 +939,7 @@ def register(ctx):
 - `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below
 - `ctx.dispatch_tool(name, arguments)` — call any other tool (built-in or from another plugin) with the parent agent's context (approvals, credentials, task_id) wired up automatically. Useful from slash-command handlers that need to invoke `terminal`, `read_file`, or any other tool as if the model had called it directly.
 - `ctx.get_config()` / `ctx.set_config()` access only this plugin's settings namespace; `ctx.state` stores plugin-owned runtime data under the active profile.
+- `ctx.record_manual_gate_audit()` stores a profile-scoped receipt for a hook-free manual guard (see [Manual guard audit receipts](#manual-guard-audit-receipts))
 - If this function crashes, the plugin is disabled but Hermes continues fine
 
 **`dispatch_tool` example — a slash command that runs a tool:**
@@ -1756,6 +1757,41 @@ def register(ctx):
 ```
 
 After registration, users can run `hermes my-plugin status`, `hermes my-plugin config`, etc.
+
+### Manual guard audit receipts
+
+A hook-free guard is manual tooling, not runtime protection. It stays `unknown` until its own
+audit writes a real receipt. Declare the required subject and freshness window in the manifest:
+
+```yaml
+tags: [guard]
+hooks: []
+gate_kind: manual
+gate_policy: required
+gate_audit:
+  subject: repo:/absolute/path/to/project
+  ttl_seconds: 3600
+```
+
+After the audit command finishes, record its actual outcome:
+
+```python
+def _handler(args, ctx):
+    code, report = run_audit(args.repo)
+    status = "pass" if code == 0 else "fail" if code == 1 else "error"
+    ctx.record_manual_gate_audit(
+        status=status,
+        subject=f"repo:{Path(args.repo).resolve()}",
+        fingerprint=f"head:{report['head']}",
+        detail="" if code == 0 else report["violations"][0],
+    )
+    return code
+```
+
+The receipt is stored under the active profile in `plugin-data` and is payload-free. Gate Plane
+marks the manual guard healthy only when a fresh `pass` receipt matches the declared subject.
+`fail`, `error`, stale, unreadable, wrong-subject, disabled, and missing evidence remain visible
+degradation; enabled/imported state alone never becomes an active runtime-guard claim.
 
 **Memory provider plugins** use a convention-based approach instead: add a `register_cli(subparser)` function to your plugin's `cli.py` file. The memory plugin discovery system finds it automatically — no `ctx.register_cli_command()` call needed. See the [Memory Provider Plugin guide](../memory-provider-plugin.md#adding-cli-commands) for details.
 

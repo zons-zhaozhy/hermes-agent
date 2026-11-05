@@ -4,10 +4,16 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 import threading
 import time
 from typing import Any, Callable, Iterable, Mapping
+
+from hermes_cli.gate_plane_manual import (
+    MANUAL_GATE_RECEIPT_VERSION,
+    MANUAL_GATE_STATUSES,
+)
 
 
 GUARD_TAG = "guard"
@@ -159,6 +165,7 @@ def _guard_rows(plugins: Iterable[Any]) -> list[dict[str, Any]]:
         else:
             reason = ""
         name = getattr(manifest, "name", None) or getattr(manifest, "key", "") or "unknown"
+        key = str(getattr(manifest, "key", None) or name)
         policy = str(getattr(manifest, "gate_policy", None) or "required")
         if policy not in GATE_POLICIES:
             policy = "required"
@@ -176,12 +183,14 @@ def _guard_rows(plugins: Iterable[Any]) -> list[dict[str, Any]]:
             active = not reason
         rows.append({
             "name": str(name),
+            "key": key,
             "hooks": runtime_hooks,
             "kind": kind,
             "active": active,
             "inactive_advisory": kind != "manual" and policy == "advisory" and not enabled,
             "reason": reason,
             "policy": policy,
+            "gate_audit": dict(getattr(manifest, "gate_audit", None) or {}),
         })
     return rows
 
@@ -195,17 +204,86 @@ def _gate_item(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _manual_item(row: Mapping[str, Any]) -> dict[str, str]:
-    return {
+def _receipt_timestamp(value: Any) -> float | None:
+    """Parse an ISO-8601 timestamp and require an explicit timezone."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.timestamp()
+
+
+def _manual_item(
+    row: Mapping[str, Any],
+    evidence: Any = None,
+    *,
+    now: float | None = None,
+) -> dict[str, Any]:
+    item: dict[str, Any] = {
         "name": row["name"],
         "policy": row["policy"],
-        "reason": row["reason"] or "no fresh audit evidence",
+        "reason": "no fresh audit evidence",
         "status": "unknown",
     }
+    if row["reason"]:
+        item["reason"] = row["reason"]
+        return item
+    declaration = row.get("gate_audit") or {}
+    if not declaration:
+        return item
+    if evidence is None:
+        return item
+    if isinstance(evidence, Mapping) and evidence.get("_read_error"):
+        item["reason"] = f"audit evidence unreadable: {evidence['_read_error']}"
+        return item
+    if not isinstance(evidence, Mapping):
+        item["reason"] = "audit evidence malformed"
+        return item
+
+    metadata = {
+        "subject": str(evidence.get("subject", "")),
+        "checked_at": str(evidence.get("checked_at", "")),
+        "fingerprint": str(evidence.get("fingerprint", "")),
+    }
+    item.update(metadata)
+    if evidence.get("version") != MANUAL_GATE_RECEIPT_VERSION:
+        item["reason"] = "audit evidence malformed"
+        return item
+    status = str(evidence.get("status", ""))
+    if status not in MANUAL_GATE_STATUSES:
+        item["reason"] = "audit evidence malformed"
+        return item
+    if metadata["subject"] != declaration.get("subject"):
+        item["reason"] = "audit subject mismatch"
+        return item
+    checked_at = _receipt_timestamp(metadata["checked_at"])
+    current_time = time.time() if now is None else float(now)
+    if checked_at is None:
+        item["reason"] = "audit evidence malformed"
+        return item
+    if current_time < checked_at:
+        item["reason"] = "audit timestamp is in the future"
+        return item
+    ttl_seconds = int(declaration.get("ttl_seconds", 0))
+    if current_time >= checked_at + ttl_seconds:
+        item["reason"] = "audit evidence stale"
+        return item
+    if status == "pass":
+        item["status"] = "pass"
+        item["reason"] = ""
+        return item
+    item["status"] = "fail"
+    item["reason"] = "latest audit failed" if status == "fail" else "latest audit errored"
+    return item
 
 
 def build_gate_report(
     plugins: Iterable[Any], plane: GatePlane, *, session_id: str | None = None,
+    manual_evidence: Mapping[str, Any] | None = None, now: float | None = None,
 ) -> dict[str, Any]:
     """Combine declarations, registrations, and runtime evidence into one report."""
     rows = _guard_rows(plugins)
@@ -272,15 +350,23 @@ def build_gate_report(
         1 for row in runtime_rows if not row["active"] and not row["inactive_advisory"]
     )
     inactive_advisory_count = sum(1 for row in rows if row["inactive_advisory"])
-    manual_guards = [_manual_item(row) for row in manual_rows]
-    required_manual_unknown = any(
-        item["policy"] == "required" and item["status"] == "unknown"
+    evidence_by_key = manual_evidence or {}
+    manual_guards = [
+        _manual_item(
+            row,
+            evidence_by_key.get(row["key"]),
+            now=now,
+        )
+        for row in manual_rows
+    ]
+    required_manual_unhealthy = any(
+        item["policy"] == "required" and item["status"] != "pass"
         for item in manual_guards
     )
 
     return {
         "overall_status": (
-            "healthy" if rows and unavailable_count == 0 and not required_manual_unknown
+            "healthy" if rows and unavailable_count == 0 and not required_manual_unhealthy
             and all(suite["status"] == "healthy" for suite in suites)
             else "unknown"
         ),

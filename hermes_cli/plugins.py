@@ -58,6 +58,7 @@ from hermes_cli.plugins_dispatch import (
     get_pre_verify_continue_message, is_valid_system_prompt_section_id, resolve_plugin_command_result,
 )
 from hermes_cli.gate_plane import GatePlane, build_gate_report
+from hermes_cli.gate_plane_manual import PluginManualGateCtxMixin, load_manual_gate_evidence
 from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
 from hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
@@ -237,7 +238,7 @@ class LoadedPlugin:
     deferred: bool = False
 
 
-class PluginContext(PluginCapabilityCtxMixin):
+class PluginContext(PluginCapabilityCtxMixin, PluginManualGateCtxMixin):
     """Facade given to plugins so they can register tools and hooks."""
 
     def __init__(self, manifest: PluginManifest, manager: PluginManager):
@@ -1176,7 +1177,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     def gate_plane_report(self, session_id: str | None = None) -> dict[str, Any]:
         """Return this profile's guard declarations, registrations, and recent evidence."""
         return build_gate_report(
-            self._plugins.values(), self.gate_plane, session_id=session_id,
+            self._plugins.values(),
+            self.gate_plane,
+            session_id=session_id,
+            manual_evidence=load_manual_gate_evidence(self._plugins.values()),
         )
 
     @property

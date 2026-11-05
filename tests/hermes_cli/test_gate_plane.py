@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime, UTC
 from types import SimpleNamespace
+
+import pytest
 
 from hermes_cli.gate_plane import GatePlane, GateStatus, build_gate_report, result_status
 
@@ -61,6 +64,7 @@ def test_gate_plane_history_is_bounded() -> None:
 def _plugin(
     name: str,
     *,
+    key: str | None = None,
     enabled: bool = True,
     error: str | None = None,
     hooks: tuple[str, ...] = ("pre_verify",),
@@ -68,10 +72,11 @@ def _plugin(
     tags: tuple[str, ...] = ("guard",),
     policy: str | None = "required",
     kind: str | None = None,
+    gate_audit: dict[str, object] | None = None,
 ) -> SimpleNamespace:
     manifest = SimpleNamespace(
         name=name,
-        key=name,
+        key=key or name,
         tags=list(tags),
         provides_hooks=list(hooks),
     )
@@ -79,6 +84,8 @@ def _plugin(
         manifest.gate_policy = policy
     if kind is not None:
         manifest.gate_kind = kind
+    if gate_audit is not None:
+        manifest.gate_audit = gate_audit
     return SimpleNamespace(
         manifest=manifest,
         enabled=enabled,
@@ -114,6 +121,130 @@ def test_required_manual_guard_without_evidence_keeps_report_unknown() -> None:
 
     assert report["overall_status"] == "unknown"
     assert report["manual_guards"][0]["status"] == "unknown"
+
+
+def _receipt(
+    *,
+    status: str = "pass",
+    subject: str = "repo:/tmp/project",
+    checked_at: str = "2026-11-05T00:00:00+00:00",
+    version: int = 1,
+) -> dict[str, object]:
+    return {
+        "version": version,
+        "status": status,
+        "subject": subject,
+        "checked_at": checked_at,
+        "fingerprint": "sha256:test",
+        "detail": "",
+    }
+
+
+def test_fresh_matching_manual_audit_pass_is_visible() -> None:
+    plane = GatePlane()
+    plugins = [
+        _plugin("intent-guard", hooks=("pre_llm_call",)),
+        _plugin(
+            "fork-guard",
+            hooks=(),
+            kind="manual",
+            gate_audit={"subject": "repo:/tmp/project", "ttl_seconds": 60},
+        ),
+    ]
+    now = datetime(2026, 11, 5, 0, 0, 59, tzinfo=UTC).timestamp()
+
+    report = build_gate_report(
+        plugins, plane,
+        manual_evidence={"fork-guard": _receipt()},
+        now=now,
+    )
+
+    assert report["active_guard_count"] == 1
+    assert report["manual_guards"] == [{
+        "name": "fork-guard",
+        "policy": "required",
+        "reason": "",
+        "status": "pass",
+        "subject": "repo:/tmp/project",
+        "checked_at": "2026-11-05T00:00:00+00:00",
+        "fingerprint": "sha256:test",
+    }]
+    assert all("fork-guard" not in suite["guards"] for suite in report["suites"])
+
+
+@pytest.mark.parametrize(
+    ("receipt", "expected_reason"),
+    [
+        (
+            _receipt(checked_at="2026-11-04T23:00:00+00:00"),
+            "audit evidence stale",
+        ),
+        (_receipt(subject="repo:/other"), "audit subject mismatch"),
+        (_receipt(version=2), "audit evidence malformed"),
+        (None, "no fresh audit evidence"),
+    ],
+)
+def test_manual_guard_degrades_on_failed_stale_wrong_or_missing_evidence(
+    receipt: dict[str, object] | None, expected_reason: str,
+) -> None:
+    plugin = _plugin(
+        "fork-guard",
+        hooks=(),
+        kind="manual",
+        gate_audit={"subject": "repo:/tmp/project", "ttl_seconds": 60},
+    )
+    now = datetime(2026, 11, 5, 0, 0, 0, tzinfo=UTC).timestamp()
+
+    report = build_gate_report(
+        [plugin], GatePlane(), manual_evidence={"fork-guard": receipt}, now=now,
+    )
+
+    item = report["manual_guards"][0]
+    assert report["overall_status"] == "unknown"
+    assert item["status"] == "unknown"
+    assert item["reason"] == expected_reason
+
+
+def test_fresh_failed_manual_audit_is_fail_not_unknown() -> None:
+    plugin = _plugin(
+        "fork-guard",
+        hooks=(),
+        kind="manual",
+        gate_audit={"subject": "repo:/tmp/project", "ttl_seconds": 60},
+    )
+    now = datetime(2026, 11, 5, 0, 0, 0, tzinfo=UTC).timestamp()
+
+    report = build_gate_report(
+        [plugin], GatePlane(),
+        manual_evidence={"fork-guard": _receipt(status="fail")},
+        now=now,
+    )
+
+    item = report["manual_guards"][0]
+    assert report["overall_status"] == "unknown"
+    assert item["status"] == "fail"
+    assert item["reason"] == "latest audit failed"
+
+
+def test_disabled_manual_guard_with_receipt_stays_unknown() -> None:
+    plugin = _plugin(
+        "fork-guard",
+        enabled=False,
+        error="disabled via config",
+        hooks=(),
+        kind="manual",
+        gate_audit={"subject": "repo:/tmp/project", "ttl_seconds": 60},
+    )
+    now = datetime(2026, 11, 5, 0, 0, 0, tzinfo=UTC).timestamp()
+
+    report = build_gate_report(
+        [plugin], GatePlane(),
+        manual_evidence={"fork-guard": _receipt()},
+        now=now,
+    )
+
+    assert report["manual_guards"][0]["status"] == "unknown"
+    assert report["manual_guards"][0]["reason"] == "disabled via config"
 
 
 def test_observer_hooks_map_to_integrity_and_registration_is_checked() -> None:

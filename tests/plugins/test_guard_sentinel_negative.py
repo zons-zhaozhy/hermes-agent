@@ -208,6 +208,34 @@ def test_required_manual_guard_without_evidence_is_visible(monkeypatch):
     assert "no fresh audit evidence" in answer
 
 
+def test_required_manual_guard_failed_audit_is_visible(monkeypatch):
+    guard = _load_guard()
+    guard._reported.clear()
+    guard._pending.clear()
+    report = {
+        "overall_status": "unknown",
+        "suites": [],
+        "manual_guards": [{
+            "name": "fork-guard",
+            "policy": "required",
+            "reason": "latest audit failed",
+            "status": "fail",
+        }],
+    }
+    fake = SimpleNamespace(gate_plane_report=lambda session_id=None: report)
+    import hermes_cli.plugins as hp
+
+    monkeypatch.setattr(hp, "get_plugin_manager", lambda: fake)
+    guard.on_session_start(session_id="manual-failed")
+    answer = guard.transform_llm_output(
+        "normal answer", session_id="manual-failed",
+    )
+
+    assert answer is not None
+    assert "门禁缺席" in answer and "fork-guard" in answer
+    assert "latest audit failed" in answer
+
+
 def test_disabled_advisory_guard_is_not_reported_as_absent(monkeypatch, caplog):
     """An optional aid that the profile deliberately leaves off is not a broken defense."""
     guard = _load_guard()
