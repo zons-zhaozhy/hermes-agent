@@ -180,7 +180,7 @@ class GatewaySecondaryReconnectMixin:
         # Hydrate external secret sources off-loop so they cannot starve heartbeats.
         await asyncio.to_thread(hydrate_profile_secret_sources, profile_home)
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
-            profile_config = load_gateway_config().platforms.get(platform)
+            profile_config = (await asyncio.to_thread(load_gateway_config)).platforms.get(platform)
             if profile_config is None or not profile_config.enabled:
                 if predecessor is None:
                     self._stand_down_unbuilt_secondary(profile_name, platform, "disabled in config")

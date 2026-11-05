@@ -117,7 +117,7 @@ def _load_cached(now: float, max_age: float) -> str:
     cache = _cache_path()
     if not cache.exists():
         return ""
-    data = json.loads(cache.read_text(encoding="utf-8"))
+    data = json.loads(cache.read_text(encoding="utf-8-sig"))
     if now - float(data.get("generated", 0)) >= max_age:
         return ""
     return str(data.get("text", ""))
