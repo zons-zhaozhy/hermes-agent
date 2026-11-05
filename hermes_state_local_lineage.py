@@ -6,7 +6,7 @@ not re-key idempotency digests, queued inputs, subscribers or uncertain claims.
 import json
 import time
 
-from hermes_state_local import POLICY_PREFIX
+from hermes_state_local import POLICY_PREFIX, _decode_local_receipt, _encode_local_receipt
 from hermes_state_runtime import RuntimeStoreError, _epoch, _json
 import itertools
 
@@ -46,7 +46,7 @@ def local_physical_target(conn, session_id):
                          (POLICY_PREFIX + session_id,)).fetchone()
     if saved is None:
         return session_id
-    receipt = json.loads(saved[0])
+    receipt = _decode_local_receipt(conn, saved[0])
     if receipt['session_id'] != session_id:
         raise RuntimeStoreError('storage_unavailable')
     return validate_local_lineage(conn, receipt)
@@ -63,7 +63,8 @@ def _commit_local_target(conn, receipt, routed):
     """Store *receipt* and its route's entry *routed* and bump the logical revision, in one transaction."""
     conn.execute("UPDATE gateway_routing SET entry_json=? WHERE scope='' AND session_key=?",
                  (_json(routed), receipt['route']))
-    conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(receipt), POLICY_PREFIX + receipt['session_id']))
+    conn.execute('UPDATE state_meta SET value=? WHERE key=?',
+                 (_encode_local_receipt(conn, receipt), POLICY_PREFIX + receipt['session_id']))
     conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (receipt['session_id'],))
 
 
@@ -81,7 +82,7 @@ def advance_local_target(conn, parent_session_id, child_session_id, *, entry=Non
             raise RuntimeStoreError('storage_unavailable')
         return
     try:
-        receipt = json.loads(raw[0])
+        receipt = _decode_local_receipt(conn, raw[0])
         if (receipt['session_id'] != logical_id or receipt['entry']['session_id'] != parent_session_id
                 or receipt['principal_id'] != parent['user_id'] or receipt['route'] != parent['session_key']):
             raise RuntimeStoreError('storage_unavailable')
@@ -150,7 +151,7 @@ def adopt_untracked_compression(db, *, epoch, session_id, expected):
     def write(conn):
         _epoch(conn, epoch)
         saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + session_id,)).fetchone()
-        receipt = json.loads(saved[0])
+        receipt = _decode_local_receipt(conn, saved[0])
         if receipt != expected:
             return
         adoptable = adoptable_compression(conn, receipt)
@@ -174,7 +175,7 @@ def reset_local_target(db, *, epoch, parent_session_id, entry):
                              (POLICY_PREFIX + parent['chat_id'],)).fetchone()
         if saved is None:
             raise RuntimeStoreError('storage_unavailable')
-        receipt = json.loads(saved[0])
+        receipt = _decode_local_receipt(conn, saved[0])
         logical_id = receipt['session_id']
         if validate_local_lineage(conn, receipt) != parent_session_id:
             raise RuntimeStoreError('admission_conflict')
