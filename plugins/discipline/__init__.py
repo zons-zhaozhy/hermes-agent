@@ -18,6 +18,7 @@ curl-safety / log-first-diagnosis / tool-safety / no-bypass / no-pushback)
   test_discipline  禁裸 pytest——一律 scripts/run_tests.sh(CI 环境同步)
   section_reinjection 守卫段重注入(段库版本指纹变更即注入 + 每 10 轮补注, 让段
                    修改对运行中的会话也生效——system prompt 段在会话起点冻结)
+  workflow_router  普通会话首轮注入一次工程工作流路由(非阻断, 指向 bundled skills)
 
 分层依据见 docs/guard-system-architecture.md。
 
@@ -48,6 +49,7 @@ _SUB_GUARD_NAMES = (
     "rule_reinjection",
     "test_discipline",
     "section_reinjection",
+    "workflow_router",
 )
 
 # 有拦截、无前置提示且属「高频×可预判」的子护栏——段文本见段库
