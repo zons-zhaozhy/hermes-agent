@@ -209,6 +209,14 @@ git rev-list --count main..upstream/main   # 应为 0
 | tests/gateway/test_runtime_listener_supervision.py | READY async 化与监听失败清理契约 | a8e085bea7 |
 | tests/gateway/test_runtime_token_identity.py | READY async 化调用契约 | a8e085bea7 |
 
+### 1106 补记 3 项（workflow skills 提交后复核）
+
+| 文件 | 定制内容 | 归属提交 |
+|---|---|---|
+| skills/software-development/requesting-code-review/SKILL.md | 评审改为需求/架构/安全/证据四线核查，显式禁止自动委托、自动修复与自动提交 | c6d5dab042 |
+| skills/software-development/systematic-debugging/SKILL.md | 根因调试改为证据、模式、假设、修复、纵深防御五阶段，并接入 Hermes 测试运行器 | c6d5dab042 |
+| skills/software-development/test-driven-development/SKILL.md | TDD 改为纵向行为切片与仓库 canonical runner，消除裸框架调用示范 | c6d5dab042 |
+
 ## 五、机器账本（SSOT）
 
 > 叙述表格只解释意图；本 YAML 块是 `fork-guard audit` 唯一机器事实源。
@@ -370,6 +378,9 @@ official_paths:
   - scripts/check
   - scripts/ci/prompt_surface.py
   - scripts/run_tests_parallel.py
+  - skills/software-development/requesting-code-review/SKILL.md
+  - skills/software-development/systematic-debugging/SKILL.md
+  - skills/software-development/test-driven-development/SKILL.md
   - tests/agent/test_auxiliary_client.py
   - tests/agent/test_auxiliary_error_classification.py
   - tests/agent/test_auxiliary_reasoning_floor.py
