@@ -22,3 +22,4 @@ gate_suites:
   - intent
   - output
 gate_policy: required
+gate_kind: enforcement

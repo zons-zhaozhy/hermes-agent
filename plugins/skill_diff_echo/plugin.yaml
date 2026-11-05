@@ -10,3 +10,4 @@ tags:
 gate_suites:
   - execution
 gate_policy: advisory
+gate_kind: enforcement

@@ -16,3 +16,4 @@ gate_suites:
   - intent
   - output
 gate_policy: advisory
+gate_kind: enforcement

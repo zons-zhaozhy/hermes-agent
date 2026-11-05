@@ -11,22 +11,34 @@ from typing import Any, Callable, Iterable, Mapping
 
 
 GUARD_TAG = "guard"
-GATE_HOOKS = frozenset({
+GATE_ENFORCEMENT_HOOKS = frozenset({
     "pre_llm_call",
     "pre_tool_batch",
     "pre_tool_call",
     "pre_verify",
     "transform_llm_output",
 })
+GATE_OBSERVER_HOOKS = frozenset({
+    "post_llm_call",
+    "post_tool_call",
+    "on_session_start",
+    "on_session_reset",
+    "on_session_end",
+})
+GATE_EVIDENCE_HOOKS = GATE_ENFORCEMENT_HOOKS | GATE_OBSERVER_HOOKS
 GATE_SUITES: dict[str, tuple[str, ...]] = {
     "intent": ("pre_llm_call",),
     "execution": ("pre_tool_batch", "pre_tool_call"),
     "output": ("transform_llm_output",),
     "completion": ("pre_verify",),
-    "integrity": ("on_session_start", "on_session_reset", "on_session_end"),
+    "integrity": (
+        "post_llm_call", "post_tool_call",
+        "on_session_start", "on_session_reset", "on_session_end",
+    ),
 }
 GATE_SUITE_NAMES = frozenset(GATE_SUITES)
 GATE_POLICIES = frozenset({"required", "advisory"})
+GATE_KINDS = frozenset({"enforcement", "observer", "manual"})
 
 
 class GateStatus(str, Enum):
@@ -133,9 +145,9 @@ def _guard_rows(plugins: Iterable[Any]) -> list[dict[str, Any]]:
         if GUARD_TAG not in tags:
             continue
         declared = set(getattr(manifest, "provides_hooks", None) or ())
-        gate_hooks = sorted(declared & GATE_HOOKS)
+        runtime_hooks = sorted(declared & GATE_EVIDENCE_HOOKS)
         registered = set(getattr(plugin, "hooks_registered", None) or ())
-        missing_hooks = [hook for hook in gate_hooks if hook not in registered]
+        missing_hooks = [hook for hook in runtime_hooks if hook not in registered]
         error = getattr(plugin, "error", None)
         enabled = bool(getattr(plugin, "enabled", False))
         if not enabled:
@@ -150,11 +162,24 @@ def _guard_rows(plugins: Iterable[Any]) -> list[dict[str, Any]]:
         policy = str(getattr(manifest, "gate_policy", None) or "required")
         if policy not in GATE_POLICIES:
             policy = "required"
+        kind = str(getattr(manifest, "gate_kind", None) or "")
+        if kind not in GATE_KINDS:
+            declared_kinds = set(runtime_hooks)
+            kind = (
+                "enforcement" if declared_kinds & GATE_ENFORCEMENT_HOOKS
+                else "observer" if declared_kinds & GATE_OBSERVER_HOOKS
+                else "manual"
+            )
+        if kind == "manual":
+            active = False
+        else:
+            active = not reason
         rows.append({
             "name": str(name),
-            "hooks": gate_hooks,
-            "active": not reason,
-            "inactive_advisory": policy == "advisory" and not enabled,
+            "hooks": runtime_hooks,
+            "kind": kind,
+            "active": active,
+            "inactive_advisory": kind != "manual" and policy == "advisory" and not enabled,
             "reason": reason,
             "policy": policy,
         })
@@ -170,12 +195,23 @@ def _gate_item(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _manual_item(row: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        "name": row["name"],
+        "policy": row["policy"],
+        "reason": row["reason"] or "no fresh audit evidence",
+        "status": "unknown",
+    }
+
+
 def build_gate_report(
     plugins: Iterable[Any], plane: GatePlane, *, session_id: str | None = None,
 ) -> dict[str, Any]:
     """Combine declarations, registrations, and runtime evidence into one report."""
     rows = _guard_rows(plugins)
-    active_rows = [row for row in rows if row["active"]]
+    runtime_rows = [row for row in rows if row["kind"] != "manual"]
+    manual_rows = [row for row in rows if row["kind"] == "manual"]
+    active_rows = [row for row in runtime_rows if row["active"]]
     events = plane.events(session_id)
     event_dicts = [event.as_dict() for event in events]
 
@@ -183,32 +219,39 @@ def build_gate_report(
     for suite_name, hooks in GATE_SUITES.items():
         hook_set = set(hooks)
         if suite_name == "integrity":
-            guards = [row["name"] for row in active_rows]
+            relevant_rows = [
+                row for row in runtime_rows
+                if not row["hooks"] or hook_set.intersection(row["hooks"])
+            ]
+            relevant_active = {
+                row["name"] for row in relevant_rows if row["active"]
+            }
+            guards = [
+                row["name"] for row in active_rows if row["name"] in relevant_active
+            ]
             missing = [
                 _gate_item(row)
-                for row in rows
-                if not row["active"] and not row["inactive_advisory"] and not row["hooks"]
+                for row in relevant_rows
+                if not row["active"] and not row["inactive_advisory"]
             ]
             inactive_advisory = [
                 _gate_item(row)
-                for row in rows
-                if row["inactive_advisory"] and not row["hooks"]
+                for row in relevant_rows
+                if row["inactive_advisory"]
             ]
         else:
-            guards = [
-                row["name"] for row in active_rows
-                if hook_set.intersection(row["hooks"])
+            relevant_rows = [
+                row for row in runtime_rows if hook_set.intersection(row["hooks"])
             ]
+            guards = [row["name"] for row in relevant_rows if row["active"]]
             missing = [
                 _gate_item(row)
-                for row in rows
+                for row in relevant_rows
                 if not row["active"] and not row["inactive_advisory"]
-                and hook_set.intersection(row["hooks"])
             ]
             inactive_advisory = [
                 _gate_item(row)
-                for row in rows
-                if row["inactive_advisory"] and hook_set.intersection(row["hooks"])
+                for row in relevant_rows if row["inactive_advisory"]
             ]
         runtime_unknown = sum(
             1 for event in events
@@ -226,19 +269,25 @@ def build_gate_report(
         })
 
     unavailable_count = sum(
-        1 for row in rows if not row["active"] and not row["inactive_advisory"]
+        1 for row in runtime_rows if not row["active"] and not row["inactive_advisory"]
     )
     inactive_advisory_count = sum(1 for row in rows if row["inactive_advisory"])
+    manual_guards = [_manual_item(row) for row in manual_rows]
+    required_manual_unknown = any(
+        item["policy"] == "required" and item["status"] == "unknown"
+        for item in manual_guards
+    )
 
     return {
         "overall_status": (
-            "healthy" if rows and unavailable_count == 0
-            and not any(suite["missing"] or suite["runtime_unknown"] for suite in suites)
+            "healthy" if rows and unavailable_count == 0 and not required_manual_unknown
+            and all(suite["status"] == "healthy" for suite in suites)
             else "unknown"
         ),
         "guard_count": len(rows),
         "active_guard_count": len(active_rows),
         "inactive_advisory_count": inactive_advisory_count,
+        "manual_guards": manual_guards,
         "suites": suites,
         "events": event_dicts,
     }

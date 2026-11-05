@@ -16,3 +16,4 @@ gate_suites:
   - output
   - completion
 gate_policy: required
+gate_kind: enforcement

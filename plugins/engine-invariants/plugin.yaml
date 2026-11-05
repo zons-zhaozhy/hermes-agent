@@ -22,3 +22,4 @@ tags:
 gate_suites:
   - integrity
 gate_policy: required
+gate_kind: observer

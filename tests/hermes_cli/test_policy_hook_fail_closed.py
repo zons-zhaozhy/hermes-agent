@@ -71,3 +71,42 @@ def test_async_policy_failure_is_fail_closed(hook_name: str) -> None:
     assert len(results) == 1
     assert results[0]["action"] == "block"
     assert "async judge unavailable" in results[0]["message"]
+
+
+@pytest.mark.parametrize("hook_name", ["post_llm_call", "post_tool_call"])
+def test_observer_failure_is_nonblocking_but_unknown(hook_name: str) -> None:
+    manager = PluginManager()
+
+    def broken_observer(**_kwargs):
+        raise RuntimeError("observer backend unavailable")
+
+    manager._hooks[hook_name] = [broken_observer]
+    results = manager.invoke_hook(
+        hook_name,
+        session_id="observer-failure",
+        tool_call_id="call-1",
+    )
+
+    assert results == []
+    event = manager.gate_plane.events("observer-failure")[0]
+    assert event.hook == hook_name
+    assert event.status.value == "unknown"
+    assert event.detail == "RuntimeError: observer backend unavailable"
+
+
+def test_async_observer_failure_is_nonblocking_but_unknown() -> None:
+    manager = PluginManager()
+
+    async def broken_observer(**_kwargs):
+        raise RuntimeError("async observer unavailable")
+
+    manager._hooks["post_llm_call"] = [broken_observer]
+    results = asyncio.run(manager.ainvoke_hook(
+        "post_llm_call", session_id="async-observer",
+    ))
+
+    assert results == []
+    event = manager.gate_plane.events("async-observer")[0]
+    assert event.hook == "post_llm_call"
+    assert event.status.value == "unknown"
+    assert event.detail == "RuntimeError: async observer unavailable"

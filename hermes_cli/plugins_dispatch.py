@@ -19,7 +19,7 @@ import types
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
 
-from hermes_cli.gate_plane import GATE_HOOKS, GateStatus, result_status
+from hermes_cli.gate_plane import GATE_EVIDENCE_HOOKS, GateStatus, result_status
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION
 
 logger = logging.getLogger("hermes_cli.plugins")
@@ -325,7 +325,7 @@ class PluginDispatchMixin:
         duration_ms: float = 0.0,
     ) -> None:
         """Store safe policy-hook evidence; diagnostics must never alter enforcement."""
-        if hook_name not in GATE_HOOKS:
+        if hook_name not in GATE_EVIDENCE_HOOKS:
             return
         try:
             self.gate_plane.record(

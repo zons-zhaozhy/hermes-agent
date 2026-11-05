@@ -11,3 +11,4 @@ gate_suites:
   - intent
   - execution
 gate_policy: advisory
+gate_kind: enforcement

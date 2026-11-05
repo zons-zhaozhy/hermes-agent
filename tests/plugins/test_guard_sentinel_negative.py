@@ -58,7 +58,10 @@ def test_negative_inactive_guard_reported(monkeypatch, caplog):
     guard = _load_guard()
     guard._reported.clear()
     fake = _FakeManager({
-        "good": _make_plugin("good", True, None),
+        "good": _make_plugin(
+            "good", True, None,
+            hooks=["pre_verify"], registered_hooks=["pre_verify"],
+        ),
         "dead": _make_plugin("dead", False, "load failed"),
     })
     import hermes_cli.plugins as hp
@@ -72,7 +75,12 @@ def test_negative_inactive_guard_reported(monkeypatch, caplog):
 def test_negative_active_guard_not_reported(monkeypatch, caplog):
     guard = _load_guard()
     guard._reported.clear()
-    fake = _FakeManager({"good": _make_plugin("good", True, None)})
+    fake = _FakeManager({
+        "good": _make_plugin(
+            "good", True, None,
+            hooks=["pre_verify"], registered_hooks=["pre_verify"],
+        ),
+    })
     import hermes_cli.plugins as hp
 
     monkeypatch.setattr(hp, "get_plugin_manager", lambda: fake)
@@ -170,6 +178,34 @@ def test_sentinel_consumes_the_shared_gate_plane_report(monkeypatch):
 
     assert answer is not None
     assert "门禁缺席" in answer and "shared-dead-guard" in answer
+
+
+def test_required_manual_guard_without_evidence_is_visible(monkeypatch):
+    guard = _load_guard()
+    guard._reported.clear()
+    guard._pending.clear()
+    report = {
+        "overall_status": "unknown",
+        "suites": [],
+        "manual_guards": [{
+            "name": "fork-guard",
+            "policy": "required",
+            "reason": "no fresh audit evidence",
+            "status": "unknown",
+        }],
+    }
+    fake = SimpleNamespace(gate_plane_report=lambda session_id=None: report)
+    import hermes_cli.plugins as hp
+
+    monkeypatch.setattr(hp, "get_plugin_manager", lambda: fake)
+    guard.on_session_start(session_id="manual-required")
+    answer = guard.transform_llm_output(
+        "normal answer", session_id="manual-required",
+    )
+
+    assert answer is not None
+    assert "门禁缺席" in answer and "fork-guard" in answer
+    assert "no fresh audit evidence" in answer
 
 
 def test_disabled_advisory_guard_is_not_reported_as_absent(monkeypatch, caplog):

@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from hermes_cli.gate_plane import (
-    GATE_HOOKS,
     GATE_ENFORCEMENT_HOOKS,
     GATE_KINDS,
     GATE_OBSERVER_HOOKS,
@@ -63,7 +62,7 @@ def test_every_bundled_guard_declares_hook_aligned_taxonomy_and_policy() -> None
         expected = {
             _HOOK_SUITES[hook]
             for hook in manifest.provides_hooks
-            if hook in GATE_HOOKS
+            if hook in GATE_ENFORCEMENT_HOOKS
         }
         actual = set(manifest.gate_suites)
         if expected:

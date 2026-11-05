@@ -626,6 +626,7 @@ this Hermes understands still loads with a warning.
 | `tags` | list of str | Free-form discovery tags (e.g. `[gateway, telegram]`). |
 | `gate_suites` | list | Guard taxonomy declaration: one or more of `intent`, `execution`, `output`, `completion`, and `integrity`. A guard may span phases. For bundled guards this is cross-checked against declared Gate Plane hooks; runtime hook registration remains authoritative, so metadata cannot hide an executable suite. Invalid entries warn and are dropped. |
 | `gate_policy` | str | Guard health policy: `required` (baseline; disabled, failed, or hollow registration makes its suites `unknown`) or `advisory` (opt-in; deliberate disable stays visible but healthy, while load failure or a hollow registration still makes its suites `unknown`). Invalid values warn and fail safe to `required`. |
+| `gate_kind` | str | Guard protection mechanics: `enforcement` (owns a runtime decision hook), `observer` (owns non-blocking evidence such as `post_llm_call`, `post_tool_call`, or session lifecycle), or `manual` (CLI/offline audit). Manual guards are reported separately, never counted as runtime-active, and a required manual guard without fresh evidence remains `unknown`. Invalid values warn and fall back to hook inference. |
 | `provides_locales` | list | Language pack declaration: ids (`- pl`) or `{id, endonym, rtl}` mappings whose `locales/<id>[.tui\|.desktop].yaml` the loader registers automatically — see [Ship a language pack](#ship-a-language-pack). |
 | `requires_auth` | list of str | Providers whose sign-in the plugin uses through Hermes (today: `openai-codex`). Required by `credentialed_provider_request`; shown at install and in `hermes plugins show`. See [Use the user's Codex sign-in](#use-the-users-codex-sign-in-core-made-requests). |
 | `oauth` | list of mappings | OAuth clients the plugin uses through Hermes: `id`, `authorize_url`, `token_url`, `scopes`, `client_id_env`, optional `client_secret_env`, `hosts`, optional `authorize_params`. Signed in with `hermes auth add <plugin>:<id>`, used through `credentialed_provider_request`. See [Use your own OAuth client](#use-your-own-oauth-client-google-and-other-apis). |
@@ -641,6 +642,7 @@ homepage: https://github.com/owner/my-plugin
 tags: [gateway, demo]
 gate_suites: [intent, output]
 gate_policy: advisory
+gate_kind: enforcement
 requires_plugins:
   - id: other-plugin
     version_range: ">=1.0,<2"

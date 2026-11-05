@@ -166,7 +166,7 @@ class TestV2Parsing:
         assert m.tags == []
         assert m.gate_suites == ["intent"]
         assert m.gate_policy == "required"
-        assert m.gate_kind == "enforcement"
+        assert m.gate_kind == "manual"
         assert "gate_suites" in caplog.text
         assert "gate_policy" in caplog.text
         assert "gate_kind" in caplog.text

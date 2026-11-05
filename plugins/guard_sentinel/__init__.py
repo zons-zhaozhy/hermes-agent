@@ -59,6 +59,21 @@ def _check_guards(surface: str, session_id: str = "") -> None:
                     "Fix: `hermes plugins enable %s` or investigate the load error.",
                     surface, name, declaration, issue, name,
                 )
+        for item in report.get("manual_guards", ()):
+            if item.get("policy") != "required" or item.get("status") != "unknown":
+                continue
+            name = str(item.get("name", "unknown"))
+            issue = str(item.get("reason", "unknown"))
+            absent.append(f"{name} (manual audit; {issue})")
+            dedupe = f"{name}:{issue}"
+            if dedupe in _reported:
+                continue
+            _reported.add(dedupe)
+            logger.warning(
+                "GUARD ABSENT [%s]: manual guard %r has no fresh audit evidence "
+                "this session (%s). Run its audit or investigate the load error.",
+                surface, name, issue,
+            )
         pending_key = session_id or "_global"
         if absent:
             _pending[pending_key] = (

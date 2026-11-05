@@ -47,6 +47,12 @@ def cmd_gates(session_id: str | None = None, *, json_output: bool = False) -> No
                 f"    advisory disabled {guard.get('name', 'unknown')}: "
                 f"{guard.get('reason', 'unknown')}"
             )
+    for guard in report.get("manual_guards", ()):
+        console.print(
+            f"    manual {guard.get('status', 'unknown')} "
+            f"{guard.get('name', 'unknown')}: "
+            f"{guard.get('policy', 'required')}; {guard.get('reason', 'unknown')}"
+        )
 
     unknown_events = [
         event for event in report.get("events", ())

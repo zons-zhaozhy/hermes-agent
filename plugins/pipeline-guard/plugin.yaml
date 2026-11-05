@@ -12,3 +12,4 @@ gate_suites:
   - execution
   - completion
 gate_policy: advisory
+gate_kind: enforcement

@@ -26,11 +26,20 @@ Bundled guard 的 `plugin.yaml` 显式声明两个 additive 字段：
 - `gate_policy`: `required` 表示工程基线；缺席、加载失败或空注册使相关 suite `unknown`。
   `advisory` 表示专项/辅助能力；刻意 disabled 只在 `inactive_advisory` 诊断道展示，不拉低
   健康，但一旦 enabled，加载失败或空注册仍进入 `missing` 并使 suite `unknown`。
+- `gate_kind`: `enforcement` 表示五个运行决策 hook 之一的执法面；`observer` 表示
+  `post_llm_call` / `post_tool_call` / session lifecycle 的非阻断观测面；`manual` 表示
+  CLI/离线审计，不得计入 runtime active guard。缺失或非法时按 hooks 保守推导，无 hook
+  即 `manual`。required manual audit 没有新鲜审计证据时保持 `unknown`，不能凭插件导入
+  成功伪装健康。
+
+Gate Plane 证据面覆盖 enforcement 与 observer hooks。observer 回调失败或超时不阻断轮次，
+但必须记录 `unknown` 并降低 integrity 健康；`engine-invariants` 不在钩子内部吞掉基础设施
+异常，而由插件调度器统一隔离并留痕。
 
 基线 owner：`read-think-gate`、`guards`、`discipline`、`block_escalation`、
 `completion-boundary-audit`、`finish_guard`、`guard-sentinel`、`engine-invariants`。
-旧/第三方 `tags: [guard]` 插件未声明 metadata 时按保守策略处理：由 hook 推导 suite 且视为
-`required`。后续行为归并只允许按本 taxonomy 分批迁入既有 owner suite；先迁/补契约测试，
+旧/第三方 `tags: [guard]` 插件未声明 metadata 时按保守策略处理：由 hook 推导 suite/kind
+且视为 `required`。后续行为归并只允许按本 taxonomy 分批迁入既有 owner suite；先迁/补契约测试，
 再改实现，不留兼容壳。
 
 ## 二、两条注入通道（事前）

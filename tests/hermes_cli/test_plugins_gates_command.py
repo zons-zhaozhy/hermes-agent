@@ -11,6 +11,12 @@ REPORT = {
     "overall_status": "unknown",
     "guard_count": 2,
     "active_guard_count": 1,
+    "manual_guards": [{
+        "name": "fork-guard",
+        "policy": "required",
+        "reason": "no fresh audit evidence",
+        "status": "unknown",
+    }],
     "suites": [
         {
             "name": "intent",
@@ -77,6 +83,7 @@ def test_gates_text_report_names_missing_guards_and_unknown_events(monkeypatch, 
     assert "Gate suites: 0/5 healthy" in output
     assert "dead-guard" in output and "not enabled" in output
     assert "advisory disabled style-guard: not enabled" in output
+    assert "manual unknown fork-guard: required; no fresh audit evidence" in output
     assert "plugins.dead_guard:check" in output
     assert "TimeoutError: judge timed out" in output
 

@@ -14,3 +14,4 @@ gate_suites:
   - execution
   - output
 gate_policy: advisory
+gate_kind: enforcement

@@ -67,6 +67,7 @@ def _plugin(
     registered: tuple[str, ...] | None = None,
     tags: tuple[str, ...] = ("guard",),
     policy: str | None = "required",
+    kind: str | None = None,
 ) -> SimpleNamespace:
     manifest = SimpleNamespace(
         name=name,
@@ -76,12 +77,78 @@ def _plugin(
     )
     if policy is not None:
         manifest.gate_policy = policy
+    if kind is not None:
+        manifest.gate_kind = kind
     return SimpleNamespace(
         manifest=manifest,
         enabled=enabled,
         error=error,
         hooks_registered=list(hooks if registered is None else registered),
     )
+
+
+def test_hook_free_guard_is_manual_not_runtime_active() -> None:
+    plane = GatePlane()
+    plugins = [
+        _plugin("intent-guard", hooks=("pre_llm_call",)),
+        _plugin("fork-guard", hooks=(), kind="manual"),
+    ]
+
+    report = build_gate_report(plugins, plane)
+
+    assert report["guard_count"] == 2
+    assert report["active_guard_count"] == 1
+    assert report["manual_guards"] == [{
+        "name": "fork-guard",
+        "policy": "required",
+        "reason": "no fresh audit evidence",
+        "status": "unknown",
+    }]
+    assert all("fork-guard" not in suite["guards"] for suite in report["suites"])
+
+
+def test_required_manual_guard_without_evidence_keeps_report_unknown() -> None:
+    report = build_gate_report(
+        [_plugin("fork-guard", hooks=(), kind="manual")], GatePlane(),
+    )
+
+    assert report["overall_status"] == "unknown"
+    assert report["manual_guards"][0]["status"] == "unknown"
+
+
+def test_observer_hooks_map_to_integrity_and_registration_is_checked() -> None:
+    plane = GatePlane()
+    plugins = [
+        _plugin("engine-invariants", hooks=("post_llm_call",), kind="observer"),
+        _plugin(
+            "tool-observer", hooks=("post_tool_call",),
+            registered=(), kind="observer",
+        ),
+    ]
+
+    report = build_gate_report(plugins, plane)
+
+    integrity = next(suite for suite in report["suites"] if suite["name"] == "integrity")
+    assert integrity["guards"] == ["engine-invariants"]
+    assert [item["name"] for item in integrity["missing"]] == ["tool-observer"]
+
+
+def test_observer_unknown_event_degrades_integrity() -> None:
+    plane = GatePlane()
+    plane.record(
+        "post_tool_call", _callback, session_id="session-1", call_id="call-1",
+        status=GateStatus.UNKNOWN, detail="RuntimeError: observer failed",
+    )
+
+    report = build_gate_report(
+        [_plugin("tool-observer", hooks=("post_tool_call",), kind="observer")],
+        plane,
+        session_id="session-1",
+    )
+
+    integrity = next(suite for suite in report["suites"] if suite["name"] == "integrity")
+    assert integrity["status"] == "unknown"
+    assert integrity["runtime_unknown"] == 1
 
 
 def test_report_builds_healthy_suites_from_real_registrations() -> None:
@@ -93,7 +160,7 @@ def test_report_builds_healthy_suites_from_real_registrations() -> None:
 
     report = build_gate_report(plugins, plane)
 
-    assert report["overall_status"] == "healthy"
+    assert report["overall_status"] == "unknown"
     assert report["guard_count"] == 2
     assert report["active_guard_count"] == 2
     assert {suite["name"]: suite["status"] for suite in report["suites"]} == {
@@ -101,7 +168,7 @@ def test_report_builds_healthy_suites_from_real_registrations() -> None:
         "execution": "unknown",
         "output": "unknown",
         "completion": "healthy",
-        "integrity": "healthy",
+        "integrity": "unknown",
     }
     assert report["suites"][0]["guards"] == ["intent-guard"]
 

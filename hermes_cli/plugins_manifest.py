@@ -14,7 +14,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 
-from hermes_cli.gate_plane import GATE_POLICIES, GATE_SUITE_NAMES
+from hermes_cli.gate_plane import (
+    GATE_ENFORCEMENT_HOOKS,
+    GATE_KINDS,
+    GATE_OBSERVER_HOOKS,
+    GATE_POLICIES,
+    GATE_SUITE_NAMES,
+)
 from utils import fast_safe_load
 from hermes_cli.plugin_capabilities import parse_declared_capabilities as _parse_declared_capabilities
 
@@ -38,6 +44,7 @@ _KNOWN_MANIFEST_FIELDS: set[str] = {
     "license", "homepage", "tags", "capabilities", "emits", "listens", "hermes", "depends",
     "requires_hermes", "python_runtime", "provides_locales", "provides_middleware", "requires_auth", "oauth", "config_keys",
     "gate_suites", "gate_policy",
+    "gate_kind",
 }
 
 # Highest manifest schema version this Hermes understands.
@@ -141,6 +148,29 @@ def _manifest_gate_policy(data: Mapping, key: str) -> str:
     return "required"
 
 
+def _manifest_gate_kind(
+    data: Mapping, key: str, provides_hooks: list[str],
+) -> str:
+    """Validate guard execution kind, inferring conservatively from executable hooks."""
+    hooks = set(provides_hooks)
+    inferred = (
+        "enforcement" if hooks & GATE_ENFORCEMENT_HOOKS
+        else "observer" if hooks & GATE_OBSERVER_HOOKS
+        else "manual"
+    )
+    raw = data.get("gate_kind")
+    if raw is None:
+        return inferred
+    kind = raw.strip().lower() if isinstance(raw, str) else ""
+    if kind in GATE_KINDS:
+        return kind
+    logger.warning(
+        "Plugin %s: gate_kind %r is not one of %s; treating as %r",
+        key, raw, ", ".join(sorted(GATE_KINDS)), inferred,
+    )
+    return inferred
+
+
 def _config_key_path(item: object) -> Optional[str]:
     """A ``config_keys`` entry: a dotted path at least two segments deep (``memory.retaindb``), else None.
     A bare section (``agent``) would silence typo notices for the whole section."""
@@ -193,7 +223,9 @@ def _config_schema_entries(key: str, raw: Any) -> dict[str, Any]:
     return schema
 
 
-def _parse_manifest_v2_fields(data: Mapping, key: str) -> dict[str, Any]:
+def _parse_manifest_v2_fields(
+    data: Mapping, key: str, provides_hooks: list[str],
+) -> dict[str, Any]:
     """Validate/normalize manifest v2 fields into PluginManifest kwargs (warnings, never failures).
 
     See #64165.
@@ -224,6 +256,7 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> dict[str, Any]:
     tags = [str(t) for t in (_manifest_field_of_type(data, key, "tags", list, "a list") or [])]
     gate_suites = _manifest_gate_suites(data, key)
     gate_policy = _manifest_gate_policy(data, key)
+    gate_kind = _manifest_gate_kind(data, key, provides_hooks)
     config_keys = manifest_config_keys(data, key)
     # Forward compat: unknown fields warn (never fail); v1 manifests only at debug.
     unknown = sorted(set(data.keys()) - _KNOWN_MANIFEST_FIELDS)
@@ -237,6 +270,7 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> dict[str, Any]:
         "config_schema": schema, "license": str(data.get("license") or ""),
         "homepage": str(data.get("homepage") or ""), "tags": tags, "config_keys": config_keys,
         "gate_suites": gate_suites, "gate_policy": gate_policy,
+        "gate_kind": gate_kind,
     }
 
 
@@ -446,6 +480,8 @@ class PluginManifest:
     gate_suites: list[str] = field(default_factory=list)
     # Health policy: absent metadata means the conservative legacy behavior (`required`).
     gate_policy: str = "required"
+    # Protection mechanics: runtime decisions, runtime observation, or manual audit.
+    gate_kind: str = "manual"
     # Event-bus declarations, advisory (discoverability only): ``emits`` bare names published under
     # ``<key>:``; ``listens`` fully-qualified ``<plugin>:<event>`` names.
     emits: list[str] = field(default_factory=list)
@@ -608,6 +644,7 @@ def parse_manifest_file(
         logger.debug(
             "Parsed manifest: key=%s name=%s kind=%s source=%s path=%s", key, name, kind, source, plugin_dir)
         provides_locales, locale_metadata = parse_provides_locales(data.get("provides_locales"), key)
+        provides_hooks = data.get("provides_hooks", data.get("hooks", []))
         return PluginManifest(
             name=name, version=str(data.get("version", "")),
             description=data.get("description", ""), author=_display_author(data.get("author", "")),
@@ -615,10 +652,11 @@ def parse_manifest_file(
             provides_tools=data.get("provides_tools", []),
             # ``hooks:`` is the spelling the bundled manifests carried for months; external copies of it
             # must keep declaring the same thing (#108371).
-            provides_hooks=data.get("provides_hooks", data.get("hooks", [])), source=source, path=str(plugin_dir),
+            provides_hooks=provides_hooks, source=source, path=str(plugin_dir),
             kind=kind, key=key, requires_hermes=str(data.get("requires_hermes") or "").strip(),
             capabilities=_parse_declared_capabilities(data.get("capabilities"), name),
-            **_parse_manifest_v2_fields(data, key), emits=data.get("emits") or [],
+            **_parse_manifest_v2_fields(data, key, provides_hooks),
+            emits=data.get("emits") or [],
             listens=data.get("listens") or [],
             provides_locales=provides_locales, locale_metadata=locale_metadata,
         )
