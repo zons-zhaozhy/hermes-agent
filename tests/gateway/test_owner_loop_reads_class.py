@@ -124,3 +124,38 @@ async def test_startup_detached_recovery_reads_admissions_off_loop(tmp_path, mon
     assert outcome == {}
     assert len(threads) == 1
     assert threads and loop_thread not in threads
+
+
+@pytest.mark.asyncio
+async def test_startup_detached_lineage_read_runs_off_loop(tmp_path, monkeypatch):
+    from types import SimpleNamespace as NS
+
+    import hermes_state_runtime as state_runtime
+    from gateway import session_detached, session_route_recovery
+
+    _, authority = _authority(tmp_path, monkeypatch)
+    source = NS(platform='test', user_id='human')
+    authority.runner._restored_source = lambda entry: source
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+
+    def recorded_names(*args, **kwargs):
+        threads.append(threading.get_ident())
+        return False
+
+    monkeypatch.setattr(
+        session_route_recovery, '_mount_plan',
+        lambda authority, sid: ('agent:main:chat', NS(origin=source), None),
+    )
+    monkeypatch.setattr(
+        session_route_recovery, '_names_another_conversation', recorded_names)
+    monkeypatch.setattr(
+        state_runtime, 'list_session_admissions',
+        lambda *args, **kwargs: [{'status': 'queued'}],
+    )
+
+    scheduled = await session_detached.recover_detached_sessions(authority, {'missing'})
+
+    assert scheduled == []
+    assert len(threads) == 1
+    assert threads and loop_thread not in threads

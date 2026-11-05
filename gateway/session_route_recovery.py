@@ -112,7 +112,7 @@ def restore_routed_session(authority, sid):
     return mount_routed_session(authority, sid, _mount_plan(authority, sid))
 
 
-def mount_routed_session(authority, sid, plan):
+def mount_routed_session(authority, sid, plan, *, names_another=None):
     """Publish a mount plan prepared off the owner loop."""
     from gateway.session_authority import LiveSession
     from gateway.session_contract import SessionRef
@@ -125,7 +125,9 @@ def mount_routed_session(authority, sid, plan):
     source = authority.runner._restored_source(entry)
     if sid not in authority.sessions:
         live = authority.sessions[sid] = LiveSession(source, route)
-        if routed is None and _names_another_conversation(authority, sid, route):
+        names_another = (_names_another_conversation(authority, sid, route)
+                         if names_another is None else names_another)
+        if routed is None and names_another:
             from gateway.session_detached import detach
             detach(authority, live, sid)  # the lane moved past it: its turns stay off the chat
     return SessionRef(authority.profile_id, sid)

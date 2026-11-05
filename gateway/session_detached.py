@@ -173,7 +173,8 @@ async def recover_detached_sessions(authority, pending) -> list[str]:
     """Boot: schedule the queued input of conversations their chats moved past (an app prompt
     accepted during a restart's after-turn wait). The routing index names only each chat's current
     conversation, so native recovery never binds these, and no chat message will wake them."""
-    from gateway.session_route_recovery import _mount_plan, mount_routed_session
+    from gateway.session_route_recovery import (
+        _mount_plan, _names_another_conversation, mount_routed_session)
     scheduled = []
     from hermes_state_runtime import list_session_admissions
     for session_id in sorted(pending):
@@ -188,7 +189,12 @@ async def recover_detached_sessions(authority, pending) -> list[str]:
         plan = await asyncio.to_thread(queued_mount_plan)
         if plan is None:
             continue
-        ref = mount_routed_session(authority, session_id, plan)
+        names_another = False
+        if plan[2] is None:
+            names_another = await asyncio.to_thread(
+                _names_another_conversation, authority, session_id, plan[0])
+        ref = mount_routed_session(
+            authority, session_id, plan, names_another=names_another)
         if ref is None:
             continue
         if authority.sessions[session_id].detached:
