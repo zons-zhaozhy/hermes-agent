@@ -187,6 +187,42 @@ def test_get_version_info_derives_identity_from_reachable_release_tag(tmp_path, 
     assert info.source == "git"
 
 
+def test_git_version_info_reads_git_provenance_in_four_subprocesses(monkeypatch, tmp_path):
+    """The startup identity must not pay seven Git spawns; one describe replaces release,
+    distance, and short-SHA lookups, while one show replaces commit and commit-date reads."""
+    full_commit = "a" * 40
+    run_git_calls: list[tuple[str, ...]] = []
+
+    def fake_run_git(_repo_dir: Path, *args: str) -> str | None:
+        run_git_calls.append(args)
+        return {
+            ("show", "-s", "--format=%H%n%ct", "HEAD"): f"{full_commit}\n1790000000",
+            ("branch", "--show-current"): "main",
+            ("describe", "--tags", "--long", "--always", "--match", "v[0-9]*.[0-9]*.[0-9]*",
+             "--exclude", "v*-*", "--exclude", "v*+*",
+             "--exclude", "v[0-9][0-9][0-9][0-9]*", "HEAD"): "v0.21.4-1-gabc1234",
+        }.get(args)
+
+    def fake_subprocess_run(args, **_kwargs):
+        return subprocess.CompletedProcess(args, 0, stdout=" M tracked\n")
+
+    monkeypatch.setattr("hermes_cli.version_info._run_git", fake_run_git)
+    monkeypatch.setattr("hermes_cli.version_info.subprocess.run", fake_subprocess_run)
+
+    info = _git_version_info(tmp_path)
+
+    assert run_git_calls == [
+        ("show", "-s", "--format=%H%n%ct", "HEAD"),
+        ("branch", "--show-current"),
+        ("describe", "--tags", "--long", "--always", "--match", "v[0-9]*.[0-9]*.[0-9]*",
+         "--exclude", "v*-*", "--exclude", "v*+*",
+         "--exclude", "v[0-9][0-9][0-9][0-9]*", "HEAD"),
+    ]
+    assert (info.commit, info.commit_date, info.branch) == (full_commit, 1790000000, "main")
+    assert (info.base_version, info.distance, info.dirty) == ("0.21.4", 1, True)
+    assert info.derived_version == "0.21.4+1.gabc1234.dirty"
+
+
 def test_get_version_info_takes_the_version_a_calver_only_release_shipped(tmp_path, monkeypatch):
     """Releases tagged only vYYYY.M.D resolve to their pyproject version, not "unknown"."""
     repo = tmp_path / "repo"

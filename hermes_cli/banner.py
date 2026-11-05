@@ -158,7 +158,7 @@ def _resolve_repo_dir() -> Optional[Path]:
 def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     """Return upstream/local git hashes for the startup banner.
 
-    Cached per-process (default ``repo_dir`` only): 2-3 git subprocesses (~100ms) whose result
+    Cached per-process (default ``repo_dir`` only): 2 git subprocesses (~100ms) whose result
     cannot change under a running CLI. The cache lets ``prefetch_banner_data()`` pay it off-thread.
     """
     if repo_dir is not None:
@@ -179,10 +179,11 @@ def _compute_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]
     repo_dir = repo_dir or _resolve_repo_dir()
     if repo_dir is None:
         return _baked_banner_state()
-    upstream, local = (source_check._git_stdout(["rev-parse", "--short=8", rev], cwd=repo_dir) for rev in ("origin/main", "HEAD"))
-    if not upstream or not local:
+    revisions = (source_check._git_stdout(["rev-parse", "origin/main", "HEAD"], cwd=repo_dir) or "").splitlines()
+    if len(revisions) != 2:
         # Live-git lookup failed (e.g. shallow clone without origin/main).
         return _baked_banner_state()
+    upstream, local = (revision[:8] for revision in revisions)
     ahead = source_check._git_count(["rev-list", "--count", "origin/main..HEAD"], cwd=repo_dir) or 0
     return {"upstream": upstream, "local": local, "ahead": max(ahead, 0)}
 

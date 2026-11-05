@@ -2103,7 +2103,7 @@ Additional behavior:
 
 | Command | Description |
 |---------|-------------|
-| `hermes --version` | Print version information. |
+| `hermes --version` | Print local version information. Add `--check-updates` to include the passive update check. |
 | `hermes update` | Pull latest changes and reinstall dependencies. |
 
 | `hermes uninstall [--full] [--gui] [--data] [--dry-run] [--yes]` | Remove owned source-install files. `--gui` selects source-built desktop removal; `--full` also removes data. `--data` removes user data without deleting package-owned code. Sealed installs use their package owner for application removal. `--dry-run` previews the scope; `--yes` skips confirmation. |

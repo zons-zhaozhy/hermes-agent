@@ -2195,8 +2195,8 @@ def _print_version_info(*, check_updates: bool = True) -> None:
 
 
 def cmd_version(args):
-    """Show version (--version/-V flag)."""
-    _print_version_info(check_updates=True)
+    """Show local version (--version/-V; add --check-updates for update status)."""
+    _print_version_info(check_updates=bool(getattr(args, "check_updates", False)))
 
 
 def cmd_uninstall(args):
@@ -3145,7 +3145,7 @@ def _try_termux_fast_cli_launch() -> bool:
         return False
 
     if _startup_fast.is_global_fast_version_argv(argv):
-        _print_version_info(check_updates=True)
+        _print_version_info(check_updates="--check-updates" in argv)
         return True
 
     first = _first_positional_argv()
@@ -3160,7 +3160,7 @@ def _try_termux_fast_cli_launch() -> bool:
     args = parser.parse_args(_coalesce_session_name_args(argv))
 
     if getattr(args, "version", False):
-        _print_version_info(check_updates=True)
+        _print_version_info(check_updates=bool(getattr(args, "check_updates", False)))
         return True
 
     if getattr(args, "oneshot", None):
