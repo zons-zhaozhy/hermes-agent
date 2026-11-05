@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-patch_first = importlib.import_module("plugins.patch-first")
+from plugins import guards
+from plugins.guards import patch_first
 
 
 def test_terminal_read_sed_passes_and_write_sed_blocks() -> None:
@@ -60,3 +60,34 @@ def test_non_string_and_malformed_input_do_not_raise() -> None:
         False,
     }
     assert patch_first._is_sed_write("unknown", {"command": "sed -i 's/a/b/' x"}) is False
+
+
+class _OwnerCtx:
+    def __init__(self) -> None:
+        self.hooks: dict[str, list] = {}
+
+    def register_hook(self, name: str, callback) -> None:
+        self.hooks.setdefault(name, []).append(callback)
+
+    def register_system_prompt_section(self, section_id: str, renderer) -> None:
+        return None
+
+
+def test_guards_owner_registers_patch_first_block() -> None:
+    ctx = _OwnerCtx()
+    guards.register(ctx)
+
+    results = [
+        callback(
+            tool_name="terminal",
+            args={"command": "sed -i 's/a/b/' README.md"},
+        )
+        for callback in ctx.hooks["pre_tool_call"]
+    ]
+
+    assert any(
+        result is not None
+        and result.get("action") == "block"
+        and "[patch-first]" in result.get("message", "")
+        for result in results
+    )

@@ -10,6 +10,8 @@ duplicate-check / source_code_write_guard / coding-standards-guard)收拢为
   pre_write       先读后写门禁(write/patch/execute_code 前必须 read_file)
   duplicate_check 新建文件前置查重
   source_write    terminal 绕过 patch 直写源码拦截(sed -i/cat >/python -c)
+  patch_first     修改通道纪律拦截(terminal/execute_code 中的 sed 写与
+                  Python open 写形态,无论目标是否源码)
   coding_standards AST 编码规范事前拦截(R001~R022) + preflight.py 写前预检
   scope_gate      新增产物授权闸门(仓库内新开目录树须当轮用户原话授权)
   skill_pruned_gate 技能剪枝机械拦截(skill_view 查得 [SKILL_PRUNED] 占位符
@@ -41,9 +43,9 @@ logger = logging.getLogger(__name__)
 # 单条 from-import 会让一个 ImportError 连坐全套守卫(2026-10-21 审计发现)。
 # 常量供导入循环与在岗状态行共用(单一事实源)。
 _SUB_GUARD_NAMES = ("tool_blacklist", "four_axis", "pre_write", "duplicate_check", "source_write",
-                    "coding_standards", "diff_debt", "casebook_gate", "batch_write", "scope_gate",
-                    "groundbreaking_gate", "slow_search", "db_target_audit", "plain_vocab",
-                    "experience_gate", "skill_pruned_gate")
+                    "patch_first", "coding_standards", "diff_debt", "casebook_gate", "batch_write",
+                    "scope_gate", "groundbreaking_gate", "slow_search", "db_target_audit",
+                    "plain_vocab", "experience_gate", "skill_pruned_gate")
 _LOADED: list[tuple[str, Any]] = []
 for _name in _SUB_GUARD_NAMES:
     try:
