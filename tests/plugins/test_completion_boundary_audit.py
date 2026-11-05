@@ -17,34 +17,15 @@ Contract:
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-import types
-from pathlib import Path
-
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_PLUGIN_DIR = _REPO_ROOT / "plugins" / "completion-boundary-audit"
+from plugins import finish_guard
+from plugins.finish_guard import completion_boundary_audit as completion_module
 
 
 def _load_plugin():
-    """按 PluginManager 命名约定加载插件 __init__.py。"""
-    if "hermes_plugins" not in sys.modules:
-        ns = types.ModuleType("hermes_plugins")
-        ns.__path__ = []
-        sys.modules["hermes_plugins"] = ns
-    spec = importlib.util.spec_from_file_location(
-        "hermes_plugins.completion_boundary_audit",
-        _PLUGIN_DIR / "__init__.py",
-        submodule_search_locations=[str(_PLUGIN_DIR)],
-    )
-    mod = importlib.util.module_from_spec(spec)
-    mod.__package__ = "hermes_plugins.completion_boundary_audit"
-    mod.__path__ = [str(_PLUGIN_DIR)]
-    sys.modules["hermes_plugins.completion_boundary_audit"] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    """加载迁入 finish_guard 后的真实子模块。"""
+    return completion_module
 
 
 class _FakeCtx:
@@ -77,7 +58,9 @@ _LONG_TEXT2 = "部署已完成，全部通过。" + "补充说明" * 40  # 第 2
 
 @pytest.fixture(autouse=True)
 def _clean_state():
+    original_state = completion_module._state
     yield
+    completion_module._state = original_state
     from plugins._shared_state import clear_session
     clear_session("cba-test")
 
@@ -248,3 +231,29 @@ def test_no_done_claim_no_pending():
     )
     audit(_LONG_TEXT, session_id="cba-test")
     assert not state.get("pending_reminder")  # 期望: 进行中汇报不打扰
+
+
+def test_finish_guard_owner_registers_boundary_resolution_reminder():
+    """The required finish owner must expose the audit's cross-turn reminder."""
+    mod = _load_plugin()
+    state = mod._state("cba-test")
+    state.clear()
+    state["pending_reminder"] = True
+    state["streak"] = 1
+
+    class _OwnerCtx:
+        def __init__(self):
+            self.hooks: dict[str, list] = {}
+
+        def register_hook(self, name: str, fn):
+            self.hooks.setdefault(name, []).append(fn)
+
+    ctx = _OwnerCtx()
+    finish_guard.register(ctx)
+    contexts = [
+        result["context"]
+        for callback in ctx.hooks["pre_llm_call"]
+        if (result := callback(session_id="cba-test")) and "context" in result
+    ]
+
+    assert any("【消项闭环】" in context for context in contexts)

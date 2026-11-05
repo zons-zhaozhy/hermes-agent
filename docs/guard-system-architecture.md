@@ -37,7 +37,7 @@ Gate Plane 证据面覆盖 enforcement 与 observer hooks。observer 回调失�
 异常，而由插件调度器统一隔离并留痕。
 
 基线 owner：`read-think-gate`、`guards`、`discipline`、`block_escalation`、
-`completion-boundary-audit`、`finish_guard`、`guard-sentinel`、`engine-invariants`。
+`finish_guard`、`guard-sentinel`、`engine-invariants`。
 旧/第三方 `tags: [guard]` 插件未声明 metadata 时按保守策略处理：由 hook 推导 suite/kind
 且视为 `required`。后续行为归并只允许按本 taxonomy 分批迁入既有 owner suite；先迁/补契约测试，
 再改实现，不留兼容壳。
@@ -271,4 +271,6 @@ block_escalation 实现）。
   `discipline.blame_shield`，独立 manifest/hook surface 删除，owner 注册契约
   在位）；`lazy-blocker`→`finish_guard` 已完成（行为迁入
   `finish_guard.lazy_blocker`，独立 manifest/hook surface 删除，owner 注册契约
-  在位）；后续为 `completion-boundary-audit`→`finish_guard`。
+  在位）；`completion-boundary-audit`→`finish_guard` 已完成（行为迁入
+  `finish_guard.completion_boundary_audit`，独立 manifest/hook surface 删除，
+  owner 注册契约在位）。

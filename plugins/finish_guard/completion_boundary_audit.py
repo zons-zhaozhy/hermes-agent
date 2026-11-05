@@ -1,4 +1,4 @@
-"""completion-boundary-audit plugin — 反面检查检查点（反者道之动）
+"""Completion-boundary audit — 反面检查检查点（反者道之动）
 
 judge 判定最终回复是否"包含交付完成声明且未披露任何未验证边界"（人话语义
 不可穷举，禁关键词/正则匹配），命中不修改用户可见回复，只记入会话状态；
@@ -28,7 +28,7 @@ UNKNOWN，并按会话指数退避熔断，不能伪装成正常通过。
 缓存安全：不改 system prompt、不改历史消息、不换 toolset——
 per-conversation prompt caching 不受影响（注入走 request-scoped context）。
 
-ACTIVATION: 需在 config.yaml plugins.enabled 中添加 "completion-boundary-audit"。
+ACTIVATION: 随 owner 插件 ``finish_guard`` 启用；本模块不再有独立 config 开关。
 Set COMPLETION_BOUNDARY_AUDIT_DISABLE=1 to turn off.
 """
 

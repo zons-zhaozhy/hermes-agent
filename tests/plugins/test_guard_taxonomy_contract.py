@@ -23,7 +23,6 @@ _HOOK_SUITES = {
 }
 _BASELINE_GUARDS = {
     "block_escalation",
-    "completion-boundary-audit",
     "discipline",
     "engine-invariants",
     "finish_guard",

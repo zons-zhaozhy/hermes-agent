@@ -496,4 +496,6 @@ def register(ctx: Any) -> None:
     ctx.register_hook("pre_llm_call", todo_debt.on_session_open)
     from . import lazy_blocker
     ctx.register_hook("pre_llm_call", lazy_blocker._on_pre_llm_call)
-    logger.info("finish_guard v2 已注册——clarify 拦截 + pre_verify 续跑 + 可见标记 + 跨会话任务债务闭环 + 卡点替代通道")
+    from . import completion_boundary_audit
+    completion_boundary_audit.register(ctx)
+    logger.info("finish_guard v2 已注册——clarify 拦截 + pre_verify 续跑 + 可见标记 + 跨会话任务债务闭环 + 卡点替代通道 + 完成边界消项审计")
