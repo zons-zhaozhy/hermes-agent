@@ -103,6 +103,14 @@ f799fd8578 在官方 Linux CI "Python tests / Run tests" = success。
 | tools/browser_use_cli.py + tests/tools/test_browser_use_cli.py (1029 新增) | browser_exec 超时后回收 harness daemon: 真实失败签名=harness IPC 5s response_timeout(helpers.py:52, 非 Hermes 300s), 单条 CDP 请求在 daemon 侧无超时等待(daemon.py:769) 且 stale-session 恢复路径在 _session_state_lock 内调 attach_first_page(daemon.py:782) → 请求卡住则锁不释放, 后续同类请求全阻塞(用户报「daemon 挂死」症状); 处置=识别 stderr 含 _IPCResponseTimeout/「waiting for the daemon」即 `--reload` 回收该 daemon, 下次调用重新 spawn | 中（官方改 browser_exec 超时分支或 daemon 回收原语时撞） | 值得提 upstream PR（根治应在上游 daemon 侧给 send_raw 加超时） |
 | agent/coding_context.py + tests/agent/test_coding_context.py (1028 新增) | Fork 定制: _NON_CODING_SKILL_CATEGORIES deny-list 扩至 28 类(官方 18 + 自定义 10: engineering-methodology/frontend/product/business/autonomous-ai-agents/devops/software-development/ontox-ops/aml/wechat-ops), focus 会话技能索引降级 names-only, 省 ~15K 字符/缓存未命中轮 (28,325→13,333, 技能段减半); 非仓库 cwd(从 $HOME 启动 CLI)同名降级、非编码面(telegram)保持全量. **测试契约 fork 化**: 官方 test_skill_demotion_gated_on_focus 原断言 devops/software-development 保留(官方 coding-adjacent 语义)→ fork 改断言其降级(收益实测 devops 3234 字符/software-development 2347), github/data-science 因收益微小(<80)仍保留; upstream sync 时该测试断言冲突以 fork 语义为准, 官方若更新 deny-list 语义让位 | 中（官方改 deny-list/技能索引/focus 判定时撞） | 官方若给自定义类加等级机制或改 focus 判定则让位; 配套: 24 workspace 副本已同步; 测试 29/29 绿 |
 
+### 同步历史（1105 补建）
+
+| 日期 | merge | 量级 | 冲突裁决 | 三验 |
+|---|---|---|---|---|
+| 2026-11-03 | c4a3246345（他轮已记） | — | — | — |
+| 2026-11-04 | 776618988d4（漏记补建） | 371 文件/15572+/7616- | test_vision_routing 取上游 _seed_models_dev 助手；uv.lock 取 fork 侧（双侧校验均被 github 直连阻断，待网络恢复 pm repair） | 133 passed + imports OK + 8/8 enabled |
+| 2026-11-05 | 98134a247cb | 468 文件/13421+/2266- | session_bot.py 融合：fork 离 loop 读结构 + 上游 Principal→SessionActor 改名（顺带根修 fork 测试 test_goal_pause 的旧类名断链） | 125 passed + imports OK + 8/8 enabled |
+
 ## 二、防冲突铁律（同步操作规程）
 
 1. 频率: 每日 fetch upstream; 官方日均 ~50-250 提交, 拖越久冲突面越大。
