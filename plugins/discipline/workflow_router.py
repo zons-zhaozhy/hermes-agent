@@ -21,7 +21,8 @@ _ROUTING_HINT = (
     "新功能/重构/接口或数据迁移→skill_view(name='brainstorming')；"
     "故障/报错/性能异常→skill_view(name='systematic-debugging')；"
     "行为变更或缺陷修复→skill_view(name='test-driven-development')；"
-    "已批准的多步架构方案→skill_view(name='writing-plans')；"
+    "已批准的多步架构方案→skill_view(name='writing-plans')，随后按计划执行→executing-plans；"
+    "收到评审反馈→skill_view(name='receiving-code-review')；代码规模/语言构成→codebase-inspection；"
     "宣称完成/修复/通过前→skill_view(name='verification-before-completion')。"
     "被护栏拦截时，把拦截原因当作证据进入 systematic-debugging，禁止换工具重复尝试。"
 )

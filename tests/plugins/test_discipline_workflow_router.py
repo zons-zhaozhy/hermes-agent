@@ -21,6 +21,9 @@ def test_first_engineering_turn_receives_one_routing_hint() -> None:
     assert "systematic-debugging" in first["context"]
     assert "test-driven-development" in first["context"]
     assert "writing-plans" in first["context"]
+    assert "executing-plans" in first["context"]
+    assert "receiving-code-review" in first["context"]
+    assert "codebase-inspection" in first["context"]
     assert "verification-before-completion" in first["context"]
     assert "skill_view" in first["context"]
     assert second == {}
