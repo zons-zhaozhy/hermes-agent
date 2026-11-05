@@ -2,7 +2,7 @@
 
 最后核验: 2026-11-03 · main 合并 upstream c314285f07 (77 提交, 零冲突) c4a3246345, 落后 0
 机器账本核验: 2026-11-06 baseline ed1afb082eb3e46cf2edae9d8f68fb67b09ee4df,
-官方文件被 fork 改动 273 项(见第五节 YAML SSOT; fork-guard 实测 missing=0/stale=0)
+官方文件被 fork 改动 294 项(见第五节 YAML SSOT; fork-guard 实测 missing=0/stale=0)
 1101 轮: photon/adapter.py 上游 runtime-record 迁 profile 根目录(33 行)与 fork 定制 4 行自动合并共存, 双方意图保留
 (网络通道: SSH443/HTTPS 直连均被重置时, remote.upstream.url 临时切 gh-proxy.com 代理通道完成 lazy fetch, 完毕恢复)
 
@@ -183,11 +183,12 @@ git rev-list --count main..upstream/main   # 应为 0
   注意: 探针须从中立 cwd 跑——python -c 会把 cwd 注入 sys.path, 在 fork 仓内跑
   会假绿为 fork 直连。
 
-### 1106 补记 15 项（fork-guard fresh audit 红灯复核）
+### 1106 补记 21 项（fork-guard fresh audit 红灯复核）
 
 | 文件 | 定制内容 | 归属提交 |
 |---|---|---|
 | gateway/run_turn_runner.py | shared clarify 注册写入 owner loop 下沉 | b232236990 |
+| gateway/run_bootstrap.py | READY 发布等待 off-loop hosted readiness | a8e085bea7 |
 | gateway/session_detached.py | detached 启动恢复与 lineage 读下沉 | 3fbbff1a15/882593041f2 |
 | gateway/session_envelope.py | native/automation route preflight 的 admission/routing 读下沉 | 9adf243b69 |
 | gateway/session_local_recovery.py | 本地恢复、adoption 与 close receipt 读下沉 | 3fbbff1a15/b31509c203 |
@@ -202,6 +203,11 @@ git rev-list --count main..upstream/main   # 应为 0
 | tests/gateway/test_bot_chat_unadoptable_local_title.py | Bot Chat 标题读下沉契约 | 4a73fc2498 |
 | tests/gateway/test_local_session_orphan_end.py | 本地 orphan/adoption 恢复契约 | 3fbbff1a15 |
 | tests/gateway/test_viewer_close_lifecycle.py | viewer close busy 检查契约 | 4a73fc2498 |
+| tests/gateway/fixtures/operator_cross_surface_peer.py | READY async 化调用契约 | a8e085bea7 |
+| tests/gateway/test_native_http_auth.py | READY async 化调用契约 | a8e085bea7 |
+| tests/gateway/test_runtime_bootstrap_lifecycle.py | READY async 化调用契约 | a8e085bea7 |
+| tests/gateway/test_runtime_listener_supervision.py | READY async 化与监听失败清理契约 | a8e085bea7 |
+| tests/gateway/test_runtime_token_identity.py | READY async 化调用契约 | a8e085bea7 |
 
 ## 五、机器账本（SSOT）
 
@@ -261,6 +267,7 @@ official_paths:
   - gateway/platforms/webhook_ingress.py
   - gateway/relay/media.py
   - gateway/run.py
+  - gateway/run_bootstrap.py
   - gateway/run_adapters.py
   - gateway/run_adapters_recovery.py
   - gateway/run_goals.py
@@ -393,6 +400,7 @@ official_paths:
   - tests/fixtures/prompt_surface/tools/skills_list.json
   - tests/fixtures/prompt_surface/tools/write_file.json
   - tests/fixtures/provider_wire_snapshot.json
+  - tests/gateway/fixtures/operator_cross_surface_peer.py
   - tests/gateway/test_bot_chat_unadoptable_local_title.py
   - tests/gateway/test_busy_followup_guard_release.py
   - tests/gateway/test_dingtalk.py
@@ -403,7 +411,11 @@ official_paths:
   - tests/gateway/test_hosted_rooms_gateway_import.py
   - tests/gateway/test_local_session_orphan_end.py
   - tests/gateway/test_loop_liveness_watchdog.py
+  - tests/gateway/test_native_http_auth.py
   - tests/gateway/test_resume_display_history.py
+  - tests/gateway/test_runtime_bootstrap_lifecycle.py
+  - tests/gateway/test_runtime_listener_supervision.py
+  - tests/gateway/test_runtime_token_identity.py
   - tests/gateway/test_session_authority_adopted_stop.py
   - tests/gateway/test_session_viewer_automation.py
   - tests/gateway/test_viewer_close_lifecycle.py
