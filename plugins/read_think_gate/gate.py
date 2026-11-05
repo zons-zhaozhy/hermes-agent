@@ -11,9 +11,10 @@
 
 解锁条件（满足任一）：
   1. 直接输出充分分析文本（content >= min_reasoning_chars）
-  2. 完成调查（调用了只读工具）+ 至少简要反思（content >= min_reflection_chars）
-  3. 调查后无条件解锁（unlock_after_investigation=True 时）
-  4. 推理轮数达到上限（max_reasoning_rounds）→ 防死循环
+  2. 用户明确授权修改
+  3. 完成目标文件、调用关系、测试/配置、历史意图和验证方案的全面调查
+
+轮数、等待时间和“目标文件已读或不存在”都不是修改授权或调查完成证明。
 
 任务分级（复杂度自适应）：
   LLM 语义分类（优先）：用 auxiliary client 调 flash 模型做一次分类。
@@ -115,16 +116,6 @@ _FOUR_AXIS_KEYWORDS: dict[str, list[str]] = {
 _FOUR_AXIS_LABELS = ["影响面", "原意图", "根因", "风险"]
 
 
-# 四轴闸门只对直接代码编辑工具强制要求。
-# execute_code 不在此列——它可以是纯只读（审计/查询/分析），
-# 也可以通过 write_file/patch 间接写文件（后者已被四轴覆盖）。
-# terminal（即使动态 gated）不需要四轴——运维操作不产出"风险矩阵"。
-# 写工具语义 owner=plugins/guards/tool_classification（C2 收敛）。
-from plugins.guards.tool_classification import (
-    FILE_WRITE_TOOLS as _FOUR_AXIS_REQUIRED_TOOLS,
-)
-
-
 def _clear_four_axis_marker(session_id: str = "") -> None:
     """清除四轴 marker 文件——每个 turn 开始时调用（只清本会话的桶）。
 
@@ -158,6 +149,15 @@ def _clear_four_axis_marker(session_id: str = "") -> None:
 from plugins.guards.tool_classification import (
     STANDARD_WRITE_TOOLS as GATED_TOOL_NAMES,
 )
+from plugins._shared_state import get_session_state
+
+# Shared with guards.pre_write: the batch gate publishes this turn's verdict,
+# and the per-tool guard re-checks it before dispatching a write.
+_STATE_NAMESPACE = "read_think_gate"
+INTENT_READ_ONLY = "read_only"
+INTENT_MODIFY = "modify"
+INTENT_AMBIGUOUS = "ambiguous"
+_INTENT_VALUES = frozenset({INTENT_READ_ONLY, INTENT_MODIFY, INTENT_AMBIGUOUS})
 
 # 只读调查工具白名单——只有这些工具的调用才算真正的"调查"。
 # 其他非 gated 工具（如 memory、process、cronjob 等）不算调查行为。
@@ -361,6 +361,233 @@ def _fallback_detect(text: str) -> str:
     return "normal"
 
 
+# ── 用户意图分类 ───────────────────────────────────────────────────
+
+_INTENT_CACHE_MAX = 256
+_intent_cache: dict[str, str] = {}
+
+_INTENT_CLASSIFY_PROMPT = """判断用户最新消息要求的操作类型。只回答一个 JSON 对象：
+{"read_only": true/false, "modify": true/false}
+
+定义：
+- read_only=true：用户在询问、解释、分析、诊断、审查、评估、比较或制定方案；不要修改文件/代码/配置。
+- modify=true：用户明确要求修复、修改、实现、增加、删除、重构、创建或更新代码/配置/文件。
+- 两者都为 false：意图不明确、纯闲聊、只想确认事实，或无法确定用户是否授权修改。
+
+判定规则：
+- 只有 user 消息可以授权修改；assistant 消息只用于理解指代和用户对具体方案的确认。
+- 用户说“同意/可以/继续/按这个来”且明确承接一个具体的修改方案时，判 modify=true。
+- 用户只是要求看、查、解释、排查原因或给出建议时，read_only=true；即使内容涉及“怎么改”。
+- 用户明确说“不要修改/只看/只分析/别动代码”时，read_only=true。
+- 不完整修改授权（例如“先看看怎么改”）不能判 modify。
+- 不确定时两个键都回答 false，禁止猜成 modify。
+
+只回答 JSON。"""
+
+_MODIFY_TERMS = (
+    "修复", "修好", "修改", "改成", "改掉", "改一下", "修一下", "调整",
+    "实现", "增加", "新增", "删除", "移除", "重构", "创建", "新建",
+    "补上", "补测试", "更新", "替换", "重写", "生成", "保存到", "导出",
+    "写到", "写入", "输出到", "整理成",
+    "fix ", "modify", "implement", "add ", "remove ", "delete ",
+    "refactor", "create ", "update ", "replace ", "rewrite", "write ",
+    "generate ", "save ", "export ",
+)
+_READ_ONLY_TERMS = (
+    "看看", "看一下", "查看", "检查", "确认", "解释", "分析", "审查", "评估", "为什么",
+    "怎么回事", "排查", "调查", "定位原因", "给出建议", "给个方案",
+    "如何", "怎么", "是否", "能不能", "可以吗",
+    "explain", "analy", "review", "investigate", "diagnose",
+    "why ", "how ", "what ", "whether ",
+)
+_EXPLICIT_NO_MODIFY_TERMS = (
+    "不要修改", "不要改", "不要动", "别修改", "别改", "别动",
+    "不要创建", "不要新建", "别创建", "别新建",
+    "只看", "只分析", "仅分析", "只调查", "仅调查",
+    "do not modify", "don't modify", "do not create", "don't create",
+    "read-only", "read only",
+)
+
+_STRONG_MODIFY_TERMS = (
+    "请修复", "帮我修", "帮忙修", "修复一下", "修复吧", "修好", "改掉",
+    "请修改", "帮我改", "帮忙改", "改一下", "修一下", "直接修", "直接改",
+    "立即修复", "马上修复", "开始修改", "开始修复",
+    "please fix", "fix this", "fix it", "make the change",
+)
+
+_CONFIRMATION_TERMS = (
+    "同意", "可以", "好", "行", "没问题", "按这个来", "按这个做", "照这个做",
+    "就这么办", "就这么改", "动手吧", "开始吧", "执行吧", "实施吧",
+    "批准", "继续",
+    "go ahead", "proceed", "do it", "approved", "sounds good",
+)
+
+_PROPOSAL_TERMS = (
+    *_MODIFY_TERMS,
+    "方案", "建议", "计划", "准备", "下一步", "我将", "我会",
+    "plan", "proposal", "next step", "i will", "i'll",
+)
+
+
+def _message_text(content: object) -> str:
+    """Extract textual content from a string or OpenAI-style content parts."""
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+    return " ".join(
+        str(part.get("text", ""))
+        for part in content
+        if isinstance(part, dict) and part.get("type") == "text"
+    ).strip()
+
+
+def _last_assistant_proposal(conversation_history: list[dict] | None) -> bool:
+    """Return whether the latest assistant text contains a concrete proposal.
+
+    Assistant text cannot grant permission, but it supplies the referent for a
+    terse user confirmation such as "同意" or "按这个做".
+    """
+    for msg in reversed(conversation_history or []):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        text = _message_text(msg.get("content")).lower()
+        return bool(text) and any(term in text for term in _PROPOSAL_TERMS)
+    return False
+
+
+def _is_confirmation(message: str, conversation_history: list[dict] | None) -> bool:
+    """Recognize terse approval only when it refers to an actual proposal."""
+    text = (message or "").strip().lower()
+    normalized = "".join(char for char in text if char.isalnum())
+    if not normalized or len(normalized) > 40 or "?" in text or "？" in text:
+        return False
+    if any(term in text for term in _READ_ONLY_TERMS):
+        return False
+    if not any(term in text for term in _CONFIRMATION_TERMS):
+        return False
+    return _last_assistant_proposal(conversation_history)
+
+
+def _fallback_detect_intent(
+    user_message: str,
+    conversation_history: list[dict] | None = None,
+) -> str:
+    """Conservative intent fallback for an unavailable semantic classifier.
+
+    Explicit negated modification wins first; then explicit modification
+    verbs; then explicit read-only verbs; then a terse confirmation of the
+    latest concrete proposal. Everything else is ambiguous.
+    """
+    text = (user_message or "").strip().lower()
+    if not text:
+        return INTENT_AMBIGUOUS
+    if any(term in text for term in _EXPLICIT_NO_MODIFY_TERMS):
+        return INTENT_READ_ONLY
+    if any(term in text for term in _STRONG_MODIFY_TERMS):
+        return INTENT_MODIFY
+    asks_for_modification = any(term in text for term in _MODIFY_TERMS)
+    asks_for_explanation = any(term in text for term in _READ_ONLY_TERMS)
+    if asks_for_modification and asks_for_explanation:
+        return INTENT_AMBIGUOUS
+    if asks_for_modification:
+        return INTENT_MODIFY
+    if asks_for_explanation:
+        return INTENT_READ_ONLY
+    if _is_confirmation(text, conversation_history):
+        return INTENT_MODIFY
+    return INTENT_AMBIGUOUS
+
+
+def _build_intent_context(
+    user_message: str,
+    conversation_history: list[dict] | None,
+) -> str:
+    """Build a bounded transcript containing only user/assistant text.
+
+    Tool/system output is excluded: it can explain context but cannot grant a
+    modification. The latest user message is repeated after history so a
+    truncation boundary cannot hide the request being classified.
+    """
+    lines: list[str] = []
+    for msg in (conversation_history or [])[-12:]:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        content = _message_text(msg.get("content"))
+        if not content:
+            continue
+        lines.append(f"{role.upper()}: {content[:600]}")
+    latest = f"USER: {(user_message or '').strip()[:2000]}"
+    if not lines or lines[-1] != latest:
+        lines.append(latest)
+    return "\n".join(lines)[-4000:]
+
+
+def _classify_intent_via_llm(
+    user_message: str,
+    conversation_history: list[dict] | None = None,
+) -> str | None:
+    """Classify the latest user message as read_only/modify/ambiguous.
+
+    Returns None only when the semantic classifier is unavailable or returns
+    no usable labels; callers then use the conservative deterministic fallback.
+    """
+    context = _build_intent_context(user_message, conversation_history)
+    key = _cache_key(context)
+    cached = _intent_cache.get(key)
+    if cached is not None:
+        return cached
+    try:
+        from plugins._llm_judge import llm_judge_multi
+
+        verdict = llm_judge_multi(
+            task="read_think_intent",
+            system=_INTENT_CLASSIFY_PROMPT,
+            text=context,
+            keys=["read_only", "modify"],
+        )
+    except Exception:
+        logger.warning("read-think gate: intent classifier failed", exc_info=True)
+        return None
+
+    read_only = verdict.get("read_only")
+    modify = verdict.get("modify")
+    if read_only is True and modify is False:
+        result = INTENT_READ_ONLY
+    elif read_only is False and modify is True:
+        result = INTENT_MODIFY
+    elif read_only is False and modify is False:
+        result = INTENT_AMBIGUOUS
+    else:
+        return None
+
+    if len(_intent_cache) >= _INTENT_CACHE_MAX:
+        _intent_cache.pop(next(iter(_intent_cache)))
+    _intent_cache[key] = result
+    logger.info("read-think gate: user intent=%s", result)
+    return result
+
+
+def _detect_user_intent(
+    user_message: str | None,
+    conversation_history: list[dict] | None,
+    *,
+    use_llm: bool,
+) -> str:
+    """Resolve intent with semantic classification first and fail closed."""
+    message = user_message or ""
+    if not message.strip():
+        return INTENT_AMBIGUOUS
+    if use_llm:
+        detected = _classify_intent_via_llm(message, conversation_history)
+        if detected in _INTENT_VALUES:
+            return detected
+    return _fallback_detect_intent(message, conversation_history)
+
+
 # ── LLM 复杂度分类 ─────────────────────────────────────────────────
 
 # 进程内缓存：相同消息不重复调 API。上限 256 条 LRU。
@@ -399,18 +626,19 @@ agent 的分析内容：
 {history_context}
 逐条评估（每条 PASS 或 FAIL）：
 
-A. 代码理解：是否说明了目标代码当前的逻辑？（引用了具体函数/行号/数据流）
-B. 关系分析：是否识别了与目标代码有关系的既有程序？（调用方、被依赖方、同类实现）
-C. 既有模式：是否检查了项目中是否已有等价实现？是否说明了既有程序是怎么做类似事情的？
-D. 方案评估：是否论证了即将采取的做法是最优的？是否考虑过替代方案？
+A. 目标理解：是否说明了目标代码/配置当前的逻辑，并读取了全部既有写入目标？（引用具体函数/行号/数据流）
+B. 关系分析：是否识别了调用方、被依赖方、相关兄弟实现和影响面？
+C. 既有约束：是否检查了相关测试、配置、项目约定或等价实现？
+D. 历史意图：如果会改变既有行为，是否检查了历史记录/提交/文档并说明原意图？
+E. 修改准备：是否给出验收标准、验证命令/证据、风险、以及合理方案对比？
 
 判定规则：
-- 4 条全 PASS → APPROVED
+- 5 条全 PASS → APPROVED
 - 有任何 FAIL → NEEDS_MORE_WORK
 - 分析内容为空或只有意图陈述 → NEEDS_MORE_WORK
 - 重要：如果前几轮已反馈过某个不足，而 agent 本轮分析中已针对该不足做了补充，
   则该项应判 PASS。不要反复找新角度——收敛判定。
-- 如果 4 个维度已经基本覆盖（即使深度不够完美），也应该 APPROVED。
+- 如果 5 个维度已经基本覆盖（即使深度不够完美），也应该 APPROVED。
   "完美"不是标准，"充分理解了代码逻辑和方案"才是标准。
 
 只回答 APPROVED 或 NEEDS_MORE_WORK。在 NEEDS_MORE_WORK 后用一句话说明缺了什么。"""
@@ -438,23 +666,18 @@ def _judge_investigation(
         (approved, feedback, was_infra_failure)
         - approved=True 时 feedback 为空，was_infra_failure=False
         - was_infra_failure=True 表示是基础设施问题（client 不可用/异常），
-          调用方应递增 fail_count 而非重置。
+          调用方应递增 fail_count 而非重置；两种失败都保持 block。
     """
     try:
         from agent.auxiliary_client import get_text_auxiliary_client, build_judge_thinking_extra_body
 
         client, model = get_text_auxiliary_client("investigation_judge")
         if client is None or not model:
-            # 漏洞 4 修复：fail-closed 前 2 次（不允许），fail-open 第 3 次（防死锁）
-            if fail_count < 2:
-                logger.warning(
-                    "read-think gate: no auxiliary client for judge → block (fail_count=%d)", fail_count,
-                )
-                return False, "调查质量评审服务暂不可用，请输出完整分析后重试。", True
             logger.warning(
-                "read-think gate: no auxiliary client, fail_count=%d → allow (fail-open)", fail_count,
+                "read-think gate: no auxiliary client for judge → block (fail_count=%d)",
+                fail_count,
             )
-            return True, "", True
+            return False, "调查质量评审服务暂不可用；修改保持锁定，请稍后重试。", True
 
         # 构建调查证据文本：文件路径 + 所有调查工具调用记录
         evidence_parts = []
@@ -500,16 +723,12 @@ def _judge_investigation(
         return False, feedback, False
 
     except Exception:
-        # 漏洞 4 修复：fail-closed 前 2 次，fail-open 第 3 次
-        if fail_count < 2:
-            logger.warning(
-                "read-think gate: judge failed → block (fail_count=%d)", fail_count, exc_info=True,
-            )
-            return False, "调查质量评审服务异常，请输出完整分析后重试。", True
         logger.warning(
-            "read-think gate: judge failed, fail_count=%d → allow (fail-open)", fail_count, exc_info=True,
+            "read-think gate: judge failed → block (fail_count=%d)",
+            fail_count,
+            exc_info=True,
         )
-        return True, "", True
+        return False, "调查质量评审服务异常；修改保持锁定，请稍后重试。", True
 
 
 def _build_history_summary(conversation_history: list[dict] | None) -> str:
@@ -659,14 +878,17 @@ class ReadThinkGateConfig:
     max_reasoning_rounds: int = 5
     min_reasoning_chars: int = 80
     min_reflection_chars: int = 20
-    unlock_after_investigation: bool = True
     min_read_only_calls: int = 1
     complexity_adaptive: bool = False
     complexity_profiles: Mapping[str, Mapping[str, int]] | None = None
     # 是否用 LLM 做复杂度分类（默认 True，需 auxiliary client 可用）
     use_llm_classifier: bool = True
-    # 是否用 LLM-as-judge 评估调查质量（严格模式下生效）
-    use_llm_judge: bool = True
+    # Optional semantic intent classifier. Keep this opt-in: enabling it spends
+    # an additional auxiliary-model call at turn start.
+    use_llm_intent_classifier: bool = False
+    # Optional semantic investigation judge. The deterministic evidence gate is
+    # the default so a write does not silently add another paid model call.
+    use_llm_judge: bool = False
     # 用户自定义额外门控工具（合并到 GATED_TOOL_NAMES 之上）。
     # 默认只门控 write_file/patch/execute_code；如需门控 terminal 等，在此追加。
     gated_tools: tuple[str, ...] = ()
@@ -681,12 +903,14 @@ class ReadThinkGateConfig:
             max_reasoning_rounds=_positive_int(data.get("max_reasoning_rounds"), 5),
             min_reasoning_chars=_positive_int(data.get("min_reasoning_chars"), 80),
             min_reflection_chars=_positive_int(data.get("min_reflection_chars"), 20),
-            unlock_after_investigation=_as_bool(data.get("unlock_after_investigation"), True),
             min_read_only_calls=_positive_int(data.get("min_read_only_calls"), 1),
             complexity_adaptive=_as_bool(data.get("complexity_adaptive"), False),
             complexity_profiles=profiles_raw if isinstance(profiles_raw, Mapping) else None,
             use_llm_classifier=_as_bool(data.get("use_llm_classifier"), True),
-            use_llm_judge=_as_bool(data.get("use_llm_judge"), True),
+            use_llm_intent_classifier=_as_bool(
+                data.get("use_llm_intent_classifier"), False
+            ),
+            use_llm_judge=_as_bool(data.get("use_llm_judge"), False),
             gated_tools=tuple(
                 str(x) for x in (data.get("gated_tools") or [])
                 if isinstance(x, str)
@@ -735,8 +959,6 @@ class ReadThinkGate:
         if self.config.gated_tools:
             self._gated_tools.update(self.config.gated_tools)
         self._four_axis_found: set[str] = set()  # 本 turn 四轴证据集合
-        self._turn_start_time: float = 0.0  # 墙钟逃逸阀
-        self._total_tool_calls: int = 0  # 总工具调用次数（含read-only），防膨胀
         self.reset_for_turn()
 
     # ── Per-turn state ──────────────────────────────────────────────
@@ -764,17 +986,25 @@ class ReadThinkGate:
         self._judge_feedback_history: list[str] = []
         # 漏洞 4 修复：judge 连续失败计数——达到阈值后 fail-open
         self._judge_fail_count: int = 0
+        self._intent: str = INTENT_AMBIGUOUS
+        self._modification_authorized: bool = False
+        self._investigation_complete: bool = False
         # 四轴闸门——每 turn 重新计数
         self._four_axis_found: set[str] = set()
         # 清除本会话上一 turn 的四轴 marker 文件（不触碰其他会话的桶）
         _clear_four_axis_marker(self._session_id)
-        # 漏洞修复：记录 turn 开始时间——墙钟逃逸阀防止用户感知的"卡死"
-        self._turn_start_time = time.time()
-        self._total_tool_calls = 0
         # 清理上一 turn 动态加入 _gated_tools 的 terminal（漏洞 3 修复副作用）。
         # 但保留用户通过 config 显式配置的 gated_tools。
         if "terminal" not in self.config.gated_tools:
             self._gated_tools.discard("terminal")
+
+        self._intent = _detect_user_intent(
+            user_message,
+            conversation_history,
+            use_llm=self.config.use_llm_intent_classifier,
+        )
+        self._modification_authorized = self._intent == INTENT_MODIFY
+        self._publish_state()
 
         if self.config.complexity_adaptive:
             history_summary = ""
@@ -813,10 +1043,67 @@ class ReadThinkGate:
                 max_reasoning_rounds=self.config.max_reasoning_rounds,
             )
 
+    def _publish_state(self) -> None:
+        """Publish this turn's verdict for ``guards.pre_write``.
+
+        The batch hook and per-tool hook run in the same profile scope. This
+        state is an enforcement handoff, not an authorization source: only
+        ``reset_for_turn`` derives intent from user conversation.
+        """
+        if not self._session_id:
+            return
+        state = get_session_state(self._session_id, _STATE_NAMESPACE)
+        state.clear()
+        state.update(
+            {
+                "active": bool(self.config.enabled),
+                "intent": self._intent,
+                "modification_authorized": self._modification_authorized,
+                "investigation_complete": self._investigation_complete,
+            }
+        )
+
     @property
-    def _investigation_done(self) -> bool:
-        """调查是否达标——至少做了 1 次只读调查。"""
-        return self._read_only_count >= 1
+    def user_intent(self) -> str:
+        """This turn's immutable user-intent classification."""
+        return self._intent
+
+    @staticmethod
+    def _normalized_path(path: str) -> str:
+        """Canonical path form for read-target comparisons."""
+        return os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+
+    def _write_targets(
+        self,
+        tool_names: list[str],
+        tool_args: list[dict] | None,
+    ) -> list[str]:
+        """Return concrete existing file targets in this write batch."""
+        if not tool_args:
+            return []
+        targets: list[str] = []
+        for name, args in zip(tool_names, tool_args):
+            if name not in ("write_file", "patch") or not isinstance(args, dict):
+                continue
+            raw = str(args.get("path") or "").strip()
+            if raw and os.path.exists(self._normalized_path(raw)):
+                targets.append(self._normalized_path(raw))
+        return targets
+
+    def _unread_write_targets(
+        self,
+        tool_names: list[str],
+        tool_args: list[dict] | None,
+    ) -> list[str]:
+        """Existing write targets not read in full this turn."""
+        read = {self._normalized_path(path) for path in self._files_read}
+        return [path for path in self._write_targets(tool_names, tool_args) if path not in read]
+
+    def _mark_satisfied(self) -> None:
+        """Unlock writes and publish the evidence verdict to pre_write."""
+        self._satisfied = True
+        self._investigation_complete = True
+        self._publish_state()
 
     def _scan_four_axis(self, content: str | None) -> None:
         """扫描 assistant 回复文本，检测四轴证据并累积到 self._four_axis_found。
@@ -921,14 +1208,13 @@ class ReadThinkGate:
         """严格模式下当前未达标的全部缺口，一次列全。
 
         与 _try_unlock 的四关一一对应：①调查量 ②搜索类多样性 ③分析
-        字数 ④四轴（仅 FILE_WRITE_TOOLS 批次检查，对齐 _try_unlock 的
-        requesting_core_edit 判定——execute_code/terminal 不查四轴）。
+        字数 ④四轴。四轴对所有修改通道都强制，terminal 直写也不能绕过。
         调查量/字数未达标时 _try_unlock 不评估后续关——本方法打破该
         顺序依赖，把后续关缺口一并披露，被拦方一次补齐而非逐层试探。
 
         Contract:
-          Preconditions: 严格模式（unlock_after_investigation=False）下
-            _try_unlock 返回 False 后由 _build_block_message 调用
+          Preconditions: 修改请求的 _try_unlock 返回 False 后由
+            _build_block_message 调用
           Postconditions: 返回零或多条缺口描述，每条含当前值/目标值/
             可执行动作；空列表 = 四关全过（被拦属状态异常，调用方兜底）
         """
@@ -955,11 +1241,7 @@ class ReadThinkGate:
                 f"{profile.min_reasoning_chars - content_len} 字。正文回答：目标"
                 "代码当前逻辑（引行号）/相关既有程序与既有做法/方案对比与最优性。"
             )
-        if (
-            tool_names
-            and any(t in _FOUR_AXIS_REQUIRED_TOOLS for t in tool_names)
-            and not self._four_axis_complete()
-        ):
+        if not self._four_axis_complete():
             missing = "、".join(self._missing_axes())
             items.append(
                 f"④ 四轴缺「{missing}」：正文逐轴输出并紧贴写调用——影响面清单"
@@ -1056,7 +1338,7 @@ class ReadThinkGate:
         # ── 四轴证据扫描（每次 assistant 回复都扫，累积到 self._four_axis_found）──
         self._scan_four_axis(assistant_content)
 
-        if not self.config.enabled or self._satisfied:
+        if not self.config.enabled:
             return None
 
         # ── 漏洞 3 修复：检测 terminal 中的文件写入操作 ──
@@ -1095,38 +1377,15 @@ class ReadThinkGate:
         if has_read_only_investigation:
             self._read_only_count += 1
 
-        # 总工具调用计数——防止 read-only 和 gated 交替膨胀
-        self._total_tool_calls += len(tool_names)
-
-        # ── write-target 覆盖率检查（优先于 _try_unlock）──
-        # 如果要改的文件已经读过，或文件不存在（新建），直接放行。
-        # 不需要再走 diversity/推理门槛——目的性调查已经完成。
-        if tool_args and not self.config.unlock_after_investigation:
-            target_satisfied = False
-            for tn, ta in zip(tool_names, tool_args):
-                if tn in ("write_file", "patch") and isinstance(ta, dict):
-                    wp = ta.get("path", "")
-                    if wp:
-                        if not os.path.exists(wp):
-                            logger.debug(
-                                "read-think gate: write target %s is new file → skip read check",
-                                wp,
-                            )
-                            target_satisfied = True
-                            break
-                        if wp in self._files_read:
-                            self._satisfied = True
-                            logger.info(
-                                "read-think gate: unlocked — write target %s was read before edit",
-                                wp,
-                            )
-                            return None
-            if target_satisfied:
-                # 所有 write/patch target 都满足 → 放行
-                return None
-
-        if self._try_unlock(content_len, content_text, tool_names):
-            return None
+        # Investigation may complete before the eventual write. It unlocks
+        # only after the full strict evidence contract, never after a single
+        # read, a timer, or a round-budget exhaust.
+        if (
+            not self._satisfied
+            and self._intent == INTENT_MODIFY
+            and self._try_unlock(content_len, content_text, tool_names)
+        ):
+            self._mark_satisfied()
 
         if not has_mutating:
             logger.debug(
@@ -1136,13 +1395,53 @@ class ReadThinkGate:
             )
             return None
 
-        # ── 推理轮数递增 ──
-        # _try_unlock 的 max_reasoning_rounds 兜底在递增之前检查，
-        # 所以当 _reasoning_rounds 达到 max 时直接放行，不会多一轮。
-        # 这里递增后，拦截消息显示的轮次与实际一致（第1次拦截显示 1/N）。
-        self._reasoning_rounds += 1
+        if self._intent != INTENT_MODIFY:
+            self._reasoning_rounds += 1
+            first_gated = next(
+                (t for t in tool_names if t in self._gated_tools),
+                "terminal",
+            )
+            return _make_synthetic_result(
+                first_gated,
+                self._build_intent_block_message(first_gated),
+                content_len,
+            )
+
+        unread_targets = self._unread_write_targets(tool_names, tool_args)
+        if unread_targets:
+            self._reasoning_rounds += 1
+            first_gated = next(
+                (t for t in tool_names if t in self._gated_tools),
+                "terminal",
+            )
+            target_list = "\n".join(f"  - {path}" for path in unread_targets)
+            return _make_synthetic_result(
+                first_gated,
+                (
+                    f"[ReadThink Gate — 用户已要求修改，但调查未完成] 工具 "
+                    f"'{first_gated}' 暂时不可用。\n\n"
+                    "以下既有目标文件尚未在本 turn 完整读取：\n"
+                    f"{target_list}\n\n"
+                    "先 read_file 读取目标现状，再检查调用方、相关实现、测试、配置"
+                    "和必要的历史意图。新建文件也不能跳过这次上下文调查。"
+                ),
+                content_len,
+            )
+
+        if self._satisfied:
+            return None
 
         first_gated = next(t for t in tool_names if t in self._gated_tools) if any(t in self._gated_tools for t in tool_names) else "terminal"
+        if self._reasoning_rounds >= self._active_profile.max_reasoning_rounds:
+            return _make_synthetic_result(
+                first_gated,
+                self._build_handoff_message(first_gated),
+                content_len,
+            )
+
+        # ── 推理轮数递增 ──
+        self._reasoning_rounds += 1
+
         block_msg = self._build_block_message(first_gated, content_len, tool_names)
         logger.info(
             "read-think gate: blocking %s (round %d/%d, content=%d, investigated=%d, complexity=%s)",
@@ -1158,203 +1457,146 @@ class ReadThinkGate:
     def _try_unlock(
         self, content_len: int, content: str = "", tool_names: list[str] | None = None,
     ) -> bool:
-        """尝试解锁。返回 True 如果状态已变为 satisfied。
+        """Return True only after the complete modification investigation.
 
-        严格模式四层门控：
-          1. 机械门槛：调查次数 + 推理量达标
-          2. LLM-as-judge：语义评估调查质量（代码理解/关系分析/既有模式/方案评估）
-          3. 四轴闸门：影响面/原意图/根因/风险 四轴证据全部在回复中出现
-          4. max_reasoning_rounds 兜底防死循环（跳过四轴检查）
+        There is deliberately no round-count, wall-clock, or read-target
+        escape hatch: those used to turn "the agent kept trying" into
+        "the agent understood the code".
         """
         profile = self._active_profile
 
-        # ── 漏洞 7 修复：兜底检查移到这里，在调查/推理量检查之前 ──
-        # 这样推理轮数达到上限时直接放行，不会多等一轮。
-        if self._reasoning_rounds >= profile.max_reasoning_rounds:
-            self._satisfied = True
-            logger.info(
-                "read-think gate: unlocked — max reasoning rounds reached (%d, complexity=%s)",
-                profile.max_reasoning_rounds, self._active_complexity,
-            )
-            return True
+        if not content or content_len < profile.min_reasoning_chars:
+            return False
+        if self._read_only_count < profile.min_read_only_calls:
+            return False
 
-        # ── 墙钟逃逸阀：turn 开始后超过 3 分钟直接解锁 ──
-        # 防止 LLM 模型每轮调用耗时长（reasoning model 1-2 min/轮）
-        # 导致 8 轮 × 2 分钟 = 16 分钟用户感知"卡死"。
-        # 3 分钟是用户耐心的合理上限——超过即认为调查已足够。
-        if self._turn_start_time > 0:
-            elapsed = time.time() - self._turn_start_time
-            if elapsed > 180:
-                self._satisfied = True
-                logger.info(
-                    "read-think gate: unlocked — wall-clock escape valve (%.0fs > 180s, rounds=%d/%d, complexity=%s)",
-                    elapsed, self._reasoning_rounds, profile.max_reasoning_rounds,
-                    self._active_complexity,
+        if self.config.use_llm_judge:
+            tool_name = ""
+            if tool_names:
+                tool_name = next(
+                    (t for t in tool_names if t in self._gated_tools),
+                    tool_names[0],
                 )
-                return True
-
-        # ── 总调用次数逃逸阀：防止 read-only/gated 交替膨胀 ──
-        # 场景：agent 做 search → terminal 被 block → search → terminal 被 block ...
-        # read-only 轮不计入 _reasoning_rounds，导致实际 LLM 调用数远超 max。
-        # 上限 = max_reasoning_rounds × 3（每次 block 最多允许 2 次 read-only 穿插）。
-        total_call_cap = profile.max_reasoning_rounds * 3
-        if self._total_tool_calls >= total_call_cap:
-            self._satisfied = True
+            approved, feedback, was_infra_failure = _judge_investigation(
+                self._user_message,
+                tool_name,
+                self._files_read,
+                content,
+                investigation_evidence=self._investigation_evidence,
+                judge_history=self._judge_feedback_history,
+                fail_count=self._judge_fail_count,
+            )
+            if not approved:
+                if was_infra_failure:
+                    self._judge_fail_count += 1
+                else:
+                    self._judge_fail_count = 0
+                    self._judge_feedback_history.append(feedback)
+                self._last_judge_feedback = feedback
+                logger.info(
+                    "read-think gate: judge rejected (reads=%d, complexity=%s): %s",
+                    self._read_only_count,
+                    self._active_complexity,
+                    feedback,
+                )
+                return False
+            self._judge_fail_count = 0
+            self.mark_four_axis_complete()
+        elif not self._has_diverse_investigation(profile):
             logger.info(
-                "read-think gate: unlocked — total tool call cap reached (%d >= %d, rounds=%d/%d, complexity=%s)",
-                self._total_tool_calls, total_call_cap,
-                self._reasoning_rounds, profile.max_reasoning_rounds,
+                "read-think gate: investigation not diverse (reads=%d, complexity=%s)",
+                self._read_only_count,
                 self._active_complexity,
             )
-            return True
+            return False
 
-        if not self.config.unlock_after_investigation:
-            # 严格模式第一关：调查量 + 推理量 双达标
-            if (self._read_only_count >= profile.min_read_only_calls
-                    and content_len >= profile.min_reasoning_chars):
-                # 严格模式第二关：LLM-as-judge 语义评估
-                if self.config.use_llm_judge and content:
-                    tool_name = ""
-                    if tool_names:
-                        tool_name = next(
-                            (t for t in tool_names if t in self._gated_tools), tool_names[0] if tool_names else ""
-                        )
-                    # ── 漏洞 2 修复：传入 judge 历史 ──
-                    # ── 漏洞 4 修复：传入 fail_count ──
-                    approved, feedback, was_infra_failure = _judge_investigation(
-                        self._user_message, tool_name, self._files_read, content,
-                        investigation_evidence=self._investigation_evidence,
-                        judge_history=self._judge_feedback_history,
-                        fail_count=self._judge_fail_count,
-                    )
-                    if not approved:
-                        # judge 不通过——不解锁，反馈给 agent
-                        # 区分：基础设施失败 → 递增 fail_count；judge 合法拒绝 → 重置 fail_count
-                        if was_infra_failure:
-                            self._judge_fail_count += 1
-                        else:
-                            self._judge_fail_count = 0
-                            self._judge_feedback_history.append(feedback)
-                        self._last_judge_feedback = feedback
-                        logger.info(
-                            "read-think gate: judge rejected (reads=%d, complexity=%s, history=%d): %s",
-                            self._read_only_count, self._active_complexity,
-                            len(self._judge_feedback_history), feedback,
-                        )
-                        return False
-                    else:
-                        # judge 通过——重置状态 + 标记四轴完成
-                        self._judge_fail_count = 0
-                        self.mark_four_axis_complete()
-                elif not self._has_diverse_investigation(profile):
-                    # 无 LLM judge 时：调查必须包含搜索类工具（search_files/web_search/web_extract），
-                    # 不能只是 read_file 堆数量。防止三连 read_file 凑数过关。
-                    logger.info(
-                        "read-think gate: investigation not diverse — need search_files/web_search/web_extract "
-                        "(reads=%d, complexity=%s)",
-                        self._read_only_count, self._active_complexity,
-                    )
-                    return False
-                else:
-                    # 无 LLM judge 但调查多样化达标 → 不自动标记四轴完成。
-                    # 四轴由内容检测（_four_axis_found）自然累积，或由 LLM judge 显式通过。
-                    # 之前这里错误地调用 mark_four_axis_complete() 导致 diversity 替代四轴，
-                    # 严格模式下 write_file 被四轴形同虚设。
-                    pass
-                # 四轴闸门——严格模式下四轴不齐不解锁。
-                # 但只对核心代码编辑工具（write_file/patch/execute_code）强制要求。
-                # terminal 即使被动态 gated（含文件写入），也不要求四轴——
-                # 运维操作（pytest/grep/tail）不应被"风险矩阵"卡住。
-                requesting_core_edit = bool(
-                    tool_names and any(t in _FOUR_AXIS_REQUIRED_TOOLS for t in tool_names)
-                )
-                if requesting_core_edit and not self._four_axis_complete():
-                    missing = self._missing_axes()
-                    logger.info(
-                        "read-think gate: four-axis incomplete — missing %s (judge path, complexity=%s)",
-                        missing, self._active_complexity,
-                    )
-                    return False
-                self._satisfied = True
-                judge_label = "judge=pass" if self.config.use_llm_judge else "judge=off(diverse)"
-                logger.info(
-                    "read-think gate: unlocked — strict mode (reads=%d>=%d, reasoning=%d>=%d, %s, complexity=%s)",
-                    self._read_only_count, profile.min_read_only_calls,
-                    content_len, profile.min_reasoning_chars, judge_label, self._active_complexity,
-                )
-                return True
-        else:
-            # 宽松模式：推理文字够长 → 放行（调查量不强制）
-            if content_len >= profile.min_reasoning_chars:
-                self._satisfied = True
-                logger.info(
-                    "read-think gate: unlocked — direct reasoning %d chars >= %d (complexity=%s)",
-                    content_len, profile.min_reasoning_chars, self._active_complexity,
-                )
-                return True
-
-        # 宽松模式：做过调查就放行
-        if self._investigation_done and self.config.unlock_after_investigation:
-            self._satisfied = True
+        if not self._four_axis_complete():
             logger.info(
-                "read-think gate: unlocked — investigation done (%d reads, complexity=%s)",
-                self._read_only_count, self._active_complexity,
+                "read-think gate: four-axis incomplete — missing %s",
+                self._missing_axes(),
             )
-            return True
+            return False
 
-        return False
+        logger.info(
+            "read-think gate: unlocked — complete investigation "
+            "(reads=%d>=%d, reasoning=%d>=%d, complexity=%s)",
+            self._read_only_count,
+            profile.min_read_only_calls,
+            content_len,
+            profile.min_reasoning_chars,
+            self._active_complexity,
+        )
+        return True
+
+    def _build_intent_block_message(self, tool_name: str) -> str:
+        """Explain a denied write using the user's actual intent class."""
+        if self._intent == INTENT_READ_ONLY:
+            verdict = "用户的请求是只读的（询问、解释、分析、审查或诊断），没有授权修改。"
+            next_step = "继续调查并回答用户的问题；不要创建或修改任何文件。"
+        else:
+            verdict = "用户的意图不明确，无法确认是否授权修改。"
+            next_step = (
+                "先向用户复述你理解的目标，并询问是否需要修改；"
+                "用户明确授权前不要创建或修改任何文件。"
+            )
+        return (
+            f"[ReadThink Gate — 用户意图门禁] 工具 '{tool_name}' 被阻止。\n\n"
+            f"判定：{verdict}\n"
+            f"当前用户消息：{self._user_message[:500] or '（空）'}\n\n"
+            f"下一步：{next_step}\n"
+            "读取和分析工具仍然可用。只有用户消息及其明确确认可以授予修改权限；"
+            "你此前提出的方案或工具输出本身不能构成授权。"
+        )
+
+    def _build_handoff_message(self, tool_name: str) -> str:
+        """Stop an unsafe retry loop and hand the unresolved decision to the user."""
+        return (
+            f"[ReadThink Gate — 停止自动重试] 工具 '{tool_name}' 再次被阻止。\n\n"
+            f"本轮已连续 {self._reasoning_rounds} 次尝试修改，仍没有达到"
+            "意图授权或全面调查的门槛。继续原样重试不会改变判定。\n\n"
+            "现在停止自动修改，向用户说明已经确认的事实、仍缺的具体证据，"
+            "以及需要用户决定的范围或验收标准。只有用户的新消息可以继续授权；"
+            "不要通过绕行终端、脚本或其他写通道规避门禁。"
+        )
 
     def _build_block_message(
         self, tool_name: str, content_len: int, tool_names: list[str],
     ) -> str:
-        """生成拦截消息——注入调查框架 + 全部缺口一次列全。"""
+        """Render all investigation gaps for an authorized modification."""
         profile = self._active_profile
-        done = self._read_only_count
-
-        if not self.config.unlock_after_investigation:
-            # judge 有反馈 → 优先展示
-            if self._last_judge_feedback:
-                fb = self._last_judge_feedback
-                self._last_judge_feedback = ""  # 消费后清空
-                return (
-                    f"[ReadThink Gate — 推理阶段 · 标准任务] 工具 '{tool_name}' 暂时不可用。\n\n"
-                    f"LLM 评审不通过。评审意见：{fb}\n\n"
-                    "你的分析需要覆盖：\n"
-                    "  A. 目标代码当前逻辑（引用具体函数/行号/数据流）\n"
-                    "  B. 与它有关系的既有程序（调用方、被依赖方、同类实现）\n"
-                    "  C. 既有程序是怎么做这件事的（等价实现/可复用的模式）\n"
-                    "  D. 你的方案为什么是最优的（对比过的替代方案）\n\n"
-                    f"（推理轮数：{self._reasoning_rounds}/{profile.max_reasoning_rounds}）"
-                )
-            # 全部缺口一次列全——逐层 if-return 曾让被拦方每轮只知道第一层
-            # 缺口，补一层撞一层（实测同一任务连拦 3 次，每层白烧一轮）。
-            gaps = self._strict_gap_items(profile, content_len, tool_names)
-            header = (
-                f"[ReadThink Gate — 推理阶段 · 标准任务] 工具 '{tool_name}' 暂时不可用。\n\n"
-                "动手前必须搞清楚：\n"
-                "  1. 要改的代码当前怎么写的？逻辑是什么？（读源码，引用行号）\n"
-                "  2. 跟它有关系的既有程序有哪些？调用方在哪？被谁依赖？\n"
-                "  3. 既有程序是怎么做这件事的？是否已有等价实现可以复用或扩展？\n"
-                "  4. 你打算怎么改？这是最优方案吗？有没有更稳妥的做法？\n\n"
-                "用 search_files 搜调用方和同类实现，用 read_file 读目标文件全貌，\n"
-                "用 codegraph/gitnexus 追依赖链。搞清楚再动手。\n\n"
-                "以下为本次拦截的全部缺口清单（一次列全，非逐层揭示——全部补齐后"
-                "在同一条回复正文里紧贴发起写调用即可，无需分多轮试探）：\n"
-            )
-            body = "\n".join(gaps) if gaps else (
-                "（四关全部达标——仍被拦属内部状态异常，检查推理轮数是否已到上限）"
-            )
+        if self._last_judge_feedback:
+            fb = self._last_judge_feedback
+            self._last_judge_feedback = ""
             return (
-                f"{header}{body}\n"
+                f"[ReadThink Gate — 调查门禁] 工具 '{tool_name}' 暂时不可用。\n\n"
+                f"LLM 评审不通过。评审意见：{fb}\n\n"
+                "你的分析需要覆盖：\n"
+                "  A. 目标代码当前逻辑（引用具体函数/行号/数据流）\n"
+                "  B. 调用方、被依赖方、相关兄弟实现\n"
+                "  C. 既有测试、配置、项目约定和可复用模式\n"
+                "  D. 改变既有行为时的历史意图\n"
+                "  E. 验收标准、验证命令、影响面、风险和替代方案\n\n"
                 f"（推理轮数：{self._reasoning_rounds}/{profile.max_reasoning_rounds}）"
             )
 
-        if done == 0:
-            return (
-                f"[ReadThink] 先用 search_files/read_file 调查再动手。（轮 {self._reasoning_rounds}/{profile.max_reasoning_rounds}）"
-            )
+        gaps = self._strict_gap_items(profile, content_len, tool_names)
+        header = (
+            f"[ReadThink Gate — 调查门禁] 工具 '{tool_name}' 暂时不可用。\n\n"
+            "用户已请求修改，但修改授权不等于立即动手。先全面搞清楚：\n"
+            "  1. 目标代码现在如何工作？读过完整目标文件和关键行号吗？\n"
+            "  2. 调用方、被依赖方、兄弟实现和相关配置在哪里？\n"
+            "  3. 现有测试和项目约定是什么？改行为前查过历史意图吗？\n"
+            "  4. 验收标准、验证命令、影响面、风险和替代方案是什么？\n\n"
+            "新建文件同样需要这次上下文调查。轮数、等待时间和文件已存在与否"
+            "都不能替代证据。\n\n"
+            "以下为本次拦截的全部缺口清单：\n"
+        )
+        body = "\n".join(gaps) if gaps else (
+            "（全部门槛已达标，但内部状态仍拒绝写入；这说明门禁状态异常，不能绕过。）"
+        )
         return (
-            f"[ReadThink] 读过了但你要改的文件还没读。先 read_file 目标文件。（轮 {self._reasoning_rounds}/{profile.max_reasoning_rounds}）"
+            f"{header}{body}\n"
+            f"（推理轮数：{self._reasoning_rounds}/{profile.max_reasoning_rounds}）"
         )
 
 

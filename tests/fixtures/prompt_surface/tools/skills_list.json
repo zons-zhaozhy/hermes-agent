@@ -6,6 +6,10 @@
       "category": {
         "description": "Optional category filter to narrow results",
         "type": "string"
+      },
+      "query": {
+        "description": "Optional situation words to find a skill by what you are trying to do, e.g. '翻页丢状态' or '对账 迁移'. Every whitespace-separated term must appear in a skill's name, description, category or trigger words; omit it to list everything.",
+        "type": "string"
       }
     },
     "required": [],

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import importlib
 import json
 import logging
 import os
@@ -79,9 +80,13 @@ def _pin_environment() -> None:
     socket.socket.connect = refuse  # type: ignore[method-assign]
     socket.create_connection = refuse  # type: ignore[assignment]
     socket.getaddrinfo = refuse  # type: ignore[assignment]
-    sys.platform = "linux"  # skills index ``platforms:`` gate
 
     import hermes_time
+    # Both zoneinfo and psutil select platform-specific code during import. Load
+    # them before pinning sys.platform to Linux for the skills-index gate; loading
+    # psutil afterward tries to import its Linux C extension on a macOS install.
+    importlib.import_module("psutil")
+    sys.platform = "linux"  # skills index ``platforms:`` gate
     hermes_time.now = lambda: FIXED_NOW  # type: ignore[assignment]
     # Every registered tool counts as available, as on a fully configured install: check_fns
     # read credentials, binaries and the tool store, which vary by host and would hide schemas.
@@ -107,11 +112,16 @@ class _ImportFailures(logging.Handler):
 
 def _scrub(text: str, home: Path) -> str:
     import platform as _platform
-    for raw, token in sorted({
-        str(home / ".hermes"): "<HERMES_HOME>",
-        str(home): "<HOME>",
+    # macOS resolves /var to /private/var, but prompt builders can retain the
+    # unresolved HOME spelling they were given. Scrub both spellings so a local
+    # render is byte-identical to Linux CI and never commits a temp path.
+    homes = {str(home), str(Path.home())}
+    replacements = {
         f"{_platform.system()} ({_platform.release()})": "<HOST_OS>",
-    }.items(), key=lambda kv: -len(kv[0])):
+        **{str(Path(item) / ".hermes"): "<HERMES_HOME>" for item in homes},
+        **{item: "<HOME>" for item in homes},
+    }
+    for raw, token in sorted(replacements.items(), key=lambda kv: -len(kv[0])):
         text = text.replace(raw, token)
     return text
 

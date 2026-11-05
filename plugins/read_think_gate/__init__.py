@@ -1,14 +1,20 @@
-"""read-think-gate plugin — host for the ReadThinkGate (four-axis deliberation gate).
+"""read-think-gate plugin — user-intent and investigation gate.
 
 Externalized from ``agent/read_think_gate.py`` + its ``tool_executor`` /
 ``agent_init`` wiring (fork narrow-waist rule: capability lives at the edges).
-Behavior contract is unchanged:
+The current behavior contract:
 
 * one ``check_batch`` per assistant_message (the executor's ``pre_tool_batch``
   hook fires exactly once per batch, at the same two dispatch seams the old
   core wiring used);
+* reads, analysis, reviews, and plans never authorize a write;
+* a write requires an explicit user modification request and a completed
+  investigation of the target, its surroundings, tests/config, and verification;
+* repeated blocked writes stop and hand the unresolved decision back to the user
+  rather than exhausting rounds into an implicit allow;
 * four-axis evidence accumulates within a turn and spills to
-  ``~/.hermes/cache/four_axis_gate.json`` for the guards plugin's second line;
+  ``~/.hermes/cache/four_axis_gate_<pid>_<session>.json`` for the guards plugin's
+  second line;
 * cron platforms are exempt (unattended jobs cannot answer gate prompts);
 * a crashing gate fails CLOSED at the dispatcher (policy hooks fail closed:
   the crash surfaces as a named block directive in the tool result, never a
@@ -26,7 +32,8 @@ import contextvars
 import logging
 from typing import Any, Dict, Optional
 
-from .gate import ReadThinkGate, ReadThinkGateConfig
+from .gate import _STATE_NAMESPACE, ReadThinkGate, ReadThinkGateConfig
+from plugins._shared_state import get_session_state
 
 logger = logging.getLogger("plugins.read-think-gate")
 
@@ -108,6 +115,7 @@ def on_session_start(session_id: str = "", **_kwargs: Any) -> None:
 def on_session_reset(session_id: str = "", **_kwargs: Any) -> None:
     """Drop the session's gate — next batch builds a fresh one."""
     _GATES.pop(session_id, None)
+    get_session_state(session_id, _STATE_NAMESPACE).clear()
     if _ACTIVE_SESSION_ID.get() == (session_id or None):
         _ACTIVE_SESSION_ID.set(None)
 
@@ -115,6 +123,7 @@ def on_session_reset(session_id: str = "", **_kwargs: Any) -> None:
 def on_session_end(session_id: str = "", **_kwargs: Any) -> None:
     """Drop the session's gate (mirror of reset; either name may fire)."""
     _GATES.pop(session_id, None)
+    get_session_state(session_id, _STATE_NAMESPACE).clear()
     if _ACTIVE_SESSION_ID.get() == (session_id or None):
         _ACTIVE_SESSION_ID.set(None)
 
@@ -124,6 +133,7 @@ def pre_llm_call(
     session_id: str = "",
     platform: str = "",
     is_first_turn: bool = False,
+    conversation_history: list[dict] | None = None,
     **_kwargs: Any,
 ) -> None:
     """Per-turn reset — the turn's user message drives complexity classification.
@@ -137,7 +147,10 @@ def pre_llm_call(
         if gate is None:
             return
         message = user_message if isinstance(user_message, str) else str(user_message or "")
-        gate.reset_for_turn(user_message=message or None)
+        gate.reset_for_turn(
+            user_message=message or None,
+            conversation_history=conversation_history,
+        )
     except Exception:
         logger.warning("read-think-gate: reset_for_turn failed", exc_info=True)
 
