@@ -490,10 +490,21 @@ class SessionAuthority:
         from gateway.session_retirement import restore_retired
         restore_retired(self, ref.session_id)  # input committed after its conversation retired
         live = self.sessions[ref.session_id]
+        self._publish_pending_snapshot(ref, *self._pending_publication(ref, live))
+
+    def _pending_publication(self, ref, live):
+        """Read the viewer-facing FIFO snapshot; blocking storage I/O, no event publication."""
         from gateway.session_queued_controls import pending_rows
         with live.event_stream.lock:
             handle = self._handle(ref)
-            pending = [asdict(self._pending_receipt(row)) for row in pending_rows(self, ref)]
+            pending = [asdict(self._pending_receipt(row))
+                       for row in pending_rows(self, ref)]
+            return handle, pending
+
+    def _publish_pending_snapshot(self, ref, handle, pending):
+        """Publish a prepared snapshot on the owner loop; storage is already behind the caller."""
+        live = self.sessions[ref.session_id]
+        with live.event_stream.lock:
             # Turns bump runtime_revision without any session.updated event, so
             # this is the only place a viewer learns the CAS revision a later
             # prepared mutation must present.
@@ -1132,7 +1143,8 @@ class SessionAuthority:
     async def _claim_next(self, ref, live):
         # False asks the pump to re-read after a queued head changed during preflight.
         async with live.claim_gate, live.mutation_lock:
-            pending = list_session_admissions(self.db, session_id=ref.session_id)
+            pending = await asyncio.to_thread(
+                list_session_admissions, self.db, session_id=ref.session_id)
             if any(row['status'] == 'unknown' for row in pending):
                 raise RuntimeStoreError('unknown_execution')
             first = next((row for row in pending if row['status'] == 'queued'), None)
@@ -1146,7 +1158,7 @@ class SessionAuthority:
                 await apply_deferred_pick(self, ref, live)
             if first is not None and live.source.platform == Platform.LOCAL:
                 from gateway.session_local_recovery import restore_local_session
-                restore_local_session(self, ref.session_id)
+                await asyncio.to_thread(restore_local_session, self, ref.session_id)
                 if first['request_id'].startswith('hosted:'):
                     from gateway.session_hosted_transport import check_remote_hosted_admission
                     if not await asyncio.to_thread(check_remote_hosted_admission, self, ref, first):
@@ -1156,7 +1168,8 @@ class SessionAuthority:
                         await asyncio.to_thread(service.check_admission, ref, first)
                     # Cancellation may advance the FIFO while the source owner is awaited;
                     # the successor must earn its own reauthorization, not inherit this one.
-                    current = get_session_admission(self.db, admission_id=first['admission_id'])
+                    current = await asyncio.to_thread(
+                        get_session_admission, self.db, admission_id=first['admission_id'])
                     if current is None or current['status'] != 'queued':
                         return False, first
                 if 'local_automation_v1' in first['payload']:
@@ -1183,7 +1196,8 @@ class SessionAuthority:
                                    self.runner._adapter_for_source(live.source))
                 # Cancellation may advance FIFO while the connector is awaited.
                 # Never let the successor inherit this row's fresh verdict.
-                current = get_session_admission(self.db, admission_id=first['admission_id'])
+                current = await asyncio.to_thread(
+                    get_session_admission, self.db, admission_id=first['admission_id'])
                 if current is None or current['status'] != 'queued':
                     return False, first
             if first is not None and live.source.platform == Platform.API_SERVER:
@@ -1208,10 +1222,15 @@ class SessionAuthority:
             live.rescan = False  # a _schedule from here on may not be visible to this claim's read
             # The row these checks validated, never whichever is first when the write runs: a
             # cancellation commits from a worker thread and can advance the FIFO at any point.
-            row = await tracked_write(self, partial(claim_session_input, self.db, epoch=self.epoch,
-                                                    session_id=ref.session_id, _guard=self._admission_gate(),
-                                                    head=first['admission_id'] if first is not None else None),
-                                      then=partial(self._stamp_claim, ref, live))
+            def claim_and_snapshot():
+                row = claim_session_input(self.db, epoch=self.epoch, session_id=ref.session_id,
+                                          _guard=self._admission_gate(),
+                                          head=first['admission_id'] if first is not None else None)
+                publication = (self._pending_publication(ref, live) if row else None)
+                return row, publication
+
+            row = await tracked_write(self, claim_and_snapshot,
+                                      then=partial(self._stamp_claim_with_snapshot, ref, live))
             # Input scheduled while this claim's transaction ran may postdate its read: re-read
             # instead of letting the drain exit idle over a committed admission.
             return (False if row is None and live.rescan else row), first
@@ -1229,6 +1248,22 @@ class SessionAuthority:
                 live.event_stream.publish(ref.session_id, admission_display(row.get('payload') or {}),
                                           event_type='message.start')
                 self._publish_pending(ref)
+        return row
+
+    def _stamp_claim_with_snapshot(self, ref, live, claimed):
+        """Stamp a claim whose FIFO snapshot was read by the claim's worker thread."""
+        row, publication = claimed
+        if not row:
+            return row
+        with live.event_stream.lock:
+            live.event_stream.execution = {
+                'authority_epoch': self.epoch, 'execution_generation': row['generation'],
+                'admission_id': row['admission_id']}
+            self.executing[ref.session_id] = row['generation']
+            from gateway.session_automation import admission_display
+            live.event_stream.publish(ref.session_id, admission_display(row.get('payload') or {}),
+                                      event_type='message.start')
+            self._publish_pending_snapshot(ref, *publication)
         return row
 
     def _drain_stopping(self, ref, live):
@@ -1538,5 +1573,5 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     from gateway.session_detached import watch_routes
     watch_routes(runner, store)
     from gateway.session_local_recovery import recover_local_sessions
-    recover_local_sessions(authority)
+    await recover_local_sessions(authority)
     return authority

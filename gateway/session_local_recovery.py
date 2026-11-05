@@ -445,7 +445,7 @@ def release_handed_off_receipts(db, *, epoch):
             'Local session %s was handed off to %s (row %s); released its local receipt', owner, source, target)
 
 
-def local_receipt_ids(authority):
+def local_receipt_ids(authority) -> list[str]:
     from gateway.session_viewer_close import CLOSE_PREFIX
     start = len(POLICY_PREFIX) + 1
     with authority.db._read_ctx() as conn:
@@ -453,12 +453,15 @@ def local_receipt_ids(authority):
             _BOOT_RECEIPTS_SQL, (POLICY_PREFIX + '%', start, CLOSE_PREFIX, start))]
 
 
-def recover_local_sessions(authority, *, schedule=False):
+async def recover_local_sessions(authority, *, schedule=False) -> None:
     orphans = []
-    for sid in local_receipt_ids(authority):
+    for sid in await asyncio.to_thread(local_receipt_ids, authority):
         try:
-            ref = restore_local_session(authority, sid)
-            pending = list_session_admissions(authority.db, session_id=sid)
+            def restore_and_read_pending():
+                ref = restore_local_session(authority, sid)
+                return ref, list_session_admissions(authority.db, session_id=sid)
+
+            ref, pending = await asyncio.to_thread(restore_and_read_pending)
             if any(row['status'] == 'unknown' for row in pending):
                 continue  # the drain pauses on it until its user's Discard
             if schedule and pending:
@@ -470,12 +473,16 @@ def recover_local_sessions(authority, *, schedule=False):
             logging.getLogger(__name__).warning('Local session %s paused: %s', sid, exc.reason)
     if schedule:
         # A last-viewer close the previous owner stopped before completing (#134889 LC-6b).
-        from gateway.session_viewer_close import rearm_persisted_closes, settle_viewer_close
+        from gateway.session_viewer_close import (
+            arm_persisted_closes, read_persisted_closes, settle_viewer_close)
         from gateway.session_runtime_workers import track_mutation
-        for sid in rearm_persisted_closes(authority):
+        stored = await asyncio.to_thread(read_persisted_closes, authority)
+        for sid in arm_persisted_closes(authority, stored):
             authority._schedule(SessionRef(authority.profile_id, sid))
-            if any(row['status'] == 'unknown' for row in list_session_admissions(authority.db, session_id=sid)):
+            pending = await asyncio.to_thread(
+                list_session_admissions, authority.db, session_id=sid)
+            if any(row['status'] == 'unknown' for row in pending):
                 # A hard-killed owner's turn: the drain pauses on it, so the close resolves it.
                 track_mutation(authority, settle_viewer_close(authority, sid))
         from gateway.session_viewer_close import arm_startup_orphan_closes
-        arm_startup_orphan_closes(authority, orphans)
+        await arm_startup_orphan_closes(authority, orphans)
