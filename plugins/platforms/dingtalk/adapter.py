@@ -156,7 +156,7 @@ def _install_sdk_ws_ping_shim() -> None:
         import types
         import dingtalk_stream.stream as _stream_mod
         real = _stream_mod.websockets
-    except Exception as e:
+    except (ImportError, AttributeError) as e:
         logger.warning("[dingtalk] stream module unavailable; websocket ping shim not installed: %s", e)
         return
 
@@ -393,6 +393,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             self._http_client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
             self._stream_client = dingtalk_stream.DingTalkStreamClient(dingtalk_stream.Credential(self._client_id, self._client_secret))
             _install_sdk_http_timeout_shim()
+            _install_sdk_ws_ping_shim()
             if CARD_SDK_AVAILABLE:
                 sdk_config = open_api_models.Config()
                 sdk_config.protocol, sdk_config.region_id = "https", "central"

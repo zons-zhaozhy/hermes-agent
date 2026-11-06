@@ -8,8 +8,9 @@ window inside the SDK's own namespace only.
 """
 from __future__ import annotations
 
+import logging
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -28,22 +29,62 @@ class _FakeWebsockets(ModuleType):
 
 @pytest.fixture
 def sdk_stream(monkeypatch):
-    """A stand-in ``dingtalk_stream.stream`` module whose ``websockets.connect`` records kwargs."""
+    """A stand-in ``dingtalk_stream`` package whose ``stream.websockets.connect`` records kwargs."""
     from plugins.platforms.dingtalk import adapter
 
     fake_ws = _FakeWebsockets()
     stream = ModuleType('dingtalk_stream.stream')
     stream.websockets = fake_ws
+    stream.requests = SimpleNamespace(post=lambda *a, **k: None)
     package = ModuleType('dingtalk_stream')
     package.stream = stream
     monkeypatch.setitem(sys.modules, 'dingtalk_stream', package)
     monkeypatch.setitem(sys.modules, 'dingtalk_stream.stream', stream)
-    monkeypatch.setattr(adapter, '_sdk_ws_shim_installed', False)
-    return adapter, stream, fake_ws
+    for flag in ('_sdk_ws_shim_installed', '_sdk_http_shim_installed'):
+        monkeypatch.setattr(adapter, flag, False)
+    return adapter, package, stream, fake_ws
+
+
+@pytest.mark.asyncio
+async def test_connecting_installs_the_ping_window(sdk_stream, monkeypatch):
+    """``connect`` wires the shim before the SDK worker opens its socket (a dead installer is no fix)."""
+    import asyncio
+
+    adapter, package, stream, fake_ws = sdk_stream
+    parked = asyncio.Event()
+
+    class _StreamClient:
+        def __init__(self, credential):
+            self.credential = credential
+            self.logger = logging.getLogger('dingtalk_stream.client')
+
+        async def start(self):
+            await parked.wait()
+
+        def register_callback_handler(self, topic, handler):
+            return None
+
+    package.Credential = lambda cid, secret: (cid, secret)
+    package.DingTalkStreamClient = _StreamClient
+    package.ChatbotMessage = SimpleNamespace(TOPIC='chatbot')
+    monkeypatch.setattr(adapter, 'dingtalk_stream', package)  # bound at import: None without the SDK
+    monkeypatch.setattr(adapter, 'DINGTALK_STREAM_AVAILABLE', True)
+    monkeypatch.setattr(adapter, 'HTTPX_AVAILABLE', True)
+    monkeypatch.setattr(adapter, 'CARD_SDK_AVAILABLE', False)
+    monkeypatch.setenv('DINGTALK_CLIENT_ID', 'id')
+    monkeypatch.setenv('DINGTALK_CLIENT_SECRET', 'secret')
+    client = adapter.DingTalkAdapter(adapter.PlatformConfig(enabled=True))
+    try:
+        assert await client.connect() is True
+        assert isinstance(stream.websockets, ModuleType), 'the SDK namespace still hands out the raw module'
+        stream.websockets.connect('wss://example.invalid/stream')
+        assert fake_ws.calls[-1]['ping_timeout'] == adapter._SDK_WS_PING_TIMEOUT_S
+    finally:
+        await client.disconnect()
 
 
 def test_the_sdk_stream_socket_gets_a_wider_ping_window(sdk_stream):
-    adapter, stream, fake_ws = sdk_stream
+    adapter, _package, stream, fake_ws = sdk_stream
     adapter._install_sdk_ws_ping_shim()
     stream.websockets.connect('wss://example.invalid/stream', open_timeout=10)
     assert fake_ws.calls == [{'uri': 'wss://example.invalid/stream', 'open_timeout': 10,
@@ -53,7 +94,7 @@ def test_the_sdk_stream_socket_gets_a_wider_ping_window(sdk_stream):
 
 
 def test_the_shim_is_scoped_to_the_sdk_and_idempotent(sdk_stream):
-    adapter, stream, _ = sdk_stream
+    adapter, _package, stream, _fake_ws = sdk_stream
     global_ws = sys.modules.get('websockets')
     adapter._install_sdk_ws_ping_shim()
     once = stream.websockets
