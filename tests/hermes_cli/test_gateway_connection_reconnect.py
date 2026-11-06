@@ -240,15 +240,26 @@ def test_a_session_gone_during_the_restart_is_skipped_and_not_retried(gateway, c
     assert _resumes(gateway.lives[2]) == []
 
 
-@pytest.mark.parametrize("failure", [GatewayClientError("storage_unavailable"), TimeoutError()],
-                         ids=["storage_unavailable", "timeout"])
-def test_a_transient_resume_failure_fails_the_reconnect_and_the_next_call_retries(gateway, conn, failure):
+def test_a_refused_resume_fails_the_reconnect_and_the_next_call_retries(gateway, conn):
     """Ready without the subscription, every later prompt.submit is refused (permission_denied) on a
-    live socket that never redials: the reconnect must fail instead, so the next call dials again."""
-    gateway.resume_errors.append(failure)
+    live socket that never redials: the reconnect must fail instead, so the next call dials again.
+    A refusal is the owner's answer, so it is not redialled inside this call."""
+    gateway.resume_errors.append(GatewayClientError("storage_unavailable"))
     gateway.hang_up(conn)
     with pytest.raises(GatewayClientError):
         conn.call("status")
+    assert conn.call("status") == {"status": "ok", "life": 3}
+    assert _resumes(gateway.lives[2]) == [SID]
+    assert conn.state(SID).subscription_id == "sub-3"
+
+
+def test_a_resume_that_times_out_on_reconnect_is_redialled_in_the_same_call(gateway, conn, monkeypatch):
+    """The transport failed, so the call spends its own budget redialling: the viewer keeps the
+    session rather than reporting it unavailable for a gateway that answers a moment later."""
+    from hermes_cli import gateway_connection
+    monkeypatch.setattr(gateway_connection, "_DIAL_RETRY_DELAY", 0.0)
+    gateway.resume_errors.append(TimeoutError())
+    gateway.hang_up(conn)
     assert conn.call("status") == {"status": "ok", "life": 3}
     assert _resumes(gateway.lives[2]) == [SID]
     assert conn.state(SID).subscription_id == "sub-3"

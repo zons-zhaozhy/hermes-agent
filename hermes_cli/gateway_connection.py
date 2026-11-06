@@ -17,7 +17,7 @@ import threading
 import time
 
 from hermes_cli.gateway_client import (DEFAULT_RPC_TIMEOUT, DISCONNECTED, NOT_SENT, RESUME_KEY_MISMATCH,
-                                       GatewayClientError, GatewayRPCError)
+                                       GatewayClientError, GatewayRPCError, GatewayUnavailableError)
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +33,42 @@ RESUME_GONE = RESUME_REFUSALS | {"profile_mismatch"}
 _KEY_NOT_TAKEN = frozenset({"admission_conflict", "permission_denied"})
 
 
+# A dial that failed on the transport is redialled inside the caller's deadline. The owner answers a
+# handshake only while its event loop runs: `hermes gateway restart` drains for up to 120 s and a
+# loaded host can miss `connect_gateway`'s 10 s open timeout, so one failed handshake used to make
+# the whole viewer `final` and a CLI launch in that window died with "Gateway connection failed; no
+# local fallback" instead of outliving it. Bounded, so a gateway that is really gone still reports
+# in seconds rather than at the end of the deadline.
+_DIAL_RETRY_DELAY = 1.0
+_DIAL_RETRY_DELAY_CAP = 4.0
+_DIAL_RETRY_ATTEMPTS = 5
+
+
 class CallStopped(GatewayClientError):
     """The caller stopped waiting (:meth:`GatewayConnection.call_until`); the request was sent."""
+
+
+def _connect_error(exc):
+    """The dial's failure, tagged ``dial_transient`` when another dial may answer differently: a
+    refused or timed-out handshake is an owner mid-restart or a host too loaded to finish the
+    upgrade, while a verdict *about* the gateway (:class:`GatewayUnavailableError`: it could not
+    start, an update holds the install) is the same on every attempt."""
+    error = exc if isinstance(exc, GatewayClientError) else GatewayClientError(
+        f"Gateway connection failed; no local fallback ({type(exc).__name__})")
+    error.dial_transient = False if isinstance(exc, GatewayUnavailableError) else _transport_failure(exc)
+    return error
+
+
+def _transport_failure(exc) -> bool:
+    """Whether ``exc``, or anything it was raised from, is a transport failure (a timeout or an OS
+    error: refused, reset, unreachable). ``connect_gateway`` wraps them without keeping the cause a
+    caller can see, and the wrapper is the only thing left by the time the dial reports."""
+    seen = exc
+    while seen is not None:
+        if isinstance(seen, (TimeoutError, OSError)):
+            return True
+        seen = seen.__cause__ or seen.__context__
+    return str(exc) == "Gateway connection failed; no local fallback"
 
 
 def _resume_plain(exc, session_id, typed):
@@ -176,6 +210,9 @@ class GatewayConnection:
         # dial again. Each connect bumps ``epoch``, and its loss is tagged with it (``lost_before``).
         self._detached = False
         self.epoch = 0
+        # Consecutive transport failures inside one dialing streak (``start``); a dial that answers
+        # resets it, so the cap bounds a launch's wait rather than the viewer's lifetime.
+        self._dial_failures = 0
         # /bg and /btw answers by task id (hermes_cli/gateway_side.py); created by whichever of the
         # waiter or the frame comes first, so an answer faster than the verb's reply is kept.
         self._side: dict[str, queue.Queue] = {}
@@ -210,6 +247,10 @@ class GatewayConnection:
 
     # -- lifecycle ---------------------------------------------------------------------------
     def start(self, timeout=90):
+        """Dial (or redial) this viewer's gateway, waiting out a dial in progress. A dial that failed
+        on the transport is redialled while ``timeout`` and :data:`_DIAL_RETRY_ATTEMPTS` allow: the
+        owner may be a moment from answering. Any other failure — and one past those bounds — is
+        raised as it was, leaving a first-connect failure :attr:`final` for later calls."""
         deadline = time.monotonic() + timeout
         while True:
             with self._start_lock:
@@ -236,14 +277,32 @@ class GatewayConnection:
             # Every caller waits out a dial in progress, its own or another thread's.
             if not self._ready.wait(max(deadline - time.monotonic(), 0)):
                 raise GatewayClientError("Gateway connection timed out; no local fallback")
-            if self._error is not None:
-                raise self._error
+            error = self._error
+            if error is not None:
+                if not self._redial_after(error, deadline):
+                    raise error
+                continue
             if self.client is not None or self.final:
                 return
             # Hung up right after that dial: let its loop end, then dial again.
             thread.join(max(deadline - time.monotonic(), 0))
             if time.monotonic() >= deadline:
                 raise GatewayClientError("Gateway connection timed out; no local fallback")
+
+    def _redial_after(self, error, deadline) -> bool:
+        """Whether this failed dials again: only a transport failure, and only while the caller's
+        deadline and :data:`_DIAL_RETRY_ATTEMPTS` allow. Clears the error first, so the loop dials
+        instead of reading it as :attr:`final`."""
+        remaining = deadline - time.monotonic()
+        if (remaining <= 0 or not getattr(error, "dial_transient", False)
+                or self._dial_failures >= _DIAL_RETRY_ATTEMPTS):
+            return False
+        self._dial_failures += 1
+        pause = min(_DIAL_RETRY_DELAY * 2 ** (self._dial_failures - 1), _DIAL_RETRY_DELAY_CAP, remaining)
+        logger.info("Gateway dial failed (%s); redialling in %.1fs", error, pause)
+        self._error = None
+        time.sleep(pause)
+        return True
 
     def _run(self):
         try:
@@ -268,6 +327,7 @@ class GatewayConnection:
                 if self.epoch:
                     await self._resubscribe(client)
                 self.epoch += 1
+                self._dial_failures = 0  # this dial answered: the retry budget is fresh again
                 self.client = client
                 self._live = (client, self.epoch)
                 self._ready.set()
@@ -278,8 +338,7 @@ class GatewayConnection:
                 stop.cancel()
         except Exception as exc:  # health: allow BLE001 -- a transport failure becomes the connect error or the disconnect frame
             if not self._ready.is_set():
-                self._error = exc if isinstance(exc, GatewayClientError) else GatewayClientError(
-                    f"Gateway connection failed; no local fallback ({type(exc).__name__})")
+                self._error = _connect_error(exc)
             else:
                 self._put_loss(GatewayClientError(DISCONNECTED))
         finally:
