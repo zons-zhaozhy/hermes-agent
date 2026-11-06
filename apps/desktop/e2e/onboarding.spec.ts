@@ -6,16 +6,15 @@
  * should detect the unconfigured state and show the DesktopOnboardingOverlay
  * with provider options / API key form.
  *
- * Prerequisite: `npm run build` must have been run so dist/ exists.
+ * Prerequisite: `pnpm run build` must have been run so dist/ exists.
  */
-
-import { test } from './test'
 
 import {
   type NoProviderFixture,
   setupNoProvider,
   waitForOnboarding,
 } from './fixtures'
+import { test } from './test'
 import { expectVisualSnapshot } from './visual-snapshot'
 
 let fixture: NoProviderFixture | null = null
