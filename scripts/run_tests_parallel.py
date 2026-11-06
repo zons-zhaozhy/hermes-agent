@@ -45,6 +45,7 @@ Exit code: 0 if every file's pytest exited 0; 1 otherwise.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass, field
 import fnmatch
 import json
 import os
@@ -64,6 +65,14 @@ from typing import Callable, Dict, List, Optional, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.ci.list_os_marked_tests import gated_specs, spec_hosts
 from scripts.run_tests_launch import start_pytest
+from scripts.run_tests_telemetry import (
+    estimate_run_work,
+    format_progress_telemetry,
+    host_load_warning,
+    parallel_utilization,
+    run_start_lines,
+    summary_lines,
+)
 
 
 def _sweep_killed_run_roots(root: str) -> None:
@@ -810,6 +819,8 @@ def _print_progress(
     test_counts: dict[Path, int],
     file_summary: dict[str, int] | None = None,
     subproc_wall: float | None = None,
+    telemetry: str | None = None,
+    host_warning: str | None = None,
 ) -> None:
     """Single-line live progress.
 
@@ -858,10 +869,13 @@ def _print_progress(
         time_str = f"{subproc_wall:.1f}s"
     else:
         time_str = f"{dur:.1f}s"
+    telemetry_str = f"{telemetry} " if telemetry else ""
+    warning_str = f" {host_warning}" if host_warning else ""
     msg = (
         f"[{pct:5.1f}% | {tests_done:>5}/~{approx_total_tests}"
         f" | ✓{tests_passed:>{fw}} | ✗{tests_failed:>{fw}}] "
-        f"{status} {_format_file(file, repo_root)} ({test_str}{time_str})"
+        f"{telemetry_str}{status} {_format_file(file, repo_root)} "
+        f"({test_str}{time_str}){warning_str}"
     )
     # Truncate to terminal width if available (no clobbering ANSI lines).
     try:
@@ -871,6 +885,135 @@ def _print_progress(
     except OSError:
         pass
     print(msg, flush=True)
+
+
+def _current_host_warning(workers: int) -> str | None:
+    if not hasattr(os, "getloadavg"):
+        return None
+    return host_load_warning(os.getloadavg()[0], workers)
+
+
+def _current_load_1m() -> float | None:
+    if not hasattr(os, "getloadavg"):
+        return None
+    return os.getloadavg()[0]
+
+
+@dataclass
+class _RunProgress:
+    runner_started: float
+    approx_total_tests: int
+    repo_root: Path
+    pytest_passthrough: list[str]
+    workers: int
+    test_counts: dict[Path, int]
+    estimated_file_work: dict[Path, float]
+    files_done: int = 0
+    tests_done: int = 0
+    pass_count: int = 0
+    fail_count: int = 0
+    tests_passed: int = 0
+    tests_failed: int = 0
+    tests_skipped: int = 0
+    tests_errored: int = 0
+    tests_collected: int = 0
+    files_crashed: int = 0
+    remaining_estimated_work: float = 0.0
+    subprocess_wall_total: float = 0.0
+    failures: list[tuple[Path, str, dict[str, int]]] = field(default_factory=list)
+    file_times: list[tuple[Path, float]] = field(default_factory=list)
+    skipped_files: list[tuple[Path, int]] = field(default_factory=list)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+def _record_file_completion(
+    file: Path,
+    started_at: float,
+    fut: Future[tuple[Path, int, str, dict[str, int], float]],
+    progress: _RunProgress,
+) -> None:
+    n_tests = progress.test_counts.get(file, 0)
+    runner_exception = fut.exception()
+    if runner_exception is not None:
+        with progress.lock:
+            progress.files_done += 1
+            progress.tests_done += n_tests
+            progress.fail_count += 1
+            progress.remaining_estimated_work -= progress.estimated_file_work[file]
+            progress.failures.append((file, f"runner crashed: {runner_exception!r}", {}))
+            warning = _current_host_warning(progress.workers)
+            telemetry = format_progress_telemetry(
+                time.monotonic() - progress.runner_started,
+                progress.tests_done,
+                progress.subprocess_wall_total,
+                max(progress.remaining_estimated_work, 0.0),
+            )
+            _print_progress(
+                progress.tests_done,
+                progress.approx_total_tests,
+                file,
+                1,
+                time.monotonic() - started_at,
+                progress.repo_root,
+                progress.tests_passed,
+                progress.tests_failed,
+                progress.test_counts,
+                subproc_wall=0.0,
+                telemetry=telemetry,
+                host_warning=warning,
+            )
+        return
+
+    fpath, rc, output, summary, subproc_wall = fut.result()
+
+    with progress.lock:
+        progress.files_done += 1
+        progress.tests_done += n_tests
+        progress.tests_passed += summary.get("passed", 0)
+        progress.tests_failed += summary.get("failed", 0)
+        progress.tests_skipped += summary.get("skipped", 0)
+        if summary.get("skipped", 0):
+            progress.skipped_files.append((fpath, summary["skipped"]))
+        progress.tests_errored += summary.get("errors", 0)
+        progress.files_crashed += summary.get("crashed", 0)
+        progress.tests_collected += sum(
+            summary.get(key, 0)
+            for key in ("passed", "failed", "skipped", "errors", "xfailed", "xpassed")
+        )
+        progress.file_times.append((fpath, subproc_wall))
+        progress.subprocess_wall_total += subproc_wall
+        progress.remaining_estimated_work -= progress.estimated_file_work[file]
+        if rc == 0:
+            progress.pass_count += 1
+        else:
+            progress.fail_count += 1
+            progress.failures.append((fpath, output, summary))
+        warning = _current_host_warning(progress.workers)
+        telemetry = format_progress_telemetry(
+            time.monotonic() - progress.runner_started,
+            progress.tests_done,
+            progress.subprocess_wall_total,
+            max(progress.remaining_estimated_work, 0.0),
+        )
+        _print_progress(
+            progress.tests_done,
+            progress.approx_total_tests,
+            fpath,
+            rc,
+            time.monotonic() - started_at,
+            progress.repo_root,
+            progress.tests_passed,
+            progress.tests_failed,
+            progress.test_counts,
+            file_summary=summary,
+            subproc_wall=subproc_wall,
+            telemetry=telemetry,
+            host_warning=warning,
+        )
+        if rc != 0:
+            _print_inline_failure(
+                fpath, output, progress.repo_root, progress.pytest_passthrough
+            )
 
 
 def _print_inline_failure(
@@ -1245,8 +1388,7 @@ def _summary_notes(
     return notes
 
 
-def main() -> int:
-    _make_stdio_glyph_safe()
+def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1362,6 +1504,13 @@ def main() -> int:
             "separator is passed through to each per-file pytest invocation."
         ),
     )
+
+    return parser
+
+
+def _parse_runner_arguments(
+    parser: argparse.ArgumentParser,
+) -> tuple[argparse.Namespace, list[str]]:
     # Split argv into "our flags + positional paths" vs "pytest passthrough".
     #
     # Two ways to pass args through to the per-file pytest invocation:
@@ -1481,6 +1630,13 @@ def main() -> int:
     # Bare flags run before any explicit ``--`` passthrough so ordering is
     # intuitive (``run_tests.sh tests/foo.py -q -- --tb=long`` → ``-q --tb=long``).
     pytest_passthrough = bare_passthrough + explicit_passthrough
+    return args, pytest_passthrough
+
+
+def main() -> int:
+    _make_stdio_glyph_safe()
+    parser = _build_arg_parser()
+    args, pytest_passthrough = _parse_runner_arguments(parser)
 
     # Parse --slice (or HERMES_TEST_SLICE) early so we can exit on bad input
     # before doing any expensive discovery.
@@ -1538,6 +1694,16 @@ def main() -> int:
         test_counts = {f: test_counts[f] for f in files if f in test_counts}
         approx_total_tests = sum(test_counts.values())
 
+    runner_durations = _load_durations(repo_root)
+    file_work_keys = [_format_file(file, repo_root) for file in files]
+    work_estimate = estimate_run_work(
+        file_work_keys, runner_durations, _DEFAULT_FILE_DURATION
+    )
+    estimated_file_work = {
+        file: float(runner_durations.get(key, _DEFAULT_FILE_DURATION))
+        for file, key in zip(files, file_work_keys, strict=True)
+    }
+
     if roots:
         roots_str = [str(r.relative_to(repo_root)) if r.is_relative_to(repo_root) else str(r) for r in roots]
         print(
@@ -1551,104 +1717,44 @@ def main() -> int:
             f"with -j {args.jobs}",
             flush=True,
         )
+    if len(files) > 1 or work_estimate.cached_files:
+        for line in run_start_lines(work_estimate, args.jobs):
+            print(line, flush=True)
 
-    # Capture and print on completion (out-of-order is fine — keeps the
-    # terminal clean rather than interleaving N parallel pytest outputs).
-    failures: list[tuple[Path, str, dict[str, int]]] = []
-    file_times: list[tuple[Path, float]] = []  # (file, subprocess_wall) for distribution
     started = time.monotonic()
-    files_done = 0
-    tests_done = 0
-    pass_count = 0
-    fail_count = 0
-    tests_passed = 0
-    tests_failed = 0
-    tests_skipped = 0
-    skipped_files: list[tuple[Path, int]] = []
-    # pytest setup/teardown ERRORs ("41 passed, 7 errors"). Not failures, but
-    # they make pytest exit non-zero, so the Summary line must name them or it
-    # reads "0 failed" under an exit code of 1.
-    tests_errored = 0
-    # Every collected outcome, not just pass/fail: a legitimately all-skipped
-    # (platform-gated) file reports "2 skipped" and must NOT trip the
-    # nothing-ran guard, whereas a file that died before collection reports
-    # nothing at all and must.
-    tests_collected = 0
-    files_crashed = 0
-    lock = threading.Lock()
-
-    def _on_done(file: Path, started_at: float, fut: Future[tuple[Path, int, str, dict[str, int], float]]) -> None:
-        nonlocal files_done, tests_done, pass_count, fail_count, tests_passed, tests_failed, tests_skipped
-        nonlocal tests_collected, files_crashed, tests_errored
-        n_tests = test_counts.get(file, 0)
-        try:
-            fpath, rc, output, summary, subproc_wall = fut.result()
-        except Exception as exc:
-            with lock:
-                files_done += 1
-                tests_done += n_tests
-                fail_count += 1
-                failures.append((file, f"runner crashed: {exc!r}", {}))
-                _print_progress(
-                    tests_done, approx_total_tests, file, 1,
-                    time.monotonic() - started_at,
-                    repo_root, tests_passed, tests_failed,
-                    test_counts,
-                    subproc_wall=0.0,
-                )
-            return
-        with lock:
-            files_done += 1
-            tests_done += n_tests
-            # Accumulate test-level counts from parsed summary.
-            tests_passed += summary.get("passed", 0)
-            tests_failed += summary.get("failed", 0)
-            tests_skipped += summary.get("skipped", 0)
-            if summary.get("skipped", 0):
-                skipped_files.append((fpath, summary["skipped"]))
-            tests_errored += summary.get("errors", 0)
-            files_crashed += summary.get("crashed", 0)
-            tests_collected += sum(
-                summary.get(k, 0)
-                for k in ("passed", "failed", "skipped", "errors", "xfailed", "xpassed")
-            )
-            file_times.append((fpath, subproc_wall))
-            if rc == 0:
-                pass_count += 1
-            else:
-                fail_count += 1
-                failures.append((fpath, output, summary))
-            _print_progress(
-                tests_done, approx_total_tests, fpath, rc,
-                time.monotonic() - started_at,
-                repo_root, tests_passed, tests_failed,
-                test_counts,
-                file_summary=summary,
-                subproc_wall=subproc_wall,
-            )
-            if rc != 0:
-                _print_inline_failure(fpath, output, repo_root, pytest_passthrough)
+    progress = _RunProgress(
+        runner_started=started,
+        approx_total_tests=approx_total_tests,
+        repo_root=repo_root,
+        pytest_passthrough=pytest_passthrough,
+        workers=args.jobs,
+        test_counts=test_counts,
+        estimated_file_work=estimated_file_work,
+        remaining_estimated_work=work_estimate.total_seconds,
+    )
 
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
     _sweep_killed_run_roots(_runner_scratch_root())
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        # Duration cache for the timeout scaler: known-slow files get
-        # proportional headroom instead of a false timeout-kill under
-        # CI load (see _effective_file_timeout).
-        timeout_durations = _load_durations(repo_root)
+        # Slow files start first so workers do not drain into a long serial tail;
+        # the same durations drive timeout headroom and telemetry estimates.
         futures: list[Future] = []
-        for file in _longest_first(files, timeout_durations, repo_root):
+        for file in _longest_first(files, runner_durations, repo_root):
             t0 = time.monotonic()
             fut = pool.submit(
                 _run_one_file, file, pytest_passthrough, repo_root,
                 _effective_file_timeout(
-                    file, repo_root, args.file_timeout, timeout_durations
+                    file, repo_root, args.file_timeout, runner_durations
                 ),
                 args.file_retries,
             )
-            fut.add_done_callback(lambda f, file=file, t0=t0: _on_done(file, t0, f))
+            fut.add_done_callback(
+                lambda f, file=file, t0=t0: _record_file_completion(
+                    file, t0, f, progress
+                )
+            )
             futures.append(fut)
         # Block until everything's done. ThreadPoolExecutor.__exit__ waits
         # for all submitted work, but doing it explicitly here makes the
@@ -1657,6 +1763,17 @@ def main() -> int:
             fut.result() if fut.exception() is None else None
 
     elapsed = time.monotonic() - started
+    failures = progress.failures
+    file_times = progress.file_times
+    skipped_files = progress.skipped_files
+    tests_collected = progress.tests_collected
+    tests_errored = progress.tests_errored
+    files_crashed = progress.files_crashed
+    tests_passed = progress.tests_passed
+    tests_failed = progress.tests_failed
+    tests_skipped = progress.tests_skipped
+    tests_done = progress.tests_done
+    subprocess_wall_total = progress.subprocess_wall_total
     print()
     pct = min(100, (tests_done / approx_total_tests * 100)) if approx_total_tests else 0
     notes = _summary_notes(failures, len(files), tests_errored, files_crashed, tests_skipped)
@@ -1720,7 +1837,7 @@ def main() -> int:
     # subprocess time is distributed so we can see if startup dominates).
     if file_times:
         times = sorted([t for _, t in file_times])
-        total_subproc = sum(times)
+        total_subproc = subprocess_wall_total
         median_t = times[len(times) // 2]
         p50 = median_t
         p90 = times[int(len(times) * 0.90)]
@@ -1731,9 +1848,19 @@ def main() -> int:
         fast = sum(1 for t in times if t < 1.0)
         fast_2s = sum(1 for t in times if t < 2.0)
         print()
+        for line in summary_lines(
+            tests_collected,
+            elapsed,
+            total_subproc,
+            len(times),
+            args.jobs,
+            _current_load_1m(),
+        ):
+            print(line)
+        print()
         print("=== Per-file subprocess time distribution ===")
         print(f"  Files:   {len(times)}")
-        print(f"  Total subprocess CPU-wall: {total_subproc:.1f}s  (runner wall: {elapsed:.1f}s, parallelism: {args.jobs}x)")
+        print(f"  Total subprocess wall: {total_subproc:.1f}s  (runner wall: {elapsed:.1f}s, workers: {args.jobs})")
         print(f"  P50: {p50:.2f}s  P90: {p90:.2f}s  P95: {p95:.2f}s  P99: {p99:.2f}s  Max: {max_t:.2f}s")
         print(f"  <1s: {fast} files ({fast/len(times)*100:.0f}%)  <2s: {fast_2s} files ({fast_2s/len(times)*100:.0f}%)")
         # Top 10 slowest files — likely the ones dragging the run.
