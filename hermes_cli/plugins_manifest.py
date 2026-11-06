@@ -172,22 +172,29 @@ def _manifest_gate_kind(
 
 
 def _manifest_gate_audit(data: Mapping, key: str) -> dict[str, Any]:
-    """Validate a manual guard's audit subject and freshness TTL."""
+    """Validate a manual guard's audit subject, freshness TTL, and binding."""
     raw = data.get("gate_audit")
     if raw is None:
         return {}
     subject = raw.get("subject") if isinstance(raw, Mapping) else None
     ttl = raw.get("ttl_seconds") if isinstance(raw, Mapping) else None
+    fingerprint = raw.get("fingerprint") if isinstance(raw, Mapping) else None
     valid_subject = isinstance(subject, str) and bool(subject.strip())
     valid_ttl = isinstance(ttl, int) and not isinstance(ttl, bool) and ttl > 0
-    if not (valid_subject and valid_ttl):
+    valid_fingerprint = fingerprint is None or (
+        isinstance(fingerprint, str) and fingerprint.strip() == "repo"
+    )
+    if not (valid_subject and valid_ttl and valid_fingerprint):
         logger.warning(
             "Plugin %s: gate_audit must be {subject: non-empty string, "
-            "ttl_seconds: positive integer}; ignoring",
+            "ttl_seconds: positive integer, fingerprint: repo|unset}; ignoring",
             key,
         )
         return {}
-    return {"subject": subject.strip(), "ttl_seconds": ttl}
+    declaration = {"subject": subject.strip(), "ttl_seconds": ttl}
+    if isinstance(fingerprint, str) and fingerprint.strip():
+        declaration["fingerprint"] = fingerprint.strip()
+    return declaration
 
 
 def _config_key_path(item: object) -> Optional[str]:

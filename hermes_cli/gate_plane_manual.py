@@ -7,7 +7,10 @@ profile-scoped audit receipt written by a manual guard's CLI and read by Gate Pl
 from __future__ import annotations
 
 from datetime import datetime, UTC
+import hashlib
 import logging
+import subprocess
+from pathlib import Path
 from typing import Any, Iterable
 
 
@@ -102,3 +105,53 @@ def load_manual_gate_evidence(plugins: Iterable[Any]) -> dict[str, Any]:
             )
             evidence[key] = {"_read_error": str(exc)}
     return evidence
+
+
+def manual_repo_fingerprint(subject: str) -> str | None:
+    """Return the payload-free git fingerprint for a ``repo:<path>`` subject."""
+    if not subject.startswith("repo:"):
+        return None
+    repo = Path(subject[len("repo:"):].strip()).expanduser()
+
+    def git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or "git failed")
+        return result.stdout
+
+    try:
+        head = git("rev-parse", "HEAD").strip()
+        worktree = git("status", "--porcelain").splitlines()
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        logger.warning("Manual gate repo fingerprint unavailable for %s: %s", repo, exc)
+        return None
+    digest = hashlib.sha256()
+    digest.update(head.encode("utf-8"))
+    for line in sorted(worktree):
+        digest.update(line.encode("utf-8"))
+    return f"git:{head}:worktree:{digest.hexdigest()[:16]}"
+
+
+def load_manual_gate_fingerprints(plugins: Iterable[Any]) -> dict[str, str | None]:
+    """Read current fingerprints for manual guards that declare repo binding."""
+    fingerprints: dict[str, str | None] = {}
+    seen_subjects: dict[str, str | None] = {}
+    for plugin in plugins:
+        manifest = getattr(plugin, "manifest", None)
+        declaration = getattr(manifest, "gate_audit", None) or {}
+        if getattr(manifest, "gate_kind", None) != "manual" or not declaration:
+            continue
+        if declaration.get("fingerprint") != "repo":
+            continue
+        key = str(getattr(manifest, "key", None) or getattr(manifest, "name", "") or "unknown")
+        subject = str(declaration.get("subject", ""))
+        if subject not in seen_subjects:
+            seen_subjects[subject] = manual_repo_fingerprint(subject)
+        fingerprints[key] = seen_subjects[subject]
+    return fingerprints

@@ -1771,6 +1771,7 @@ gate_policy: required
 gate_audit:
   subject: repo:/absolute/path/to/project
   ttl_seconds: 3600
+  fingerprint: repo
 ```
 
 After the audit command finishes, record its actual outcome:
@@ -1789,7 +1790,8 @@ def _handler(args, ctx):
 ```
 
 The receipt is stored under the active profile in `plugin-data` and is payload-free. Gate Plane
-marks the manual guard healthy only when a fresh `pass` receipt matches the declared subject.
+marks the manual guard healthy only when a fresh `pass` receipt matches the declared subject and,
+for `fingerprint: repo`, the repository's current HEAD/worktree fingerprint.
 `fail`, `error`, stale, unreadable, wrong-subject, disabled, and missing evidence remain visible
 degradation; enabled/imported state alone never becomes an active runtime-guard claim.
 

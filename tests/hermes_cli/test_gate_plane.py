@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli.gate_plane import GatePlane, GateStatus, build_gate_report, result_status
+from hermes_cli import gate_plane_manual
 
 
 def test_result_status_classifies_normal_and_policy_directives() -> None:
@@ -129,13 +130,14 @@ def _receipt(
     subject: str = "repo:/tmp/project",
     checked_at: str = "2026-11-05T00:00:00+00:00",
     version: int = 1,
+    fingerprint: str = "sha256:test",
 ) -> dict[str, object]:
     return {
         "version": version,
         "status": status,
         "subject": subject,
         "checked_at": checked_at,
-        "fingerprint": "sha256:test",
+        "fingerprint": fingerprint,
         "detail": "",
     }
 
@@ -170,6 +172,69 @@ def test_fresh_matching_manual_audit_pass_is_visible() -> None:
         "fingerprint": "sha256:test",
     }]
     assert all("fork-guard" not in suite["guards"] for suite in report["suites"])
+
+
+@pytest.mark.parametrize(
+    ("current_fingerprint", "receipt", "expected_reason"),
+    [
+        ("sha256:test", _receipt(), ""),
+        ("sha256:changed", _receipt(), "audit fingerprint mismatch"),
+        ("sha256:test", _receipt(fingerprint=""), "audit fingerprint missing"),
+        (None, _receipt(), "current repo fingerprint unavailable"),
+    ],
+)
+def test_fresh_manual_audit_must_match_the_current_repo_fingerprint(
+    current_fingerprint: str | None,
+    receipt: dict[str, object],
+    expected_reason: str,
+) -> None:
+    plugin = _plugin(
+        "fork-guard",
+        hooks=(),
+        kind="manual",
+        gate_audit={
+            "subject": "repo:/tmp/project",
+            "ttl_seconds": 60,
+            "fingerprint": "repo",
+        },
+    )
+    now = datetime(2026, 11, 5, 0, 0, 0, tzinfo=UTC).timestamp()
+
+    report = build_gate_report(
+        [plugin],
+        GatePlane(),
+        manual_evidence={"fork-guard": receipt},
+        manual_fingerprints={"fork-guard": current_fingerprint},
+        now=now,
+    )
+
+    item = report["manual_guards"][0]
+    assert report["overall_status"] == "unknown" if expected_reason else "healthy"
+    assert item["status"] == ("pass" if not expected_reason else "unknown")
+    assert item["reason"] == expected_reason
+
+
+def test_repo_bound_fingerprints_follow_plugin_keys(monkeypatch) -> None:
+    monkeypatch.setattr(
+        gate_plane_manual,
+        "manual_repo_fingerprint",
+        lambda subject: "git:current:worktree:test" if subject == "repo:/tmp/project" else None,
+    )
+    plugin = _plugin(
+        "fork-guard",
+        key="external/fork-guard",
+        hooks=(),
+        kind="manual",
+        gate_audit={
+            "subject": "repo:/tmp/project",
+            "ttl_seconds": 60,
+            "fingerprint": "repo",
+        },
+    )
+
+    assert gate_plane_manual.load_manual_gate_fingerprints([plugin]) == {
+        "external/fork-guard": "git:current:worktree:test",
+    }
 
 
 @pytest.mark.parametrize(

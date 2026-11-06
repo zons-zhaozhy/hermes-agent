@@ -273,13 +273,25 @@ def _manual_guard_manifest() -> PluginManifest:
         provides_hooks=[],
         gate_policy="required",
         gate_kind="manual",
-        gate_audit={"subject": "repo:/tmp/project", "ttl_seconds": 60},
+        gate_audit={
+            "subject": "repo:/tmp/project",
+            "ttl_seconds": 60,
+            "fingerprint": "repo",
+        },
     )
 
 
 def test_manual_gate_audit_receipt_reaches_profile_gate_report(
     isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from hermes_cli import plugins as plugins_mod
+
+    monkeypatch.setattr(
+        plugins_mod,
+        "load_manual_gate_fingerprints",
+        lambda plugins: {plugin.manifest.key: "sha256:test" for plugin in plugins},
+    )
     manifest = _manual_guard_manifest()
     manager = PluginManager()
     manager._plugins[manifest.key] = LoadedPlugin(

@@ -220,6 +220,7 @@ def _receipt_timestamp(value: Any) -> float | None:
 def _manual_item(
     row: Mapping[str, Any],
     evidence: Any = None,
+    current_fingerprint: str | None = None,
     *,
     now: float | None = None,
 ) -> dict[str, Any]:
@@ -272,6 +273,16 @@ def _manual_item(
     if current_time >= checked_at + ttl_seconds:
         item["reason"] = "audit evidence stale"
         return item
+    if declaration.get("fingerprint") == "repo":
+        if not current_fingerprint:
+            item["reason"] = "current repo fingerprint unavailable"
+            return item
+        if not metadata["fingerprint"]:
+            item["reason"] = "audit fingerprint missing"
+            return item
+        if metadata["fingerprint"] != current_fingerprint:
+            item["reason"] = "audit fingerprint mismatch"
+            return item
     if status == "pass":
         item["status"] = "pass"
         item["reason"] = ""
@@ -284,6 +295,7 @@ def _manual_item(
 def build_gate_report(
     plugins: Iterable[Any], plane: GatePlane, *, session_id: str | None = None,
     manual_evidence: Mapping[str, Any] | None = None, now: float | None = None,
+    manual_fingerprints: Mapping[str, str | None] | None = None,
 ) -> dict[str, Any]:
     """Combine declarations, registrations, and runtime evidence into one report."""
     rows = _guard_rows(plugins)
@@ -351,10 +363,12 @@ def build_gate_report(
     )
     inactive_advisory_count = sum(1 for row in rows if row["inactive_advisory"])
     evidence_by_key = manual_evidence or {}
+    fingerprints_by_key = manual_fingerprints or {}
     manual_guards = [
         _manual_item(
             row,
             evidence_by_key.get(row["key"]),
+            fingerprints_by_key.get(row["key"]),
             now=now,
         )
         for row in manual_rows
