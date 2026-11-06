@@ -218,6 +218,13 @@ git rev-list --count main..upstream/main   # 应为 0
 | skills/software-development/systematic-debugging/SKILL.md | 根因调试改为证据、模式、假设、修复、纵深防御五阶段，并接入 Hermes 测试运行器 | c6d5dab042 |
 | skills/software-development/test-driven-development/SKILL.md | TDD 改为纵向行为切片与仓库 canonical runner，消除裸框架调用示范 | c6d5dab042 |
 
+### 1107 补记 2 项（gateway 拨号重试提交后复核）
+
+| 文件 | 定制内容 | 归属提交 |
+|---|---|---|
+| hermes_cli/gateway_connection.py | 传输类首次拨号失败在调用 deadline 内有界重试；网关已判定的不可用不盲等 | 87da001684 |
+| tests/hermes_cli/test_gateway_connection_reconnect.py | 区分 resume 的 owner 拒答与传输超时：前者下次调用重拨，后者同调用重拨 | 87da001684 |
+
 ## 五、机器账本（SSOT）
 
 > 叙述表格只解释意图；本 YAML 块是 `fork-guard audit` 唯一机器事实源。
@@ -337,6 +344,7 @@ official_paths:
 - hermes_cli/config_defaults.py
 - hermes_cli/desktop_update_verify.py
 - hermes_cli/gateway_client.py
+- hermes_cli/gateway_connection.py
 - hermes_cli/goal_command.py
 - hermes_cli/goals.py
 - hermes_cli/hooks.py
@@ -472,6 +480,7 @@ official_paths:
 - tests/hermes_cli/test_doctor_journal_modes.py
 - tests/hermes_cli/test_doctor_wal_checkpoint_guard.py
 - tests/hermes_cli/test_gateway_automation.py
+- tests/hermes_cli/test_gateway_connection_reconnect.py
 - tests/hermes_cli/test_gateway_disconnect_outcome.py
 - tests/hermes_cli/test_gateway_multiplex_status.py
 - tests/hermes_cli/test_gateway_runtime_ensure.py
