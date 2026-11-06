@@ -14,7 +14,7 @@
  *
  * CROSS_GATEWAY_LEG=main records the picker (the repro: Homelab's bot absent)
  * and stops. CROSS_GATEWAY_SHOTS=<dir> saves screenshots; PROBE_RESULT lines
- * carry the evidence. Needs `npm run build` (dist/) first.
+ * carry the evidence. Needs `pnpm run build` (dist/) first.
  */
 
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process'
@@ -234,6 +234,7 @@ test.describe('cross-gateway group chat', () => {
     }, ROOM)
 
     const replies = async () => (await roomLog()).filter((entry: any) => entry.from !== 'You').map((entry: any) => [entry.from, entry.text])
+
     // Each member's own scripted line, authored by that member, once.
     const dump = async () => {
       console.log('PROBE_RESULT room log', JSON.stringify(await roomLog()))
@@ -249,6 +250,7 @@ test.describe('cross-gateway group chat', () => {
     await expect(page.getByText('REMOTE_OK answered from Homelab', { exact: true }).filter({ visible: true })).toHaveCount(1)
     const log = await roomLog()
     console.log('PROBE_RESULT room log', JSON.stringify(log))
+
     // Each reply was produced on its own machine: read both gateways' state.db.
     const owner = (home: string, marker: string) => spawnSync('python3', ['-c', [
       'import glob, sqlite3, sys',
@@ -258,10 +260,12 @@ test.describe('cross-gateway group chat', () => {
       '    n += c.execute("select count(*) from messages where role = \'assistant\' and content like ?", ("%" + sys.argv[2] + "%",)).fetchone()[0]',
       'print(n)'
     ].join(String.fromCharCode(10)), home, marker], { encoding: 'utf8' }).stdout.trim()
+
     const ownership = {
       thisDevice: { LOCAL_OK: owner(sandbox.hermesHome, 'LOCAL_OK answered'), REMOTE_OK: owner(sandbox.hermesHome, 'REMOTE_OK answered') },
       homelab: { LOCAL_OK: owner(remote.home, 'LOCAL_OK answered'), REMOTE_OK: owner(remote.home, 'REMOTE_OK answered') }
     }
+
     console.log('PROBE_RESULT assistant rows per gateway state.db', JSON.stringify(ownership))
     expect([Number(ownership.thisDevice.LOCAL_OK) > 0, ownership.thisDevice.REMOTE_OK, Number(ownership.homelab.REMOTE_OK) > 0, ownership.homelab.LOCAL_OK]).toEqual([true, '0', true, '0'])
     const prompts = mock.receivedPrompts.filter(prompt => prompt.includes('E2E_SAY('))
