@@ -637,28 +637,37 @@ class AuthorityConnection:
             # characters. Resolve only that family before authorization so a unique hint reaches
             # the same durable local route as its full ID; ambiguous and missing prefixes retain
             # the normal not_found result.
+            # Every read in this resolution prologue is a blocking SQLite query, so each one hops
+            # off the shared gateway loop; only the publishing call below stays on it.
             if re.fullmatch(r'local-[0-9a-f]{16}', ref.session_id):
-                resolved_id = self.authority.db.resolve_session_id(ref.session_id)
+                resolved_id = await asyncio.to_thread(self.authority.db.resolve_session_id, ref.session_id)
                 if resolved_id is not None:
                     ref = SessionRef(ref.profile_id, resolved_id)
-            from gateway.session_local_migration import adopts_client_history, resolve_local_target
+            from gateway.session_local_migration import (
+                adopts_client_history, local_target_probe, resolve_local_target)
             from gateway.session_policy_refresh import refresh_settled
             from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
             # Another viewer's refresh mid-cleanup has committed a policy it has not published yet.
             await refresh_settled(self.authority, ref.session_id)
-            row = self.authority.db.get_session(ref.session_id)
+            row = await asyncio.to_thread(self.authority.db.get_session, ref.session_id)
             # Canonical LOCAL compression/reset segments keep the receipt on their logical
             # owner, not on the physical transcript ID the history picker / Desktop supplies
             # after list_sessions projects the tip (#139306).
-            if row and (row['source'] in LEGACY_LOCAL_SOURCES | {Platform.LOCAL.value}
-                        or adopts_client_history(self.authority, self.actor, row)):
-                ref = resolve_local_target(self.authority, self.actor,
-                    self.authority.db.get_compression_tip(ref.session_id) or ref.session_id)
+            legacy = bool(row) and (row['source'] in LEGACY_LOCAL_SOURCES | {Platform.LOCAL.value}
+                                    or await asyncio.to_thread(
+                                        adopts_client_history, self.authority, self.actor, row))
+            if legacy:
+                # ``resolve_local_target`` restores/adopts a session (a publication), so only its
+                # read-only probe hops to a worker; the publish stays on the loop.
+                tip = await asyncio.to_thread(self.authority.db.get_compression_tip, ref.session_id)
+                sid = tip or ref.session_id
+                probe = await asyncio.to_thread(local_target_probe, self.authority.db, sid)
+                ref = resolve_local_target(self.authority, self.actor, sid, probe)
             elif row:
                 # A messaging compression continuation attaches to its lineage root, the session
                 # its lane's turns stream to; the reply names that root.
                 from gateway.session_route_recovery import messaging_owner_ref
-                ref = messaging_owner_ref(self.authority, ref)
+                ref = await asyncio.to_thread(messaging_owner_ref, self.authority, ref)
         if params.get('editor') is not None:
             self.authority.authorize(self.actor, ref, 'session:control')
             from gateway.session_local_mcp import resume_editor_mcp

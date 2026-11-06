@@ -308,6 +308,29 @@ def test_overflow_closes_only_the_slow_peer_and_healthy_keeps_streaming():
         loop.close()
 
 
+def test_send_deadline_and_abort_schedule_one_socket_close(monkeypatch):
+    loop = asyncio.new_event_loop()
+    loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
+    loop_thread.start()
+    stalled_ws = _SocketWS()
+    transport = WSTransport(stalled_ws, loop, peer="slow")
+    monkeypatch.setattr("tui_gateway.ws._WS_WRITE_TIMEOUT_S", 0.01)
+    monkeypatch.setattr("tui_gateway.ws._WS_SEND_DEADLINE_S", 0.01)
+    try:
+        transport.write({"id": "blocked"})
+        deadline = time.monotonic() + 2.0
+        while not stalled_ws.close_codes and time.monotonic() < deadline:
+            time.sleep(0.001)
+        transport.abort()
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop).result(timeout=2)
+        assert stalled_ws.close_codes == [1011]
+    finally:
+        transport.abort()
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=2)
+        loop.close()
+
+
 def test_fanout_close_and_detach_leave_peer_sockets_open():
     kept, detached = RecordingTransport(), RecordingTransport()
     fan = FanoutTransport(kept, detached)

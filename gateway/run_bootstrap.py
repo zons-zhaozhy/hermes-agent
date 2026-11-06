@@ -782,7 +782,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     try:
         _start_gateway_configure_logging(verbosity)
 
-        from gateway.run_startup import recover_left_core_at_gateway_start
+        from gateway.run_startup_recovery import recover_left_core_at_gateway_start
         await asyncio.to_thread(recover_left_core_at_gateway_start)  # before the runner loads platform config
 
         from gateway.run_runtime import initialize_gateway_runtime, pin_launch_store, unpin_launch_store

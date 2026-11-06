@@ -72,6 +72,11 @@ RECONNECT_CIRCUIT_BREAKER_DELAY = 300  # seconds between attempts while tripped 
 _SDK_LOG_REPEAT_WINDOW = 300.0  # identical dingtalk_stream.client records are collapsed within this window
 _SDK_HTTP_TIMEOUT_S = 15.0  # bounds the SDK's un-timed requests.post (connect+read); override via DINGTALK_SDK_HTTP_TIMEOUT_S
 _sdk_http_shim_installed = False
+# The SDK's protocol-level ping window (library defaults are 20 s/20 s, too tight next to its own
+# 60 s application keepalive: a late pong reads as a dead socket and forces a reconnect).
+_SDK_WS_PING_INTERVAL_S = 30.0
+_SDK_WS_PING_TIMEOUT_S = 60.0
+_sdk_ws_shim_installed = False
 
 
 def _sdk_http_timeout() -> float:
@@ -126,6 +131,46 @@ def _install_sdk_http_timeout_shim() -> None:
 
     _stream_mod.requests = _TimeoutRequestsShim("dingtalk_sdk_requests_timeout_shim")
     _sdk_http_shim_installed = True
+
+
+def _install_sdk_ws_ping_shim() -> None:
+    """Give the SDK's stream socket a stall-tolerant protocol ping window.
+
+    ``stream.py`` opens ``websockets.connect(uri)`` with the library defaults (20 s ping, 20 s
+    pong timeout). The SDK then runs its OWN application-level keepalive (``ws.ping()`` every
+    60 s) inside ``async for raw_message``, so a protocol pong that arrives late — a host load
+    spike, a GC pause, a transient path loss — surfaces as ``sent 1011 (internal error):
+    keepalive ping timeout`` and costs a full SDK reconnect (~3 a day on the reference install).
+    A 30 s ping with a 60 s pong window still catches a dead socket (the reconnect the 1011
+    triggers is preserved) and stops racing an application-level keepalive that already reports
+    liveness every minute.
+
+    Only ``dingtalk_stream.stream``'s own ``websockets`` binding is replaced; the process-global
+    module and every other websocket consumer keep the library defaults. Idempotent across
+    reconnects and the lazy dependency installer's module rebind.
+    """
+    global _sdk_ws_shim_installed
+    if _sdk_ws_shim_installed:
+        return
+    try:
+        import types
+        import dingtalk_stream.stream as _stream_mod
+        real = _stream_mod.websockets
+    except Exception as e:
+        logger.warning("[dingtalk] stream module unavailable; websocket ping shim not installed: %s", e)
+        return
+
+    class _PingTimeoutWebsocketsShim(types.ModuleType):
+        def connect(self, *args: Any, **kwargs: Any) -> Any:
+            kwargs.setdefault("ping_interval", _SDK_WS_PING_INTERVAL_S)
+            kwargs.setdefault("ping_timeout", _SDK_WS_PING_TIMEOUT_S)
+            return real.connect(*args, **kwargs)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(real, name)
+
+    _stream_mod.websockets = _PingTimeoutWebsocketsShim("dingtalk_sdk_websockets_ping_shim")
+    _sdk_ws_shim_installed = True
 
 
 def _is_sdk_incompat(exc: BaseException | None) -> bool:

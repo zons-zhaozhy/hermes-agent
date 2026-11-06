@@ -5,6 +5,7 @@ import subprocess
 import pytest
 
 from tools.environments.base_session_env import _split_cwd_marker, _wrap_command_script
+from tools.environments.local import _find_bash
 
 CWD_MARKER = "__HERMES_CWD_test__"
 PIPE_MARKER = "__HERMES_PIPE_test__"
@@ -18,24 +19,26 @@ def _script(command: str, pipe_marker: str = PIPE_MARKER) -> str:
     )
 
 
-def _run_result(command: str, pipe_marker: str = PIPE_MARKER) -> subprocess.CompletedProcess:
+def _run_result(
+    command: str, bash: str, pipe_marker: str = PIPE_MARKER,
+) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["bash", "-c", _script(command, pipe_marker)], capture_output=True, text=True, check=False,
+        [bash, "-c", _script(command, pipe_marker)], capture_output=True, text=True, check=False,
     )
 
 
-def _run(command: str) -> str:
-    return _run_result(command).stdout
+def _run(command: str, bash: str) -> str:
+    return _run_result(command, bash).stdout
 
 
 def test_pipeline_status_captures_the_leading_command():
-    output = _run("false | true")
+    output = _run("false | true", _find_bash())
 
     assert f"{PIPE_MARKER}1 0{PIPE_MARKER}" in output
 
 
 def test_plain_command_reports_one_status():
-    output = _run("false")
+    output = _run("false", _find_bash())
 
     assert f"{PIPE_MARKER}1{PIPE_MARKER}" in output
 
@@ -50,25 +53,29 @@ def _seen(result: subprocess.CompletedProcess) -> tuple[int, str, str]:
 
 
 @pytest.mark.parametrize(
-    ("command", "exit_code", "stdout"),
+    "command",
     [
-        ("if false; then echo yes; fi", 0, ""),
-        ("while read line; do echo \"$line\"; done < /dev/null", 0, ""),
-        ("set -o pipefail; false | true", 1, ""),
-        ("! false", 0, ""),
-        ("! true", 1, ""),
-        ("echo 'unbalanced", 2, ""),
-        ('echo "unbalanced', 2, ""),
-        ("echo $(echo unclosed", 2, ""),
-        ("echo hi \\", 0, "hi \\\n"),
-        ("cat <<'EOF'\nunterminated heredoc", 0, "unterminated heredoc\n"),
-        ("exit 3", 3, ""),
-        ("trap 'echo T' ERR; false", 1, "T\n"),
+        "if false; then echo yes; fi",
+        "while read line; do echo \"$line\"; done < /dev/null",
+        "set -o pipefail; false | true",
+        "! false",
+        "! true",
+        "echo 'unbalanced",
+        'echo "unbalanced',
+        "echo $(echo unclosed",
+        "echo hi \\",
+        "cat <<'EOF'\nunterminated heredoc",
+        "exit 3",
+        "trap 'echo T' ERR; false",
     ],
 )
-def test_capturing_pipestatus_changes_nothing_the_model_sees(command, exit_code, stdout):
+def test_capturing_pipestatus_changes_nothing_the_model_sees(command):
     """The capture is side data: the shell's own ``$?`` and output, no wrapper text."""
-    seen_code, seen_stdout, seen_stderr = _seen(_run_result(command))
+    bash = _find_bash()
+    direct = subprocess.run(
+        [bash, "-c", command], capture_output=True, text=True, check=False,
+    )
+    seen_code, seen_stdout, seen_stderr = _seen(_run_result(command, bash))
 
-    assert (seen_code, seen_stdout) == (exit_code, stdout)
+    assert (seen_code, seen_stdout) == (direct.returncode, direct.stdout)
     assert "__hermes" not in seen_stderr

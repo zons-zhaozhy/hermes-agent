@@ -6,6 +6,7 @@ import json
 
 import pytest
 from websockets.exceptions import ConnectionClosedError
+from websockets.protocol import State
 
 from hermes_cli.gateway_client import GatewayClient, GatewayClientError
 
@@ -15,6 +16,8 @@ async def test_send_side_death_is_the_same_honest_unknown_not_a_raw_transport_er
     """The read side already translates a transport death; the send side must too, or a caller
     that catches only GatewayClientError (the spinner thread's tick) dies on the raw error."""
     class SendDied:
+        state = State.OPEN
+
         async def send(self, _data):
             raise ConnectionClosedError(None, None)
 

@@ -105,3 +105,64 @@ async def _edit_card(adapter, chat_id: str, message_id: str, notice: str, comman
         logger.debug("Approval card edit failed; sending the notice as a new message", exc_info=True)
         return False
     return bool(getattr(result, "success", False))
+
+
+def _approval_send_outcome(future, timeout: float) -> str:
+    """Classify an approval prompt send as ``sent`` / ``failed`` / ``ambiguous``.
+
+    ``ambiguous`` = future timed out but the card may have posted: keep the registration, do NOT re-send.
+    Only a DEFINITIVE failure (error result / non-timeout exception / no future) re-asks; logged here.
+
+    Lives beside the approval notice lane it classifies (moved out of ``gateway/run.py``); the
+    facade re-exports it through a thin delegator so ``from gateway.run import ...`` callers and
+    tests keep resolving the seam they patch.
+    """
+    import concurrent.futures
+
+    if future is None:
+        logger.warning("Prompt send failed: no scheduling future (loop unavailable)")
+        return "failed"
+    try:
+        result = future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        return "ambiguous"
+    except Exception as exc:  # health: allow BLE001 -- a caller-supplied send future can raise anything; every failure is the same verdict ("failed"), and this is the common non-timeout path so a traceback per occurrence would bury the log
+        logger.warning("Prompt send failed: %s", exc)
+        return "failed"
+    if getattr(result, "success", False):
+        return "sent"
+    # P5(b): a connector DECLINE is not a lane failure. The connector authorized the destination and refused it;
+    # re-sending the same content as plain text into that same chat is the exfiltration the egress guard exists
+    # to stop. `failed` is the cue to fall back, so a decline needs its own verdict — callers must surface it
+    # and send nothing further.
+    #
+    # CLASSIFY THE STRUCTURED RESPONSE, NOT THE ERROR STRING. The adapter
+    # preserves the connector's own dict in `raw_response`; rebuilding a dict
+    # from `error` alone loses two things review demonstrated:
+    #   * a decline carrying `code: egress_declined` and NO text renders as
+    #     "relay egress declined" — no marker colon — so the string check
+    #     missed it and the fallback fired into the refused chat;
+    #   * `ambiguous: True` (lost ack, mid-write drop) was flattened into a
+    #     DEFINITE failure, which re-sends a card that may well have posted.
+    # I fixed the text-marker path and tested only the text-marker path.
+    from gateway.relay.egress import declined_send
+
+    _raw = getattr(result, "raw_response", None)
+    if isinstance(_raw, dict) and _raw.get("ambiguous"):
+        # The frame may have been applied. Same physics as a scheduling
+        # timeout: possibly-delivered, so never re-send. Checked BEFORE the
+        # decline classification because an ambiguous result is a transport
+        # outcome, not an authorization one, and this lane has three verdicts
+        # rather than the boolean the shared helper answers.
+        logger.warning("Prompt send AMBIGUOUS (lost ack): %s", _raw.get("error"))
+        return "ambiguous"
+    if declined_send(result):
+        # Both shapes, one classifier: a structured body, or the uniform
+        # decline sentence from an older connector.
+        logger.warning(
+            "Prompt send DECLINED by connector egress guard: %s",
+            getattr(result, "error", None),
+        )
+        return "declined"
+    logger.warning("Prompt send failed: %s", getattr(result, "error", None) or "unknown error")
+    return "failed"

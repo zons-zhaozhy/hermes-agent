@@ -22,6 +22,17 @@ import pytest
 
 from tools import browser_launcher as launcher
 from tools.browser_launcher_holders import ns_identity
+from tests.waiting import wait_until
+
+_FAKE_ZYGOTE_HELPER = textwrap.dedent('''\
+    import os, signal, sys, time
+    def h(*_):
+        open(sys.argv[1], 'a').write('child\\n'); sys.exit(0)
+    signal.signal(signal.SIGTERM, h)
+    parent = int(sys.argv[2])
+    while os.getppid() == parent: time.sleep(0.1)
+    time.sleep(5)
+''')
 
 _FAKE_CHROMIUM = textwrap.dedent('''\
     #!{python}
@@ -32,14 +43,7 @@ _FAKE_CHROMIUM = textwrap.dedent('''\
     with open(os.path.join(udd, "argv.json"), "w") as f:
         json.dump(sys.argv, f)
     # A helper child like Chromium's zygote: records when IT is told to stop.
-    child = subprocess.Popen([sys.executable, "-c",
-        "import os,signal,sys,time\\n"
-        "def h(*_):\\n"
-        "    open(sys.argv[1],'a').write('child\\\\n'); sys.exit(0)\\n"
-        "signal.signal(signal.SIGTERM, h)\\n"
-        "parent = os.getppid()\\n"
-        "while os.getppid() == parent: time.sleep(0.1)\\n"
-        "time.sleep(5)\\n", log])  # outlives a SIGKILLed parent briefly, then exits (no leak)
+    child = subprocess.Popen([sys.executable, "-c", {helper!r}, log, str(os.getpid())])  # outlives a SIGKILLed parent briefly, then exits (no leak)
     def on_term(*_):
         open(log, "a").write("parent\\n")
         sys.exit(0)  # leaves the child running, as a browser mid-shutdown would
@@ -53,7 +57,7 @@ _FAKE_CHROMIUM = textwrap.dedent('''\
 @pytest.fixture
 def fake_chromium(tmp_path, monkeypatch):
     script = tmp_path / "chromium"
-    script.write_text(_FAKE_CHROMIUM.format(python=sys.executable))
+    script.write_text(_FAKE_CHROMIUM.format(python=sys.executable, helper=_FAKE_ZYGOTE_HELPER))
     script.chmod(0o755)
     monkeypatch.setattr(launcher, "_resolve_executable", lambda: str(script))
     monkeypatch.setattr(launcher, "needs_chromium_sandbox_bypass", lambda: False)
@@ -61,6 +65,50 @@ def fake_chromium(tmp_path, monkeypatch):
     monkeypatch.setattr("tools.browser_session_cloud.is_headed_mode", lambda: False)
     yield script
     launcher.stop_all_browsers()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.live_system_guard_bypass  # the deliberately orphaned fake zygote is ours to continue/kill
+def test_fake_zygote_helper_exits_when_orphaned_before_it_starts(tmp_path):
+    """The fake zygote must not survive a parent that died before the helper starts."""
+    log = tmp_path / "order.log"
+    pid_file = tmp_path / "helper.pid"
+    wrapper = textwrap.dedent("""\
+        import os, signal, sys
+        pid = os.fork()
+        if pid == 0:
+            os.close(0)
+            os.close(1)
+            os.close(2)
+            os.kill(os.getpid(), signal.SIGSTOP)
+            os.execv(sys.executable, [
+                sys.executable, "-c", os.environ["HERMES_FAKE_ZYGOTE"], os.environ["HERMES_FAKE_ZYGOTE_LOG"],
+                str(os.getpid())
+            ])
+        with open(os.environ["HERMES_FAKE_ZYGOTE_PID"], "w") as f:
+            f.write(str(pid))
+        os._exit(0)
+    """)
+    env = dict(os.environ, HERMES_FAKE_ZYGOTE=_FAKE_ZYGOTE_HELPER,
+               HERMES_FAKE_ZYGOTE_LOG=str(log), HERMES_FAKE_ZYGOTE_PID=str(pid_file))
+    parent = subprocess.run([sys.executable, "-c", wrapper], env=env, timeout=5, check=True,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    assert parent.returncode == 0
+    helper_pid = int(pid_file.read_text())
+    os.kill(helper_pid, signal.SIGCONT)
+
+    def helper_exited() -> bool:
+        try:
+            os.kill(helper_pid, 0)
+        except ProcessLookupError:
+            return True
+        return False
+
+    try:
+        wait_until(helper_exited, timeout=7, what="the orphaned fake zygote to exit")
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(helper_pid, signal.SIGKILL)
 
 
 def _records() -> Path:

@@ -163,6 +163,7 @@ class WSTransport:
         # Socket writes need an async boundary: several batches can queue on the loop during a stall.
         self._send_lock = asyncio.Lock()
         self._abort_requested = False
+        self._socket_close_scheduled = False
 
     def _on_loop(self) -> bool:
         try:
@@ -284,7 +285,7 @@ class WSTransport:
                     self._closed = True
                     _log.warning("ws send deadline exceeded (socket stalled, loop responsive) peer=%s deadline=%ss — closing",
                                  self._peer, _WS_SEND_DEADLINE_S)
-                    self._loop.create_task(self._close_socket(1011, "send deadline"))
+                    self._schedule_socket_close(1011, "send deadline")
                     return
                 except UnicodeEncodeError as exc:
                     # A single illegal UTF-8 frame (lone surrogate) must not tear down the socket.
@@ -317,9 +318,17 @@ class WSTransport:
         with contextlib.suppress(RuntimeError):
             self._loop.call_soon_threadsafe(self._finish_abort)
 
+    def _schedule_socket_close(self, code: int, reason: str) -> None:
+        """Schedule one socket close even when send-deadline and overflow race."""
+        with self._token_lock:
+            if self._socket_close_scheduled:
+                return
+            self._socket_close_scheduled = True
+        self._loop.create_task(self._close_socket(code, reason))
+
     def _finish_abort(self) -> None:  # loop thread
         self.close()
-        self._loop.create_task(self._close_socket(1011, "fanout overflow"))
+        self._schedule_socket_close(1011, "fanout overflow")
 
     async def _close_socket(self, code: int, reason: str) -> None:
         """Close the peer socket so ``handle_ws``'s ``receive_text`` unblocks and its disconnect teardown

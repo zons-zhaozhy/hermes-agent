@@ -49,9 +49,10 @@ def require_history_claim(authority, conn, actor, sid):
         raise RuntimeStoreError('permission_denied')
 
 
-def resolve_local_target(authority, actor, sid):
-    """Resolve physical history IDs without silently adopting canonical corruption."""
-    db = authority.db
+def local_target_probe(db, sid):
+    """Read-only half of ``resolve_local_target``: the row and whether it carries a bound local
+    policy. Blocking storage, so a caller on the gateway event loop runs this in a worker and hands
+    the plan over; adoption and ``restore_local_session`` publish on the loop and stay with it."""
     row = db.get_session(sid)
     if row is None:
         raise RuntimeStoreError('not_found')
@@ -65,6 +66,12 @@ def resolve_local_target(authority, actor, sid):
             # A copied chat_id is not evidence that this row belongs to the owner's lineage.
             if local_lineage_owner(conn, sid) != row['chat_id']:
                 raise RuntimeStoreError('storage_unavailable')
+    return row, bound
+
+
+def resolve_local_target(authority, actor, sid, probe=None):
+    """Resolve physical history IDs without silently adopting canonical corruption."""
+    row, bound = probe if probe is not None else local_target_probe(authority.db, sid)
     if bound or str(row.get('chat_id') or '').startswith('local-'):
         ref = SessionRef(authority.profile_id, row['chat_id'])
         authority.authorize(actor, ref, 'session:read')

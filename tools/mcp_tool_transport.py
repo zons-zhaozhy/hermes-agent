@@ -17,6 +17,7 @@ from tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _
 from hermes_cli.process_identity import own_process_groups, register_child, release_process_groups
 from tools.mcp_tool_common import _core
 from tools.mcp_tool_node_abi import node_abi_error
+from tools.mcp_tool_stdio_startup import stdio_startup_error
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_events as _events
 from tools import mcp_tool_lifecycle as _lifecycle
@@ -425,9 +426,13 @@ class MCPServerTransportMixin:
                     return await self._serve_session(session, connect_timeout, mark_lifecycle=True)
         except Exception as exc:
             # The SDK only sees "Connection closed"; the child's stderr says why (#124264).
-            abi_error = node_abi_error(self.name, await asyncio.to_thread(stderr.close))
+            stderr_text = await asyncio.to_thread(stderr.close)
+            abi_error = node_abi_error(self.name, stderr_text)
             if abi_error is not None:
                 raise abi_error from exc
+            startup_error = stdio_startup_error(stderr_text)
+            if startup_error is not None:
+                raise startup_error from exc
             raise
         finally:  # clean exit, exceptions AND cancellation
             stderr.close(timeout=0)

@@ -273,7 +273,7 @@ class GatewayUpdateNotificationsMixin:
                     logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
                 self._clear_update_markers(paths, session_key)
                 return
-            _read_new_output()
+            await _read_new_output()
             if buffer.strip() and (loop.time() - last_stream_time) >= stream_interval:
                 await _flush_buffer()
             # Forward a prompt only when none is pending, else every poll re-forwards the same prompt.

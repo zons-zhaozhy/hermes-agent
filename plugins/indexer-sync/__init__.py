@@ -58,7 +58,8 @@ def _discover_tracked_repos():
             result = subprocess.run(
                 ["find", str(scan_root), "-maxdepth", "5",
                  "-name", ".codegraph", "-type", "d", "-not", "-path", "*/.codegraph/*"],
-                capture_output=True, text=True, timeout=5, check=False,
+                stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                timeout=5, check=False,
             )
             for line in result.stdout.strip().splitlines():
                 cg_dir = Path(line)
@@ -76,7 +77,8 @@ def _discover_tracked_repos():
                 ["find", str(root), "-maxdepth", "4",
                  "-name", "*.py", "-o", "-name", "*.ts", "-o", "-name", "*.tsx",
                  "-o", "-name", "*.js", "-o", "-name", "*.java"],
-                capture_output=True, text=True, timeout=3, check=False,
+                stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                timeout=3, check=False,
             )
             file_count = len(r.stdout.strip().splitlines()) if r.stdout.strip() else 0
         except Exception:
@@ -173,7 +175,8 @@ def _do_sync(root_key: str):
             logger.info("indexer-sync: codegraph sync %s (%d files, timeout=%ds)", root_key, file_count, timeout)
             subprocess.run(
                 cmd, timeout=timeout,
-                capture_output=True, text=True, check=False,
+                stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                check=False,
             )
         elif root_type == "gitnexus":
             repo_path = info["path"]
@@ -181,7 +184,8 @@ def _do_sync(root_key: str):
             logger.info("indexer-sync: gitnexus analyze %s (%d files, timeout=%ds)", repo_path, file_count, timeout)
             subprocess.run(
                 cmd, timeout=timeout,
-                capture_output=True, text=True, check=False,
+                stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                check=False,
             )
         info["last_sync"] = time.time()
     except subprocess.TimeoutExpired:

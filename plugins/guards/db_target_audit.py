@@ -102,6 +102,7 @@ def _active_pg_endpoints() -> list[str]:
     try:
         proc = subprocess.run(
             ["lsof", "-iTCP", "-sTCP:ESTABLISHED", "-P", "-n"],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=3,

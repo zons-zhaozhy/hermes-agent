@@ -34,6 +34,7 @@ def _next_selection(recorded, requested=None):
                                      repair=False, shipped=None, frozen=None)[0]
 
 
+@pytest.mark.platforms("linux")
 def test_without_drops_a_recorded_extra_from_every_later_selection(synced, tmp_path):
     assert pm.cli.cmd_install(argparse.Namespace(names=None, tools_only=False, without=["matrix"])) == 0
 
@@ -216,6 +217,7 @@ def test_without_after_a_failed_first_migration_keeps_the_other_legacy_extras(mo
     assert extras.declined_extras(root) == frozenset({"matrix"})
 
 
+@pytest.mark.platforms("linux")
 def test_automatic_repair_never_undoes_a_without_that_landed_after_its_read(monkeypatch):
     """Configured-platform repair reads the declines, then asks PM for the configured extra. A
     `--without matrix` completing between that read and PM's lock wins: repair's request was

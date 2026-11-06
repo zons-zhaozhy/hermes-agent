@@ -1,4 +1,5 @@
-"""Shared semantic-judge failures open a bounded, task-local circuit."""
+"""Shared semantic-judge failures open a bounded circuit — task-local for parse failures,
+endpoint-scoped for hard (timeout/transport) failures."""
 
 from __future__ import annotations
 
@@ -12,6 +13,14 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 
 
 _REPO = Path(__file__).resolve().parents[2]
+
+
+class _Resp:
+    """Minimal chat-completion stub for the "unusable answer" failure mode."""
+
+    def __init__(self, content: str) -> None:
+        self.choices = [types.SimpleNamespace(
+            message=types.SimpleNamespace(content=content))]
 
 
 def _load_judge() -> types.ModuleType:
@@ -30,7 +39,13 @@ def _load_judge() -> types.ModuleType:
     return module
 
 
-def test_multi_failure_suppresses_repeat_calls_for_same_task(monkeypatch):
+def test_endpoint_timeout_suppresses_every_task_on_that_endpoint(monkeypatch):
+    """A dead judge endpoint costs ONE timeout per turn, not one per registered judge task.
+
+    Regression for the 2026-11-06 gateway stall: six guard tasks each paid a 5-10 s timeout
+    for the same unreachable endpoint (≈48 s per turn), which exhausted the ``pre_llm_call``
+    hook budget and ended a turn with ``blocked_by_plugin_pre_llm_call`` and ``api_calls=0``.
+    """
     module = _load_judge()
     calls: list[str] = []
 
@@ -48,10 +63,65 @@ def test_multi_failure_suppresses_repeat_calls_for_same_task(monkeypatch):
     other_task = module.llm_judge_multi(
         task="user_side_guards", system="return JSON", text="continue", keys=["done"],
     )
+    third_task = module.llm_judge_multi(
+        task="scope_gate", system="return JSON", text="continue", keys=["done"],
+    )
 
     assert first == {"done": None}
     assert second == {"done": None}
     assert other_task == {"done": None}
+    assert third_task == {"done": None}
+    # Only the first call actually reached the endpoint; the rest short-circuited.
+    assert calls == ["reply_side_guards"]
+
+
+def test_endpoint_timeout_leaves_a_task_on_another_endpoint_alone(monkeypatch):
+    """Tasks may be configured onto different auxiliary models: a dead endpoint must not
+    silence a task whose own endpoint is healthy."""
+    module = _load_judge()
+    calls: list[str] = []
+
+    def resolve(task, provider=None, model=None, base_url=None, api_key=None):
+        if task == "slow_guard":
+            return ("local_judge", "qwen3.5:4b-mlx-judge", "http://127.0.0.1:11434/v1", None, None)
+        return ("zai", "glm-5.3-flash", "https://open.bigmodel.cn/api/coding/paas/v4", None, None)
+
+    def unavailable(**kwargs):
+        calls.append(str(kwargs["task"]))
+        raise TimeoutError("judge timed out")
+
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", unavailable)
+    monkeypatch.setattr("agent.auxiliary_client._resolve_task_provider_model", resolve)
+
+    assert module.llm_judge_multi(
+        task="slow_guard", system="return JSON", text="finished", keys=["done"],
+    ) == {"done": None}
+    assert module.llm_judge_multi(
+        task="fast_guard", system="return JSON", text="finished", keys=["done"],
+    ) == {"done": None}
+
+    assert calls == ["slow_guard", "fast_guard"]
+
+
+def test_unusable_answer_stays_task_scoped(monkeypatch):
+    """A parse failure is model misbehaviour on ONE prompt, not a dead endpoint: a sibling
+    task on the same endpoint must still be judged."""
+    module = _load_judge()
+    calls: list[str] = []
+
+    def garbage(**kwargs):
+        calls.append(str(kwargs["task"]))
+        return _Resp("这不是判定结果，只是一段散文。")
+
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", garbage)
+
+    assert module.llm_judge_multi(
+        task="reply_side_guards", system="return JSON", text="finished", keys=["done"],
+    ) == {"done": None}
+    assert module.llm_judge_multi(
+        task="user_side_guards", system="return JSON", text="continue", keys=["done"],
+    ) == {"done": None}
+
     assert calls == ["reply_side_guards", "user_side_guards"]
 
 

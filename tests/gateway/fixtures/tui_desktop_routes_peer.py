@@ -12,6 +12,7 @@ model:
   provider: custom
   default: no-inference
   base_url: http://127.0.0.1:1/v1
+  context_length: 256000
 auxiliary:
   title_generation:
     enabled: false

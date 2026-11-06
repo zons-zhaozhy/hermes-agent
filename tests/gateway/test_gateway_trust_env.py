@@ -34,8 +34,10 @@ class TestResolveProxyUrlMultiplexScope:
         from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
 
         monkeypatch.setenv("DISCORD_PROXY", "http://default-profile-proxy:8080")
-        monkeypatch.delenv("NO_PROXY", raising=False)
-        monkeypatch.delenv("no_proxy", raising=False)
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy",
+                    "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(gw_base, "_detect_macos_system_proxy", lambda: None)
 
         set_multiplex_active(True)
         token = set_secret_scope({"DISCORD_PROXY": "http://secondary-profile-proxy:9090"})
@@ -49,8 +51,10 @@ class TestResolveProxyUrlMultiplexScope:
         from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
 
         monkeypatch.setenv("DISCORD_PROXY", "http://default-profile-proxy:8080")
-        monkeypatch.delenv("NO_PROXY", raising=False)
-        monkeypatch.delenv("no_proxy", raising=False)
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy",
+                    "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(gw_base, "_detect_macos_system_proxy", lambda: None)
 
         set_multiplex_active(True)
         token = set_secret_scope({})

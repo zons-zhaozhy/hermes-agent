@@ -843,7 +843,9 @@ class SessionAuthority:
 
     async def receipt(self, actor, ref, admission_id):
         self.authorize(actor, ref, 'session:submit')
-        row = get_session_admission(self.db, admission_id=admission_id)
+        # Receipt polling runs on the shared gateway loop; the admission read is a blocking SQLite
+        # query, so it goes to a worker (owner_loop_guard else flags this site).
+        row = await asyncio.to_thread(get_session_admission, self.db, admission_id=admission_id)
         if row is None or row['target_session_id'] != ref.session_id:
             raise RuntimeStoreError('not_found')
         from gateway.owner_identity import same_owner

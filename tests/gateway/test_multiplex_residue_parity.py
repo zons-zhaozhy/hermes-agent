@@ -67,7 +67,11 @@ def test_resolve_proxy_url_reads_routed_profile_scope(two_homes, monkeypatch):
         ss.reset_secret_scope(token)
     token = ss.set_secret_scope({})  # a served profile with NO proxy must not borrow the default's
     try:
-        monkeypatch.delenv("HTTPS_PROXY", raising=False)
+        from gateway.platforms import base as gateway_base
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy",
+                    "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(gateway_base, "_detect_macos_system_proxy", lambda: None)
         assert resolve_proxy_url("TELEGRAM_PROXY") is None
     finally:
         ss.reset_secret_scope(token)

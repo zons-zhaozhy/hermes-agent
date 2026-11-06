@@ -15,6 +15,7 @@ process that already imported it mount it before the listener starts, exactly as
 
 import asyncio
 from dataclasses import dataclass
+import importlib
 import logging
 import os
 import socket
@@ -296,6 +297,17 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
         api_origin=dial_origin(listener.getsockname()[0], state.bound_port),
         server=server, task=task, app=mount, socket=listener,
     )
+
+
+def warm_gateway_ws_stack() -> None:
+    """Import the native session WebSocket stack ahead of the first upgrade. Call it on an executor.
+
+    ``GatewayRuntimeAPI._serve`` imports ``tui_gateway.ws`` lazily when an upgrade arrives, so the
+    first dashboard/Desktop client used to pay that whole chain on the owner loop — hundreds of
+    modules read inline, measured at 7.4 s on a loaded host, freezing every platform heartbeat and
+    losing the ``ready`` frame to its own send timeout. Boot warm-up (``_warm_turn_prerequisites``)
+    runs this off the loop so the lazy import is a cache hit by the time a client connects."""
+    importlib.import_module('tui_gateway.ws')  # the import is the warm-up
 
 
 def warm_gateway_dashboard(runner) -> None:

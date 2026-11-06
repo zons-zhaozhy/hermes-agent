@@ -17,12 +17,20 @@ def _git(root, *args):
 
 @pytest.fixture
 def clean_install(tmp_path):
-    # Keep the real ignore rules and tracked root entries without copying a full checkout
-    # or committing fixture source. Git objects are read-only shared with the test checkout.
+    # Keep the real ignore rules and tracked root entries without copying full history.
+    # Materialize the partial clone's HEAD objects first: a local upload-pack cannot
+    # lazily fetch them while serving another clone.
     root = tmp_path / "install"
     repo = Path(__file__).resolve().parents[2]
-    subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", "--template=",
-                    str(repo), str(root)], check=True)
+    subprocess.run(["git", "-C", str(repo), "ls-tree", "-r", "HEAD"],
+                   stdout=subprocess.DEVNULL, check=True)
+    subprocess.run(
+        [
+            "git", "clone", "--quiet", "--depth", "1", "--no-checkout", "--template=",
+            "--single-branch", "--no-tags", repo.as_uri(), str(root),
+        ],
+        check=True,
+    )
     _git(root, "config", "core.sparseCheckout", "true")
     (root / ".git/info").mkdir(exist_ok=True)
     (root / ".git/info/sparse-checkout").write_text(

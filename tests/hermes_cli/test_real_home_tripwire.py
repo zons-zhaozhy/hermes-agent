@@ -196,10 +196,12 @@ def test_resolving_a_path_entry_under_the_home_is_command_lookup(protected_home,
     monkeypatch.setenv("PATH", str(entry))
     guard.check(entry, metadata=True)
     guard.check(entry.parent, metadata=True)
+    # Tools and installs are reinstallable payloads: reads are allowed, writes are not.
+    guard.check(protected_home / "tools" / "other", metadata=True)
     with pytest.raises(AssertionError, match="REAL hermes home"):
-        guard.check(protected_home / "tools" / "other", metadata=True)
+        guard.check(protected_home / "state" / "other", metadata=True)
     with pytest.raises(AssertionError, match="REAL hermes home"):
-        guard.check(entry.parent, metadata=False)
+        guard.check(protected_home / "state" / "other", metadata=False)
 
 
 def test_checkout_inside_a_guarded_root_is_not_hermes_state():

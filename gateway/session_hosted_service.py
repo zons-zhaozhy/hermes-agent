@@ -256,6 +256,18 @@ async def ensure_hosted_service(runner):
 
 
 async def _ensure_hosted_service(runner, authority):
+    """Prepare one authority's hosted-room transport, entering its profile scope only for real work.
+
+    ``owner_scope`` binds the owning profile's config, secrets and terminal policy; on the multiplexed
+    path that reads the profile's ``.env`` from disk. ``_hosted_room_worker_watcher`` calls this every
+    second for EVERY served profile, so an unconditional scope re-read every profile's secrets once a
+    second and froze the owner loop often enough for the liveness watchdog to restart the gateway
+    (168 stalls / 307 s in one morning on a 29-profile home). A settled authority — service created,
+    transport installed — has nothing left to prepare.
+    """
+    settled = getattr(authority, 'hosted_room_service', None)
+    if settled is not None and getattr(settled, '_transport_installed', False):
+        return
     with owner_scope(authority):
         service = getattr(authority, 'hosted_room_service', None)
         if service is None:

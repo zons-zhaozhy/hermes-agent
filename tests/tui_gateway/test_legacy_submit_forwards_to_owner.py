@@ -298,14 +298,14 @@ def test_an_owner_error_after_its_commit_is_unconfirmed_not_resendable(monkeypat
                             payload={"text": "a DM"})
         claim_session_input(db, epoch=epoch, session_id=key)
         authority = _owner(monkeypatch, db, key, epoch)
-        publish, failed = authority._publish_pending, []
+        publish, failed = authority._publish_pending_off_loop, []
 
-        def publish_fails_once(ref):  # the admission's publication, after its commit
+        async def publish_fails_once(ref):  # the admission's publication, after its commit
             if not failed:
                 failed.append(ref)
                 raise sqlite3.OperationalError("disk I/O error")
-            return publish(ref)
-        monkeypatch.setattr(authority, "_publish_pending", publish_fails_once)
+            return await publish(ref)
+        monkeypatch.setattr(authority, "_publish_pending_off_loop", publish_fails_once)
 
         reply = server.handle_request({"id": "p", "method": "prompt.submit",
                                        "params": {"session_id": sid, "text": "my question"}})

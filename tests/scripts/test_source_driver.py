@@ -168,7 +168,7 @@ def test_observer_judges_only_the_live_app_not_rollback_copies_beside_it(tmp_pat
     ("incomplete", "incomplete"),
     ("web-changed", "web output"), ("web-missing", "web output"),
 ])
-def test_pm_observer_accepts_ready_fixture_and_leaves_failed_fixture_untouched(tmp_path, fault, error):
+def test_pm_observer_accepts_ready_fixture_and_leaves_failed_fixture_untouched(tmp_path, fault, error, monkeypatch):
     # This exercises the complete observer process, not a whole install. The
     # fixture borrows prepared test dependencies and records real PM input
     # stamps / compiler receipts. It never resolves or acquires a package.
@@ -184,9 +184,17 @@ def test_pm_observer_accepts_ready_fixture_and_leaves_failed_fixture_untouched(t
     env = dict(os.environ, HOME=str(home), HERMES_HOME=str(home), HERMES_RUNTIME_DIR=str(store),
                PYTHONDONTWRITEBYTECODE="1", HERMES_DISABLE_LAZY_INSTALLS="1")
     env.pop("HERMES_INSTALL_ROOT", None)
-    path = os.pathsep.join(p for p in os.get_exec_path() if ".hermes" not in Path(p).parts)
-    node = shutil.which("node", path=path)
-    assert node
+    from hermes_cli._launchers import _launcher_python
+    launcher_python = _launcher_python(repo / ".hermes" / "bin" / "hermes")
+    assert launcher_python is not None
+    tool_store = next((parent for parent in launcher_python.parents if parent.name == "tools"), None)
+    assert tool_store is not None
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tool_store))
+    monkeypatch.setattr("pm.paths.writable_store_root", lambda: tool_store)
+    from pm.install import installed_package
+    installed_node = installed_package("node")
+    assert installed_node is not None and installed_node.binary is not None
+    node = installed_node.binary
     setup = '''import sys
 from pathlib import Path
 root, store, node, deps = map(Path, sys.argv[1:])
@@ -236,8 +244,12 @@ for (const [product, out] of [['tui', 'ui-tui/dist'], ['web', 'hermes_cli/web_di
     # The passive query must not write even import caches: -I ignores the
     # environment's bytecode switch, so the published query enforces it.
     def snapshot():
-        return {p: (hashlib.sha256(p.read_bytes()).hexdigest(), p.stat().st_mtime_ns) for tree in (root, home, store)
-                for p in tree.rglob("*") if p.is_file()}
+        return {
+            p: (p.readlink(), p.lstat().st_mtime_ns, True) if p.is_symlink() else
+               (hashlib.sha256(p.read_bytes()).hexdigest(), p.lstat().st_mtime_ns, False)
+            for tree in (root, home, store) for p in tree.rglob("*")
+            if p.is_symlink() or p.is_file()
+        }
     before = snapshot()
     result = subprocess.run(command, env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60, check=False)
     assert result.returncode == 0, result.stdout + result.stderr

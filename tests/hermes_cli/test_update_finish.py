@@ -405,6 +405,10 @@ def _npm_graph(source):
     _put(source, "package.json", json.dumps(root))
     _put(source, "package-lock.json", json.dumps({"name": root["name"], "version": "1.0.0",
                                                  "lockfileVersion": 3, "packages": packages}))
+    tui_scripts = source / "ui-tui/scripts"
+    tui_scripts.mkdir(parents=True, exist_ok=True)
+    for helper in ("gateway_bootstrap.py", "clipboard_image.py"):
+        shutil.copy2(ROOT / "ui-tui/scripts" / helper, tui_scripts / helper)
     _put(source, "prepare-tools.mjs", textwrap.dedent(f'''
         import {{ mkdirSync, symlinkSync, writeFileSync }} from 'node:fs';
         import {{ execFileSync }} from 'node:child_process';
