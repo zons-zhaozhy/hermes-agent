@@ -110,6 +110,7 @@ f799fd8578 在官方 Linux CI "Python tests / Run tests" = success。
 | 2026-11-03 | c4a3246345（他轮已记） | — | — | — |
 | 2026-11-04 | 776618988d4（漏记补建） | 371 文件/15572+/7616- | test_vision_routing 取上游 _seed_models_dev 助手；uv.lock 取 fork 侧（双侧校验均被 github 直连阻断，待网络恢复 pm repair） | 133 passed + imports OK + 8/8 enabled |
 | 2026-11-05 | 98134a247cb | 468 文件/13421+/2266- | session_bot.py 融合：fork 离 loop 读结构 + 上游 Principal→SessionActor 改名（顺带根修 fork 测试 test_goal_pause 的旧类名断链） | 125 passed + imports OK + 8/8 enabled |
+| 2026-11-06 | 2db2fa2872 | 830 文件（上游 11-05 单日 577 提交） | 零冲突（干跑预判=实测） | 125 passed(worktree PYTHONPATH 验证) + imports OK + 插件面异常见下 |
 
 ## 二、防冲突铁律（同步操作规程）
 
