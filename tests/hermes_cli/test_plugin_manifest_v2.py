@@ -79,6 +79,13 @@ class TestV2Parsing:
                 "license": "MIT",
                 "homepage": "https://example.com/modern",
                 "tags": ["gateway", "demo"],
+                "gate_suites": ["intent", "output"],
+                "gate_policy": "advisory",
+                "gate_kind": "observer",
+                "gate_audit": {
+                    "subject": "repo:/tmp/project",
+                    "ttl_seconds": 60,
+                },
                 "requires_plugins": [
                     {"id": "other", "version_range": ">=1.0,<2"},
                     "bare-dep",
@@ -98,6 +105,13 @@ class TestV2Parsing:
         assert m.license == "MIT"
         assert m.homepage == "https://example.com/modern"
         assert m.tags == ["gateway", "demo"]
+        assert m.gate_suites == ["intent", "output"]
+        assert m.gate_policy == "advisory"
+        assert m.gate_kind == "observer"
+        assert m.gate_audit == {
+            "subject": "repo:/tmp/project",
+            "ttl_seconds": 60,
+        }
         assert m.requires_plugins == [
             {"id": "other", "version_range": ">=1.0,<2"},
             {"id": "bare-dep", "version_range": None},
@@ -142,6 +156,10 @@ class TestV2Parsing:
                 "requires_plugins": "not-a-list",
                 "python_dependencies": {"nope": 1},
                 "tags": "not-a-list",
+                "gate_suites": ["intent", "banana"],
+                "gate_policy": "sometimes",
+                "gate_kind": "sometimes",
+                "gate_audit": {"subject": "", "ttl_seconds": 0},
             },
         )
         _enable(hermes_home, ["sloppy"])
@@ -155,6 +173,46 @@ class TestV2Parsing:
         assert m.requires_plugins == []
         assert m.python_dependencies == []
         assert m.tags == []
+        assert m.gate_suites == ["intent"]
+        assert m.gate_policy == "required"
+        assert m.gate_kind == "manual"
+        assert m.gate_audit == {}
+        assert "gate_suites" in caplog.text
+        assert "gate_policy" in caplog.text
+        assert "gate_kind" in caplog.text
+        assert "gate_audit" in caplog.text
+
+    def test_gate_kind_infers_from_legacy_guard_hooks(self, hermes_home):
+        _write_plugin(
+            hermes_home / "plugins", "hook-free-guard",
+            manifest_extra={"tags": ["guard"], "hooks": []},
+        )
+        _write_plugin(
+            hermes_home / "plugins", "observer-guard",
+            manifest_extra={"tags": ["guard"], "hooks": ["post_llm_call"]},
+        )
+        _write_plugin(
+            hermes_home / "plugins", "mixed-guard",
+            manifest_extra={
+                "tags": ["guard"],
+                "hooks": ["post_tool_call", "pre_verify"],
+            },
+        )
+        _enable(
+            hermes_home,
+            ["hook-free-guard", "observer-guard", "mixed-guard"],
+        )
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        kinds = {
+            name: plugin.manifest.gate_kind
+            for name, plugin in mgr._plugins.items()
+        }
+        assert kinds["hook-free-guard"] == "manual"
+        assert kinds["observer-guard"] == "observer"
+        assert kinds["mixed-guard"] == "enforcement"
 
 
 class TestDependencyOrder:

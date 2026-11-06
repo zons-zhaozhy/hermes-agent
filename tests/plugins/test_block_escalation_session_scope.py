@@ -46,7 +46,7 @@ def test_escalated_marker_scoped_to_own_session() -> None:
     _arm_escalation("sess_A")
     b = block_escalation._on_transform_llm_output(
         response_text="B 任务正常收尾", session_id="sess_B")
-    assert b is None  # 期望: B 零污染且不改写（契约：first non-None wins，不改写返回 None）
+    assert b is None  # 期望: B 零污染且不改写（不改写返回 None，后续 transform 仍会执行）
     # A 自己的消费不受影响
     a = block_escalation._on_transform_llm_output(
         response_text="A 会话收尾", session_id="sess_A")

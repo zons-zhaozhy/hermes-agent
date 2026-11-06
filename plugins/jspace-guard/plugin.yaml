@@ -18,3 +18,9 @@ author: stan (based on Tiger3807861189/J-Space-Cognition-Suite-V3.6, Apache-2.0)
 hooks:
   - transform_llm_output
   - post_tool_call
+tags:
+  - guard
+gate_suites:
+  - output
+gate_policy: advisory
+gate_kind: enforcement

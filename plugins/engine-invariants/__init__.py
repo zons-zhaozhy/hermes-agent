@@ -21,7 +21,8 @@
 不修复不阻断——修复归修复器，信号归检测器。违反计数可被
 observability/judge 体系消费。
 
-fail-open：任何异常吞掉只 warning，绝不破坏正常轮次。
+observer 失败不阻断轮次，由插件调度器隔离并记为 Gate Plane UNKNOWN；
+禁止在钩子内部把基础设施失败伪装成 pass。
 
 缓存安全：不改 system prompt、不改历史消息、不换 toolset。
 post_llm_call 在回合结束后触发，对 prompt caching 零影响。
@@ -159,7 +160,7 @@ def register(ctx) -> None:
     """注册 post_llm_call 检测钩子。
 
     Contract:
-      Postconditions: 钩子已注册；钩子内部任何异常不外泄（fail-open）
+      Postconditions: 钩子已注册；基础设施异常外抛给调度器记录 UNKNOWN
     """
 
     def check_invariants(
@@ -167,28 +168,25 @@ def register(ctx) -> None:
     ) -> None:
         if _plugin_disabled():
             return
-        try:
-            messages = conversation_history or []
-            if not messages:
-                return
-            sid = session_id or "_global"
-            st = get_session_state(sid, _NAMESPACE)
-            results = run_all_invariants(messages)
-            for name, violations in results.items():
-                if not violations:
-                    continue
-                key = f"violations_{name}"
-                st[key] = int(st.get(key, 0)) + len(violations)
-                logged = int(st.get("logged", 0))
-                if logged < _MAX_LOGGED:
-                    st["logged"] = logged + 1
-                    logger.warning(
-                        "engine-invariants: %s 违反 x%d: %s",
-                        name, len(violations),
-                        "; ".join(violations[:5]),
-                    )
-        except Exception as e:
-            logger.warning("engine-invariants skipped: %s", e, exc_info=True)
+        messages = conversation_history or []
+        if not messages:
+            return
+        sid = session_id or "_global"
+        st = get_session_state(sid, _NAMESPACE)
+        results = run_all_invariants(messages)
+        for name, violations in results.items():
+            if not violations:
+                continue
+            key = f"violations_{name}"
+            st[key] = int(st.get(key, 0)) + len(violations)
+            logged = int(st.get("logged", 0))
+            if logged < _MAX_LOGGED:
+                st["logged"] = logged + 1
+                logger.warning(
+                    "engine-invariants: %s 违反 x%d: %s",
+                    name, len(violations),
+                    "; ".join(violations[:5]),
+                )
 
     ctx.register_hook("post_llm_call", check_invariants)
     logger.info("engine-invariants registered")

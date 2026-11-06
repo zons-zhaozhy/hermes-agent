@@ -35,6 +35,28 @@ def test_defer_pushout_detection_unit():
     assert fg._is_defer_pushout("任务全部完成。") is False  # 期望: 正常收尾不拦
 
 
+def test_attribution_todo_not_deferred():
+    """D4：归属型「待办」引用不误伤（1105 副手巡检实测三轮误拦）。
+
+    副手/监控类汇报里「跨会话待办归属他会话」是归属陈述不是外推——
+    裸子串「待办」命中 _DEFER_RE 造成每轮最多 3 次强制续跑。"""
+    for text in (
+        "跨会话待办 t7/t9 归属 local-5e042e 在途施工，按并发纪律不代消费。",
+        "t7/t9 待办属于他会话，由其自行消化。",
+    ):
+        assert fg._is_defer_pushout(text) is False  # 期望: 归属型引用放行
+    # 对抗负例：归属话术包装的真外推（归属锚点缺失+含真推迟词）仍拦
+    adv = "发现X问题，待办归属：我自己，后续单独跟进。"
+    assert fg._is_defer_pushout(adv) is True  # 期望: 无会话锚点的归属话术不豁免
+
+
+def test_negated_declare_not_false_continue():
+    """D4：否定型「下一步」引用不误伤（1105 实测「无宣布而未做的『下一步』」被拦）。"""
+    assert fg._is_false_continue("本轮无剩余步骤、无宣布而未做的「下一步」。") is False  # 期望: 否定型放行
+    assert fg._is_false_continue("继续下一批。") is True  # 期望: 真宣言仍拦
+    assert fg._is_false_continue("先处理A，下一步做B。") is True  # 期望: 真计划仍拦
+
+
 def test_legit_irreversible_defer_exempt():
     """D2：不可逆/需拍板级推迟放行（真豁免）。
 

@@ -13,6 +13,7 @@ from typing import Any, List, Optional
 from urllib.parse import urlparse
 from tools.mcp_tool_common import _exc_str, _sanitize_error, _core
 from tools.mcp_tool_node_abi import NodeAbiMismatchError
+from tools.mcp_tool_stdio_startup import StdioStartupFileMissingError
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -180,7 +181,9 @@ def _classify_mcp_failure(exc: BaseException) -> str:
     Node) or ``'transient'`` (backoff retry)."""
     root = _unwrap_exception_group(exc)
     permanent = (_is_auth_error(root)
-                 or isinstance(root, (NonMcpEndpointError, InvalidMcpUrlError, FileNotFoundError, NodeAbiMismatchError))
+                 or isinstance(root, (
+                     NonMcpEndpointError, InvalidMcpUrlError, FileNotFoundError,
+                     NodeAbiMismatchError, StdioStartupFileMissingError))
                  or (isinstance(root, OSError) and getattr(root, "errno", None) == errno.ENOENT)
                  # 401/403 HTTPStatusError that _is_auth_error's type-gate missed (auth types not importable here)
                  or getattr(getattr(root, "response", None), "status_code", None) in (401, 403))

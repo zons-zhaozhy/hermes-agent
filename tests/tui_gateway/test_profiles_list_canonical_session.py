@@ -41,6 +41,7 @@ def home(tmp_path, monkeypatch):
     h = tmp_path / ".hermes"
     (h / "profiles" / "ops").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(h))
+    monkeypatch.setattr("hermes_cli.profiles._get_wrapper_dir", lambda: tmp_path / "bin")
     return h
 
 

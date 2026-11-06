@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import asyncio
+
 import pytest
 
 
@@ -78,3 +80,33 @@ def test_ready_gateway_leaves_empty_profile_stores_dormant(monkeypatch):
     session_hosted_service.start_ready_hosted_services(runner)
 
     assert started == [occupied_id]
+
+
+@pytest.mark.asyncio
+async def test_ready_publication_reads_hosted_bindings_off_loop(monkeypatch):
+    """READY publication must use the async readiness probe, not its synchronous DB-reading core."""
+    import threading
+    from gateway import run_runtime, session_hosted_service
+    from gateway import hosted_rooms_gateway_import
+
+    loop_thread = threading.get_ident()
+    threads = []
+
+    def recorded_bindings():
+        threads.append(threading.get_ident())
+        return ()
+
+    service = SimpleNamespace(_transport_installed=True, bindings=recorded_bindings, start=lambda: None)
+    runner = SimpleNamespace(
+        _running=True, _draining=False, session_runtime_descriptor={"state": "starting"},
+        session_api=SimpleNamespace(task=asyncio.get_running_loop().create_future()),
+    )
+    authority = SimpleNamespace(hosted_room_service=service)
+    monkeypatch.setattr(session_hosted_service, "serving_authorities", lambda _runner: [authority])
+    monkeypatch.setattr(hosted_rooms_gateway_import, "import_after_ready", lambda _authorities: None)
+    runner.session_authority = SimpleNamespace(hosted_room_service=service)
+
+    await run_runtime.publish_gateway_runtime_ready(runner)
+
+    assert runner.session_runtime_descriptor["state"] == "ready"
+    assert threads and loop_thread not in threads

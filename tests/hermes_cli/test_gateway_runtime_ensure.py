@@ -27,6 +27,7 @@ def test_unmanaged_runtime_drops_session_config_bypass_flags(tmp_path, monkeypat
         captured.update(kwargs)
         return child
     monkeypatch.setattr(start.subprocess, 'Popen', spawn)
+    monkeypatch.setattr(start, 'start_gateway_job', lambda *args, **kwargs: None)
     assert start.spawn_unmanaged_gateway(tmp_path, deadline=time.monotonic() + 5) is child
     assert all(key not in captured['env'] for key in flags)
     assert captured['env']['RUNTIME_TEST_SENTINEL'] == 'retained'

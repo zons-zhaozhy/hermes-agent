@@ -575,8 +575,13 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         if self._approval_owner is not None and result.success:
             authority, session_id, generation = self._approval_owner
             from gateway import local_viewer_events
-            authority.register_clarify(session_id, generation, entry,
-                                       timeout_s=local_viewer_events.prompt_timeout_s(self, "clarify"))
+            await asyncio.to_thread(
+                authority.register_clarify,
+                session_id,
+                generation,
+                entry,
+                timeout_s=local_viewer_events.prompt_timeout_s(self, "clarify"),
+            )
         return result
 
     def _clarify_callback_sync(self, questions) -> dict:

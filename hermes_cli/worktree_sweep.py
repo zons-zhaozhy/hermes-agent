@@ -122,7 +122,9 @@ def _psutil_live_pids(roots: list[str], exclude: frozenset) -> dict[str, list[in
         try:
             if proc.pid in exclude:
                 continue
-            root = _inside(os.path.realpath(proc.cwd()), roots)
+            # psutil's cwd is already the kernel's absolute, symlink-resolved path;
+            # realpath here would itself probe a protected foreign home in tests.
+            root = _inside(proc.cwd(), roots)
         except (psutil.Error, OSError):
             continue
         if root is not None:

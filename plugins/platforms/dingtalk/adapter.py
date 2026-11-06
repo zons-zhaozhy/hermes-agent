@@ -4,6 +4,7 @@ Requires ``pip install "dingtalk-stream>=0.20" httpx``. config.yaml ``platforms.
 ``extra.client_id`` / ``extra.client_secret`` (or DINGTALK_CLIENT_ID / DINGTALK_CLIENT_SECRET)."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -71,6 +72,11 @@ RECONNECT_CIRCUIT_BREAKER_DELAY = 300  # seconds between attempts while tripped 
 _SDK_LOG_REPEAT_WINDOW = 300.0  # identical dingtalk_stream.client records are collapsed within this window
 _SDK_HTTP_TIMEOUT_S = 15.0  # bounds the SDK's un-timed requests.post (connect+read); override via DINGTALK_SDK_HTTP_TIMEOUT_S
 _sdk_http_shim_installed = False
+# The SDK's protocol-level ping window (library defaults are 20 s/20 s, too tight next to its own
+# 60 s application keepalive: a late pong reads as a dead socket and forces a reconnect).
+_SDK_WS_PING_INTERVAL_S = 30.0
+_SDK_WS_PING_TIMEOUT_S = 60.0
+_sdk_ws_shim_installed = False
 
 
 def _sdk_http_timeout() -> float:
@@ -125,6 +131,46 @@ def _install_sdk_http_timeout_shim() -> None:
 
     _stream_mod.requests = _TimeoutRequestsShim("dingtalk_sdk_requests_timeout_shim")
     _sdk_http_shim_installed = True
+
+
+def _install_sdk_ws_ping_shim() -> None:
+    """Give the SDK's stream socket a stall-tolerant protocol ping window.
+
+    ``stream.py`` opens ``websockets.connect(uri)`` with the library defaults (20 s ping, 20 s
+    pong timeout). The SDK then runs its OWN application-level keepalive (``ws.ping()`` every
+    60 s) inside ``async for raw_message``, so a protocol pong that arrives late — a host load
+    spike, a GC pause, a transient path loss — surfaces as ``sent 1011 (internal error):
+    keepalive ping timeout`` and costs a full SDK reconnect (~3 a day on the reference install).
+    A 30 s ping with a 60 s pong window still catches a dead socket (the reconnect the 1011
+    triggers is preserved) and stops racing an application-level keepalive that already reports
+    liveness every minute.
+
+    Only ``dingtalk_stream.stream``'s own ``websockets`` binding is replaced; the process-global
+    module and every other websocket consumer keep the library defaults. Idempotent across
+    reconnects and the lazy dependency installer's module rebind.
+    """
+    global _sdk_ws_shim_installed
+    if _sdk_ws_shim_installed:
+        return
+    try:
+        import types
+        import dingtalk_stream.stream as _stream_mod
+        real = _stream_mod.websockets
+    except Exception as e:
+        logger.warning("[dingtalk] stream module unavailable; websocket ping shim not installed: %s", e)
+        return
+
+    class _PingTimeoutWebsocketsShim(types.ModuleType):
+        def connect(self, *args: Any, **kwargs: Any) -> Any:
+            kwargs.setdefault("ping_interval", _SDK_WS_PING_INTERVAL_S)
+            kwargs.setdefault("ping_timeout", _SDK_WS_PING_TIMEOUT_S)
+            return real.connect(*args, **kwargs)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(real, name)
+
+    _stream_mod.websockets = _PingTimeoutWebsocketsShim("dingtalk_sdk_websockets_ping_shim")
+    _sdk_ws_shim_installed = True
 
 
 def _is_sdk_incompat(exc: BaseException | None) -> bool:
@@ -235,6 +281,11 @@ def _csv_set(raw: Any) -> set[str]:
     raw = _decode_json_list_literal(raw)
     parts = raw if isinstance(raw, list) else str(raw).split(",")
     return {str(part).strip() for part in parts if str(part).strip()}
+
+
+def _identifier_digest(value: str) -> str:
+    """Stable non-reversible log hint for platform identifiers."""
+    return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()[:8]}" if value else "-"
 
 
 def dingtalk_deps_present() -> bool:
@@ -615,6 +666,10 @@ class DingTalkAdapter(BasePlatformAdapter):
         """Group chat whitelist; non-empty = hard gate even when @mentioned. DMs never filtered."""
         return self._csv_setting("allowed_chats", "DINGTALK_ALLOWED_CHATS")
 
+    def _dingtalk_group_allowed_chats(self) -> set[str]:
+        """Group chats whose members are authorized without adding each user to the DM allowlist."""
+        return self._csv_setting("group_allowed_chats", "DINGTALK_GROUP_ALLOWED_CHATS")
+
     def _compile_mention_patterns(self) -> list[re.Pattern]:
         """Compile optional regex wake-word patterns (config list, or env as JSON / lines / CSV)."""
         patterns = (self.config.extra or {}).get("mention_patterns")
@@ -629,7 +684,9 @@ class DingTalkAdapter(BasePlatformAdapter):
             return []
         return compile_mention_patterns(patterns, log_prefix=self.name, platform_label="dingtalk", display_label="DingTalk", logger_=logger)
 
-    def _is_user_allowed(self, sender_id: str, sender_staff_id: str) -> bool:
+    def _is_user_allowed(self, sender_id: str, sender_staff_id: str, *, chat_id: str = "", is_group: bool = False) -> bool:
+        if is_group and chat_id and chat_id in self._dingtalk_group_allowed_chats():
+            return True
         if not self._allowed_users or "*" in self._allowed_users:
             return True
         return bool(({(sender_id or "").lower(), (sender_staff_id or "").lower()} - {""}) & self._allowed_users)
@@ -691,7 +748,12 @@ class DingTalkAdapter(BasePlatformAdapter):
         is_group = str(getattr(message, "conversation_type", "1")) == "2"
         sender_nick = sender_nick or sender_id
         chat_id = conversation_id or sender_id
-        if not self._is_user_allowed(sender_id, sender_staff_id):
+        if not self._is_user_allowed(sender_id, sender_staff_id, chat_id=chat_id, is_group=is_group):
+            if is_group and getattr(message, "is_in_at_list", False):
+                logger.info(
+                    "[%s] Dropping @mention from non-allowlisted user sender=%s chat=%s",
+                    self.name, _identifier_digest(sender_staff_id or sender_id), _identifier_digest(chat_id),
+                )
             return logger.debug("[%s] Dropping message from non-allowlisted user staff_id=%s sender_id=%s", self.name, sender_staff_id, sender_id)
         if not self._should_process_message(message, self._extract_text(message) or "", is_group, chat_id):  # wake-word gate needs text early
             return logger.debug("[%s] Dropping group message that failed mention gate message_id=%s chat_id=%s", self.name, msg_id, chat_id)
@@ -1120,6 +1182,7 @@ def _nested_allowed_users(yaml_cfg: dict, dingtalk_cfg: dict):
 _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("require_mention", "DINGTALK_REQUIRE_MENTION", "lower"), ("mention_patterns", "DINGTALK_MENTION_PATTERNS", "json"),
     ("free_response_chats", "DINGTALK_FREE_RESPONSE_CHATS", "csv"), ("allowed_chats", "DINGTALK_ALLOWED_CHATS", "csv"),
+    ("group_allowed_chats", "DINGTALK_GROUP_ALLOWED_CHATS", "csv"),
     ("allowed_users", "DINGTALK_ALLOWED_USERS", "csv"),
 )
 

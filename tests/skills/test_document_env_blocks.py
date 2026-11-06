@@ -131,7 +131,10 @@ def test_repair_still_works_when_the_test_tools_live_under_a_spaced_path(tmp_pat
     # must not split those commands into words (the blocks themselves are not involved).
     spaced = tmp_path / "test tools"
     spaced.mkdir()
-    (spaced / "python").symlink_to(sys.executable)
+    # A wrapper (rather than a symlink) keeps the real interpreter's own installation
+    # discoverable: Python 3.14 cannot find its stdlib when its venv launcher is reached
+    # through an unrelated symlink in this temporary directory.
+    _script(spaced / "python", f"exec {shlex.quote(sys.executable)} \"$@\"\n")
     (spaced / "mktemp").symlink_to(shutil.which("mktemp"))
     real_which = shutil.which
     monkeypatch.setattr(sys, "executable", str(spaced / "python"))

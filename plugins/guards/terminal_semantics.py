@@ -21,10 +21,25 @@ Contract:
 
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass
 
 # 与 shell 语义对应的 sink 目标: 重定向到它们不构成文件写。
 HARMLESS_SINKS = frozenset({"/dev/null", "/dev/stderr", "/dev/stdout"})
+
+# 段首命令名判定为只读的基础集合。具体命令仍需先经过重定向/专用语义
+# （例如 sed 写形态）排除；这不是“任意参数都安全”的完整命令分析器。
+READ_COMMANDS: frozenset[str] = frozenset({
+    "ls", "stat", "file", "find", "grep", "rg", "ag", "cat", "head", "tail",
+    "wc", "echo", "printf", "date", "pwd", "whoami", "uname", "ps", "pgrep",
+    "lsof", "df", "du", "which", "type", "printenv", "id", "groups",
+    "hostname", "sw_vers", "sysctl", "uptime", "jq", "awk", "sed", "cut",
+    "sort", "uniq", "tr", "column", "diff", "cmp", "comm", "md5", "md5sum",
+    "shasum", "sha1sum", "sha256sum", "base64", "xxd", "strings", "nm",
+    "otool", "exiftool", "sleep", "true", "false", "test", "[", "cd",
+    "export", "set", "unset", "alias", "unalias", "wait", "mdfind", "mdls",
+    "pbpaste", "tree", "history", "vm_stat", "iostat", "netstat",
+})
 
 # 目标 token 扫描的字符上限（防超长串把整段命令吞成"目标"）。
 _MAX_TARGET_CHARS = 4096
@@ -62,6 +77,62 @@ def _is_numeric(tok: str) -> bool:
     return tok.replace(".", "", 1).isdigit()
 
 
+def is_read_command(command_name: str) -> bool:
+    """命令名（允许绝对/相对可执行路径）是否属于基础只读命令集。"""
+    name = command_name.strip("\"'").rsplit("/", 1)[-1]
+    return name in READ_COMMANDS
+
+
+def _words(seg: str) -> list[str]:
+    """把 shell/Python 片段容错拆成语义词。
+
+    shlex 是首选；残缺引号时退回空白拆分。再剥掉 Python 容器与 shell
+    连接符，使 ``["sed", "-i"]`` 这类嵌入形态也能进入同一判据。
+    """
+    try:
+        raw_words = shlex.split(seg, posix=True)
+    except ValueError:
+        raw_words = seg.split()
+    separators = " \t\r\n()[]{}\"'`,;|&<>"
+    table = str.maketrans({char: " " for char in separators})
+    return [word for raw in raw_words for word in raw.translate(table).split()]
+
+
+def _is_sed_substitution(word: str) -> bool:
+    """是否为 ``s<delim>...<delim>...<delim>`` 替换脚本。"""
+    if len(word) < 4 or not word.startswith("s"):
+        return False
+    delimiter = word[1]
+    if delimiter.isalnum():
+        return False
+    return word.count(delimiter) >= 3
+
+
+def sed_writes_file(command: str) -> bool:
+    """sed 是否构成 patch-first 语义上的源文件写。
+
+    ``-i`` 是实际写文件；非 quiet 替换即使只输出到 stdout，也属于
+    patch-first 明确禁止的批量替换形态。``sed -n ...p`` 是只读查看。
+    本函数只做文本分类，不执行 shell，残缺输入返回保守/只读结论。
+    """
+    words = _words(command)
+    for index, word in enumerate(words):
+        if word != "sed":
+            continue
+        arguments = words[index + 1:index + 9]
+        if any(arg == "-i" or arg.startswith("-i") for arg in arguments):
+            return True
+        if any(arg in {"-n", "--quiet", "--silent"} for arg in arguments):
+            return False
+        scripts = (
+            arg.removeprefix("--expression=").removeprefix("-e")
+            for arg in arguments
+        )
+        if any(_is_sed_substitution(script) for script in scripts):
+            return True
+    return False
+
+
 def looks_like_path(tok: str) -> bool:
     """token 是否具备文件路径形态（消费方按需选用的窄口径判定）。
 
@@ -80,7 +151,7 @@ def looks_like_path(tok: str) -> bool:
 
 
 def parse_redirects(seg: str) -> list[Redirect]:
-    """解析一段 shell 文本里全部重定向流（字符扫描,容错残缺引号）。
+    """解析一段 shell 文本里全部重定向流（引号感知字符扫描,容错残缺引号）。
 
     Contract:
       Preconditions: seg 为 str。
@@ -89,12 +160,14 @@ def parse_redirects(seg: str) -> list[Redirect]:
         永不抛异常。
     """
     out: list[Redirect] = []
-    i = 0
+    positions = _unquoted_gt_positions(seg)
+    position_index = 0
     n = len(seg)
     while True:
-        gt = seg.find(">", i)
-        if gt == -1:
+        if position_index >= len(positions):
             return out
+        gt = positions[position_index]
+        position_index += 1
         append = seg[gt + 1: gt + 2] == ">"
         nxt = gt + (2 if append else 1)
         is_procsub = seg[gt + 1: gt + 2] == "("
@@ -106,7 +179,36 @@ def parse_redirects(seg: str) -> list[Redirect]:
             sink_end += 1
         fd_dup = (gt > 0 and seg[gt - 1] == "&") or seg[nxt: nxt + 1] == "&"
         out.append(Redirect(append, fd_dup, is_procsub, seg[j:sink_end]))
-        i = max(sink_end, gt + 1)
+        while position_index < len(positions) and positions[position_index] < sink_end:
+            position_index += 1
+
+
+def _unquoted_gt_positions(seg: str) -> tuple[int, ...]:
+    """Return ``>`` character positions that shell interpretation sees as syntax.
+
+    Quoted program text (including awk comparisons) and quoted literals are data,
+    not redirection. An unclosed quote makes the remainder data, preserving the
+    malformed-input contract without raising.
+    """
+    positions: list[int] = []
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(seg):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if quote is not None:
+            if char == quote:
+                quote = None
+            continue
+        if char in ("'", '"'):
+            quote = char
+        elif char == ">":
+            positions.append(index)
+    return tuple(positions)
 
 
 def redirect_writes_file(seg: str) -> bool:

@@ -168,6 +168,15 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         "name", nargs="?", default=None,
         help="Plugin id to inspect (omit to list all plugins with capabilities)")
 
+    plugins_gates = plugins_subparsers.add_parser(
+        "gates", help="Inspect guard gate-suite health and recent unknown events",
+        description="Read the profile-scoped Gate Plane report. This diagnostic is "
+            "read-only; enforcement remains in the policy hooks themselves.")
+    plugins_gates.add_argument(
+        "--session", metavar="ID",
+        help="Show runtime evidence for one session (registration health stays global)")
+    add_json_flag(plugins_gates, "Print the Gate Plane report as JSON")
+
     plugins_doctor = plugins_subparsers.add_parser(
         "doctor", help="Validate a plugin with the real runtime contracts")
     plugins_doctor.add_argument(

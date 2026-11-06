@@ -34,22 +34,23 @@ def test_update_preserves_local_work_and_rescues_orphan_before_reset(
     t.args.channel, t.args.keep_stash = 'main', keep
     monkeypatch.setattr(hermes_main, '_sync_with_upstream_if_needed', update_cmd._sync_with_upstream_if_needed)
     monkeypatch.setattr(update_cmd, '_UPDATE_CRITICAL_MODULES', ())
-    original = subprocess.run
+    original = update_cmd._git_run
+    probe_run = subprocess.run
     resets = []
 
-    def fault(command, *args, **kwargs):
+    def fault(git_cmd, command, *args, **kwargs):
         if 'reset' in command and '--hard' in command:
-            refs = original(['git', 'for-each-ref', '--format=%(objectname)',
-                             'refs/hermes-update-backups/'], cwd=t.clone,
-                            check=True, capture_output=True, text=True).stdout.split()
+            refs = probe_run(['git', 'for-each-ref', '--format=%(objectname)',
+                              'refs/hermes-update-backups/'], cwd=t.clone,
+                             check=True, capture_output=True, text=True).stdout.split()
             assert refs == ([before] if failure not in {'ref', 'head'} else [])
-            resets.append(command)
+            resets.append([*git_cmd, *command])
         if ((failure == 'ref' and 'update-ref' in command and '-d' not in command)
                 or (failure == 'reset' and 'reset' in command and '--hard' in command)):
-            return subprocess.CompletedProcess(command, 128, stdout='', stderr='fixture I/O refusal')
-        return original(command, *args, **kwargs)
+            return subprocess.CompletedProcess([*git_cmd, *command], 128, stdout='', stderr='fixture I/O refusal')
+        return original(git_cmd, command, *args, **kwargs)
 
-    monkeypatch.setattr(subprocess, 'run', fault)
+    monkeypatch.setattr(update_cmd, '_git_run', fault)
     if failure == 'head':
         monkeypatch.setattr(update_cmd, '_capture_head_sha', lambda *_: None)
     if failure == 'reset':

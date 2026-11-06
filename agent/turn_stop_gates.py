@@ -21,6 +21,12 @@ from agent.message_metadata import append_message
 
 logger = logging.getLogger("agent.conversation_loop")
 
+_PRE_VERIFY_UNAVAILABLE_NUDGE = (
+    "[pre_verify 门禁不可用 / UNKNOWN] 插件验证门禁在完成前失败，"
+    "本轮结果不能视为已验证。请检查插件加载日志；修复后重新运行验证，"
+    "再给出完成结论。"
+)
+
 
 @dataclass
 class StopGateVerdict:
@@ -75,10 +81,11 @@ def _pre_verify_nudge(agent, final_response, attempt: int) -> Optional[str]:
                 platform=getattr(agent, "platform", "") or "",
                 model=getattr(agent, "model", "") or "", coding=coding, attempt=attempt,
                 final_response=final_response, changed_paths=_edited,
+                cwd=getattr(agent, "session_cwd", None) or os.getcwd(),
             )
     except Exception:
-        logger.debug("pre_verify hook check failed", exc_info=True)
-    return None
+        logger.warning("pre_verify hook check failed; keeping turn open", exc_info=True)
+        return _PRE_VERIFY_UNAVAILABLE_NUDGE
 
 
 def _kanban_stop_nudge(agent, messages) -> Optional[str]:

@@ -6,3 +6,10 @@ kind: standalone
 hooks:
   - pre_tool_call
   - pre_verify
+tags:
+  - guard
+gate_suites:
+  - execution
+  - completion
+gate_policy: advisory
+gate_kind: enforcement

@@ -5,3 +5,10 @@ hooks:
   - pre_tool_call
   - post_tool_call
   - pre_llm_call
+tags:
+  - guard
+gate_suites:
+  - intent
+  - execution
+gate_policy: advisory
+gate_kind: enforcement

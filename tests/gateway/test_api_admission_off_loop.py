@@ -39,6 +39,13 @@ async def test_admission_waits_for_the_writer_off_the_owner_loop(api, owner, mon
     app.router.add_post(path, getattr(api, {'chat': '_handle_chat_completions', 'responses': '_handle_responses',
                                             'runs': '_handle_runs'}[name]))
     async with TestClient(TestServer(app)) as client:
+        # Warm the route's cold imports before measuring loop responsiveness; startup latency
+        # belongs to gateway bootstrap tests, not to the held-writer admission contract.
+        warm_headers = {**headers}
+        if name == 'responses':
+            warm_headers['Idempotency-Key'] = 'warm-up'
+        warm_up = await client.post(path, json=body, headers={**AUTH, **warm_headers})
+        assert warm_up.status == expected, await warm_up.text()
         # Another process holds the profile's state.db writer for HOLD_S (a long transaction).
         holder = sqlite3.connect(owner.db.db_path, timeout=0, isolation_level=None, check_same_thread=False)
         holder.execute('BEGIN IMMEDIATE')

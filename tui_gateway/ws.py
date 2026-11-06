@@ -166,6 +166,7 @@ class WSTransport:
         # One socket close per transport: the send-deadline path and abort() both reach for a 1011,
         # and under load both fire — latched on the loop thread so the peer gets a single close frame.
         self._close_scheduled = False
+        self._socket_close_scheduled = False
 
     def _on_loop(self) -> bool:
         try:
@@ -287,7 +288,7 @@ class WSTransport:
                     self._closed = True
                     _log.warning("ws send deadline exceeded (socket stalled, loop responsive) peer=%s deadline=%ss — closing",
                                  self._peer, _WS_SEND_DEADLINE_S)
-                    self._loop.create_task(self._close_socket(1011, "send deadline"))
+                    self._schedule_socket_close(1011, "send deadline")
                     return
                 except UnicodeEncodeError as exc:
                     # A single illegal UTF-8 frame (lone surrogate) must not tear down the socket.
@@ -320,9 +321,17 @@ class WSTransport:
         with contextlib.suppress(RuntimeError):
             self._loop.call_soon_threadsafe(self._finish_abort)
 
+    def _schedule_socket_close(self, code: int, reason: str) -> None:
+        """Schedule one socket close even when send-deadline and overflow race."""
+        with self._token_lock:
+            if self._socket_close_scheduled:
+                return
+            self._socket_close_scheduled = True
+        self._loop.create_task(self._close_socket(code, reason))
+
     def _finish_abort(self) -> None:  # loop thread
         self.close()
-        self._loop.create_task(self._close_socket(1011, "fanout overflow"))
+        self._schedule_socket_close(1011, "fanout overflow")
 
     async def _close_socket(self, code: int, reason: str) -> None:
         """Close the peer socket so ``handle_ws``'s ``receive_text`` unblocks and its disconnect teardown
@@ -407,16 +416,25 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
 
 def _start_backend_liveness() -> None:
     """Backend heartbeat refresher + startup orphan sweep (idempotent, once per process); a
-    failure of either is logged and never blocks the connection."""
+    failure of either is logged and never blocks the connection. Both starters touch SessionDB,
+    so they run in workers and never block the WebSocket event loop."""
+    loop = asyncio.get_running_loop()
     for start, what in (
         (server._start_backend_heartbeat_refresher, "backend heartbeat refresher start"),
         (server._schedule_startup_orphan_sweep, "startup orphan sweep scheduling"),
     ):
-        try:
-            start()
-        # health: allow BLE001 -- liveness boundary; logs the traceback (exc_info) via _log, a name ruff does not treat as a logger
-        except Exception:
-            _log.warning("%s failed", what, exc_info=True)
+        def _done(task: asyncio.Task, what: str = what) -> None:
+            _LIVENESS_TASKS.discard(task)
+            if not task.cancelled() and task.exception() is not None:
+                # Liveness is best-effort; a failed starter must not break the connection.
+                _log.warning("%s failed", what, exc_info=task.exception())
+
+        task = loop.create_task(asyncio.to_thread(start))
+        _LIVENESS_TASKS.add(task)
+        task.add_done_callback(_done)
+
+
+_LIVENESS_TASKS: set[asyncio.Task] = set()
 
 
 class _SendFailed(Exception):

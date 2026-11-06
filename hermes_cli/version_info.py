@@ -93,6 +93,28 @@ def _parse_nonnegative(value: str | None) -> int | None:
     return parsed if parsed >= 0 else None
 
 
+_STABLE_DESCRIBE_ARGS = (
+    "describe", "--tags", "--long", "--always",
+    "--match", "v[0-9]*.[0-9]*.[0-9]*",
+    "--exclude", "v*-*", "--exclude", "v*+*",
+    "--exclude", "v[0-9][0-9][0-9][0-9]*", "HEAD",
+)
+
+
+def _parse_stable_describe(described: str | None) -> tuple[str, int, str] | None:
+    """Parse ``vX.Y.Z-distance-g<short>`` from Git's one-shot release lookup."""
+    if not described:
+        return None
+    try:
+        tag, count, short_commit = described.rsplit("-", 2)
+    except ValueError:
+        return None
+    distance = _parse_nonnegative(count.removeprefix("g"))
+    if distance is None or not STABLE_TAG_RE.fullmatch(tag):
+        return None
+    return tag[1:], distance, short_commit.removeprefix("g")
+
+
 def _calver_release_version(repo_dir: Path) -> tuple[str, int] | None:
     """The version the nearest CalVer release shipped, and the commits since it.
 
@@ -206,11 +228,13 @@ def _stamp_version_info() -> VersionInfo | None:
 
 
 def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> VersionInfo:
-    commit = _run_git(repo_dir, "rev-parse", "HEAD")
+    head = _run_git(repo_dir, "show", "-s", "--format=%H%n%ct", "HEAD")
+    head_lines = (head or "").splitlines()
+    commit = head_lines[0] if head_lines else None
+    commit_date_raw = head_lines[1] if len(head_lines) > 1 else None
     # A detached HEAD has no branch. Leave the field None: every formatter
     # already prints the commit separately and handles a missing branch.
     branch = _run_git(repo_dir, "branch", "--show-current")
-    commit_date_raw = _run_git(repo_dir, "log", "-1", "--format=%ct", "HEAD")
     commit_date: int | None = None
     if commit_date_raw and commit_date_raw.isdigit():
         commit_date = int(commit_date_raw)
@@ -237,22 +261,20 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
     except (OSError, subprocess.SubprocessError):
         dirty = False
 
-    tags = _run_git(repo_dir, "tag", "--merged", "HEAD", "--list", "v[0-9]*")
-    releases = [
-        tag[1:]
-        for tag in (tags or "").splitlines()
-        if STABLE_TAG_RE.fullmatch(tag)
-    ]
-    base_version = (
-        max(releases, key=lambda value: tuple(int(part) for part in value.split(".")))
-        if releases else "unknown"
-    )
-    distance = _parse_nonnegative(
-        _run_git(repo_dir, "rev-list", "--count", f"v{base_version}..HEAD")
-    ) if releases else None
-    if not releases:
+    # One describe answers release, distance, and short SHA. Excludes keep canary,
+    # prerelease, and historical CalVer-only tags out of the stable-tag candidate set;
+    # --always also supplies the short SHA when no stable release is reachable.
+    described = _run_git(repo_dir, *_STABLE_DESCRIBE_ARGS)
+    release = _parse_stable_describe(described)
+    if release is not None:
+        base_version, distance, short_commit = release
+    else:
         base_version, distance = _calver_release_version(repo_dir) or ("unknown", None)
-    short_commit = _run_git(repo_dir, "rev-parse", "--short=7", "HEAD")
+        short_commit = (
+            described
+            if commit and described and commit.startswith(described)
+            else _run_git(repo_dir, "rev-parse", "--short=7", "HEAD")
+        )
     if base_version == "unknown" and short_commit:
         display_version = f"git.{short_commit}{'.dirty' if dirty else ''}"
     else:

@@ -261,7 +261,7 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
                 # Owner-loop guard: _publish_pending does synchronous SessionDB reads
                 # (_handle → get_session + pending rows); run it off-loop like the
                 # settlement write above, or publication stalls every other session.
-                await asyncio.to_thread(authority._publish_pending, ref)
+                await authority._publish_pending_off_loop(ref)
         except Exception:
             logger.exception(
                 'Settlement or publication of admission %s failed', admission_id)
@@ -272,22 +272,23 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
                     status = await recover_failed_settlement(authority, row)
                 except RuntimeStoreError:
                     # Ownership moved; this owner may only release its process-local observers.
-                    authority._pause(ref, 'unknown_execution')
+                    await authority._pause_off_loop(ref, 'unknown_execution')
                     return False
                 # Discard can race the off-loop recovery stamp; its terminal decision wins.
-                current = get_session_admission(authority.db, admission_id=admission_id)
+                current = await asyncio.to_thread(
+                    get_session_admission, authority.db, admission_id=admission_id)
                 status = current['status']
                 if status == 'unknown':
                     from gateway.session_ingress import retain_unsettled_delivery
                     retain_unsettled_delivery(authority, admission_id)
-                    authority._publish_pending(ref)
-                    authority._pause(ref, 'unknown_execution')
+                    await authority._publish_pending_off_loop(ref)
+                    await authority._pause_off_loop(ref, 'unknown_execution')
                     return False
                 # A write can commit before reporting failure. Re-read its exact result,
                 # then publish the terminal outcome rather than inventing uncertainty.
                 from gateway.session_results import admission_result
+                captured = await asyncio.to_thread(admission_result, authority.db, admission_id)
                 with live.event_stream.lock:
-                    captured = admission_result(authority.db, admission_id)
                     authority.pending_results.pop(admission_id, None)
                     settled = current
                     if captured is None:

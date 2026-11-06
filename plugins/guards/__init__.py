@@ -10,6 +10,8 @@ duplicate-check / source_code_write_guard / coding-standards-guard)收拢为
   pre_write       先读后写门禁(write/patch/execute_code 前必须 read_file)
   duplicate_check 新建文件前置查重
   source_write    terminal 绕过 patch 直写源码拦截(sed -i/cat >/python -c)
+  patch_first     修改通道纪律拦截(terminal/execute_code 中的 sed 写与
+                  Python open 写形态,无论目标是否源码)
   coding_standards AST 编码规范事前拦截(R001~R022) + preflight.py 写前预检
   scope_gate      新增产物授权闸门(仓库内新开目录树须当轮用户原话授权)
   skill_pruned_gate 技能剪枝机械拦截(skill_view 查得 [SKILL_PRUNED] 占位符
@@ -17,6 +19,7 @@ duplicate-check / source_code_write_guard / coding-standards-guard)收拢为
 
 包内非护栏模块(不在 _SUB_GUARD_NAMES,无 pre_tool_call 注册):
   terminal_semantics 重定向写语义唯一事实源(供各守卫复用判定)
+  session_policy   会话→platform 与 cron 豁免判定唯一事实源
   dynamic_tips    动态提示段渲染器(消费拦截账本生成高频教训段)
 
 分层依据与裁定规则见 docs/guard-system-architecture.md。
@@ -32,15 +35,17 @@ import importlib
 import logging
 from typing import Any, Mapping
 
+from plugins.guards import session_policy
+
 logger = logging.getLogger(__name__)
 
 # 逐个导入: 任一子模块 import 失败仅记录日志并跳过(独立降级,见模块 Contract)——
 # 单条 from-import 会让一个 ImportError 连坐全套守卫(2026-10-21 审计发现)。
 # 常量供导入循环与在岗状态行共用(单一事实源)。
 _SUB_GUARD_NAMES = ("tool_blacklist", "four_axis", "pre_write", "duplicate_check", "source_write",
-                    "coding_standards", "diff_debt", "casebook_gate", "batch_write", "scope_gate",
-                    "groundbreaking_gate", "slow_search", "db_target_audit", "plain_vocab",
-                    "experience_gate", "skill_pruned_gate")
+                    "patch_first", "coding_standards", "diff_debt", "casebook_gate", "batch_write",
+                    "scope_gate", "groundbreaking_gate", "slow_search", "db_target_audit",
+                    "plain_vocab", "experience_gate", "skill_pruned_gate")
 _LOADED: list[tuple[str, Any]] = []
 for _name in _SUB_GUARD_NAMES:
     try:
@@ -122,6 +127,7 @@ def _render_blacklist_section(session_info: Mapping[str, Any]) -> str:
 
 def register(ctx: Any) -> None:
     """套件入口——逐子护栏注册 + 注册文件型段(单个失败不连坐)。"""
+    session_policy.register(ctx)
     for name, mod in _SUB_GUARDS:
         try:
             mod.register(ctx)

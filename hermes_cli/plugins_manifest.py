@@ -14,6 +14,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 
+from hermes_cli.gate_plane import (
+    GATE_ENFORCEMENT_HOOKS,
+    GATE_KINDS,
+    GATE_OBSERVER_HOOKS,
+    GATE_POLICIES,
+    GATE_SUITE_NAMES,
+)
 from utils import fast_safe_load
 from hermes_cli.plugin_capabilities import parse_declared_capabilities as _parse_declared_capabilities
 
@@ -36,6 +43,8 @@ _KNOWN_MANIFEST_FIELDS: set[str] = {
     "manifest_version", "api_version", "requires_plugins", "python_dependencies", "config_schema",
     "license", "homepage", "tags", "capabilities", "emits", "listens", "hermes", "depends",
     "requires_hermes", "python_runtime", "provides_locales", "provides_middleware", "requires_auth", "oauth", "config_keys",
+    "gate_suites", "gate_policy",
+    "gate_kind", "gate_audit",
 }
 
 # Highest manifest schema version this Hermes understands.
@@ -107,6 +116,80 @@ def _manifest_list(data: Mapping, key: str, field_name: str, what: str, coerce: 
     return out
 
 
+def _manifest_gate_suites(data: Mapping, key: str) -> list[str]:
+    """Validate optional guard taxonomy declarations; invalid entries are dropped."""
+    suites: list[str] = []
+    raw_items = _manifest_field_of_type(data, key, "gate_suites", list, "a list")
+    for item in raw_items or []:
+        suite = str(item).strip().lower() if isinstance(item, str) else ""
+        if suite not in GATE_SUITE_NAMES:
+            logger.warning(
+                "Plugin %s: gate_suites entry %r is not one of %s; dropping it",
+                key, item, ", ".join(sorted(GATE_SUITE_NAMES)),
+            )
+            continue
+        if suite not in suites:
+            suites.append(suite)
+    return suites
+
+
+def _manifest_gate_policy(data: Mapping, key: str) -> str:
+    """Validate guard health policy, failing safe to the more conservative value."""
+    raw = data.get("gate_policy")
+    if raw is None:
+        return "required"
+    policy = str(raw).strip().lower() if isinstance(raw, str) else ""
+    if policy in GATE_POLICIES:
+        return policy
+    logger.warning(
+        "Plugin %s: gate_policy %r is not one of %s; treating as 'required'",
+        key, raw, ", ".join(sorted(GATE_POLICIES)),
+    )
+    return "required"
+
+
+def _manifest_gate_kind(
+    data: Mapping, key: str, provides_hooks: list[str],
+) -> str:
+    """Validate guard execution kind, inferring conservatively from executable hooks."""
+    hooks = set(provides_hooks)
+    inferred = (
+        "enforcement" if hooks & GATE_ENFORCEMENT_HOOKS
+        else "observer" if hooks & GATE_OBSERVER_HOOKS
+        else "manual"
+    )
+    raw = data.get("gate_kind")
+    if raw is None:
+        return inferred
+    kind = raw.strip().lower() if isinstance(raw, str) else ""
+    if kind in GATE_KINDS:
+        return kind
+    logger.warning(
+        "Plugin %s: gate_kind %r is not one of %s; treating as %r",
+        key, raw, ", ".join(sorted(GATE_KINDS)), inferred,
+    )
+    return inferred
+
+
+def _manifest_gate_audit(data: Mapping, key: str) -> dict[str, Any]:
+    """Validate a manual guard's audit subject and freshness TTL."""
+    raw = data.get("gate_audit")
+    if raw is None:
+        return {}
+    subject = raw.get("subject") if isinstance(raw, Mapping) else None
+    ttl = raw.get("ttl_seconds") if isinstance(raw, Mapping) else None
+    valid_subject = isinstance(subject, str) and bool(subject.strip())
+    valid_ttl = isinstance(ttl, int) and not isinstance(ttl, bool) and ttl > 0
+    if not (valid_subject and valid_ttl):
+        logger.warning(
+            "Plugin %s: gate_audit must be {subject: non-empty string, "
+            "ttl_seconds: positive integer}; ignoring",
+            key,
+        )
+        return {}
+    return {"subject": subject.strip(), "ttl_seconds": ttl}
+
+
 def _config_key_path(item: object) -> Optional[str]:
     """A ``config_keys`` entry: a dotted path at least two segments deep (``memory.retaindb``), else None.
     A bare section (``agent``) would silence typo notices for the whole section."""
@@ -159,7 +242,9 @@ def _config_schema_entries(key: str, raw: Any) -> dict[str, Any]:
     return schema
 
 
-def _parse_manifest_v2_fields(data: Mapping, key: str) -> dict[str, Any]:
+def _parse_manifest_v2_fields(
+    data: Mapping, key: str, provides_hooks: list[str],
+) -> dict[str, Any]:
     """Validate/normalize manifest v2 fields into PluginManifest kwargs (warnings, never failures).
 
     See #64165.
@@ -188,6 +273,10 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> dict[str, Any]:
     )
     schema = _config_schema_entries(key, _manifest_field_of_type(data, key, "config_schema", Mapping, "a mapping"))
     tags = [str(t) for t in (_manifest_field_of_type(data, key, "tags", list, "a list") or [])]
+    gate_suites = _manifest_gate_suites(data, key)
+    gate_policy = _manifest_gate_policy(data, key)
+    gate_kind = _manifest_gate_kind(data, key, provides_hooks)
+    gate_audit = _manifest_gate_audit(data, key)
     config_keys = manifest_config_keys(data, key)
     # Forward compat: unknown fields warn (never fail); v1 manifests only at debug.
     unknown = sorted(set(data.keys()) - _KNOWN_MANIFEST_FIELDS)
@@ -200,6 +289,8 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> dict[str, Any]:
         "manifest_version": mv, "api_version": api, "requires_plugins": deps, "python_dependencies": pydeps,
         "config_schema": schema, "license": str(data.get("license") or ""),
         "homepage": str(data.get("homepage") or ""), "tags": tags, "config_keys": config_keys,
+        "gate_suites": gate_suites, "gate_policy": gate_policy,
+        "gate_kind": gate_kind, "gate_audit": gate_audit,
     }
 
 
@@ -405,6 +496,14 @@ class PluginManifest:
     license: str = ""
     homepage: str = ""
     tags: list[str] = field(default_factory=list)
+    # Guard taxonomy is descriptive; runtime hook registration remains authoritative for health.
+    gate_suites: list[str] = field(default_factory=list)
+    # Health policy: absent metadata means the conservative legacy behavior (`required`).
+    gate_policy: str = "required"
+    # Protection mechanics: runtime decisions, runtime observation, or manual audit.
+    gate_kind: str = "manual"
+    # Manual audit evidence scope and freshness; empty means no receipt source is declared.
+    gate_audit: dict[str, Any] = field(default_factory=dict)
     # Event-bus declarations, advisory (discoverability only): ``emits`` bare names published under
     # ``<key>:``; ``listens`` fully-qualified ``<plugin>:<event>`` names.
     emits: list[str] = field(default_factory=list)
@@ -567,6 +666,7 @@ def parse_manifest_file(
         logger.debug(
             "Parsed manifest: key=%s name=%s kind=%s source=%s path=%s", key, name, kind, source, plugin_dir)
         provides_locales, locale_metadata = parse_provides_locales(data.get("provides_locales"), key)
+        provides_hooks = data.get("provides_hooks", data.get("hooks", []))
         return PluginManifest(
             name=name, version=str(data.get("version", "")),
             description=data.get("description", ""), author=_display_author(data.get("author", "")),
@@ -574,10 +674,11 @@ def parse_manifest_file(
             provides_tools=data.get("provides_tools", []),
             # ``hooks:`` is the spelling the bundled manifests carried for months; external copies of it
             # must keep declaring the same thing (#108371).
-            provides_hooks=data.get("provides_hooks", data.get("hooks", [])), source=source, path=str(plugin_dir),
+            provides_hooks=provides_hooks, source=source, path=str(plugin_dir),
             kind=kind, key=key, requires_hermes=str(data.get("requires_hermes") or "").strip(),
             capabilities=_parse_declared_capabilities(data.get("capabilities"), name),
-            **_parse_manifest_v2_fields(data, key), emits=data.get("emits") or [],
+            **_parse_manifest_v2_fields(data, key, provides_hooks),
+            emits=data.get("emits") or [],
             listens=data.get("listens") or [],
             provides_locales=provides_locales, locale_metadata=locale_metadata,
         )

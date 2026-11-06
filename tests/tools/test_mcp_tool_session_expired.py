@@ -213,17 +213,13 @@ def test_call_tool_handler_rebuilds_configured_server_transport(
         handler = _make_tool_handler("resumed", "health", 10.0)
         parsed = json.loads(handler({}))
 
-        if expected_route == "stdio":
-            # A stdio pipe closing after dispatch is an ambiguous mid-call death: the transport
-            # is rebuilt for future calls, but the call itself is not replayed (#106440).
-            assert parsed["outcome_uncertain"] is True, parsed
-            assert call_count["n"] == 1
-        else:
-            assert parsed == {"error" if application_error else "result": "reconnected"}
-            # The recovered result is the tool's real answer either way; an application error is
-            # still one breaker strike (#10447), a success resets the counter.
-            assert mcp_tool._server_error_counts.get("resumed", 0) == (1 if application_error else 0)
-            assert call_count["n"] == 2
+        # This fixture is positively read-only. Both transports therefore reconnect and replay
+        # once; write-capable mid-call failures remain outcome-uncertain (#106440, then #88821).
+        assert parsed == {"error" if application_error else "result": "reconnected"}
+        # The recovered result is the tool's real answer either way; an application error is
+        # still one breaker strike (#10447), a success resets the counter.
+        assert mcp_tool._server_error_counts.get("resumed", 0) == (1 if application_error else 0)
+        assert call_count["n"] == 2
         assert routes == [expected_route, expected_route]
         assert configs == [transport_config, transport_config]
         assert len(sessions) == 2

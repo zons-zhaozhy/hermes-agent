@@ -107,6 +107,27 @@ def test_blocked_turn_never_reaches_the_provider_and_stores_only_the_placeholder
         db.close()
 
 
+def test_pre_llm_dispatch_failure_blocks_before_inference(provider_url, tmp_path, monkeypatch):
+    """A broken pre-LLM dispatch made no intent decision, so the turn must fail closed."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        with patch(
+            "hermes_cli.lifecycle.invoke_hook",
+            side_effect=RuntimeError("plugin registry unavailable"),
+        ):
+            result = _agent(provider_url, db).run_conversation(
+                f"look up {SECRET}", conversation_history=[], task_id="t",
+            )
+
+        assert _Provider.chat_requests == []
+        assert result["turn_exit_reason"] == PRE_LLM_BLOCK_EXIT_REASON
+        assert "门禁不可用" in result["final_response"]
+        assert "pre_llm_call" in result["final_response"]
+    finally:
+        db.close()
+
+
 def test_compaction_of_a_blocked_turn_never_sends_the_prompt(provider_url, tmp_path, monkeypatch):
     """A later compaction serializes the stored rows for the summarizer and quotes user turns in its
     handoff: neither the summary request nor the compacted history may carry the vetoed prompt."""

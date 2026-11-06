@@ -70,7 +70,7 @@ def test_native_room_service_local_member_and_restart(tmp_path):
     async def probe(desc, restart):
         async with websocket(home, desc) as ws:
             capabilities = await rpc(ws, 'groups.capabilities')
-            assert capabilities['result']['driver'], capabilities
+            assert capabilities['result']['driver'] == restart, capabilities
             if not restart:
                 # Directory existence must not become cross-profile execution permission.
                 invalid = [members[0], {'member_id': 'other', 'profile': 'other', 'handle': 'other'}]
@@ -78,6 +78,8 @@ def test_native_room_service_local_member_and_restart(tmp_path):
                 assert 'error' in rejected, rejected
                 created = await rpc(ws, 'groups.create', room_id='owned', name='Owned', members=members)
                 assert 'result' in created, created
+                activated = await rpc(ws, 'groups.capabilities')
+                assert activated['result']['driver'], activated
             if not restart:
                 uploaded = await rpc(ws, 'groups.attachment.upload', room_id='owned', upload_id='image',
                     kind='image', name='pixel.png', mime='image/png', data_base64=base64.b64encode(image).decode())

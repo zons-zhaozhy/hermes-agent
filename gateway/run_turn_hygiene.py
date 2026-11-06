@@ -176,7 +176,13 @@ class GatewayTurnHygieneMixin:
             if session_entry.last_prompt_tokens <= 0:
                 from agent.usage_anchor import persisted_anchor_tokens
                 _session_db = getattr(self, "_session_db", None)
-                _anchored = persisted_anchor_tokens(
+                # Off-loop: this is a synchronous SQLite read on a shared writer connection. One
+                # gateway process serves many profiles and state.db runs to GB scale, so reading it
+                # on the loop stalls every other turn and cron tick (owner_loop_db_guard logged 46
+                # such stalls in one day). ``to_thread`` copies the context, so the image cost
+                # context above still prices the anchor.
+                _anchored = await asyncio.to_thread(
+                    persisted_anchor_tokens,
                     getattr(_session_db, "_db", _session_db), session_entry.session_id, history,
                 )
             if session_entry.last_prompt_tokens > 0:
@@ -200,7 +206,10 @@ class GatewayTurnHygieneMixin:
             if _getter is not None:
                 _cooldown_state = None
                 with suppress(Exception):
-                    _cooldown_state = _getter(session_entry.session_id)
+                    # Off-loop for the same reason as the anchor read above: this is a DB read.
+                    _cooldown_state = await asyncio.to_thread(
+                        _getter, session_entry.session_id,
+                    )
                 if _cooldown_state and _cooldown_state.get("remaining_seconds", 0) > 0:
                     logger.info(
                         "Session hygiene: skipping compression for %s; "

@@ -42,7 +42,7 @@ async def test_authenticated_token_can_create_without_identityless_permissions(t
         assert await runner.session_control_server.start()
         await start_gateway_runtime_api(runner)
         assert await runner.start()
-        publish_gateway_runtime_ready(runner)
+        await publish_gateway_runtime_ready(runner)
         url = runner.session_api.api_origin.replace('http:', 'ws:') + '/api/ws'
         with pytest.raises(InvalidStatus):
             async with connect(url + '?token=wrong'):

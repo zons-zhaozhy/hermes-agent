@@ -13,10 +13,12 @@ curl-safety / log-first-diagnosis / tool-safety / no-bypass / no-pushback)
   tool_safety      灾难删除/批量替换无验证等工具滥用拦截
   no_bypass        被护栏拦截后禁换通道绕过
   no_pushback      输出推责话术拦截
+  blame_shield     生成前自检注入(推责/免责/偷懒/理想化,默认注入,封闭闲聊豁免)
   rule_reinjection 规则常驻重注入(.hermes-rules.md 每轮权威版注入,防纪律衰减)
   test_discipline  禁裸 pytest——一律 scripts/run_tests.sh(CI 环境同步)
   section_reinjection 守卫段重注入(段库版本指纹变更即注入 + 每 10 轮补注, 让段
                    修改对运行中的会话也生效——system prompt 段在会话起点冻结)
+  workflow_router  普通会话首轮注入一次工程工作流路由(非阻断, 指向 bundled skills)
 
 分层依据见 docs/guard-system-architecture.md。
 
@@ -28,37 +30,26 @@ Contract:
 
 from __future__ import annotations
 
+import importlib
 import logging
 from typing import Any, Callable, Mapping
 
-from plugins.discipline import (
-    curl_safety,
-    db_safety,
-    error_discipline,
-    log_first,
-    no_bypass,
-    no_guessing,
-    no_pushback,
-    rule_reinjection,
-    section_reinjection,
-    test_discipline,
-    tool_safety,
-)
-
 logger = logging.getLogger(__name__)
 
-_SUB_GUARDS = (
-    ("no_guessing", no_guessing),
-    ("db_safety", db_safety),
-    ("error_discipline", error_discipline),
-    ("curl_safety", curl_safety),
-    ("log_first", log_first),
-    ("tool_safety", tool_safety),
-    ("no_bypass", no_bypass),
-    ("no_pushback", no_pushback),
-    ("rule_reinjection", rule_reinjection),
-    ("test_discipline", test_discipline),
-    ("section_reinjection", section_reinjection),
+_SUB_GUARD_NAMES = (
+    "no_guessing",
+    "db_safety",
+    "error_discipline",
+    "curl_safety",
+    "log_first",
+    "tool_safety",
+    "no_bypass",
+    "no_pushback",
+    "blame_shield",
+    "rule_reinjection",
+    "test_discipline",
+    "section_reinjection",
+    "workflow_router",
 )
 
 # 有拦截、无前置提示且属「高频×可预判」的子护栏——段文本见段库
@@ -88,11 +79,16 @@ def _render_section(section_id: str) -> Callable[[Mapping[str, Any]], str]:
 
 def register(ctx: Any) -> None:
     """套件入口——逐子护栏注册 + 注册文件型段(单个失败不连坐)。"""
-    for name, mod in _SUB_GUARDS:
+    for name in _SUB_GUARD_NAMES:
         try:
+            mod = importlib.import_module(f"{__name__}.{name}")
             mod.register(ctx)
         except Exception:
-            logger.warning("discipline: sub-guard %s failed to register", name, exc_info=True)
+            logger.warning(
+                "discipline: sub-guard %s failed to import/register; siblings continue",
+                name,
+                exc_info=True,
+            )
     for section_id in _SECTION_IDS:
         try:
             ctx.register_system_prompt_section(section_id, _render_section(section_id))

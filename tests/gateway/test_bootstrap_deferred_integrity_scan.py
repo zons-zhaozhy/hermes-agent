@@ -96,7 +96,10 @@ def _startup(monkeypatch, tmp_path):
     monkeypatch.setattr(run_bootstrap, "_start_gateway_start_cron_and_housekeeping",
                         lambda runner: (threading.Event(), None, None, None))
     monkeypatch.setattr(run_bootstrap, "_start_gateway_shutdown_tail", AsyncMock(return_value=True))
-    monkeypatch.setattr(run_runtime, "publish_gateway_runtime_ready", lambda runner: events.append("ready"))
+    async def publish_ready(runner):
+        events.append("ready")
+
+    monkeypatch.setattr(run_runtime, "publish_gateway_runtime_ready", publish_ready)
     monkeypatch.setattr(run_runtime, "wait_gateway_runtime", wait_runtime)
     monkeypatch.setattr(run_api, "warm_gateway_dashboard", lambda runner: None)
     yield events, state, scan_entered

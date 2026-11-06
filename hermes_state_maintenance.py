@@ -551,6 +551,8 @@ class SessionMaintenanceMixin:
             "closed": 0,
             "vacuumed": False,
             "orphan_results_pruned": 0,
+            "config_receipts_compacted": 0,
+            "config_blobs_pruned": 0,
         }
         if retention_days is None or retention_days < 0:
             # A negative retention would build a future cutoff and match every ended
@@ -580,6 +582,9 @@ class SessionMaintenanceMixin:
             result["orphan_results_pruned"] = self.prune_orphan_admission_results()
             result["pruned"] = pruned = self.prune_sessions(
                 older_than_days=retention_days, sessions_dir=sessions_dir, exclude_active_write_guards=True)
+            from hermes_state_local import compact_local_config_receipts, prune_orphan_local_config_blobs
+            result["config_receipts_compacted"] = compact_local_config_receipts(self)
+            result["config_blobs_pruned"] = prune_orphan_local_config_blobs(self)
             report_startup_progress(900.0, phase="state_db_auto_sweep")
             closed = self.sweep_orphaned_sessions(
                 max_idle_seconds=float(retention_days) * 86400.0,
@@ -591,7 +596,10 @@ class SessionMaintenanceMixin:
             # freelist ratio passed — it holds an exclusive lock for a full rewrite.
             since_vacuum = _seconds_since(now, self.get_meta("last_vacuum"))
             vacuum_due = since_vacuum is None or since_vacuum >= min_vacuum_interval_days * 86400
-            if vacuum and pruned > 0 and vacuum_due:
+            reclaimed = (pruned > 0 or result["orphan_results_pruned"] > 0
+                         or result["config_receipts_compacted"] > 0
+                         or result["config_blobs_pruned"] > 0)
+            if vacuum and reclaimed and vacuum_due:
                 result["freelist_ratio"] = ratio = self._freelist_ratio()
                 # Same admission `hermes sessions optimize` runs: VACUUM plus the TRUNCATE checkpoint
                 # retire the WAL generation a sibling writer (gateway, Desktop, dashboard, cron) still
@@ -626,10 +634,12 @@ class SessionMaintenanceMixin:
                                  ratio * 100.0, min_vacuum_freelist_ratio * 100.0)
             # Record even when pruned == 0 so the throttle holds.
             self.set_meta("last_auto_prune", str(now))
-            if closed or pruned > 0:
+            if closed or reclaimed:
                 logger.info("state.db auto-maintenance: closed %d stale open session(s), "
-                            "pruned %d session(s) inactive for %d days, reclaimed %d orphan result(s)%s",
+                            "pruned %d session(s) inactive for %d days, reclaimed %d orphan result(s), "
+                            "compacted %d local config receipt(s), reclaimed %d config blob(s)%s",
                             len(closed), pruned, retention_days, result["orphan_results_pruned"],
+                            result["config_receipts_compacted"], result["config_blobs_pruned"],
                             " + VACUUM" if result["vacuumed"] else "")
         except Exception as exc:
             # Maintenance must never block startup.

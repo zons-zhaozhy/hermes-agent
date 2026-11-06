@@ -15,7 +15,10 @@ Resolution order:
      only spawns inside its package). See windows_bash_candidates().
   3. Provisioned PATH: shutil.which("bash") — the store dirs are on the
      process PATH after pm.activate() ran.
-  4. POSIX fallback table for non-bundle / daemon-launch PATH edge cases
+  4. macOS: when PATH selected the system Bash 3.2, prefer an installed
+     Homebrew Bash (many wrapper contracts match modern Bash); an explicit
+     non-system PATH choice still wins.
+  5. POSIX fallback table for non-bundle / daemon-launch PATH edge cases
      (/usr/bin/bash, /bin/bash, $SHELL, /bin/sh). A systemd/cron-launched
      gateway may have a minimal PATH and macOS /bin/bash is not on PATH by
      default, so `which` alone is not enough there.
@@ -27,6 +30,7 @@ import ntpath
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Mapping
 
 from pm import paths
@@ -63,6 +67,18 @@ def _staged_bash() -> str | None:
 # stub (prints "no installed distributions", exits 1) and WindowsApps holds
 # MSIX execution aliases that fail with WinError 5 from an arbitrary process.
 _WINDOWS_BASH_STUB_DIRS = ("system32", "windowsapps")
+_MACOS_SYSTEM_BASH_PATHS = frozenset(("/bin/bash", "/usr/bin/bash"))
+_MACOS_HOMEBREW_BASH_PATHS = ("/opt/homebrew/bin/bash", "/usr/local/bin/bash")
+
+
+def _posix_bash_candidates(on_path: str | None, *, is_macos: bool) -> list[str]:
+    """Ordered POSIX bash candidates without touching the filesystem."""
+    system_path_selected = on_path is None or on_path in _MACOS_SYSTEM_BASH_PATHS
+    candidates = list(_MACOS_HOMEBREW_BASH_PATHS) if is_macos and system_path_selected else []
+    if on_path:
+        candidates.append(on_path)
+    candidates.extend(("/usr/bin/bash", "/bin/bash", os.environ.get("SHELL"), "/bin/sh"))
+    return list(dict.fromkeys(candidates))
 
 
 def windows_bash_candidates(on_path: str | None, env: Mapping[str, str]) -> list[str]:
@@ -113,16 +129,8 @@ def bash() -> str | None:
     if os.name == "nt":
         return next((c for c in windows_bash_candidates(on_path, os.environ)
                      if os.path.isfile(c) and _bash_starts(c)), None)
-    if on_path:
-        return on_path
-
-    # POSIX fallbacks for minimal-PATH daemon launches / macOS /bin/bash.
-    for candidate in (
-        "/usr/bin/bash",
-        "/bin/bash",
-        os.environ.get("SHELL"),
-        "/bin/sh",
-    ):
+    # POSIX selection, including minimal-PATH daemon launches / macOS /bin/bash.
+    for candidate in _posix_bash_candidates(on_path, is_macos=sys.platform == "darwin"):
         if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
     return None

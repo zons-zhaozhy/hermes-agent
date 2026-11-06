@@ -100,7 +100,12 @@ def ensure_project_root_on_path() -> None:
 
 
 def is_global_fast_version_argv(argv: list[str]) -> bool:
-    return argv in (["--version"], ["-V"])
+    version_flags = {"--version", "-V"}
+    return (
+        len(argv) <= 2
+        and bool(set(argv) & version_flags)
+        and all(token in version_flags | {"--check-updates"} for token in argv)
+    )
 
 
 def is_desktop_ssh_backend_argv(argv: list[str]) -> bool:
@@ -244,10 +249,9 @@ def print_fast_version_info(*, check_updates: bool = True) -> None:
 def try_fast_version(argv: list[str] | None = None) -> bool:
     """Handle ``hermes --version`` before the heavy import wall.
 
-    Only ``--version``/``-V`` (the ``version`` subcommand was removed —
-    ``--version`` now carries the full output incl. update status), and
-    never when container mode may need to route the command into the
-    container.
+    Only ``--version``/``-V`` (optionally with the explicit ``--check-updates``
+    opt-in), and never when container mode may need to route the command into
+    the container.
     """
     if argv is None:
         argv = sys.argv[1:]
@@ -256,5 +260,5 @@ def try_fast_version(argv: list[str] | None = None) -> bool:
     if container_mode_may_be_active():
         return False
 
-    print_fast_version_info()
+    print_fast_version_info(check_updates="--check-updates" in argv)
     return True

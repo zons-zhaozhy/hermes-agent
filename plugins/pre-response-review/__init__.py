@@ -10,22 +10,26 @@ transform_llm_output 钩子：
   - "不交付半成品✓" → 查当前会话是否有 terminal/execute_code 验证调用
   - "正则✓" 或 "正则：无✓" → 扫描回复中的 Python 代码是否用了 re 模块
 
-无 state.db 访问权限时静默降级为纯文本扫描（仅检测正则违规）。
+无 state.db 访问权限时降级为纯文本扫描（仅检测正则违规），并记录 warning。
 """
 
 import json
-import os
+import logging
 import sqlite3
+
+from hermes_constants import get_hermes_home
+
+logger = logging.getLogger(__name__)
 
 
 def _get_session_tool_calls(session_id: str, limit: int = 50) -> list[str]:
     """查询当前会话最近的工具调用名称列表。"""
+    db_path = get_hermes_home() / "state.db"
+    if not db_path.exists():
+        return []
+
     try:
-        hermes_home = os.path.expanduser("~/.hermes")
-        db_path = os.path.join(hermes_home, "state.db")
-        if not os.path.exists(db_path):
-            return []
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn = sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True)
         try:
             rows = conn.execute(
                 """
@@ -40,24 +44,44 @@ def _get_session_tool_calls(session_id: str, limit: int = 50) -> list[str]:
             ).fetchall()
         finally:
             conn.close()
-
-        tool_names: list[str] = []
-        for tool_calls_json, tool_name in rows:
-            if tool_name:
-                tool_names.append(tool_name)
-            if tool_calls_json:
-                try:
-                    calls = json.loads(tool_calls_json)
-                    for tc in calls:
-                        fn = tc.get("function", {}) if isinstance(tc, dict) else {}
-                        name = fn.get("name", "")
-                        if name:
-                            tool_names.append(name)
-                except (json.JSONDecodeError, TypeError):
-                    pass
-        return tool_names
-    except Exception:
+    except sqlite3.Error as exc:
+        logger.warning(
+            "pre-response-review: failed to read session tool calls "
+            "(session=%s): %s",
+            session_id,
+            exc,
+        )
         return []
+
+    tool_names: list[str] = []
+    for tool_calls_json, tool_name in rows:
+        if tool_name:
+            tool_names.append(tool_name)
+        if tool_calls_json:
+            try:
+                calls = json.loads(tool_calls_json)
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "pre-response-review: malformed tool_calls JSON "
+                    "(session=%s): %s",
+                    session_id,
+                    exc,
+                )
+                continue
+            if not isinstance(calls, list):
+                logger.warning(
+                    "pre-response-review: malformed tool_calls JSON "
+                    "(session=%s): expected list, got %s",
+                    session_id,
+                    type(calls).__name__,
+                )
+                continue
+            for tc in calls:
+                fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                name = fn.get("name", "")
+                if name:
+                    tool_names.append(name)
+    return tool_names
 
 
 def _check_false_claims(response_text: str, session_id: str | None) -> list[str]:
@@ -109,7 +133,13 @@ def _check_false_claims(response_text: str, session_id: str | None) -> list[str]
 def register(ctx):
     """注册 transform_llm_output 钩子。"""
 
-    def review_response(response_text, session_id=None, model=None, platform=None, **kwargs):
+    def review_response(
+        response_text: str,
+        session_id: str | None = None,
+        model: object | None = None,
+        platform: object | None = None,
+        **kwargs: object,
+    ) -> str | None:
         if not response_text:
             return None
 

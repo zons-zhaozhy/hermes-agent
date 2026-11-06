@@ -10,11 +10,37 @@
 |---|---|---|---|
 | L0 | `guards.tool_blacklist` | 必败调用机械黑名单——拦的不是「错」，而是「注定失败」 | — |
 | L2 | `guards` | 写入质量护栏：写前功课 + 写动作合规 | pre_write / four_axis / duplicate_check / source_write / coding_standards / diff_debt / casebook_gate / batch_write / scope_gate / groundbreaking_gate / slow_search / db_target_audit / plain_vocab / experience_gate（2026-10-26 实测共 17 子模块） |
-| L3 | `discipline` | 执行纪律护栏：怎么跑命令、怎么面对错误 | no_guessing / db_safety / error_discipline / curl_safety / log_first / tool_safety / no_bypass / no_pushback / test_discipline + 注入通道 rule_reinjection / section_reinjection |
+| L3 | `discipline` | 执行纪律护栏：怎么跑命令、怎么面对错误 | no_guessing / db_safety / error_discipline / curl_safety / log_first / tool_safety / no_bypass / no_pushback / blame_shield / test_discipline + 注入通道 rule_reinjection / section_reinjection / workflow_router（2026-11-06 实测共 13 子模块） |
 | 独立 | scientific-programming-guard；terminology-guard；enterprise-quality-gate；requirement-interview | 专项规范（写码预算、用词一致、企业级对表、需求歧义） | — |
 
 裁定原则：同一层同性质才收拢进同一套件；跨层不合并。子模块 register 逐个调用，
 单个失败仅告警不连坐。
+
+## 一之一、Guard taxonomy 与健康策略（2026-11-05）
+
+Bundled guard 的 `plugin.yaml` 显式声明两个 additive 字段：
+
+- `gate_suites`: `intent / execution / output / completion / integrity` 的列表。一个 guard 可跨
+  阶段；taxonomy 只做归属与后续重组依据，运行时 suite 归属仍以真实声明的 Gate Plane hook
+  与注册状态为准，元数据不能隐藏可执行面。
+- `gate_policy`: `required` 表示工程基线；缺席、加载失败或空注册使相关 suite `unknown`。
+  `advisory` 表示专项/辅助能力；刻意 disabled 只在 `inactive_advisory` 诊断道展示，不拉低
+  健康，但一旦 enabled，加载失败或空注册仍进入 `missing` 并使 suite `unknown`。
+- `gate_kind`: `enforcement` 表示五个运行决策 hook 之一的执法面；`observer` 表示
+  `post_llm_call` / `post_tool_call` / session lifecycle 的非阻断观测面；`manual` 表示
+  CLI/离线审计，不得计入 runtime active guard。缺失或非法时按 hooks 保守推导，无 hook
+  即 `manual`。required manual audit 没有新鲜审计证据时保持 `unknown`，不能凭插件导入
+  成功伪装健康。
+
+Gate Plane 证据面覆盖 enforcement 与 observer hooks。observer 回调失败或超时不阻断轮次，
+但必须记录 `unknown` 并降低 integrity 健康；`engine-invariants` 不在钩子内部吞掉基础设施
+异常，而由插件调度器统一隔离并留痕。
+
+基线 owner：`read-think-gate`、`guards`、`discipline`、`block_escalation`、
+`finish_guard`、`guard-sentinel`、`engine-invariants`。
+旧/第三方 `tags: [guard]` 插件未声明 metadata 时按保守策略处理：由 hook 推导 suite/kind
+且视为 `required`。后续行为归并只允许按本 taxonomy 分批迁入既有 owner suite；先迁/补契约测试，
+再改实现，不留兼容壳。
 
 ## 二、两条注入通道（事前）
 
@@ -192,25 +218,59 @@ section_reinjection 版本指纹补注——动态段文本已并入补注指纹
 零同步成本；无 `[护栏名]` 前缀的消息（回调超时等基础设施噪音）不进段。
 层级优先级保持不变：modify 自动改写 > 事前提示 > 事后拦截。
 
-### C3 解析器收敛进展（2026-11-03 第一批已落地）
+### C3 解析器收敛完成（2026-11-05）
 
 唯一事实源 `plugins/guards/terminal_semantics.py`（Redirect 数据类 +
 parse_redirects/redirect_writes_file/redirect_file_targets/
-looks_like_path,语义基底取六套中最全的 block_escalation 实现）。
+looks_like_path/sed_writes_file/is_read_command,语义基底取六套中最全的
+block_escalation 实现）。
 消费方已切换 4 处：read_think_gate/gate._terminal_writes_file（窄口径
 →宽口径,`echo hi > out` 不再漏判）、source_write._extract_redirect_target
 （`>>` append 与多重重定向漏检修复）、casebook_gate._redirect_targets
 （fd 粘连形态提取+shlex 引号异常清除）、block_escalation._redirects_write
-（委托,数字字面量排除对齐）。配套 test_terminal_semantics.py 9 例。
-第二批待收敛：patch-first sed 写形态、block_escalation._READ_CMDS 白名单
-迁入 owner 常量区。
+（委托,数字字面量排除对齐）。配套 test_terminal_semantics.py 原 9 例。
+2026-11-05 第二批：`patch-first` 已改为消费 `sed_writes_file`，只读
+`sed -n ...p`、复合命令中的写 sed、以及 execute_code 内嵌 sed 使用同一
+判据。第三批：`block_escalation._READ_CMDS` 迁入 owner 的
+`READ_COMMANDS/is_read_command`，并先经 `sed_writes_file` 排除 `sed -i`
+等写形态，消除「升级计数把 sed -i 误判只读」的交界漏洞。owner 回归增至
+12 例，block_escalation 相关回归 18 例。
+
+### 行为归并前置基线（2026-11-05）
+
+五个此前无直接契约的 guard 已建立行为测试：`lazy-blocker`（5 例）、
+`patch-first`（5 例）、`persistence-enforcer`（7 例）、
+`pre-response-review`（5 例）、`quality_auditor`（5 例）。本批修复
+`patch-first` 复合/内嵌 sed 漏拦、`pre-response-review` profile 越界与
+静默降级、`quality_auditor` 同名工具统计误崩；另两项目前为基线确认，
+不得据此直接按文件名合并，后续重组仍需按 suite owner 与行为等价迁移。
+
+### 状态源与拦截原因裁定（2026-11-05）
+
+两个原“独立工程项”已按语义拆开，而不是把不同事实证明成同一个状态：
+
+- `guards.session_policy` 是会话→platform 与 cron 豁免的唯一事实源；
+  `four_axis` 与 `diff_debt` 只消费该判定，unified cron 的 `local-*`
+  会话与 legacy `cron_*` 会话走同一规则。
+- `read-think-gate` 继续独占 pre-write 四轴证据 marker；`diff_debt` 继续
+  独占 post-write diff 欠账。两者是先后两道不同义务，不得合并成一个
+  boolean，也不得在 completion-owner 迁移中互相搬运。
+- `diff_debt` 在 session reset/end 只清本会话欠账与本批证据位，避免长驻
+  网关进程保留已结束会话状态；TTL 仍只作兜底而非生命周期事实源。
+- `block_escalation` 的 blocked 指纹包含稳定原因族：runtime guardrail code、
+  插件拦截文案护栏名，或归一化首行；同一目标被不同原因拦截不合并计数，
+  成功落地仍按目标交集清账。
 
 ### 已知路线图（独立工程项，非本轮范围）
 
-- **六套 terminal 写意图解析器收敛**（第一批已落地，见上文 C3 小节）：
-  owner=`plugins/guards/terminal_semantics.py`，4 处消费方已切换；余第二批
-  （patch-first sed 写形态、block_escalation._READ_CMDS 白名单迁入 owner
-  常量区）。注意反方警告：误拦形态是长尾，集中式判据一次设计穷尽不了，
-  收敛必须配逐插件回归测试。
-- **block_escalation 意图指纹精细化**（区分护栏差异，避免一次修复不到位
-  即 L3）；**四轴双状态源合一**（marker 文件与 diff_debt 进程内账本）。
+- required/profile 基线收敛：五个 required owner 缺席必须启用或经行为迁移
+  显式替换，不得降级刷绿。
+- 物理归并仍按小批次执行：`patch-first`→`guards` 已完成（行为迁入
+  `guards.patch_first`，独立 manifest/hook surface 删除，owner 注册契约
+  在位）；`blame-shield`→`discipline` 已完成（行为迁入
+  `discipline.blame_shield`，独立 manifest/hook surface 删除，owner 注册契约
+  在位）；`lazy-blocker`→`finish_guard` 已完成（行为迁入
+  `finish_guard.lazy_blocker`，独立 manifest/hook surface 删除，owner 注册契约
+  在位）；`completion-boundary-audit`→`finish_guard` 已完成（行为迁入
+  `finish_guard.completion_boundary_audit`，独立 manifest/hook surface 删除，
+  owner 注册契约在位）。

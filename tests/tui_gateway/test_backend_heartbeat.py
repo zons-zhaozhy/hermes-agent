@@ -117,6 +117,37 @@ class TestEntryAndWsWiring:
         entry.main()
         assert started["n"] == 1
 
+    def test_ws_liveness_starters_run_off_loop(self, monkeypatch):
+        """The first heartbeat write and orphan-sweep setup touch SessionDB; neither may
+        block the WebSocket event loop while a client is connecting."""
+        import asyncio
+        import threading
+
+        from tui_gateway import server, ws as ws_mod
+
+        threads: dict[str, int] = {}
+
+        def heartbeat_start():
+            threads["heartbeat"] = threading.get_ident()
+
+        def sweep_start():
+            threads["sweep"] = threading.get_ident()
+
+        monkeypatch.setattr(server, "_start_backend_heartbeat_refresher", heartbeat_start)
+        monkeypatch.setattr(server, "_schedule_startup_orphan_sweep", sweep_start)
+
+        async def start_and_drain():
+            main_thread = threading.get_ident()
+            ws_mod._start_backend_liveness()
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            return main_thread
+
+        main_thread = asyncio.run(start_and_drain())
+        assert set(threads) == {"heartbeat", "sweep"}
+        assert threads["heartbeat"] != main_thread
+        assert threads["sweep"] != main_thread
+
     def test_handle_ws_starts_heartbeat_refresher(self, monkeypatch):
         import asyncio
 

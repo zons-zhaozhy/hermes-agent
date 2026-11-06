@@ -195,6 +195,19 @@ def test_turn_end_pass_skipped_where_the_session_ends_with_the_turn(agent_attrs)
     thread.join(5.0)
 
 
+def test_turn_end_pass_skipped_in_a_registered_worker_process(monkeypatch):
+    from agent import runtime_session_store
+
+    cc = _compressor()
+    agent = _agent(cc)
+    monkeypatch.setattr(runtime_session_store, "_worker_process", True)
+    assert pc.maybe_prepare(agent, _messages(30), origin="turn-end") is None
+    assert cc.calls == []
+    thread = pc.maybe_prepare(agent, _messages(30), origin="tool-batch")
+    assert thread is not None
+    thread.join(5.0)
+
+
 def test_pass_runs_under_the_callers_profile_scope(tmp_path):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 

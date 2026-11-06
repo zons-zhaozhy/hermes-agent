@@ -1,411 +1,160 @@
 ---
 name: systematic-debugging
-description: "4-phase root cause debugging: understand bugs before fixing."
-version: 1.1.0
-author: Hermes Agent (adapted from obra/superpowers)
+description: "Find root causes with evidence before fixing."
+version: 2.0.0
+author: "Stan + Hermes Agent (adapted from obra/superpowers)"
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [debugging, troubleshooting, problem-solving, root-cause, investigation]
-    related_skills: [test-driven-development, subagent-driven-development]
+    tags: [debugging, troubleshooting, root-cause, investigation, evidence]
+    related_skills: [test-driven-development, repository-investigation, condition-based-waiting]
+    category: software-development
 ---
 
 # Systematic Debugging
 
-## Overview
-
-Random fixes waste time and create new bugs. Quick patches mask underlying issues.
-
-**Core principle:** ALWAYS find root cause before attempting fixes. Symptom fixes are failure.
-
-**Violating the letter of this process is violating the spirit of debugging.**
-
-## The Iron Law
-
-```
-NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST
-```
-
-If you haven't completed Phase 1, you cannot propose fixes.
-
-## The Feedback Loop Rule
-
-The feedback loop is the debugging work. Before reading code to build a theory, create or identify a **tight** command that can go red on the user's exact symptom and green when the bug is fixed. A tight loop is fast, deterministic, agent-runnable, and specific enough to catch this bug — not merely "doesn't crash".
-
-When a clean repro is hard, spend disproportionate effort building the loop. Guessing without a red-capable loop is the failure mode this skill exists to prevent.
+Diagnose the exact mechanism before changing code. Build a tight feedback loop, read the full
+error, trace data to its source, test one falsifiable hypothesis at a time, and add defense in
+depth after the root cause is proven.
 
 ## When to Use
 
-Use for ANY technical issue:
-- Test failures
-- Bugs in production
-- Unexpected behavior
-- Performance problems
-- Build failures
-- Integration issues
-
-**Use this ESPECIALLY when:**
-- Under time pressure (emergencies make guessing tempting)
-- "Just one quick fix" seems obvious
-- You've already tried multiple fixes
-- Previous fix didn't work
-- You don't fully understand the issue
-
-**Don't skip when:**
-- Issue seems simple (simple bugs have root causes too)
-- You're in a hurry (rushing guarantees rework)
-- Someone wants it fixed NOW (systematic is faster than thrashing)
-
-## The Four Phases
-
-You MUST complete each phase before proceeding to the next.
-
----
-
-## Phase 1: Root Cause Investigation
-
-**BEFORE attempting ANY fix:**
-
-### 1. Read Error Messages Carefully
-
-- Don't skip past errors or warnings
-- They often contain the exact solution
-- Read stack traces completely
-- Note line numbers, file paths, error codes
-
-**Action:** Use `read_file` on the relevant source files. Use `search_files` to find the error string in the codebase.
-
-### 2. Build a Tight Feedback Loop
-
-- Can you trigger the user's exact symptom with one command?
-- Does the command fail for this bug and only pass once the bug is fixed?
-- Is it fast enough to run repeatedly?
-- Is it deterministic? For flaky bugs, can you raise the reproduction rate high enough to debug?
-- If not reproducible → gather more data, don't guess.
-
-**Ways to construct a loop — try in roughly this order:**
-
-1. **Failing test** at the seam that reaches the bug: unit, integration, or end-to-end.
-2. **HTTP script / curl** against a running dev server.
-3. **CLI invocation** with fixture input, diffing stdout/stderr against expected output.
-4. **Headless browser script** (Playwright/Puppeteer) asserting on DOM, console, or network.
-5. **Replay a captured trace**: HAR, request payload, event log, queue message, or webhook body.
-6. **Throwaway harness** that boots the smallest useful slice of the system and calls the failing path.
-7. **Property / fuzz loop** when the bug is intermittent wrong output over a broad input space.
-8. **Bisection harness** suitable for `git bisect run` when the bug appeared between two known states.
-9. **Differential loop** comparing old vs new version, two configs, two providers, or two datasets.
-10. **Human-in-the-loop script** only as a last resort: script the human steps and capture their result so the loop stays structured.
-
-**Tighten the loop once it exists:**
-
-- Make it faster: cache setup, narrow scope, skip unrelated initialization.
-- Make the signal sharper: assert the exact symptom, not generic success.
-- Make it more deterministic: pin time, seed randomness, isolate filesystem, freeze network.
-
-For non-deterministic bugs, the immediate goal is a higher reproduction rate, not perfection. Run the trigger 100x, parallelize, add stress, narrow timing windows, or inject sleeps. A 50% flake is debuggable; a 1% flake usually is not.
-
-**Action:** Use the `terminal` tool to run the tight loop:
-
-```bash
-# Run a specific failing test
-pytest tests/test_module.py::test_name -v
-
-# Or run a scripted repro
-python scripts/repro_bug.py
-
-# Or run a high-repetition flaky repro
-for i in {1..100}; do pytest tests/test_flake.py::test_name -q || break; done
-```
-
-### 3. Check Recent Changes
-
-- What changed that could cause this?
-- Git diff, recent commits
-- New dependencies, config changes
-
-**Action:**
-
-```bash
-# Recent commits
-git log --oneline -10
-
-# Uncommitted changes
-git diff
-
-# Changes in specific file
-git log -p --follow src/problematic_file.py | head -100
-```
-
-### 4. Gather Evidence in Multi-Component Systems
-
-**WHEN system has multiple components (API → service → database, CI → build → deploy):**
-
-**BEFORE proposing fixes, add diagnostic instrumentation:**
-
-For EACH component boundary:
-- Log what data enters the component
-- Log what data exits the component
-- Verify environment/config propagation
-- Check state at each layer
-
-Run once to gather evidence showing WHERE it breaks.
-THEN analyze evidence to identify the failing component.
-THEN investigate that specific component.
-
-### 5. Trace Data Flow
-
-**WHEN error is deep in the call stack:**
-
-- Where does the bad value originate?
-- What called this function with the bad value?
-- Keep tracing upstream until you find the source
-- Fix at the source, not at the symptom
-
-**Action:** Use `search_files` to trace references:
-
-```python
-# Find where the function is called
-search_files("function_name(", path="src/", file_glob="*.py")
-
-# Find where the variable is set
-search_files("variable_name\\s*=", path="src/", file_glob="*.py")
-```
-
-### Phase 1 Completion Checklist
-
-- [ ] Error messages fully read and understood
-- [ ] A tight loop command exists and has been run at least once
-- [ ] Loop is red-capable: it asserts the user's exact symptom, not a nearby failure
-- [ ] Loop is deterministic, or a flaky bug has a high enough reproduction rate to debug
-- [ ] Recent changes identified and reviewed
-- [ ] Evidence gathered (logs, state, data flow)
-- [ ] Problem isolated to specific component/code
-- [ ] Root cause hypotheses can be stated and tested
-
-**STOP:** Do not proceed to Phase 2 until you understand WHY it's happening.
-
----
-
-## Phase 2: Pattern Analysis
-
-**Find the pattern before fixing:**
-
-### 0. Minimize the Reproduction
-
-Once the loop is red, shrink the repro to the smallest scenario that still goes red. Cut inputs, callers, config, data, and steps **one at a time**, re-running the loop after each cut. Keep only what is load-bearing for the failure.
-
-Done when removing any remaining element makes the loop go green. A minimal repro narrows the hypothesis space and often becomes the cleanest regression test.
-
-### 1. Find Working Examples
-
-- Locate similar working code in the same codebase
-- What works that's similar to what's broken?
-
-**Action:** Use `search_files` to find comparable patterns:
-
-```python
-search_files("similar_pattern", path="src/", file_glob="*.py")
-```
-
-### 2. Compare Against References
-
-- If implementing a pattern, read the reference implementation COMPLETELY
-- Don't skim — read every line
-- Understand the pattern fully before applying
-
-### 3. Identify Differences
-
-- What's different between working and broken?
-- List every difference, however small
-- Don't assume "that can't matter"
-
-### 4. Understand Dependencies
-
-- What other components does this need?
-- What settings, config, environment?
-- What assumptions does it make?
-
----
-
-## Phase 3: Hypothesis and Testing
-
-**Scientific method:**
-
-### 1. Form Ranked Falsifiable Hypotheses
-
-- Generate 3–5 plausible hypotheses before testing any single one.
-- Rank them by likelihood and cheapness to falsify.
-- State the prediction each hypothesis makes: "If X is the cause, then changing or observing Y should make Z happen."
-- Discard or sharpen any hypothesis that does not make a testable prediction.
-
-If the user is present, show the ranked list before testing. They may have domain knowledge that instantly re-ranks it. If the user is AFK, proceed with your ranking.
-
-### 2. Test Minimally
-
-- Test the highest-ranked hypothesis with the smallest possible probe.
-- Change one variable at a time.
-- Don't fix multiple things at once.
-- Prefer debugger/REPL inspection when available; one breakpoint beats ten logs.
-- If you add logs, tag every temporary line with a unique prefix such as `[DEBUG-a4f2]` so cleanup is a single search.
-
-### 3. Verify Before Continuing
-
-- Did it work? → Phase 4
-- Didn't work? → Form NEW hypothesis
-- DON'T add more fixes on top
-
-### 4. When You Don't Know
-
-- Say "I don't understand X"
-- Don't pretend to know
-- Ask the user for help
-- Research more
-
----
-
-## Phase 4: Implementation
-
-**Fix the root cause, not the symptom:**
-
-### 1. Create Failing Test Case
-
-- Simplest possible reproduction
-- Automated test if possible
-- MUST have before fixing
-- Use the `test-driven-development` skill
-
-### 2. Implement Single Fix
-
-- Address the root cause identified
-- ONE change at a time
-- No "while I'm here" improvements
-- No bundled refactoring
-
-### 3. Verify Fix
-
-```bash
-# Run the specific regression test
-pytest tests/test_module.py::test_regression -v
-
-# Run full suite — no regressions
-pytest tests/ -q
-```
-
-### 4. If Fix Doesn't Work — The Rule of Three
-
-- **STOP.**
-- Count: How many fixes have you tried?
-- If < 3: Return to Phase 1, re-analyze with new information
-- **If ≥ 3: STOP and question the architecture (step 5 below)**
-- DON'T attempt Fix #4 without architectural discussion
-
-### 5. If 3+ Fixes Failed: Question Architecture
-
-**Pattern indicating an architectural problem:**
-- Each fix reveals new shared state/coupling in a different place
-- Fixes require "massive refactoring" to implement
-- Each fix creates new symptoms elsewhere
-
-**STOP and question fundamentals:**
-- Is this pattern fundamentally sound?
-- Are we "sticking with it through sheer inertia"?
-- Should we refactor the architecture vs. continue fixing symptoms?
-
-**Discuss with the user before attempting more fixes.**
-
-This is NOT a failed hypothesis — this is a wrong architecture.
-
----
-
-## Red Flags — STOP and Follow Process
-
-If you catch yourself thinking:
-- "Quick fix for now, investigate later"
-- "Just try changing X and see if it works"
-- "Add multiple changes, run tests"
-- "Skip the test, I'll manually verify"
-- "It's probably X, let me fix that"
-- "I don't fully understand but this might work"
-- "Pattern says X but I'll adapt it differently"
-- "Here are the main problems: [lists fixes without investigation]"
-- Proposing solutions before tracing data flow
-- **"One more fix attempt" (when already tried 2+)**
-- **Each fix reveals a new problem in a different place**
-
-**ALL of these mean: STOP. Return to Phase 1.**
-
-**If 3+ fixes failed:** Question the architecture (Phase 4 step 5).
-
-## Common Rationalizations
-
-| Excuse | Reality |
-|--------|---------|
-| "Issue is simple, don't need process" | Simple issues have root causes too. Process is fast for simple bugs. |
-| "Emergency, no time for process" | Systematic debugging is FASTER than guess-and-check thrashing. |
-| "Just try this first, then investigate" | First fix sets the pattern. Do it right from the start. |
-| "I'll write test after confirming fix works" | Untested fixes don't stick. Test first proves it. |
-| "Multiple fixes at once saves time" | Can't isolate what worked. Causes new bugs. |
-| "Reference too long, I'll adapt the pattern" | Partial understanding guarantees bugs. Read it completely. |
-| "I see the problem, let me fix it" | Seeing symptoms ≠ understanding root cause. |
-| "One more fix attempt" (after 2+ failures) | 3+ failures = architectural problem. Question the pattern, don't fix again. |
+- any error, test failure, crash, hang, performance anomaly, or unexpected behavior;
+- a guard, migration, service, browser flow, or platform-specific path fails;
+- an earlier fix did not work or exposed another failure.
+
+Use `repository-investigation` when the main question is how an unfamiliar system is designed.
+Use `condition-based-waiting` when diagnosing a race or readiness condition.
+
+## Prerequisites
+
+- Original error text, log, trace, test output, or user-visible symptom.
+- Hermes `terminal`, `read_file`, and `search_files`.
+- A way to observe the failing behavior repeatedly, or a plan to build one.
+
+## How to Run
+
+1. Read and preserve the original error evidence.
+2. Build or identify a red-capable feedback loop.
+3. Inspect recent changes and trace data flow across boundaries.
+4. Compare against a working sibling or reference.
+5. Rank and minimally test falsifiable hypotheses.
+6. Fix the proven root cause through TDD.
+7. Add proportional defense in depth and fresh regression evidence.
 
 ## Quick Reference
 
-| Phase | Key Activities | Success Criteria |
-|-------|---------------|------------------|
-| **1. Root Cause** | Read errors, reproduce, check changes, gather evidence, trace data flow | Understand WHAT and WHY |
-| **2. Pattern** | Find working examples, compare, identify differences | Know what's different |
-| **3. Hypothesis** | Form theory, test minimally, one variable at a time | Confirmed or new hypothesis |
-| **4. Implementation** | Create regression test, fix root cause, verify | Bug resolved, all tests pass |
+| Phase | Exit condition |
+|---|---|
+| 1. Evidence | Exact symptom, path, and likely mechanism are understood |
+| 2. Pattern | A working comparison explains the meaningful difference |
+| 3. Hypothesis | One prediction is confirmed or falsified minimally |
+| 4. Fix | Regression test was red, root-cause fix is green |
+| 5. Defense | Siblings, guards, observability, and docs are proportionally covered |
 
-## Hermes Agent Integration
+## Procedure
 
-### Investigation Tools
+### 1. Read the original evidence
 
-Use these Hermes tools during Phase 1:
+Copy the complete error, stack, status code, timestamp, process/profile identity, and command.
+Extract file, symbol, line, host, and user/session scope before searching. Never paraphrase an
+error into a generic keyword and guess.
 
-- **`search_files`** — Find error strings, trace function calls, locate patterns
-- **`read_file`** — Read source code with line numbers for precise analysis
-- **`terminal`** — Run tests, check git history, reproduce bugs
-- **`web_search`/`web_extract`** — Research error messages, library docs
+Check the newest relevant logs before changing code. When logs lack a field needed to locate
+the event, treat that as evidence and improve diagnosis before proposing a product fix.
 
-### With delegate_task
+### 2. Build a tight feedback loop
 
-For complex multi-component debugging, dispatch investigation subagents:
+Create or identify one command that fails on the exact symptom and can pass only after the
+defect is fixed. Prefer, in order:
 
-```python
-delegate_task(
-    goal="Investigate why [specific test/behavior] fails",
-    context="""
-    Follow systematic-debugging skill:
-    1. Read the error message carefully
-    2. Reproduce the issue
-    3. Trace the data flow to find root cause
-    4. Report findings — do NOT fix yet
+1. a targeted real-seam test;
+2. a CLI or HTTP probe against the smallest live slice;
+3. a deterministic script or replay from captured input;
+4. a temporary diagnostic harness with tagged output;
+5. a stress or repetition loop for an intermittent symptom.
 
-    Error: [paste full error]
-    File: [path to failing code]
-    Test command: [exact command]
-    """,
-    toolsets=['terminal', 'file']
-)
+For timing behavior, wait on events or observable predicates with deadlines. Do not use fixed
+delays to make a race less frequent.
+
+Record the red output once before changing production code.
+
+### 3. Inspect change and state
+
+Compare current work to the last known-good revision. Inspect configuration, schema, secrets
+presence, environment scope, migration state, cache shape, process identity, and platform.
+Never infer infrastructure location or tenant from a name; read the active configuration and
+logs.
+
+### 4. Trace boundaries
+
+Follow the bad value or failed transition upstream and downstream. At every component boundary,
+name input, output, error, retry, timeout, cancellation, persistence, and ownership. Continue
+to the source that first creates or fails to validate the bad state.
+
+Search exact symbols, error strings, old names, sibling paths, and consumers. A local patch at
+the deepest crash site is a symptom patch if the origin remains unguarded.
+
+### 5. Minimize and compare
+
+Reduce the repro one element at a time while it remains red. Find a working sibling or
+reference and list meaningful differences. Read a referenced implementation completely before
+adapting it.
+
+### 6. Test hypotheses scientifically
+
+Write three to five hypotheses when the cause is not obvious. For each, state a prediction and
+the cheapest observation that can falsify it. Probe one variable at a time.
+
+Temporary diagnostics need a unique tag and must be removed after evidence is captured. Two
+failed correction attempts require returning to evidence; three indicate an architectural
+assumption that must be questioned.
+
+### 7. Fix through TDD
+
+Turn the minimized repro into a regression test and observe red. Fix the proven source with the
+smallest change, then observe green. In this repository, run targeted tests through:
+
+```bash
+HERMES_PYTHON="$PWD/.venv/bin/python" scripts/run_tests.sh tests/<area>/test_file.py -q
 ```
 
-### With test-driven-development
+Do not bundle unrelated refactors or speculative cleanup with the fix.
 
-When fixing bugs:
-1. Write a test that reproduces the bug (RED)
-2. Debug systematically to find root cause
-3. Fix the root cause (GREEN)
-4. The test proves the fix and prevents regression
+### 8. Add proportional defense in depth
 
-## Real-World Impact
+After the root cause is fixed, ask which layer is the single best enforcement point and what
+evidence would detect recurrence:
 
-From debugging sessions:
-- Systematic approach: 15-30 minutes to fix
-- Random fixes approach: 2-3 hours of thrashing
-- First-time fix rate: 95% vs 40%
-- New bugs introduced: Near zero vs common
+- search and fix sibling paths in the same class;
+- add an invariant test at the public seam;
+- add a guard only where it is precise, testable, and has a real escape path;
+- log the decision point with enough scope to diagnose recurrence;
+- document the invariant where future contributors will read it.
 
-**No shortcuts. No guessing. Systematic always wins.**
+Do not add hooks, flags, retries, or telemetry without a concrete failure class and consumer.
+Avoid silent fallback; if degradation is intentional, warn and leave an audit trail.
+
+## Pitfalls
+
+1. Proposing a fix before reading the original error.
+2. Treating a nearby generic failure as the user's symptom.
+3. Testing only whether a call no longer raises, not whether the contract is restored.
+4. Changing two variables at once.
+5. Fixing the downstream crash instead of the upstream source.
+6. Hiding a race with a larger delay.
+7. Adding a broad guard that creates false positives.
+8. Declaring recovery without rerunning the original repro.
+
+## Verification
+
+Before leaving this skill:
+
+- [ ] Full original error and relevant log evidence were read.
+- [ ] The tight loop was red on the exact symptom.
+- [ ] Root cause is stated with file, symbol, and data flow.
+- [ ] A prediction was confirmed before the fix.
+- [ ] Regression test was observed red, then green.
+- [ ] Sibling paths and recurrence detection were considered.
+- [ ] Fresh targeted and regression-scope results are recorded.

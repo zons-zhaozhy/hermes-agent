@@ -7,3 +7,7 @@ hooks:
   - transform_llm_output
 tags:
   - guard
+gate_suites:
+  - output
+gate_policy: required
+gate_kind: enforcement

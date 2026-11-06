@@ -101,14 +101,23 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
+| [`brainstorming`](../user-guide/skills/bundled/software-development/software-development-brainstorming.md) | Design architecture and changes before code. | `software-development/brainstorming` |
 | [`codebase-inspection`](../user-guide/skills/bundled/software-development/software-development-codebase-inspection.md) | Inspect codebases w/ pygount: LOC, languages, ratios. | `software-development/codebase-inspection` |
+| [`condition-based-waiting`](../user-guide/skills/bundled/software-development/software-development-condition-based-waiting.md) | Wait on events and observable conditions with deadlines. | `software-development/condition-based-waiting` |
 | [`dogfood`](../user-guide/skills/bundled/software-development/software-development-dogfood.md) | Exploratory QA of web apps: find bugs, evidence, reports. | `software-development/dogfood` |
+| [`executing-plans`](../user-guide/skills/bundled/software-development/software-development-executing-plans.md) | Run written plans with checkpoints and evidence. | `software-development/executing-plans` |
+| [`finishing-a-development-branch`](../user-guide/skills/bundled/software-development/software-development-finishing-a-development-branch.md) | Branch integration verification and safe cleanup. | `software-development/finishing-a-development-branch` |
 | [`github`](../user-guide/skills/bundled/software-development/software-development-github.md) | GitHub via gh CLI: PRs, issues, reviews, repos, auth. | `software-development/github` |
-| [`requesting-code-review`](../user-guide/skills/bundled/software-development/software-development-requesting-code-review.md) | Pre-commit review: security scan, quality gates, auto-fix. | `software-development/requesting-code-review` |
+| [`receiving-code-review`](../user-guide/skills/bundled/software-development/software-development-receiving-code-review.md) | Verify review feedback before changing code. | `software-development/receiving-code-review` |
+| [`repository-investigation`](../user-guide/skills/bundled/software-development/software-development-repository-investigation.md) | Map code, callers, history, and invariants before changes. | `software-development/repository-investigation` |
+| [`requesting-code-review`](../user-guide/skills/bundled/software-development/software-development-requesting-code-review.md) | Review changes before commit with fresh evidence. | `software-development/requesting-code-review` |
 | [`simplify-code`](../user-guide/skills/bundled/software-development/software-development-simplify-code.md) | Parallel 4-agent cleanup of recent code changes. | `software-development/simplify-code` |
 | [`spike`](../user-guide/skills/bundled/software-development/software-development-spike.md) | Throwaway experiments to validate an idea before build. | `software-development/spike` |
-| [`systematic-debugging`](../user-guide/skills/bundled/software-development/software-development-systematic-debugging.md) | 4-phase root cause debugging: understand bugs before fixing. | `software-development/systematic-debugging` |
-| [`test-driven-development`](../user-guide/skills/bundled/software-development/software-development-test-driven-development.md) | TDD: enforce RED-GREEN-REFACTOR, tests before code. | `software-development/test-driven-development` |
+| [`systematic-debugging`](../user-guide/skills/bundled/software-development/software-development-systematic-debugging.md) | Find root causes with evidence before fixing. | `software-development/systematic-debugging` |
+| [`test-driven-development`](../user-guide/skills/bundled/software-development/software-development-test-driven-development.md) | Drive changes with RED-GREEN-REFACTOR tests first. | `software-development/test-driven-development` |
+| [`using-git-worktrees`](../user-guide/skills/bundled/software-development/software-development-using-git-worktrees.md) | Use Git worktree isolation with a verified baseline. | `software-development/using-git-worktrees` |
+| [`verification-before-completion`](../user-guide/skills/bundled/software-development/software-development-verification-before-completion.md) | Prove completion with fresh command output. | `software-development/verification-before-completion` |
+| [`writing-plans`](../user-guide/skills/bundled/software-development/software-development-writing-plans.md) | Turn approved specs into test-first task plans. | `software-development/writing-plans` |
 
 ## web
 

@@ -230,6 +230,26 @@ def test_fast_version_parity(tmp_path):
     assert "Traceback" not in result.stderr
 
 
+@pytest.mark.parametrize(
+    ("argv", "check_updates"),
+    [(["--version"], False), (["-V"], False),
+     (["--version", "--check-updates"], True), (["--check-updates", "-V"], True)],
+)
+def test_fast_version_leaves_update_check_explicit(monkeypatch, argv, check_updates):
+    """A version probe is local and deterministic; network/update work is opt-in."""
+    from hermes_cli import _startup_fast
+
+    calls: list[bool] = []
+    monkeypatch.setattr(_startup_fast, "container_mode_may_be_active", lambda: False)
+    monkeypatch.setattr(
+        _startup_fast, "print_fast_version_info",
+        lambda *, check_updates=False: calls.append(check_updates),
+    )
+
+    assert _startup_fast.try_fast_version(argv) is True
+    assert calls == [check_updates]
+
+
 @pytest.mark.parametrize("argv", [["update"], ["pm", "doctor"], ["gateway", "status"]])
 def test_termux_chat_shortcut_leaves_subcommands_to_dispatch(monkeypatch, argv):
     from hermes_cli import main

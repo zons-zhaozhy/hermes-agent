@@ -277,18 +277,9 @@ def owns_api_run(adapter, run_id, owner_scope):
     return _valid_owner_scope(stored) and hmac.compare_digest(stored, owner_scope)
 
 
-def recover_api_turns(adapter):
-    """Recover committed work only after the real API adapter is published. A parked profile's
-    retained (retiring) authority is not served: its store is never read here."""
-    from gateway.session_authorities import owner_scope, serving_authorities
-    for authority in serving_authorities(adapter.gateway_runner):
-        # Startup is unscoped (the launch profile's home): each profile's media root, config and
-        # API bindings must pair with its own state.db, never the launch profile's.
-        with owner_scope(authority):
-            recover_authority_api_turns(adapter, authority)
-
-
-def recover_authority_api_turns(adapter, authority):
+def _recover_authority_api_turns(adapter, authority):
+    """Blocking half of API-turn recovery: SQLite reads/writes plus session rebinding.
+    Returns refs to schedule; ``authority._schedule`` must stay on the event loop."""
     from hermes_state_runtime import list_session_admissions
     from gateway.session_ingress_media import collect_unheld_api_images
     import logging
@@ -298,6 +289,7 @@ def recover_authority_api_turns(adapter, authority):
     with authority.db._read_ctx() as conn:
         targets = [row[0] for row in conn.execute(
             "SELECT DISTINCT target_session_id FROM session_admissions WHERE principal_id='api' AND status='queued'")]
+    ready = []
     for sid in targets:
         try:
             ref = restore_api_session(authority, sid)
@@ -307,9 +299,36 @@ def recover_authority_api_turns(adapter, authority):
             for row in pending:
                 if row['status'] == 'queued':
                     check_api_turn(authority, ref, row['payload'])
-            authority._schedule(ref)
+            ready.append(ref)
         except RuntimeStoreError as exc:
             logging.getLogger(__name__).warning('API session %s paused: %s', sid, exc.reason)
+    return ready
+
+
+def recover_authority_api_turns(adapter, authority):
+    for ref in _recover_authority_api_turns(adapter, authority):
+        authority._schedule(ref)
+
+
+def recover_api_turns(adapter):
+    """Synchronous recovery contract used by tests and non-loop recovery seams."""
+    from gateway.session_authorities import owner_scope, serving_authorities
+    for authority in serving_authorities(adapter.gateway_runner):
+        with owner_scope(authority):
+            recover_authority_api_turns(adapter, authority)
+
+
+async def recover_api_turns_off_loop(adapter):
+    """Recover committed work only after the real API adapter is published. A parked profile's
+    retained (retiring) authority is not served: its store is never read here."""
+    from gateway.session_authorities import owner_scope, serving_authorities
+    for authority in serving_authorities(adapter.gateway_runner):
+        # Startup is unscoped (the launch profile's home): each profile's media root, config and
+        # API bindings must pair with its own state.db, never the launch profile's.
+        with owner_scope(authority):
+            ready = await asyncio.to_thread(_recover_authority_api_turns, adapter, authority)
+            for ref in ready:
+                authority._schedule(ref)
 
 
 async def run_api_turn(adapter, *, approval_notify_callback=None, approval_session_key=None, **kwargs):

@@ -1,4 +1,4 @@
-"""completion-boundary-audit plugin — 反面检查检查点（反者道之动）
+"""Completion-boundary audit — 反面检查检查点（反者道之动）
 
 judge 判定最终回复是否"包含交付完成声明且未披露任何未验证边界"（人话语义
 不可穷举，禁关键词/正则匹配），命中不修改用户可见回复，只记入会话状态；
@@ -22,12 +22,13 @@ judge 判定最终回复是否"包含交付完成声明且未披露任何未验�
 纠偏变成 agent 自检。与 UX 审计铁律（"完成了吗"=追加审查信号）同构。
 
 成本控制：回复 hash 去重 + judge 调用每会话硬上限 30 + 红牌每会话
-上限 3 + 短回复（<80字符，闲聊）直接跳过 + fail-open。
+上限 3 + 短回复（<80字符，闲聊）直接跳过。判定不可用时向用户显示
+UNKNOWN，并按会话指数退避熔断，不能伪装成正常通过。
 
 缓存安全：不改 system prompt、不改历史消息、不换 toolset——
 per-conversation prompt caching 不受影响（注入走 request-scoped context）。
 
-ACTIVATION: 需在 config.yaml plugins.enabled 中添加 "completion-boundary-audit"。
+ACTIVATION: 随 owner 插件 ``finish_guard`` 启用；本模块不再有独立 config 开关。
 Set COMPLETION_BOUNDARY_AUDIT_DISABLE=1 to turn off.
 """
 
@@ -36,14 +37,16 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import time
+from collections.abc import Mapping
 from typing import Any, Dict, Optional
 
-from plugins._llm_judge import llm_judge_bool
+from plugins._llm_judge import llm_judge_bool, llm_judge_multi
 from plugins._shared_state import get_session_state
 
 # 回复侧合并判定：uncertain/needs_audit 一次调用（唯一出入口收拢）。
 # 延迟导入：避免插件间循环依赖；certainty 插件未启用时
-# judge_reply_side 不可用，此时本插件回退独立判定（llm_judge_bool 原路径）。
+# judge_reply_side 不可用或判定不完整时，本插件回退独立的多键判定。
 from importlib import import_module as _import_module
 import sys
 
@@ -55,6 +58,22 @@ _NAMESPACE = "completion_boundary_audit"
 _MIN_LENGTH = 80
 _MAX_REMINDERS = 3
 _MAX_JUDGE_CALLS = 30
+_JUDGE_RETRY_SECONDS = 300.0
+_JUDGE_RETRY_MAX_SECONDS = 3600.0
+
+_AUDIT_UNAVAILABLE_MARKER = (
+    "\n\n"
+    "[审计不可用 / UNKNOWN] completion-boundary-audit 无法完成语义判定"
+    "（辅助模型超时、限流、认证/余额或依赖不可用）。"
+    "本次交付声明未经审计，不能视为通过；系统已熔断重复调用。"
+)
+
+_INJECT_UNAVAILABLE = (
+    "【审计不可用 / UNKNOWN】上一轮 completion-boundary-audit 的语义判定通道"
+    "不可用（超时、限流、认证/余额或依赖缺失），因此上一轮的交付声明未经审计，"
+    "不能当作已通过。后续回复必须明确证据来源与未验证边界；不要重复调用同一个"
+    "已熔断的判定通道。"
+)
 
 _JUDGE_SYSTEM = (
     "你是交付审查哨兵。判断下面这条 AI 最终回复是否同时满足："
@@ -62,6 +81,13 @@ _JUDGE_SYSTEM = (
     "2) 未披露任何未验证边界（未列出未测路径/环境/已知风险/局限/未覆盖）。"
     "两条都满足才答 true。只是进度汇报、已含边界声明、闲聊、提问都不算。"
     "只回答 JSON：{\"needs_audit\": true} 或 {\"needs_audit\": false}"
+)
+
+_VERDICT_SYSTEM = (
+    "你是交付审查哨兵。对下面这条 AI 最终回复同时判定："
+    "1) done_claim：是否包含交付完成声明（任务/修复/测试/部署已完成、全部通过、已交付）；"
+    "2) has_boundary：是否披露了未验证边界（未测路径/环境/已知风险/局限/未覆盖）。"
+    "只回答 JSON：{\"done_claim\": true/false, \"has_boundary\": true/false}"
 )
 
 _INJECT = (
@@ -102,6 +128,38 @@ def _state(sid: str) -> dict[str, Any]:
     return get_session_state(sid or "_global", _NAMESPACE)
 
 
+def _judge_breaker_active(st: dict[str, Any]) -> bool:
+    """Whether this session's failed judge channel is still inside its retry cooldown."""
+    retry_after = st.get("judge_retry_after")
+    if not isinstance(retry_after, (int, float)):
+        return False
+    if time.monotonic() < float(retry_after):
+        return True
+    st.pop("judge_retry_after", None)
+    return False
+
+
+def _mark_judge_unavailable(st: dict[str, Any]) -> None:
+    """Open a bounded exponential circuit and leave an operator-visible session state."""
+    failures = int(st.get("judge_failure_count", 0)) + 1
+    retry_seconds = min(
+        _JUDGE_RETRY_SECONDS * (2 ** min(failures - 1, 4)),
+        _JUDGE_RETRY_MAX_SECONDS,
+    )
+    st["judge_failure_count"] = failures
+    st["judge_retry_after"] = time.monotonic() + retry_seconds
+    st["audit_unavailable"] = True
+
+
+def _mark_judge_available(st: dict[str, Any]) -> None:
+    """Close the circuit after a real verdict; normal audit resumes without sticky noise."""
+    was_unavailable = bool(st.pop("audit_unavailable", False))
+    st.pop("judge_failure_count", None)
+    st.pop("judge_retry_after", None)
+    if was_unavailable:
+        logger.info("completion-boundary-audit: judge recovered; audit available again")
+
+
 def _judge_reply_side(text: str):
     # 运行时插件模块名 = hermes_plugins.<slug>（连字符转下划线，
     # 见 hermes_cli/plugins.py _directory_module_name）；依次尝试两个命名空间。
@@ -116,7 +174,7 @@ def _judge_reply_side(text: str):
 
 
 def needs_boundary_audit(text: str) -> Optional[bool]:
-    """judge 判"完成声明且无边界披露"；None=fail-open。
+    """judge 判"完成声明且无边界披露"；None=判定不可用，不能视为通过。
 
     Contract:
       Preconditions: text 为 str（可为空）
@@ -136,33 +194,55 @@ def needs_boundary_audit(text: str) -> Optional[bool]:
 
 
 def _resolve_verdict(text: str) -> dict[str, Optional[bool]]:
-    """合并 judge 判 done_claim/has_boundary 两键；异常/缺键 → 全 None。
+    """合并 judge 判 done_claim/has_boundary 两键；缺键则尝试独立判定。
 
     Contract:
       Preconditions: text 为 str（可为空）
-      Postconditions: 空/短文本 → {False, False}；judge 通道异常 →
-                     {None, None}（fail-open，调用方须零状态改动）
+      Postconditions: 空/短文本 → {False, False}；任一通道无法给出两键 →
+                     {None, None}，调用方必须向用户显示 UNKNOWN
     """
     if not text or len(text) < _MIN_LENGTH:
         return {"done_claim": False, "has_boundary": False}
     merged = _judge_reply_side(text)
-    if merged is not None and merged.get("done_claim") is not None:
-        return {"done_claim": merged.get("done_claim"),
-                "has_boundary": merged.get("has_boundary")}
-    logger.warning("completion-boundary-audit: 合并判定缺 done_claim 键，fail-open")
-    return {"done_claim": None, "has_boundary": None}
+    if (
+        isinstance(merged, Mapping)
+        and merged.get("done_claim") is not None
+        and merged.get("has_boundary") is not None
+    ):
+        verdict = {
+            "done_claim": merged.get("done_claim"),
+            "has_boundary": merged.get("has_boundary"),
+        }
+    else:
+        # The shared reply-side judge lives in reply-certainty-checker. Continue when
+        # that plugin is absent/disabled instead of disabling completion auditing.
+        verdict = llm_judge_multi(
+            task="completion_boundary_audit",
+            system=_VERDICT_SYSTEM,
+            text=text[:4000],
+            keys=["done_claim", "has_boundary"],
+        )
+    if verdict.get("done_claim") is None or verdict.get("has_boundary") is None:
+        logger.warning(
+            "completion-boundary-audit: judge verdict unavailable; reporting UNKNOWN"
+        )
+        return {"done_claim": None, "has_boundary": None}
+    return {
+        "done_claim": verdict.get("done_claim"),
+        "has_boundary": verdict.get("has_boundary"),
+    }
 
 
 def register(ctx) -> None:
     """注册 transform_llm_output（检测+记状态）与 pre_llm_call（注入）。
 
     Contract:
-      Postconditions: 两个钩子均已注册；钩子内部任何异常不外泄（fail-open）
+      Postconditions: 两个钩子均已注册；异常不外泄，审计失败显示为 UNKNOWN
     """
 
     def audit_boundary(response_text, session_id=None, model=None,
                        platform=None, **kwargs) -> Optional[str]:
-        """judge 判定 → 状态机转移；用户可见回复零改动。
+        """judge 判定 → 状态机转移；判定不可用时向用户显示 UNKNOWN。
 
         状态机（消项闭环）：
         - 完成声明 + 无披露 → 记 pending（下轮补披露红牌，旧路径）
@@ -172,17 +252,20 @@ def register(ctx) -> None:
         - 无完成声明（进行中汇报）→ 不打扰（但 pending 保留，不重置）
 
         Contract:
-          Postconditions: 恒返回 None（绝不修改用户回复）；异常不外泄；
-                          judge fail-open（None）→ 状态零改动
+          Postconditions: 判定成功时不改回复；judge 失败、缺键或内部异常时
+                          追加用户可见 UNKNOWN，并打开会话熔断
         """
         if _plugin_disabled():
             return None
+        text = response_text if isinstance(response_text, str) else str(response_text or "")
+        st: Optional[dict[str, Any]] = None
         try:
-            text = response_text or ""
             if len(text) < _MIN_LENGTH:
                 return None
             sid = session_id or ""
             st = _state(sid)
+            if _judge_breaker_active(st):
+                return text + _AUDIT_UNAVAILABLE_MARKER
             if int(st.get("count", 0)) >= _MAX_REMINDERS:
                 return None
             if int(st.get("judge_calls", 0)) >= _MAX_JUDGE_CALLS:
@@ -194,13 +277,18 @@ def register(ctx) -> None:
                 st["seen"] = seen
             if h in seen:
                 return None
-            seen.add(h)
             st["judge_calls"] = int(st.get("judge_calls", 0)) + 1
             verdict = _resolve_verdict(text)
             done = verdict.get("done_claim")
             boundary = verdict.get("has_boundary")
             if done is None or boundary is None:
-                return None  # fail-open：判定失败零状态改动
+                _mark_judge_unavailable(st)
+                logger.warning(
+                    "completion-boundary-audit: audit unavailable; surfaced to user"
+                )
+                return text + _AUDIT_UNAVAILABLE_MARKER
+            _mark_judge_available(st)
+            seen.add(h)
             if not done:
                 return None  # 进行中汇报不打扰（pending 保留跨轮）
             if boundary:
@@ -220,7 +308,7 @@ def register(ctx) -> None:
                     logger.info(
                         "completion-boundary-audit: 边界已消项，状态清零"
                     )
-                elif needs_boundary_audit(text) is True:
+                else:
                     st["count"] = int(st.get("count", 0)) + 1
                     st["pending_reminder"] = True
                     logger.info(
@@ -229,9 +317,14 @@ def register(ctx) -> None:
                     )
             return None
         except Exception as e:  # 绝不因插件自身错误破坏回复
-            logger.warning("completion-boundary-audit skipped: %s", e,
-                           exc_info=True)
-        return None  # 透传
+            logger.warning(
+                "completion-boundary-audit unavailable after internal error: %s",
+                e,
+                exc_info=True,
+            )
+            if st is not None:
+                _mark_judge_unavailable(st)
+            return text + _AUDIT_UNAVAILABLE_MARKER
 
     def inject_reminder(**kwargs) -> Optional[dict[str, Any]]:
         """上一轮被标记 → 注入红牌给 agent。
@@ -248,6 +341,8 @@ def register(ctx) -> None:
         try:
             sid = kwargs.get("session_id") or ""
             st = _state(sid)
+            if st.get("audit_unavailable"):
+                return {"context": _INJECT_UNAVAILABLE}
             if not st.get("pending_reminder"):
                 return None
             del st["pending_reminder"]
@@ -256,9 +351,11 @@ def register(ctx) -> None:
             if int(st.get("streak", 0)) >= 1:
                 return {"context": _INJECT_RESOLVE}
             return {"context": _INJECT}
-        except Exception as exc:  # fail-open
+        except Exception as exc:
+            # pre_llm_call is a fail-closed policy hook. Let dispatch block the turn
+            # instead of swallowing the failure and silently skipping the audit state.
             logger.warning("completion-boundary-audit inject failed: %s", exc)
-            return None
+            raise
 
     ctx.register_hook("transform_llm_output", audit_boundary)
     ctx.register_hook("pre_llm_call", inject_reminder)

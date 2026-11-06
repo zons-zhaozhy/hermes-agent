@@ -92,6 +92,28 @@ async def test_last_viewer_close_commits_memory_and_finalizes_on_the_owner(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_last_viewer_close_runs_every_idle_busy_check_off_loop(tmp_path, monkeypatch):
+    import gateway.session_viewer_close as viewer_close
+
+    db, authority, _calls = await _owner(tmp_path, monkeypatch)
+    viewer, subscription = await _open(db, authority, tmp_path)
+    loop_thread = threading.get_ident()
+    threads = []
+    real_busy = viewer_close._busy
+
+    def recorded_busy(*args, **kwargs):
+        threads.append(threading.get_ident())
+        return real_busy(*args, **kwargs)
+
+    monkeypatch.setattr(viewer_close, '_busy', recorded_busy)
+    await _call(viewer, 'session.detach', session_id='chat', subscription_id=subscription,
+                end_reason='cli_close')
+
+    assert len(threads) == 2  # once before the end stamp, once before memory retirement
+    assert threads and all(thread != loop_thread for thread in threads)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('reason', ['new_session', 'tui_close'])  # classic CLI /new; Ink /new or resume switch
 async def test_a_viewer_new_resets_the_session_on_the_owner_after_finalize(tmp_path, monkeypatch, reason):
     db, authority, calls = await _owner(tmp_path, monkeypatch)
@@ -338,7 +360,7 @@ async def test_a_close_pending_at_gateway_stop_completes_after_restart(tmp_path,
     cancel_session_input(db, epoch=authority.epoch, admission_id=row['admission_id'])
 
     db2, restarted, calls2 = await _restarted_owner(tmp_path, monkeypatch, db)
-    recover_local_sessions(restarted, schedule=True)
+    await recover_local_sessions(restarted, schedule=True)
     await async_wait_until(lambda: len(calls2) == 2, timeout=10)
     assert db2.get_session('chat')['end_reason'] == 'cli_close'
     assert [name for name, _ in calls2] == ['commit', 'finalize']
@@ -365,7 +387,7 @@ async def test_a_viewer_reattaching_cancels_the_persisted_close(tmp_path, monkey
     # And after a restart (the turn settled meanwhile) nothing re-arms it.
     cancel_session_input(db, epoch=authority.epoch, admission_id=row['admission_id'])
     db2, restarted, calls2 = await _restarted_owner(tmp_path, monkeypatch, db)
-    recover_local_sessions(restarted, schedule=True)
+    await recover_local_sessions(restarted, schedule=True)
     assert restarted.sessions['chat'].task is None  # no queued turn and no close: no drain at all
     assert restarted.pending_closes == {} and calls2 == []
     assert db2.get_session('chat')['ended_at'] is None
@@ -418,7 +440,7 @@ async def test_a_cancelled_older_close_keeps_the_newer_close_durable(tmp_path, m
     # The old owner's memory is gone; the next authority recovers B and ends the row.
     cancel_session_input(db, epoch=authority.epoch, admission_id=row['admission_id'])
     db2, restarted, calls2 = await _restarted_owner(tmp_path, monkeypatch, db)
-    recover_local_sessions(restarted, schedule=True)
+    await recover_local_sessions(restarted, schedule=True)
     await async_wait_until(lambda: len(calls2) == 2, timeout=10)
     assert db2.get_session('chat')['end_reason'] == 'close_b'
     assert db2.get_session('chat')['ended_at'] is not None
@@ -466,7 +488,7 @@ async def test_a_reattach_during_the_close_write_cancels_it_durably(tmp_path, mo
 
     cancel_session_input(db, epoch=authority.epoch, admission_id=row['admission_id'])
     db2, restarted, calls2 = await _restarted_owner(tmp_path, monkeypatch, db)
-    recover_local_sessions(restarted, schedule=True)
+    await recover_local_sessions(restarted, schedule=True)
     assert restarted.pending_closes == {} and calls2 == []
     assert db2.get_session('chat')['ended_at'] is None
 
@@ -517,7 +539,7 @@ async def test_a_close_stored_before_a_hard_kill_ends_the_row_past_the_unknown_t
     from hermes_state_runtime import get_session_admission
 
     db2, restarted, calls2, row = await _hard_killed_mid_turn(tmp_path, monkeypatch)
-    recover_local_sessions(restarted, schedule=True)
+    await recover_local_sessions(restarted, schedule=True)
     await async_wait_until(lambda: len(calls2) == 2, timeout=10)
     assert db2.get_session('chat')['end_reason'] == 'cli_close'
     assert db2.get_session('chat')['ended_at'] is not None

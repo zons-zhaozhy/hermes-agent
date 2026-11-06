@@ -104,6 +104,21 @@ def test_fresh_cache_short_circuits(
     assert out.startswith("\n")  # 期望: 追加式段以换行衔接段本体
 
 
+def test_utf8_bom_cache_short_circuits(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Windows 工具写入的 BOM 缓存仍是新鲜缓存,直接复用而不是触库重建。"""
+    cache = _wire(monkeypatch, tmp_path, [])
+    cache.write_text(
+        json.dumps({"generated": time.time() - 60, "text": "BOM_TIP"}, ensure_ascii=False),
+        encoding="utf-8-sig",
+    )
+    monkeypatch.setattr(
+        dt, "_aggregate_tips", lambda: (_ for _ in ()).throw(AssertionError("不应触库"))
+    )
+    assert "BOM_TIP" in dt.render({"platform": "cli"})
+
+
 def test_db_missing_fail_open(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

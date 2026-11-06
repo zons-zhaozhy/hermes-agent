@@ -47,6 +47,7 @@ def _probe_root(tmp_path):
     shutil.copy2(real / "run_tests_parallel.py", scripts)
     shutil.copy2(real / "run_tests_launch.py", scripts)
     shutil.copy2(real / "run_tests_fork_child.py", scripts)
+    shutil.copy2(real / "run_tests_telemetry.py", scripts)
     # The runner shares the platforms() spec resolver with the CI lane selector.
     shutil.copy2(real / "ci" / "list_os_marked_tests.py", scripts / "ci")
     return root
@@ -307,6 +308,7 @@ def _load_runner(name: str):
     spec = importlib.util.spec_from_file_location(
         name, Path(__file__).resolve().parents[2] / "scripts" / "run_tests_parallel.py")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -592,13 +594,7 @@ def test_interpreter_crash_is_reported_as_a_crash_not_as_no_tests_ran(tmp_path: 
 
 def test_parse_summary_counts_setup_errors() -> None:
     """"41 passed, 7 errors" parses both counts (the input the Summary relies on)."""
-    import importlib.util
-
-    runner = Path(__file__).resolve().parents[2] / "scripts" / "run_tests_parallel.py"
-    spec = importlib.util.spec_from_file_location("_rtp_errors_probe", runner)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    mod = _load_runner("_rtp_errors_probe")
     fake = (
         "tests/tools/test_plugin_guard.py ....EEEEEEE\n"
         "ERROR tests/tools/test_plugin_guard.py::test_x - RuntimeError: boom\n"
@@ -809,12 +805,7 @@ def test_off_host_note_names_platforms_specs_that_exclude_this_host(tmp_path: Pa
 
 def test_slices_partition_the_suite_exactly_even_with_different_duration_caches(capsys) -> None:
     """Each CI slice job restores its own duration cache; the slices must still cover every file once."""
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "rtp_slices", Path(__file__).resolve().parents[2] / "scripts" / "run_tests_parallel.py")
-    rtp = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(rtp)
+    rtp = _load_runner("rtp_slices")
     root = Path("/repo")
     files = [root / f"tests/t_{i:03d}.py" for i in range(101)]
     caches = [{f"tests/t_{i:03d}.py": float(i) for i in range(101)}, {"tests/t_000.py": 500.0}, {}]

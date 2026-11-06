@@ -624,6 +624,9 @@ this Hermes understands still loads with a warning.
 | `license` | str | SPDX-style license id (e.g. `MIT`). |
 | `homepage` | str | Project URL. |
 | `tags` | list of str | Free-form discovery tags (e.g. `[gateway, telegram]`). |
+| `gate_suites` | list | Guard taxonomy declaration: one or more of `intent`, `execution`, `output`, `completion`, and `integrity`. A guard may span phases. For bundled guards this is cross-checked against declared Gate Plane hooks; runtime hook registration remains authoritative, so metadata cannot hide an executable suite. Invalid entries warn and are dropped. |
+| `gate_policy` | str | Guard health policy: `required` (baseline; disabled, failed, or hollow registration makes its suites `unknown`) or `advisory` (opt-in; deliberate disable stays visible but healthy, while load failure or a hollow registration still makes its suites `unknown`). Invalid values warn and fail safe to `required`. |
+| `gate_kind` | str | Guard protection mechanics: `enforcement` (owns a runtime decision hook), `observer` (owns non-blocking evidence such as `post_llm_call`, `post_tool_call`, or session lifecycle), or `manual` (CLI/offline audit). Manual guards are reported separately, never counted as runtime-active, and a required manual guard without fresh evidence remains `unknown`. Invalid values warn and fall back to hook inference. |
 | `provides_locales` | list | Language pack declaration: ids (`- pl`) or `{id, endonym, rtl}` mappings whose `locales/<id>[.tui\|.desktop].yaml` the loader registers automatically — see [Ship a language pack](#ship-a-language-pack). |
 | `requires_auth` | list of str | Providers whose sign-in the plugin uses through Hermes (today: `openai-codex`). Required by `credentialed_provider_request`; shown at install and in `hermes plugins show`. See [Use the user's Codex sign-in](#use-the-users-codex-sign-in-core-made-requests). |
 | `oauth` | list of mappings | OAuth clients the plugin uses through Hermes: `id`, `authorize_url`, `token_url`, `scopes`, `client_id_env`, optional `client_secret_env`, `hosts`, optional `authorize_params`. Signed in with `hermes auth add <plugin>:<id>`, used through `credentialed_provider_request`. See [Use your own OAuth client](#use-your-own-oauth-client-google-and-other-apis). |
@@ -637,6 +640,9 @@ api_version: 1
 license: MIT
 homepage: https://github.com/owner/my-plugin
 tags: [gateway, demo]
+gate_suites: [intent, output]
+gate_policy: advisory
+gate_kind: enforcement
 requires_plugins:
   - id: other-plugin
     version_range: ">=1.0,<2"
@@ -933,6 +939,7 @@ def register(ctx):
 - `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below
 - `ctx.dispatch_tool(name, arguments)` — call any other tool (built-in or from another plugin) with the parent agent's context (approvals, credentials, task_id) wired up automatically. Useful from slash-command handlers that need to invoke `terminal`, `read_file`, or any other tool as if the model had called it directly.
 - `ctx.get_config()` / `ctx.set_config()` access only this plugin's settings namespace; `ctx.state` stores plugin-owned runtime data under the active profile.
+- `ctx.record_manual_gate_audit()` stores a profile-scoped receipt for a hook-free manual guard (see [Manual guard audit receipts](#manual-guard-audit-receipts))
 - If this function crashes, the plugin is disabled but Hermes continues fine
 
 **`dispatch_tool` example — a slash command that runs a tool:**
@@ -1521,6 +1528,8 @@ def register(ctx):
     ctx.register_hook("transform_llm_output", redact, hold_stream=True)
 ```
 
+When several plugins register `transform_llm_output`, Hermes runs them in registration order. Each callback receives the prior rewrite as `response_text` and the immutable `original_response_text`; returning `None` leaves the chain unchanged.
+
 Every session in the profile that loads the plugin then stops streaming its replies: the user sees the typing or thinking indicator, and then only your rewritten final, on the surfaces listed in the reference. Commentary between tool calls is dropped for those turns, and if your hook raises or times out the user gets a short "reply withheld" notice instead of the original. Leave the flag off for cosmetic transforms (footers, styling) so replies keep streaming. Details per surface: [Holding the reply until it is rewritten](../../user-guide/features/hooks.md#hold-stream).
 
 ### Hook reference
@@ -1748,6 +1757,41 @@ def register(ctx):
 ```
 
 After registration, users can run `hermes my-plugin status`, `hermes my-plugin config`, etc.
+
+### Manual guard audit receipts
+
+A hook-free guard is manual tooling, not runtime protection. It stays `unknown` until its own
+audit writes a real receipt. Declare the required subject and freshness window in the manifest:
+
+```yaml
+tags: [guard]
+hooks: []
+gate_kind: manual
+gate_policy: required
+gate_audit:
+  subject: repo:/absolute/path/to/project
+  ttl_seconds: 3600
+```
+
+After the audit command finishes, record its actual outcome:
+
+```python
+def _handler(args, ctx):
+    code, report = run_audit(args.repo)
+    status = "pass" if code == 0 else "fail" if code == 1 else "error"
+    ctx.record_manual_gate_audit(
+        status=status,
+        subject=f"repo:{Path(args.repo).resolve()}",
+        fingerprint=f"head:{report['head']}",
+        detail="" if code == 0 else report["violations"][0],
+    )
+    return code
+```
+
+The receipt is stored under the active profile in `plugin-data` and is payload-free. Gate Plane
+marks the manual guard healthy only when a fresh `pass` receipt matches the declared subject.
+`fail`, `error`, stale, unreadable, wrong-subject, disabled, and missing evidence remain visible
+degradation; enabled/imported state alone never becomes an active runtime-guard claim.
 
 **Memory provider plugins** use a convention-based approach instead: add a `register_cli(subparser)` function to your plugin's `cli.py` file. The memory plugin discovery system finds it automatically — no `ctx.register_cli_command()` call needed. See the [Memory Provider Plugin guide](../memory-provider-plugin.md#adding-cli-commands) for details.
 

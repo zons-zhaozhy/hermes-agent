@@ -1,14 +1,67 @@
 """Private local creation receipts in the canonical runtime transaction owner."""
+import hashlib
 import json
 import threading
 import time
 from collections import OrderedDict
+from typing import Any
 
 from hermes_state_runtime import RuntimeStoreError, _epoch, _json
 
 POLICY_PREFIX = 'gateway.local_policy.v1:'
+CONFIG_BLOB_PREFIX = 'gateway.local_config_blob.v1.'
 API_BINDING_PREFIX = 'gateway.api.binding.v1.'
 API_DECLARED_PREFIX = 'gateway.api.conversation.v1.'
+_CONFIG_REF_FIELD = '$hermes_local_config_ref'
+
+
+def _config_ref(config_json: str) -> dict[str, str]:
+    digest = hashlib.sha256(config_json.encode('utf-8')).hexdigest()
+    return {_CONFIG_REF_FIELD: digest}
+
+
+def _is_config_ref(value: object) -> bool:
+    return (isinstance(value, dict) and set(value) == {_CONFIG_REF_FIELD}
+            and isinstance(value[_CONFIG_REF_FIELD], str))
+
+
+def _encode_local_receipt(conn: Any, receipt: dict[str, Any]) -> str:
+    """Encode a receipt, replacing its large frozen config with a content-addressed blob.
+
+    The blob write is part of the caller's transaction. A hash collision is refused rather than
+    silently aliasing two different launch configs.
+    """
+    policy = receipt.get('policy') if isinstance(receipt, dict) else None
+    config_json = policy.get('config_json') if isinstance(policy, dict) else None
+    if not isinstance(config_json, str) or _is_config_ref(config_json):
+        return _json(receipt)
+    ref = _config_ref(config_json)
+    key = CONFIG_BLOB_PREFIX + ref[_CONFIG_REF_FIELD]
+    conn.execute('INSERT OR IGNORE INTO state_meta(key,value) VALUES(?,?)', (key, config_json))
+    saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
+    if saved is None or saved[0] != config_json:
+        raise RuntimeStoreError('storage_unavailable')
+    return _json({**receipt, 'policy': {**policy, 'config_json': ref}})
+
+
+def _decode_local_receipt(conn: Any, raw: str) -> dict[str, Any]:
+    """Decode both legacy inline configs and v1 content-addressed receipts."""
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError('invalid receipt')
+    policy = value.get('policy')
+    config_json = policy.get('config_json') if isinstance(policy, dict) else None
+    if not _is_config_ref(config_json):
+        return value
+    digest = config_json[_CONFIG_REF_FIELD]
+    row = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                       (CONFIG_BLOB_PREFIX + digest,)).fetchone()
+    if row is None:
+        raise RuntimeStoreError('storage_unavailable')
+    restored = row[0]
+    if not isinstance(restored, str) or _config_ref(restored)[_CONFIG_REF_FIELD] != digest:
+        raise RuntimeStoreError('storage_unavailable')
+    return {**value, 'policy': {**policy, 'config_json': restored}}
 
 
 def commit_local_session(db, *, epoch, receipt):
@@ -33,7 +86,7 @@ def commit_local_session(db, *, epoch, receipt):
         old = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
         if old is not None:
             try:
-                saved = json.loads(old[0])
+                saved = _decode_local_receipt(conn, old[0])
                 same = all(saved[k] == receipt[k] for k in (
                     'profile_id', 'principal_id', 'request_id', 'session_id', 'route'))
                 same = same and same_create_retry(saved['policy'], receipt['policy']['request_json'], request)
@@ -74,7 +127,8 @@ def commit_local_session(db, *, epoch, receipt):
              _json(entry['origin']), started))
         conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?)",
                      (route, _json(entry), started))
-        conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, encoded))
+        conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
+                     (key, _encode_local_receipt(conn, receipt)))
         if on_create is not None:
             on_create.publish()  # before the row is visible, so no reader lazy-loads around it
         return receipt
@@ -388,17 +442,51 @@ def annotate_local_lineages(sessions, heads):
 
 
 def local_receipt(db, session_id):
-    with db._read_ctx() as conn:
-        row = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + session_id,)).fetchone()
-    if row is None:
-        raise RuntimeStoreError('storage_unavailable')
+
     try:
-        value = json.loads(row[0])
-        if not isinstance(value, dict):
-            raise ValueError('invalid receipt')
-        return value
-    except (TypeError, ValueError) as exc:
+        with db._read_ctx() as conn:
+            row = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                               (POLICY_PREFIX + session_id,)).fetchone()
+            if row is None:
+                raise RuntimeStoreError('storage_unavailable')
+            return _decode_local_receipt(conn, row[0])
+    except (RuntimeStoreError, TypeError, ValueError) as exc:
         raise RuntimeStoreError('storage_unavailable') from exc
+
+
+def compact_local_config_receipts(db) -> int:
+    """Re-encode legacy inline launch configs onto content-addressed blobs."""
+    def write(conn):
+        compacted = 0
+        rows = conn.execute('SELECT key,value FROM state_meta WHERE key GLOB ?',
+                            (POLICY_PREFIX + '*',)).fetchall()
+        for key, raw in rows:
+            receipt = _decode_local_receipt(conn, raw)
+            encoded = _encode_local_receipt(conn, receipt)
+            if encoded != raw:
+                conn.execute('UPDATE state_meta SET value=? WHERE key=?', (encoded, key))
+                compacted += 1
+        return compacted
+    return db._execute_write(write)
+
+
+def prune_orphan_local_config_blobs(db) -> int:
+    """Delete config blobs whose last local receipt reference has gone."""
+    def write(conn):
+        referenced = set()
+        for (raw,) in conn.execute('SELECT value FROM state_meta WHERE key GLOB ?',
+                                   (POLICY_PREFIX + '*',)):
+            receipt = json.loads(raw)
+            config = (receipt.get('policy', {}) if isinstance(receipt, dict) else {}).get('config_json')
+            if _is_config_ref(config):
+                referenced.add(config[_CONFIG_REF_FIELD])
+        rows = conn.execute('SELECT key FROM state_meta WHERE key GLOB ?',
+                            (CONFIG_BLOB_PREFIX + '*',)).fetchall()
+        orphans = [(key,) for (key,) in rows if key[len(CONFIG_BLOB_PREFIX):] not in referenced]
+        if orphans:
+            conn.executemany('DELETE FROM state_meta WHERE key=?', orphans)
+        return len(orphans)
+    return db._execute_write(write)
 
 
 def end_idle_local_session(db, *, epoch, session_id, target_id, reason):

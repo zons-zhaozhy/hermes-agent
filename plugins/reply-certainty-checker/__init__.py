@@ -69,7 +69,7 @@ def judge_reply_side(text: str) -> dict[str, Optional[bool]]:
     """一次调用同时判 uncertain/needs_audit/done_claim/has_boundary/violation/naming_drift/jargon_coined；异常 → 全 None。
 
     同一回复文本进程内只发起一次真实调用（缓存命中直接返回），供
-    reply-certainty-checker / completion-boundary-audit 两个
+    reply-certainty-checker / finish_guard.completion_boundary_audit 两个
     transform_llm_output 钩子共享，消除重复调用。
 
     Contract:

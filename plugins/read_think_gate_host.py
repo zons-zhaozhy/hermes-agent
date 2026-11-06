@@ -44,6 +44,11 @@ _terminal_writes_file = _gate._terminal_writes_file
 _terminal_is_investigation = _gate._terminal_is_investigation
 detect_complexity = _gate.detect_complexity
 _complexity_cache = _gate._complexity_cache
+_classify_intent_via_llm = _gate._classify_intent_via_llm
+_fallback_detect_intent = _gate._fallback_detect_intent
+INTENT_READ_ONLY = _gate.INTENT_READ_ONLY
+INTENT_MODIFY = _gate.INTENT_MODIFY
+INTENT_AMBIGUOUS = _gate.INTENT_AMBIGUOUS
 
 # Module-level attribute proxy for the two classifier seams: ``patch(host,
 # "_classify_via_llm")`` writes must reach the implementation module's global
@@ -51,7 +56,12 @@ _complexity_cache = _gate._complexity_cache
 # __getattr__ only covers reads — patch() would park the mock in this module's
 # dict where the gate never looks — so the module class is swapped to forward
 # BOTH directions.
-_FORWARDED_ATTRS = ("_classify_via_llm", "_fallback_detect")
+_FORWARDED_ATTRS = (
+    "_classify_via_llm",
+    "_fallback_detect",
+    "_classify_intent_via_llm",
+    "_fallback_detect_intent",
+)
 
 
 class _HostModule(ModuleType):

@@ -104,11 +104,16 @@ def _publish_stable(monkeypatch, t):
                                 'check-explicit', 'check-missing', 'check-upstream'])
 def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkeypatch, case, capsys):
     t = update_tree
+    from hermes_cli import update_cmd_posix_pause, update_custody
+
     git(t.clone, 'checkout', '-q', 'main')
     t.args.channel = 'main'
     t.args.gateway = True
     t.args.check = case.startswith('check-')
     monkeypatch.setattr(cli_main, '_sync_with_upstream_if_needed', _sync_with_upstream_if_needed)
+    # Ref/completion identity is independent of host service discovery; keep the test away from
+    # launchd/systemd while the global subprocess guard below remains strict.
+    monkeypatch.setattr(update_cmd_posix_pause, 'pause_at_commit_point', lambda: None)
     if case in {'explicit', 'check-explicit'}:
         git(t.origin, 'branch', 'chosen', t.wanted)
         t.args.branch = 'chosen'
@@ -164,6 +169,8 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
             pushes.append(result.returncode)
         return result
 
+    monkeypatch.setattr(update_custody, 'run_git', lambda git_cmd, git_args, **kwargs: fault(
+        [*git_cmd, *git_args], **kwargs))
     monkeypatch.setattr(subprocess, 'run', fault)
     fails = case in {'missing', 'check-missing', 'no-move', 'wrong-branch',
                      'fork-upstream-wrong-branch', 'fork-upstream-reverted',
@@ -247,7 +254,7 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
     # watchdog), never subprocess.run, so the refusal above must also be planted at the
     # custody seam — the same pattern the transport tests below use. Both seams are
     # covered: custody.run(argv, **kwargs) and _run_owner_watched(argv, kwargs_dict);
-    # ``inherit_lock`` is custody-only and is stripped before forwarding.
+        # ``inherit_lock``/``watch_owner`` are custody-only and stripped before forwarding.
     from hermes_cli import update_custody
 
     def guarded_custody_run(command, *args, **kwargs):
@@ -259,6 +266,7 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
             calls.append(command)
             return subprocess.CompletedProcess(command, 128, stdout='', stderr='fixture: raw SHA wants disabled')
         kwargs.pop('inherit_lock', None)
+        kwargs.pop('watch_owner', None)
         return guarded_run(command, *args, **kwargs)
 
     monkeypatch.setattr(update_custody, 'run', guarded_custody_run)

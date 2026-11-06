@@ -455,8 +455,8 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message; the first valid `{"action": "block", "message": ...}` ends the turn before any inference request. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform`, `side_question_token` | Full prompt, response, and history. |
-| `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
-| `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
+| `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; non-empty strings compose in registration order, and each callback sees the prior rewrite. | `response_text`, `original_response_text`, `session_id`, `model`, `platform`, `turn_id`, `cwd` | Full final assistant text. |
+| `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths`, `cwd` | Draft response, changed paths, and workspace. |
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
 | `post_api_request` | Observer | After normalized provider success; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `finish_reason`, `message_count`, `response_model`, `response`, `usage`, `assistant_message`, `assistant_content_chars`, `assistant_tool_call_count` | Sanitized `response` is available, but raw normalized `assistant_message` may contain model/user content; `usage` is accounting data. |
 | `api_request_error` | Observer | On each failed provider attempt; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `status_code`, `retry_count`, `max_retries`, `retryable`, `reason`, `error`, `request` | Error text may contain provider/user data; `request` is intended to be sanitized. |
@@ -1762,21 +1762,25 @@ Fires **once per turn** after the tool-calling loop completes and the model has 
 ```python
 def my_callback(
     response_text: str,
+    original_response_text: str,
     session_id: str,
     model: str,
     platform: str,
+    cwd: str,
     **kwargs,
 ) -> str | None:
 ```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `response_text` | `str` | The assistant's final response text for this turn. |
+| `response_text` | `str` | The current text in the rewrite chain: the original response for the first callback, then the previous callback's result. |
+| `original_response_text` | `str` | The assistant's original unmodified final response for this turn. |
 | `session_id` | `str` | Session ID for this conversation (may be empty for one-shot runs). |
 | `model` | `str` | Model name that produced the response (e.g. `anthropic/claude-sonnet-4.6`). |
 | `platform` | `str` | Delivery platform (`cli`, `telegram`, `discord`, …; empty when unset). |
+| `cwd` | `str` | Workspace bound to this turn; evidence gates should key verification state by it. |
 
-**Return value:** Non-empty `str` to replace the response text, `None` or empty string to leave it unchanged. **First non-empty string wins** when multiple plugins register. Unlike the tool and terminal transforms, an empty string is not accepted as a replacement.
+**Return value:** A non-empty `str` becomes the current text for the next callback, `None` or an empty string leaves the current text unchanged. Every registered callback runs in order, so separate gates can append or rewrite without hiding each other. Unlike the tool and terminal transforms, an empty string is not accepted as a replacement.
 
 **Use cases:** Apply a personality/vocabulary transform (pirate-speak, Spongebob), redact user-specific identifiers from the final text, append a project-specific signature footer, enforce a house style guide without burning tokens on SOUL instructions.
 
@@ -1800,7 +1804,7 @@ def register(ctx):
     ctx.register_hook("transform_llm_output", spongebob)
 ```
 
-The hook is guarded on a non-empty, non-interrupted response — it will not fire on stop-button interrupts or empty turns. Exceptions are logged as warnings and do not break agent execution.
+The hook is guarded on a non-empty, non-interrupted response — it will not fire on stop-button interrupts or empty turns. A callback that raises or times out does not stop later transforms; the final text gets a visible `[插件门禁不可用 / UNKNOWN]` marker naming the failed callback.
 
 #### Holding the reply until it is rewritten (`hold_stream=True`) {#hold-stream}
 
@@ -1824,7 +1828,7 @@ What else is held:
 
 - **Commentary** (model text sent between tool calls, `display.interim_assistant_messages`) never passes through `transform_llm_output`, so a held turn drops it. It stays in the model's context but is stored hidden, so resuming or reopening the session (TUI, desktop app, dashboard, classic CLI) does not show it either. The same goes for every other model text the user never got: an answer Hermes sent back for another try (late language-server errors, verify-on-stop), a reply cut by the output limit before its continuation, a call to an unknown tool.
 - **Every way a turn ends passes through the hook.** A reply cut by the output limit on every continuation, an iteration-budget summary, a provider or compression error, an interrupt: whatever text the turn ends with reaches the user only after `transform_llm_output` saw it, and model text is stored as the rewrite.
-- **A failing hook withholds the reply.** If no hook rewrote the reply and one raised or timed out, the user gets a short "reply withheld" notice, never the original.
+- **A failing held hook withholds the reply.** The user gets a short "reply withheld" notice instead of the original or a partial rewrite chain.
 - **The hook set is fixed for the turn.** A held turn runs the `transform_llm_output` hooks that were loaded when it started, even if plugins are re-discovered mid-turn.
 - **Tool progress and reasoning** are not the reply and keep their own settings (`display.tool_progress`, `display.show_reasoning`). Turn them off as well if model output the plugin never saw must not reach the user.
 

@@ -20,10 +20,17 @@ outcome-collector 的 outcomes.db，WAL + 进程内锁）。跨会话、跨进�
 
 import json
 import logging
+import re
 import sqlite3
 import threading
 import time
 from pathlib import Path
+
+from plugins.guards.terminal_semantics import (
+    is_read_command,
+    redirect_writes_file,
+    sed_writes_file,
+)
 
 logger = logging.getLogger("hermes.plugin.block-escalation")
 
@@ -31,19 +38,6 @@ _WINDOW_SECS = 1800          # 同意图重复被拦的判定时间窗
 _STREAK_LIMIT = 2            # 窗口内第 2 次即升级（用户拍板：连续 2 次同因=停）
 _STATE_CAP = 512             # 库内指纹行数上限（防膨胀，驱逐最旧）
 
-# 只读命令白名单：段首词命中且无落盘重定向时，该段判为只读。
-# 未列出的命令一律按写意图计数（保守方向：漏计升级 < 误伤防线）。
-_READ_CMDS = frozenset({
-    "ls", "stat", "file", "find", "grep", "rg", "ag", "cat", "head", "tail",
-    "wc", "echo", "printf", "date", "pwd", "whoami", "uname", "ps", "pgrep",
-    "lsof", "df", "du", "which", "type", "printenv", "id", "groups",
-    "hostname", "sw_vers", "sysctl", "uptime", "jq", "awk", "sed", "cut",
-    "sort", "uniq", "tr", "column", "diff", "cmp", "comm", "md5", "md5sum",
-    "shasum", "sha1sum", "sha256sum", "base64", "xxd", "strings", "nm",
-    "otool", "exiftool", "sleep", "true", "false", "test", "[", "cd",
-    "export", "set", "unset", "alias", "unalias", "wait", "mdfind", "mdls",
-    "pbpaste", "tree", "history", "vm_stat", "iostat", "netstat",
-})
 _WRAPPERS = frozenset({"sudo", "nohup", "command", "time", "nice", "env", "exec"})
 _GIT_READ_SUBCMDS = frozenset({
     "status", "log", "diff", "show", "rev-list", "branch", "blame",
@@ -55,7 +49,8 @@ _SQL_WRITE_VERBS = (
     "INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "REPLACE",
     "ATTACH", "DETACH", "VACUUM", "PRAGMA",
 )
-_HARMLESS_SINKS = frozenset({"/dev/null", "/dev/stderr", "/dev/stdout"})
+_BLOCK_LABEL_RE = re.compile(r"\[([^\[\]\r\n]{1,96})\]")
+_GENERIC_BLOCK_LABELS = frozenset({"护栏聚合"})
 
 # 升级终止提示前缀。模块级常量供 cron/scheduler.py 探测：含此标记的
 # final_response 说明 agent 被拦截升级终止而非正常完成，scheduler 须按
@@ -143,8 +138,6 @@ def _redirects_write(seg: str) -> bool:
     语义对齐: owner 口径在原实现（append/非 fd_dup/非进程替换/非 sink）
     之上增加空目标与数字字面量（SQL 比较符 price > 9.99）排除,只读
     分类更准。"""
-    from plugins.guards.terminal_semantics import redirect_writes_file
-
     return redirect_writes_file(seg)
 
 
@@ -157,11 +150,9 @@ def _head_index(words: list) -> int:
         if w in _WRAPPERS:
             wi += 1
             continue
-        if "/" in w:
-            base = w.rsplit("/", 1)[-1]
-            if base in _READ_CMDS or base in _WRAPPERS:
-                wi += 1
-                continue
+        if ("/" in w and w.rsplit("/", 1)[-1] in _WRAPPERS):
+            wi += 1
+            continue
         return wi
     return wi
 
@@ -226,11 +217,13 @@ def _segment_is_readonly(seg: str) -> bool:
         return _fetch_is_readonly(words)
     wi = _head_index(words)
     head = words[wi] if wi < len(words) else ""
+    if head == "sed":
+        return not sed_writes_file(seg)
     if head == "git":
         return _git_is_readonly(words, wi)
     if head in ("sqlite3", "psql"):
         return _sql_is_readonly(words, wi)
-    return head in _READ_CMDS
+    return is_read_command(head)
 
 
 def _fetch_is_readonly(words: list) -> bool:
@@ -282,23 +275,60 @@ def _extract_paths(text: str) -> tuple:
     return tuple(sorted(set(pool))[:8])
 
 
-def _intent_fingerprint(tool_name: str, args: dict) -> tuple:
+def _block_reason_family(error_type: str, error_message: str, result: object) -> str:
+    """Contract: Preconditions: observer 复播了 blocked 调用；Postconditions:
+    返回稳定阻断原因族。runtime guardrail code 优先；插件文案用方括号护栏名，
+    聚合头不计而成员名保留；无标签时用首行并归一数字；无信息返回空串。"""
+    try:
+        parsed = json.loads(result) if isinstance(result, str) else result
+    except (TypeError, json.JSONDecodeError):
+        parsed = None
+    if isinstance(parsed, dict):
+        guardrail = parsed.get("guardrail")
+        raw_code = (
+            guardrail.get("code") if isinstance(guardrail, dict)
+            else parsed.get("code")
+        )
+        if isinstance(raw_code, str) and raw_code.strip():
+            return f"{error_type or 'blocked'}:{raw_code.strip()}"
+
+    labels = sorted({
+        label.strip()
+        for label in _BLOCK_LABEL_RE.findall(error_message or "")
+        if label.strip() and label.strip() not in _GENERIC_BLOCK_LABELS
+    })
+    if labels:
+        return f"{error_type or 'blocked'}:{'|'.join(labels)}"
+
+    first_line = next(iter((error_message or "").strip().splitlines()), "")
+    if not first_line:
+        return error_type.strip()
+    family = re.sub(r"\d+", "#", re.sub(r"\s+", " ", first_line))[:200]
+    return f"{error_type or 'blocked'}:{family}"
+
+
+def _intent_fingerprint(tool_name: str, args: dict,
+                        reason_family: str = "") -> tuple:
     """Contract: Preconditions: args 为 dict；Postconditions: 返回意图指纹
-    （目标路径元组，或退化 token 元组）；无内容时返回 ()（不参与计数）。"""
+    （目标路径元组，或退化 token 元组）；blocked 可附加稳定原因族；
+    无内容时返回 ()（不参与计数）。"""
+    fp: tuple = ()
     if tool_name == "terminal":
         cmd = str(args.get("command") or "")
-        return _extract_paths(cmd) or tuple(sorted(set(cmd.split()))[:12])
+        fp = _extract_paths(cmd) or tuple(sorted(set(cmd.split()))[:12])
     if tool_name in ("write_file", "patch", "edit"):
-        return (str(args.get("path") or ""),)
+        fp = (str(args.get("path") or ""),)
     if tool_name in ("read_file", "search_files"):
         # 读工具指纹=path（或 pattern+path）——error/blocked 循环的观测键。
         # 曾恒返回 ()，读循环从不参与计数，失败观测层对读通道结构性失明。
         target = str(args.get("path") or "")
         pattern = str(args.get("pattern") or "")
-        return (f"{tool_name}:{target or pattern}",)
+        fp = (f"{tool_name}:{target or pattern}",)
     if tool_name == "execute_code":
-        return _extract_paths(str(args.get("code") or ""))
-    return ()
+        fp = _extract_paths(str(args.get("code") or ""))
+    if reason_family and fp:
+        return (*fp, f"reason:{reason_family}")
+    return fp
 
 
 def _fp_key(fp: tuple) -> str:
@@ -308,12 +338,17 @@ def _fp_key(fp: tuple) -> str:
 
 
 def _note_blocked(tool_name: str, args: dict, session_id: str = "",
-                  kind: str = "blocked") -> None:
+                  kind: str = "blocked", error_type: str = "",
+                  error_message: str = "", result: object = None) -> None:
     """Contract: Preconditions: 一次「未成功落地」的工具调用已发生，kind
     区分语义（'blocked'=护栏拦截/'error'=执行失败）；
     Postconditions: 只读命令豁免不计；写意图指纹计数经 _bump_streak 持久化，
     达阈值时按 kind 分流（blocked 升级终止/error 仅观测告警）。"""
-    fp = _intent_fingerprint(tool_name, args)
+    reason_family = (
+        _block_reason_family(error_type, error_message, result)
+        if kind == "blocked" else ""
+    )
+    fp = _intent_fingerprint(tool_name, args, reason_family)
     if not fp:
         return
     if tool_name == "terminal" and _command_is_readonly(
@@ -469,7 +504,12 @@ def _on_post_tool_call(tool_name: str = "", status: str = "", error_type: str = 
     时同指纹清账（成功落地=streak 作废，防误判残留）；纯观察无返回值。"""
     if status in ("blocked", "error"):
         kind = "blocked" if _is_semantic_block(status, kwargs.get("result")) else "error"
-        _note_blocked(tool_name, args or {}, session_id=session_id, kind=kind)
+        _note_blocked(
+            tool_name, args or {}, session_id=session_id, kind=kind,
+            error_type=error_type,
+            error_message=str(kwargs.get("error_message") or ""),
+            result=kwargs.get("result"),
+        )
     elif status == "ok":
         _clear_streak(tool_name, args or {})
 
@@ -486,8 +526,8 @@ def _on_transform_llm_output(response_text: str = "", **kwargs) -> "str | None":
     """Contract: Preconditions: response_text 为本回合 LLM 输出（核心键名）；
     Postconditions: 存在已升级指纹（说明被拦后仍在尝试或继续输出）时追加
     带用户可见终止提示（ESCALATION_MARKER 前缀，cron scheduler 据此按
-    失败记账），否则返回 None（核心契约：first non-None wins——不改写
-    必须返回 None，返回原文会抢占槽位短路其后全部 transform 插件）。"""
+    失败记账），否则返回 None。transform 链会继续执行后续插件；不改写
+    时必须返回 None，不能伪报成功。"""
     output = response_text or ""
     sid = str(kwargs.get("session_id") or "")
     if not _escalated.get(sid):

@@ -101,14 +101,22 @@ def _clone_background_review_messages(messages):
     return [_clone_message_for_send(message) for message in messages]
 
 
-def _invoke_hook_safely(name: str, logger: logging.Logger, **kwargs) -> list:
+_TRANSFORM_DISPATCH_UNAVAILABLE_MARKER = (
+    "\n\n[插件门禁不可用 / UNKNOWN] transform_llm_output 分发失败，"
+    "回复改写链未执行完，不能视为通过。请检查插件加载日志。"
+)
+
+
+def _invoke_hook_safely(
+    name: str, logger: logging.Logger, *, failure_text: str = "", **kwargs,
+) -> list:
     """Fire a lifecycle plugin hook; a failing hook is logged, never fatal."""
     try:
         from hermes_cli.lifecycle import invoke_hook
         return invoke_hook(name, **kwargs)
     except Exception as exc:
         logger.warning("%s hook failed: %s", name, exc)
-        return []
+        return [failure_text] if failure_text else []
 
 
 def _guarded_cleanup(label: str, fn: Callable[[], Any], errors: list[str], logger) -> None:
@@ -532,14 +540,24 @@ def apply_llm_output_transform(
     if platform is None:
         platform = getattr(agent, "platform", None) or ""
     transformed, pre_transform = False, None
-    payload = dict(response_text=final_response, session_id=agent.session_id or "", model=agent.model,
-                   platform=platform, turn_id=turn_id)  # turn_id: per-turn identity for the hook callback gate
+    payload = dict(
+        response_text=final_response,
+        session_id=agent.session_id or "",
+        model=agent.model,
+        platform=platform,
+        turn_id=turn_id,
+        cwd=getattr(agent, "session_cwd", None) or os.getcwd(),
+    )  # turn_id: per-turn identity for the hook callback gate
     held = getattr(agent, "_held_transforms", None) if getattr(agent, "_hold_stream", False) else None
     if held:
         rewrite = _run_held_transforms(held, payload, logger)
     else:
-        # First hook to return a string wins; None/empty leaves the text unchanged.
-        rewrite = next((r for r in _invoke_hook_safely("transform_llm_output", logger, **payload)
+        # PluginManager composes non-empty rewrites in registration order.
+        rewrite = next((r for r in _invoke_hook_safely(
+                            "transform_llm_output", logger,
+                            failure_text=final_response + _TRANSFORM_DISPATCH_UNAVAILABLE_MARKER,
+                            **payload,
+                        )
                         if isinstance(r, str) and r), None)
     if rewrite:
         pre_transform, final_response, transformed = final_response, rewrite, True
@@ -873,22 +891,6 @@ def finalize_turn(
         interrupted=interrupted, messages=messages, review_memory=_should_review_memory,
         review_skills=_should_review_skills, vetoed=vetoed,
     )
-
-    # Background memory/skill review runs AFTER delivery so it never competes with the
-    # user's task. Suppressed by skip_background_review (e.g. cron): the fork costs
-    # ~30K tokens / event with no human-in-the-loop benefit. Best-effort; the review
-    # clones the snapshot structurally so its sanitizers can't reach the live transcript.
-    if (
-        final_response
-        and not interrupted
-        and not getattr(agent, "skip_background_review", False)
-        and (_should_review_memory or _should_review_skills)
-    ):
-        with suppress(Exception):
-            agent._spawn_background_review(
-                messages_snapshot=list(messages), review_memory=_should_review_memory,
-                review_skills=_should_review_skills,
-            )
 
     # With compression.prepare_ahead (default on): near the trigger, write the next compaction summary
     # between turns. No-op otherwise; never raises.

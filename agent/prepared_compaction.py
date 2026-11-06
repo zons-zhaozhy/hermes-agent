@@ -216,6 +216,10 @@ def _blocked_for_platform(agent: Any, origin: str) -> bool:
     used."""
     if origin != "turn-end":
         return False
+    from agent.runtime_session_store import is_worker_process
+
+    if is_worker_process():  # a registered worker exits with this admitted turn
+        return True
     if getattr(agent, "platform", None) in ("cron", "subagent") or getattr(agent, "_delegate_depth", 0) > 0:
         return True
     from agent.oneshot_footprint import agent_is_oneshot

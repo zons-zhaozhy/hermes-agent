@@ -7,3 +7,11 @@ hooks:
   - pre_llm_call
   - pre_tool_call
   - transform_llm_output
+tags:
+  - guard
+gate_suites:
+  - intent
+  - execution
+  - output
+gate_policy: advisory
+gate_kind: enforcement

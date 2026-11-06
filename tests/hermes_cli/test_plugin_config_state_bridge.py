@@ -13,7 +13,7 @@ import pytest
 import hermes_yaml as yaml
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from hermes_cli.plugins import LoadedPlugin, PluginContext, PluginManager, PluginManifest
 
 
 def _context(
@@ -263,6 +263,105 @@ def test_state_quota_failure_preserves_previous_file(isolated_home: Path) -> Non
 
     assert ctx.state.path.read_bytes() == before
     assert ctx.state.get("cursor") == "safe"
+
+
+def _manual_guard_manifest() -> PluginManifest:
+    return PluginManifest(
+        name="fork-guard",
+        key="fork-guard",
+        tags=["guard"],
+        provides_hooks=[],
+        gate_policy="required",
+        gate_kind="manual",
+        gate_audit={"subject": "repo:/tmp/project", "ttl_seconds": 60},
+    )
+
+
+def test_manual_gate_audit_receipt_reaches_profile_gate_report(
+    isolated_home: Path,
+) -> None:
+    manifest = _manual_guard_manifest()
+    manager = PluginManager()
+    manager._plugins[manifest.key] = LoadedPlugin(
+        manifest=manifest,
+        enabled=True,
+        hooks_registered=[],
+    )
+    ctx = PluginContext(manifest, manager)
+
+    receipt = ctx.record_manual_gate_audit(
+        status="pass",
+        subject="repo:/tmp/project",
+        fingerprint="sha256:test",
+    )
+
+    assert ctx.state.path.exists()
+    assert json.loads(ctx.state.path.read_text(encoding="utf-8")) == {
+        "gate_audit": receipt,
+    }
+    report = manager.gate_plane_report()
+    assert report["manual_guards"] == [{
+        "name": "fork-guard",
+        "policy": "required",
+        "reason": "",
+        "status": "pass",
+        "subject": "repo:/tmp/project",
+        "checked_at": receipt["checked_at"],
+        "fingerprint": "sha256:test",
+    }]
+
+
+def test_wrong_subject_manual_gate_receipt_stays_unknown(
+    isolated_home: Path,
+) -> None:
+    manifest = _manual_guard_manifest()
+    manager = PluginManager()
+    manager._plugins[manifest.key] = LoadedPlugin(
+        manifest=manifest,
+        enabled=True,
+        hooks_registered=[],
+    )
+
+    PluginContext(manifest, manager).record_manual_gate_audit(
+        status="pass",
+        subject="repo:/other-project",
+        fingerprint="sha256:test",
+    )
+
+    item = manager.gate_plane_report()["manual_guards"][0]
+    assert item["status"] == "unknown"
+    assert item["reason"] == "audit subject mismatch"
+
+
+def test_unreadable_manual_gate_state_degrades_instead_of_crashing(
+    isolated_home: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    manifest = _manual_guard_manifest()
+    manager = PluginManager()
+    manager._plugins[manifest.key] = LoadedPlugin(
+        manifest=manifest,
+        enabled=True,
+        hooks_registered=[],
+    )
+    ctx = PluginContext(manifest, manager)
+    ctx.state.path.parent.mkdir(parents=True, exist_ok=True)
+    ctx.state.path.write_text("{broken", encoding="utf-8")
+
+    item = manager.gate_plane_report()["manual_guards"][0]
+
+    assert item["status"] == "unknown"
+    assert item["reason"].startswith("audit evidence unreadable:")
+    assert "manual gate evidence" in caplog.text
+
+
+def test_manual_gate_audit_rejects_invalid_payloads(isolated_home: Path) -> None:
+    manifest = _manual_guard_manifest()
+    ctx = PluginContext(manifest, PluginManager())
+
+    with pytest.raises(ValueError, match="manual audit status"):
+        ctx.record_manual_gate_audit(status="healthy", subject="repo:/tmp/project")
+    with pytest.raises(ValueError, match="manual audit subject"):
+        ctx.record_manual_gate_audit(status="pass", subject=" ")
 
 
 def test_corrupt_state_is_not_silently_overwritten(isolated_home: Path) -> None:

@@ -1,6 +1,6 @@
 """Optimistic preparation snapshots revalidated inside the receipt transaction."""
 import json
-from hermes_state_local import POLICY_PREFIX
+from hermes_state_local import POLICY_PREFIX, _decode_local_receipt, _encode_local_receipt
 from hermes_state_local_lineage import validate_local_lineage
 from hermes_state_mutation_guards import require_target_advanceable
 from hermes_state_runtime import RuntimeStoreError
@@ -13,7 +13,7 @@ def local_snapshot(db, conn, session_id):
     row = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + session_id,)).fetchone()
     if row is None:
         raise RuntimeStoreError('runtime_coordination_required')
-    saved = json.loads(row[0])
+    saved = _decode_local_receipt(conn, row[0])
     target = validate_local_lineage(conn, saved)
     require_target_advanceable(db, conn, list({session_id, target}))
     revision = conn.execute('SELECT runtime_revision FROM sessions WHERE id=?', (target,)).fetchone()[0]
@@ -31,11 +31,11 @@ def validate_prepared(db, conn, session_id, prepared):
 
 def _commit_policy(db, conn, session_id, prepared):
     """Write the prepared policy over the snapshot it was derived from and bump the generation."""
-    from hermes_state_runtime import _json
     snapshot = validate_prepared(db, conn, session_id, prepared)
     saved = snapshot['receipt']
     saved['policy'] = prepared['policy']
-    conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(saved), POLICY_PREFIX + session_id))
+    conn.execute('UPDATE state_meta SET value=? WHERE key=?',
+                 (_encode_local_receipt(conn, saved), POLICY_PREFIX + session_id))
     conn.execute('UPDATE sessions SET runtime_generation=runtime_generation+1 WHERE id=?', (session_id,))
     generation = conn.execute('SELECT runtime_generation FROM sessions WHERE id=?', (session_id,)).fetchone()[0]
     return snapshot, generation
@@ -134,7 +134,7 @@ def picks_on(conn, session_id, before=None):
     saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + session_id,)).fetchone()
     if saved is None:
         return picked
-    if 'picks' in (receipt := json.loads(saved[0])):
+    if 'picks' in (receipt := _decode_local_receipt(conn, saved[0])):
         return picked | set(receipt['picks'])
     # The parent's branch receipt names this session and the parent's revision the branch committed at.
     branched = conn.execute(

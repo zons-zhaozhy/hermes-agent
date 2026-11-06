@@ -782,7 +782,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     try:
         _start_gateway_configure_logging(verbosity)
 
-        from gateway.run_startup import recover_left_core_at_gateway_start
+        from gateway.run_startup_recovery import recover_left_core_at_gateway_start
         await asyncio.to_thread(recover_left_core_at_gateway_start)  # before the runner loads platform config
 
         from gateway.run_runtime import initialize_gateway_runtime, pin_launch_store, unpin_launch_store
@@ -877,7 +877,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         from gateway.run_runtime import publish_gateway_runtime_ready, wait_gateway_runtime
         try:
             # READY only once adapters, cron and housekeeping run; missing systemd state just disables watchdog.
-            publish_gateway_runtime_ready(runner)
+            await publish_gateway_runtime_ready(runner)
             runner._start_systemd_watchdog()
             if idle_exit:
                 from gateway.run_idle_exit import arm_unmanaged_idle_exit

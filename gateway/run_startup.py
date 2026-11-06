@@ -39,30 +39,6 @@ from typing import Any, Dict, Optional, Tuple
 logger = logging.getLogger("gateway.run")
 
 
-def recover_left_core_in(home: Path, *, hydrate_secrets: bool = True) -> None:
-    """Install the catalog plugin of every feature that left core (Home Assistant) *home* uses, in
-    *home*'s runtime scope (its config, secrets and allow_lazy_installs); once per process per home.
-    Blocking: call it off the event loop."""
-    from gateway.run import _profile_runtime_scope
-    from hermes_cli.left_core_migration import recover_at_startup
-    with _profile_runtime_scope(Path(home), hydrate_secrets=hydrate_secrets):
-        recover_at_startup(gateway_start=True)
-
-
-def recover_left_core_at_gateway_start() -> None:
-    """Left-core migration for the homes whose platform config the runner loads first: the launch
-    home and the default root (the multiplex primary; a named launcher is then served as a
-    secondary). Every secondary runs :func:`recover_left_core_in` before its plugins are discovered,
-    so a platform plugin it gets starts its adapter in the same gateway start."""
-    from hermes_cli.left_core_migration import recover_at_startup
-    from hermes_constants import get_default_hermes_root, get_hermes_home
-    recover_at_startup(gateway_start=True)
-    root = Path(get_default_hermes_root())
-    if root.resolve() != Path(get_hermes_home()).resolve():
-        recover_left_core_in(root)
-
-
-
 def _own_policy_envs(platform) -> Optional[tuple]:
     """``(dm_policy_env, group_policy_env, allow_all_env)`` for a platform that declares
     ``own_policy_env``, else None. The live entry wins; a bundled platform whose entry is absent
@@ -219,6 +195,14 @@ class GatewayStartupMixin:
                 "Turn machinery warmed in %.1fs (%d tool schema(s) materialized)",
                 time.monotonic() - t0, tool_count,
             )
+        # The native session WebSocket imports ``tui_gateway.ws`` on its first upgrade; paid on the
+        # owner loop it froze every platform heartbeat (7.4 s measured) and lost the ``ready`` frame.
+        from gateway.run_api import warm_gateway_ws_stack
+        with _log_suppressed(
+            logging.WARNING, "Dashboard WebSocket warm-up failed; the first upgrade imports it inline",
+            exc_info=True,
+        ):
+            await asyncio.get_running_loop().run_in_executor(None, warm_gateway_ws_stack)
 
     async def _await_startup_warmup(self) -> None:
         """Bounded wait for the boot warm-up. On timeout the gate opens anyway (availability outranks
@@ -1408,7 +1392,7 @@ class GatewayStartupMixin:
                 )
                 continue
             if outcome == "ok":
-                self._publish_primary_adapter(platform, adapter)
+                await self._publish_primary_adapter(platform, adapter)
                 connected_count += 1
                 # connect() may return True on a degraded (unconfirmed) receive path; don't stamp "connected".
                 _degraded = adapter.send_path_degraded

@@ -1,8 +1,15 @@
 name: guard-sentinel
 version: 1.0.0
-description: 守卫面完整性哨兵——守卫插件缺席时 WARNING 级响亮报错，防线不再静默消失
+description: 守卫面完整性哨兵——守卫插件缺席时 WARNING 留痕并在回复中显示一次，防线不再静默消失
 hooks:
   - on_session_start
   - on_session_reset
+  - on_session_end
+  - transform_llm_output
 tags:
   - guard
+gate_suites:
+  - integrity
+  - output
+gate_policy: required
+gate_kind: enforcement

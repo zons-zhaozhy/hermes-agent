@@ -46,7 +46,7 @@ async def test_runtime_wait_observes_listener_exit(tmp_path, listener_failure):
         assert await runner.session_control_server.start()
         await run_runtime.start_gateway_runtime_api(runner)
         assert await runner.start()
-        run_runtime.publish_gateway_runtime_ready(runner)
+        await run_runtime.publish_gateway_runtime_ready(runner)
         waiter = asyncio.create_task(run_runtime.wait_gateway_runtime(runner))
         if listener_failure:
             # Stop the actual listener independently of the runner lifecycle.
@@ -87,8 +87,8 @@ async def test_listener_failure_stops_bootstrap_background_threads(monkeypatch):
 
     publish = run_runtime.publish_gateway_runtime_ready
 
-    def fail_after_ready(runner):
-        publish(runner)
+    async def fail_after_ready(runner):
+        await publish(runner)
         runner.session_api.server.should_exit = True
 
     monkeypatch.setattr(run_bootstrap, '_start_gateway_start_cron_and_housekeeping', start_owned_threads)

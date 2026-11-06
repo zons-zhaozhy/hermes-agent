@@ -150,11 +150,19 @@ gateway:
         allowed_users:
           - user-id-1
           - user-id-2
+
+        # Optional chat-scoped authorization for shared team groups. Members of these groups may
+        # invoke the bot there, while direct messages remain governed by allowed_users above.
+        # require_mention still applies in every group.
+        group_allowed_chats:
+          - group-chat-id-1
+          - group-chat-id-2
 ```
 
 - `group_sessions_per_user: true` keeps each participant's context isolated inside shared group chats
 - `require_mention: true` prevents the bot from responding to every group message — it only answers when someone @-mentions it
 - `allowed_users` under `dingtalk.extra` is an alternative to `DINGTALK_ALLOWED_USERS`; set one or the other (if both are set, only users present in both lists are authorized)
+- `group_allowed_chats` authorizes members of the listed group chats without granting them direct-message access; use it for team/support bots where group membership is the access boundary
 
 ### Start the Gateway
 

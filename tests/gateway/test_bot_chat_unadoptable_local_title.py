@@ -9,6 +9,8 @@ does an API or messaging row, and mints the profile's local Bot Chat; adoptable 
 """
 from pathlib import Path
 
+import threading
+
 import pytest
 
 from hermes_state_runtime import RuntimeStoreError
@@ -38,6 +40,24 @@ async def _deliver(authority, key, connection=None):
     pinned = _bot_chat_tip(home)
     return await deliver(connection or _local_owner(authority), dict(id=key * 32, profile=served_profile_name(home),
                                                        message='cron beat', **({'session_id': pinned} if pinned else {})))
+
+
+@pytest.mark.asyncio
+async def test_delivery_reads_the_bot_chat_title_off_loop(headless, monkeypatch):
+    db = headless.authority.db
+    loop_thread = threading.get_ident()
+    threads = []
+    real_lookup = db.get_session_by_title
+
+    def recorded_lookup(*args, **kwargs):
+        threads.append(threading.get_ident())
+        return real_lookup(*args, **kwargs)
+
+    monkeypatch.setattr(db, 'get_session_by_title', recorded_lookup)
+    receipt = await _deliver(headless.authority, 'a')
+
+    assert receipt['session_id']
+    assert threads and all(thread != loop_thread for thread in threads)
 
 
 @pytest.mark.parametrize('column, value', [

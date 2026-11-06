@@ -475,7 +475,7 @@ async def serve_profile_runtime(runner, name, home):
             _drop_retired_local_adapter(authority)
             await recover_bot_mailbox(authority)
             await recover_webhook_finalizations(authority)
-            recover_local_sessions(authority, schedule=True)
+            await recover_local_sessions(authority, schedule=True)
             await _recover_published_api_turns(runner, authority)
         if getattr(runner, 'session_control_server', None) is not None:
             await _ensure_hosted_service(runner, authority)
@@ -507,8 +507,10 @@ async def _recover_published_api_turns(runner, authority):
     from gateway.config import Platform
     api = (getattr(runner, 'adapters', None) or {}).get(Platform.API_SERVER)
     if api is not None:
-        from gateway.session_api_turn import recover_authority_api_turns
-        recover_authority_api_turns(api, authority)
+        from gateway.session_api_turn import _recover_authority_api_turns
+        ready = await asyncio.to_thread(_recover_authority_api_turns, api, authority)
+        for ref in ready:
+            authority._schedule(ref)
 
 
 async def recover_served_native_rows(runner):
@@ -666,7 +668,7 @@ async def recover_gateway_native_sessions(runner):
     results = {}
     for authority in authorities:
         with owner_scope(authority):
-            recover_local_sessions(authority, schedule=True)
+            await recover_local_sessions(authority, schedule=True)
             await recover_webhook_finalizations(authority)
         results.update(await recover_profile_native_sessions(runner, authority))
     return results
@@ -686,20 +688,21 @@ async def recover_profile_native_sessions(runner, authority):
         pending, bindings = await asyncio.to_thread(pending_bindings)
         outcome = await authority.recover_native_sessions(bindings)
         from gateway.session_detached import recover_detached_sessions
-        outcome.update(dict.fromkeys(recover_detached_sessions(authority, pending - set(outcome)), 'detached'))
+        recovered_detached = await recover_detached_sessions(authority, pending - set(outcome))
+        outcome.update(dict.fromkeys(recovered_detached, 'detached'))
     for sid, verdict in outcome.items():
         logger.info('Native session startup recovery %s (%s): %s', sid, authority.profile_id, verdict)
     return outcome
 
 
-def publish_gateway_runtime_ready(runner):
+async def publish_gateway_runtime_ready(runner):
     descriptor = runner.session_runtime_descriptor
     if runner.session_api.task.done() or not runner._running or runner._draining:
         raise RuntimeError('gateway stopped before session API readiness')
     descriptor.update(state='ready', capabilities=[
         'session-authority-v1', 'durable-admission-v1', 'event-replay-v1'])
-    from gateway.session_hosted_service import start_ready_hosted_services
-    start_ready_hosted_services(runner)
+    from gateway.session_hosted_service import start_ready_hosted_services_async
+    await start_ready_hosted_services_async(runner)
 
 
 async def wait_gateway_runtime(runner):

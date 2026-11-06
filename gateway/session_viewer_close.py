@@ -150,8 +150,18 @@ def rearm_persisted_closes(authority):
     """Boot/serve recovery, after the local sessions are restored: every stored close whose session
     is mounted with no viewer goes back to ``pending_closes``. The caller schedules the drain, whose
     idle point (after any queued turn; never past an ``unknown`` one) completes it. Returns the ids."""
+    return arm_persisted_closes(authority, read_persisted_closes(authority))
+
+
+def read_persisted_closes(authority):
+    """Read stored viewer-close receipts without mutating owner-loop state."""
     with authority.db._read_ctx() as conn:
-        stored = conn.execute('SELECT key, value FROM state_meta WHERE key LIKE ?', (CLOSE_PREFIX + '%',)).fetchall()
+        return conn.execute(
+            'SELECT key, value FROM state_meta WHERE key LIKE ?', (CLOSE_PREFIX + '%',)).fetchall()
+
+
+def arm_persisted_closes(authority, stored):
+    """Re-arm stored closes the restored sessions still own; the caller is on the owner loop."""
     armed = []
     for key, record in stored:
         session_id = key[len(CLOSE_PREFIX):]
@@ -249,16 +259,18 @@ def _idle_s(authority, session_id):
     return time.time() - row[0] if row and row[0] else 0.0
 
 
-def arm_startup_orphan_closes(authority, session_ids):
+async def arm_startup_orphan_closes(authority, session_ids):
     """Boot, after the stored closes are re-armed: the previous owner stopped under these sessions
     (idle, or with input it left queued), so no viewer is left to close them (#143547 LC-37). One
     that reattaches keeps it open; a fired close still waits for the queued input to settle.
     An idle classic CLI only redials on its next call, so a session idle less than the legacy
     sweep's TTL waits out the rest of it, as that sweep did, before its grace starts to count."""
-    grace = orphan_close_grace(authority, startup=True)
+    grace = await asyncio.to_thread(orphan_close_grace, authority, startup=True)
     for session_id in session_ids:
-        if grace and session_id not in authority.pending_closes and orphan_candidate(authority, session_id):
-            delay = max(grace, STARTUP_IDLE_S - _idle_s(authority, session_id))
+        if (grace and session_id not in authority.pending_closes
+                and await asyncio.to_thread(orphan_candidate, authority, session_id)):
+            idle_s = await asyncio.to_thread(_idle_s, authority, session_id)
+            delay = max(grace, STARTUP_IDLE_S - idle_s)
             arm_orphan_close(authority, session_id, 'startup_orphan_reap', delay)
 
 
@@ -323,7 +335,7 @@ async def settle_viewer_close(authority, session_id):
     if not live.subscribers:  # ended: no viewer is left to replay to; a resume refetches history
         live.event_stream.release()
     from gateway.session_retirement import retire_closed
-    retire_closed(authority, session_id, live, target, idle_stamp)
+    await asyncio.to_thread(retire_closed, authority, session_id, live, target, idle_stamp)
 
 
 async def _resolve_abandoned_unknown(authority, session_id, live, close):

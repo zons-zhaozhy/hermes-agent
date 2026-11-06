@@ -64,6 +64,19 @@ def cmd_list(args: Any | None = None) -> None:
          catalog.removed_annotation(name, _dir, removed_entries))
         for name, version, description, source, _dir, key in entries
     ]
+    from hermes_cli.config import load_config_readonly
+
+    activation_config = load_config_readonly() or {}
+    activation_conflicts = {
+        name: conflict
+        for name, version, _description, _source, _dir, key in entries
+        if (conflict := _pc()._config_activation_conflict(
+            name,
+            key,
+            _entry_status((name, version, _description, _source, _dir, key), enabled, disabled, active),
+            config=activation_config,
+        ))
+    }
 
     if getattr(args, "json", False):
         keys = ("name", "status", "version", "description", "source", "removed")
@@ -107,6 +120,8 @@ def cmd_list(args: Any | None = None) -> None:
     console.print(table)
     for line in removed_lines:
         console.print(line)
+    for name, conflict in activation_conflicts.items():
+        console.print(f"[yellow]Activation conflict:[/yellow] {name}: {conflict}")
     console.print()
     console.print("[dim]Compact view:[/dim] hermes plugins list --plain --no-bundled")
     console.print("[dim]Interactive toggle:[/dim] hermes plugins")
@@ -132,6 +147,8 @@ def cmd_show(name: str) -> None:
     if description:
         console.print(description)
     console.print(f"[dim]Status:[/dim] {status}")
+    if conflict := _pc()._config_activation_conflict(pname, key, status):
+        console.print(f"[yellow]Activation conflict:[/yellow] {conflict}")
     console.print(f"[dim]Source:[/dim] {source}")
     console.print(f"[dim]Key:[/dim] {key}")
     if dir_path and source != "bundled":

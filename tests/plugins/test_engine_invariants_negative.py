@@ -6,7 +6,9 @@ Contract:
 """
 import importlib.util
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
+
+from hermes_cli.plugins import PluginManager
 
 
 def _load_guard() -> ModuleType:
@@ -57,3 +59,28 @@ def test_negative_clean_history_passes():
     ]
     out = guard.run_all_invariants(msgs)
     assert out == {"tool_pairing": [], "role_alternation": []}  # 期望: 合法历史零违反
+
+
+def test_state_failure_reaches_dispatcher_for_unknown_evidence(monkeypatch):
+    guard = _load_guard()
+
+    def broken_state(_sid, _namespace):
+        raise RuntimeError("state store unavailable")
+
+    monkeypatch.setattr(guard, "get_session_state", broken_state)
+    callbacks: dict[str, list] = {}
+    guard.register(SimpleNamespace(
+        register_hook=lambda hook, callback: callbacks.setdefault(hook, []).append(callback),
+    ))
+    manager = PluginManager()
+    manager._hooks["post_llm_call"] = callbacks["post_llm_call"]
+
+    manager.invoke_hook(
+        "post_llm_call",
+        conversation_history=[{"role": "user", "content": "hi"}],
+        session_id="engine-state-failure",
+    )
+
+    event = manager.gate_plane.events("engine-state-failure")[0]
+    assert event.status.value == "unknown"
+    assert "state store unavailable" in event.detail

@@ -264,6 +264,38 @@ class TestRuntimeMode:
         assert not any("Operator instructions" in b for b in mode.system_blocks())
 
 
+# ── default coding method ──────────────────────────────────────────────────
+
+class TestCodingMethod:
+    def test_brief_covers_intent_evidence_reproduction_and_acceptance(self, tmp_path):
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n")
+        prefix, _workspace, _trailing = cc.coding_system_prompt_parts(
+            platform="cli",
+            cwd=tmp_path,
+            config={"agent": {"coding_context": "auto"}},
+            workspace_block="",
+        )
+        brief = prefix[0].lower()
+        required = {
+            "intent gate": "modification request authorizes investigation",
+            "read-only requests": "read-only",
+            "autonomous implementation": "proceed autonomously through implementation",
+            "no routine approvals": "do not ask for approval at routine",
+            "intent and acceptance": "acceptance criteria",
+            "evidence before change": "current behavior",
+            "caller and dependency survey": "callers",
+            "tests and configuration": "tests and configuration",
+            "historical intent": "historical intent",
+            "reproduction first": "reproduce",
+            "red-capable check": "failing check",
+            "root-cause class": "sibling",
+            "final diff": "final diff",
+            "honest residual risk": "remaining risk",
+        }
+        missing = [name for name, phrase in required.items() if phrase not in brief]
+        assert not missing, f"coding brief is missing method obligations: {missing}"
+
+
 
 # ── edit-format steering (per-model harness tuning) ──────────────────────────
 

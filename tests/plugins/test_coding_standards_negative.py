@@ -23,6 +23,38 @@ def _rule_ids(guard: ModuleType, code: str) -> set:
     return {v.rule_id for v in guard._run_all_checks(code)}
 
 
+def test_negative_env_key_guess_detected():  # R025
+    guard = _load_guard()
+    rules = _rule_ids(
+        guard,
+        'env.update({"ATOMATCH_DB_HOST": h, "ATOMATCH_PORT": p})\n')
+    assert "R025" in rules  # 期望: 无 idsrc 标记的 env 键写入被拦（1105 事故形态）
+
+
+def test_negative_env_subscript_guess_detected():  # R025
+    guard = _load_guard()
+    rules = _rule_ids(
+        guard,
+        'os.environ["ATOMATCH_JDBC_URL"] = url\n')
+    assert "R025" in rules  # 期望: 下标赋值形态的猜键名同样被拦
+
+
+def test_env_key_with_idsrc_annotation_passes():  # R025 豁免通道
+    guard = _load_guard()
+    rules = _rule_ids(
+        guard,
+        'env.update({"ATOMATCH_JDBC_URL": u})  # idsrc: db/__init__.py:1769\n')
+    assert "R025" not in rules  # 期望: 行内来源标记即放行
+
+
+def test_env_key_plain_name_not_flagged():  # R025 收窄边界
+    guard = _load_guard()
+    rules = _rule_ids(
+        guard,
+        'env.update({"PATH": p, "TZ": tz})\n')
+    assert "R025" not in rules  # 期望: 非 UPPER_SNAKE（无下划线）键不拦（PATH 类）
+
+
 def test_negative_bare_except_pass_detected():
     guard = _load_guard()
     rules = _rule_ids(guard, "try:\n    x = 1\nexcept:\n    pass\n")

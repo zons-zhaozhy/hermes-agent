@@ -764,55 +764,13 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
 def _approval_send_outcome(future, timeout: float) -> str:
     """Classify an approval prompt send as ``sent`` / ``failed`` / ``ambiguous``.
 
-    ``ambiguous`` = future timed out but the card may have posted: keep the registration, do NOT re-send.
-    Only a DEFINITIVE failure (error result / non-timeout exception / no future) re-asks; logged here."""
-    if future is None:
-        logger.warning("Prompt send failed: no scheduling future (loop unavailable)")
-        return "failed"
-    try:
-        result = future.result(timeout=timeout)
-    except concurrent.futures.TimeoutError:
-        return "ambiguous"
-    except Exception as exc:
-        logger.warning("Prompt send failed: %s", exc)
-        return "failed"
-    if getattr(result, "success", False):
-        return "sent"
-    # P5(b): a connector DECLINE is not a lane failure. The connector authorized the destination and refused it;
-    # re-sending the same content as plain text into that same chat is the exfiltration the egress guard exists
-    # to stop. `failed` is the cue to fall back, so a decline needs its own verdict — callers must surface it 
-    # and send nothing further.
-    #
-    # CLASSIFY THE STRUCTURED RESPONSE, NOT THE ERROR STRING. The adapter
-    # preserves the connector's own dict in `raw_response`; rebuilding a dict
-    # from `error` alone loses two things review demonstrated:
-    #   * a decline carrying `code: egress_declined` and NO text renders as
-    #     "relay egress declined" — no marker colon — so the string check
-    #     missed it and the fallback fired into the refused chat;
-    #   * `ambiguous: True` (lost ack, mid-write drop) was flattened into a
-    #     DEFINITE failure, which re-sends a card that may well have posted.
-    # I fixed the text-marker path and tested only the text-marker path.
-    from gateway.relay.egress import declined_send
+    Thin delegator: the classification lives beside the approval notice lane that consumes it
+    (``gateway/run_turn_runner_approval_settle.py``). Kept here because that lane and its tests
+    reach the helper through this module (``from gateway.run import _approval_send_outcome``).
+    """
+    from gateway.run_turn_runner_approval_settle import _approval_send_outcome as _classify
 
-    _raw = getattr(result, "raw_response", None)
-    if isinstance(_raw, dict) and _raw.get("ambiguous"):
-        # The frame may have been applied. Same physics as a scheduling
-        # timeout: possibly-delivered, so never re-send. Checked BEFORE the
-        # decline classification because an ambiguous result is a transport
-        # outcome, not an authorization one, and this lane has three verdicts
-        # rather than the boolean the shared helper answers.
-        logger.warning("Prompt send AMBIGUOUS (lost ack): %s", _raw.get("error"))
-        return "ambiguous"
-    if declined_send(result):
-        # Both shapes, one classifier: a structured body, or the uniform
-        # decline sentence from an older connector.
-        logger.warning(
-            "Prompt send DECLINED by connector egress guard: %s",
-            getattr(result, "error", None),
-        )
-        return "declined"
-    logger.warning("Prompt send failed: %s", getattr(result, "error", None) or "unknown error")
-    return "failed"
+    return _classify(future, timeout)
 
 
 def _resolve_progress_thread_id(
@@ -1656,10 +1614,18 @@ def _cron_tick_profile_homes(config: object) -> list[tuple[str, Path]]:
     profile: ``profiles_to_serve`` lists default + every live named profile, but a ``--profile
     <name>`` gateway's own profile may sit outside ``profiles/`` (custom HERMES_HOME). One host
     process ticks all of them regardless of ``gateway.multiplex_profiles``. Adapter startup
-    already skips ``active``."""
+    already skips ``active``.
+
+    ``cron.tick_profiles`` replaces that set outright when set, which is what makes a
+    two-gateway split (interactive vs scheduled fleet) possible — see ``gateway/run_cron_tick.py``.
+    """
+    from gateway.run_cron_tick import override_tick_homes
     from hermes_cli.profiles import get_active_profile_name, get_profile_dir
 
     homes = _multiplex_profile_homes(config)
+    override = override_tick_homes(config, served=homes)
+    if override is not None:
+        return override
     active = get_active_profile_name() or "default"  # launch profile, pre-identity (ticker boot)
     if any(name == active for name, _home in homes):
         return homes

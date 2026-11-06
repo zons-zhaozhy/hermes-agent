@@ -39,6 +39,16 @@ def test_sql_numeric_literal_not_target() -> None:
     assert ts.redirect_writes_file("psql -c 'SELECT count(*) FROM t WHERE amt > 100.5'") is False  # 期望: 小数同排除
 
 
+
+def test_quoted_comparison_and_literal_gt_not_redirects() -> None:
+    """引号内 shell 元字符是程序文本/字面量，不是重定向。"""
+    assert ts.redirect_writes_file(
+        "awk 'NR>=560 && NR<=700 && /public .*\\(/' src.java | head -3"
+    ) is False  # 期望: awk 比较符在单引号程序内
+    assert ts.redirect_writes_file('echo "write x > output.txt"') is False  # 期望: 引号内是字面量
+    assert ts.redirect_writes_file('echo "done" > output.txt') is True  # 期望: 引号外真实重定向仍拦截
+
+
 def test_targets_extraction() -> None:
     assert ts.redirect_file_targets("a > x.txt && b >> y.txt") == ["x.txt", "y.txt"]  # 期望: 按序提取写目标
     assert ts.redirect_file_targets("a 2>/dev/null; b > z.sql") == ["z.sql"]  # 期望: sink 不进目标列
@@ -58,6 +68,28 @@ def test_looks_like_path() -> None:
     assert ts.looks_like_path("out") is False  # 期望: 裸词非路径形态
     assert ts.looks_like_path("-n") is False  # 期望: 选项非路径
     assert ts.looks_like_path("'quoted.json'") is True  # 期望: 剥引号后判定
+
+
+def test_sed_write_semantics() -> None:
+    """sed 写语义唯一事实源：只读打印豁免，替换/原地编辑构成写。"""
+    assert ts.sed_writes_file("sed -i 's/a/b/' src.py") is True
+    assert ts.sed_writes_file("sed 's/a/b/' src.py") is True
+    assert ts.sed_writes_file("sed -n '10,20p' src.py") is False
+    assert ts.sed_writes_file("sed -n '/pattern/p' src.py") is False
+
+
+def test_sed_semantics_never_raises_on_malformed() -> None:
+    for command in ("'", "sed -n '10,20p", "sed -i", "sed s/a/b/"):
+        ts.sed_writes_file(command)  # 期望: 残缺命令不抛异常
+
+
+def test_read_command_name_owner() -> None:
+    assert ts.is_read_command("cat") is True
+    assert ts.is_read_command("rg") is True
+    assert ts.is_read_command("/usr/bin/stat") is True
+    assert ts.is_read_command("rm") is False
+    assert ts.is_read_command("mv") is False
+    assert ts.is_read_command("python") is False
 
 
 def test_never_raises_on_malformed() -> None:

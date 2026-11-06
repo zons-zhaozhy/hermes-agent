@@ -70,11 +70,12 @@ def _model_routes(conn):
 def test_classic_cli_model_switch_reaches_the_gateway_session(monkeypatch):
     import cli as cli_mod
     from tests.hermes_cli.test_cli_model_once import _StubCLI
+    from hermes_cli.gateway_session_store import GatewaySessionStore
     conn = RecordingConnection({"model": "old/model", "provider": "openrouter"})
     stub = _StubCLI()
     stub.agent = _agent(conn, model="old/model", provider="openrouter")
     stub._snapshot_model_runtime = cli_mod.HermesCLI._snapshot_model_runtime.__get__(stub)
-    stub._session_db = None
+    stub._session_db = GatewaySessionStore(connection=conn)
     stub.session_id = "s"
     printed = []
     monkeypatch.setattr(cli_mod, "_cprint", lambda s, *a, **k: printed.append(str(s)))

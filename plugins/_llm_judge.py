@@ -26,6 +26,8 @@ from __future__ import annotations
 import json
 import logging
 import math
+import threading
+import time
 import unicodedata
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -206,6 +208,137 @@ def _normalize_readout(
 # ── 能力探测缓存（按 task）：实证不支持 logprobs 的后端不再重复尝试 ────────────
 _SUPPORT_CACHE: dict[str, bool] = {}
 
+_JUDGE_RETRY_SECONDS = 300.0
+_JUDGE_RETRY_MAX_SECONDS = 3600.0
+_JUDGE_CIRCUIT: dict[tuple[str, str], tuple[int, float]] = {}
+_JUDGE_CIRCUIT_LOCK = threading.Lock()
+
+# 端点级熔断。逐 task 熔断只挡「同一个 task 再试一次」，挡不住一个 turn 里 6~7 个不同 task
+# 各自烧满一次超时：2026-11-06 实测 reply_side_guards / user_side_guards / scope_gate /
+# declare_act_guard / completion_boundary_audit / read_think_intent 各付 5~10s，单轮合计 ≈48s，
+# 把 pre_llm_call 的 30s 预算打穿后整轮 blocked_by_plugin_pre_llm_call、api_calls=0。
+# 键是**解析出的判定端点**，不是 task：不同 task 可以各配不同辅助模型，指向别的端点的 task
+# 仍应尝试；而指向同一端点时，它超时/连不通后换 task 重付全价没有信息增益——判定件全是
+# fail-open，挂起不降低纪律强度。
+_JUDGE_ENDPOINT_DOWN_SECONDS = 120.0
+_JUDGE_ENDPOINT_DOWN: dict[tuple[str, str], float] = {}
+
+
+def _judge_circuit_key(task: str) -> tuple[str, str]:
+    """Identity of one profile's auxiliary model task.
+
+    One Hermes process can serve several profiles. A broken judge model in one
+    profile must not suppress calls in another, so the process-global circuit is
+    partitioned by the context-local Hermes home as well as the task.
+    """
+    from hermes_constants import hermes_home_key
+
+    return hermes_home_key(), task or "default"
+
+
+def _judge_endpoint_key(task: str) -> str:
+    """*task* 解析到的判定端点身份（``provider|base_url``）。
+
+    Contract:
+        Postconditions: 返回 str；解析不了时返回空串（端点未知），此时熔断退化为对该 profile
+                        的全部 task 生效——宁可少判，不可每轮空转。
+    """
+    try:
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        provider, _model, base_url, _api_key, _api_mode = _resolve_task_provider_model(
+            task, None, None, None, None,
+        )
+    except Exception:
+        # Deliberate boundary: config/env readers can fail in ways this module cannot
+        # enumerate (malformed config.yaml, unreadable home, provider registry import).
+        # Degrading to the profile-wide circuit is always safe here, so log the traceback
+        # and carry on rather than letting a resolution fault kill every guard.
+        logger.debug("llm_judge: judge endpoint unresolved; falling back to profile-wide circuit",
+                     exc_info=True)
+        return ""
+    return f"{provider or ''}|{base_url or ''}"
+
+
+def _hard_judge_failure(exc: BaseException) -> bool:
+    """*exc* 是否意味着判定端点不可用（超时/连不通），而不是仅仅「答得不可用」。
+
+    只有前者挂起端点：解析失败是模型答非所问，换一个 task 仍可能读到判定。
+
+    Contract:
+        Postconditions: 只看异常类型名与文本，永不 raise 且无副作用。
+    """
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(marker in text for marker in (
+        "timeout", "timed out", "connection", "connect", "unreachable", "broken pipe",
+    ))
+
+
+def _judge_circuit_open(task: str) -> bool:
+    """Whether this task's judge endpoint (or the task itself) is cooling down."""
+    key = _judge_circuit_key(task)
+    endpoint = (key[0], _judge_endpoint_key(task))
+    now = time.monotonic()
+    with _JUDGE_CIRCUIT_LOCK:
+        if now < _JUDGE_ENDPOINT_DOWN.get(endpoint, 0.0):
+            return True
+        state = _JUDGE_CIRCUIT.get(key)
+        if state is None:
+            return False
+        retry_after = state[1]
+        if now < retry_after:
+            return True
+        return False
+
+
+def _record_judge_failure(task: str, *, hard: bool = False) -> None:
+    """Open a bounded exponential circuit so a broken task is not retried by every gate.
+
+    ``hard`` (endpoint timeout / transport failure) additionally suspends every task that
+    resolves to the SAME endpoint: a dead endpoint must not cost one full timeout per
+    registered judge task per turn. Parse-only failures stay task-scoped — a different task's
+    prompt may still read correctly, and a task on a different endpoint is unaffected.
+    """
+    key = _judge_circuit_key(task)
+    endpoint = (key[0], _judge_endpoint_key(task))
+    now = time.monotonic()
+    endpoint_suspended = False
+    with _JUDGE_CIRCUIT_LOCK:
+        if hard and now >= _JUDGE_ENDPOINT_DOWN.get(endpoint, 0.0):
+            _JUDGE_ENDPOINT_DOWN[endpoint] = now + _JUDGE_ENDPOINT_DOWN_SECONDS
+            endpoint_suspended = True
+            if len(_JUDGE_ENDPOINT_DOWN) > 128:
+                _JUDGE_ENDPOINT_DOWN.pop(next(iter(_JUDGE_ENDPOINT_DOWN)))
+        previous = _JUDGE_CIRCUIT.get(key)
+        failures = (previous[0] if previous is not None else 0) + 1
+        retry_seconds = min(
+            _JUDGE_RETRY_SECONDS * (2 ** min(failures - 1, 4)),
+            _JUDGE_RETRY_MAX_SECONDS,
+        )
+        _JUDGE_CIRCUIT[key] = (failures, now + retry_seconds)
+        if len(_JUDGE_CIRCUIT) > 128:
+            _JUDGE_CIRCUIT.pop(next(iter(_JUDGE_CIRCUIT)))
+    if endpoint_suspended:
+        logger.warning(
+            "llm_judge: 判定端点 %s 硬失败（%s），指向该端点的 task 挂起 %.0fs——后续判定直接 "
+            "fail-open，不再逐个 task 重付超时 (profile=%s)",
+            endpoint[1] or "未知", task, _JUDGE_ENDPOINT_DOWN_SECONDS, key[0],
+        )
+    if previous is None or now >= previous[1]:
+        logger.warning(
+            "llm_judge(%s): circuit open for %.0fs after failure #%d (profile=%s)",
+            key[1], retry_seconds, failures, key[0],
+        )
+
+
+def _record_judge_success(task: str) -> None:
+    """Close a task's circuit after a usable verdict."""
+    key = _judge_circuit_key(task)
+    with _JUDGE_CIRCUIT_LOCK:
+        state = _JUDGE_CIRCUIT.pop(key, None)
+    if state is not None:
+        logger.info("llm_judge(%s): circuit closed after a usable verdict (profile=%s)", key[1], key[0])
+
 
 def reset_capability_cache() -> None:
     """清空 logprobs 能力缓存（测试与配置变更后使用）。
@@ -214,6 +347,17 @@ def reset_capability_cache() -> None:
         Postconditions: 缓存为空，下一次判定会重新探测。
     """
     _SUPPORT_CACHE.clear()
+
+
+def reset_judge_circuit() -> None:
+    """清空所有 profile/task 的 judge 熔断状态（测试与模型配置变更后使用）。
+
+    Contract:
+        Postconditions: 下一次判定会立即重新尝试辅助模型调用，通道级挂起同时解除。
+    """
+    with _JUDGE_CIRCUIT_LOCK:
+        _JUDGE_CIRCUIT.clear()
+        _JUDGE_ENDPOINT_DOWN.clear()
 
 
 def _capability_known(task: str) -> Optional[bool]:
@@ -287,6 +431,9 @@ def _text_verdict(task: str, system: str, text: str, true_key: str,
         Preconditions: system/text 非空。
         Postconditions: 返回 TypedDecision（source="text"），失败 → verdict=None 且 source="none"。
     """
+    if _judge_circuit_open(task):
+        logger.debug("llm_judge_text(%s): circuit open; returning UNKNOWN", task)
+        return TypedDecision(verdict=None, source="none", detail="判定通道已熔断")
     try:
         from agent.auxiliary_client import call_llm
         resp = call_llm(
@@ -302,12 +449,16 @@ def _text_verdict(task: str, system: str, text: str, true_key: str,
         )
         content = (resp.choices[0].message.content or "").replace(" ", "").lower()
         if f'"{true_key}":true' in content:
+            _record_judge_success(task)
             return TypedDecision(verdict=True, label="true", source="text")
         if f'"{true_key}":false' in content:
+            _record_judge_success(task)
             return TypedDecision(verdict=False, label="false", source="text")
+        _record_judge_failure(task)
         return TypedDecision(verdict=None, source="none", detail="文本通道未解析出判定")
     except Exception as e:
         logger.warning("llm_judge_text(%s) failed: %s", task, e, exc_info=True)
+        _record_judge_failure(task, hard=_hard_judge_failure(e))
         return TypedDecision(verdict=None, source="none", detail=f"文本通道异常: {e}")
 
 
@@ -373,8 +524,12 @@ def llm_decision_typed(task: str, system: str, text: str,
                         默认 False = 不改变既有布尔语义。
     """
     assert system and text, "system and text must be non-empty"
+    if _judge_circuit_open(task):
+        logger.debug("llm_decision_typed(%s): circuit open; returning UNKNOWN", task)
+        return TypedDecision(verdict=None, source="none", detail="判定通道已熔断")
     decision = _try_logprobs(task, system, text, true_key, timeout, use_logprobs)
     if decision is not None:
+        _record_judge_success(task)
         return _apply_low_confidence_policy(decision, low_confidence_pass)
     return _text_verdict(task, system, text, true_key, timeout, max_tokens)
 
@@ -507,6 +662,9 @@ def llm_judge_multi(task: str, system: str, text: str,
     assert system and text, "system and text must be non-empty"
     assert keys and len(set(keys)) == len(keys), "keys must be non-empty unique"
     fail: dict[str, Optional[bool]] = {k: None for k in keys}
+    if _judge_circuit_open(task):
+        logger.debug("llm_judge_multi(%s): circuit open; returning UNKNOWN", task)
+        return fail
     try:
         from agent.auxiliary_client import call_llm
         eb = dict(extra_body) if extra_body else {}
@@ -523,9 +681,15 @@ def llm_judge_multi(task: str, system: str, text: str,
             extra_body=eb,
         )
         content = resp.choices[0].message.content or ""
-        return _parse_bool_keys(content, keys)
+        parsed = _parse_bool_keys(content, keys)
+        if any(verdict is not None for verdict in parsed.values()):
+            _record_judge_success(task)
+        else:
+            _record_judge_failure(task)
+        return parsed
     except Exception as e:
         logger.warning("llm_judge_multi(%s) failed: %s", task, e, exc_info=True)
+        _record_judge_failure(task, hard=_hard_judge_failure(e))
         return fail
 
 
@@ -547,6 +711,9 @@ def llm_judge_json(task: str, system: str, text: str, keys: list[str],
     assert system and text, "system and text must be non-empty"
     assert keys and len(set(keys)) == len(keys), "keys must be non-empty unique"
     empty: dict[str, Any] = {k: [] for k in keys}
+    if _judge_circuit_open(task):
+        logger.debug("llm_judge_json(%s): circuit open; returning empty", task)
+        return empty
     try:
         from agent.auxiliary_client import call_llm
         resp = call_llm(
@@ -569,13 +736,16 @@ def llm_judge_json(task: str, system: str, text: str, keys: list[str],
                 parsed = json.loads(content[start:content.rfind("}") + 1])
             except json.JSONDecodeError:
                 logger.info("llm_judge_json(%s): non-JSON reply ignored", task)
-        if not isinstance(parsed, dict):
+        if not isinstance(parsed, dict) or not any(key in parsed for key in keys):
+            _record_judge_failure(task)
             return empty
         out: dict[str, Any] = {}
         for k in keys:
             v = parsed.get(k)
             out[k] = [str(x).strip() for x in v if str(x).strip()] if isinstance(v, list) else []
+        _record_judge_success(task)
         return out
     except Exception as e:
         logger.warning("llm_judge_json(%s) failed: %s", task, e, exc_info=True)
+        _record_judge_failure(task, hard=_hard_judge_failure(e))
         return empty

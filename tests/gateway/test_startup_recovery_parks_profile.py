@@ -45,11 +45,19 @@ def _runtime(tmp_path, monkeypatch, failing):
         if authority.profile_id == str(failing):
             raise RuntimeError("leftover receipt the store cannot answer")
 
+    async def recover_local(authority, schedule):
+        return None
+
+    async def recover_webhook(authority):
+        return None
+
     async def fake_api(runner_):
         return SimpleNamespace(api_origin="http://127.0.0.1:1")
 
     monkeypatch.setattr("gateway.run_api.start_gateway_api", fake_api)
     monkeypatch.setattr("gateway.session_bot.recover_bot_deliveries", recover_bot)
+    monkeypatch.setattr("gateway.session_local_recovery.recover_local_sessions", recover_local)
+    monkeypatch.setattr("gateway.platforms.webhook_ingress.recover_webhook_finalizations", recover_webhook)
     monkeypatch.setattr("gateway.session_cron.unbind_owner", lambda authority: None)
     monkeypatch.setattr(run_runtime, "_record_parked_profiles", lambda value: parked.update(value))
     return runner, launch, homes, recovered, parked
@@ -129,8 +137,10 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
             return None
 
         monkeypatch.setattr("gateway.session_hosted_service._ensure_hosted_service", ensure_hosted)
-        monkeypatch.setattr("gateway.session_local_recovery.recover_local_sessions",
-                            lambda authority, schedule=False: local.append(authority.profile_id))
+        async def recover_local(authority, schedule=False):
+            local.append(authority.profile_id)
+
+        monkeypatch.setattr("gateway.session_local_recovery.recover_local_sessions", recover_local)
         monkeypatch.setattr("gateway.platforms.webhook_ingress.recover_webhook_finalizations", no_webhooks)
         asyncio.run(run_runtime.recover_gateway_native_sessions(runner))
         assert str(homes["beta"]) not in local
@@ -164,7 +174,7 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
         host._sync_voice_mode_state_to_adapter = host._bind_voice_input_callback = lambda adapter: None
         api_adapter = SimpleNamespace(gateway_runner=runner)
         try:
-            host._publish_primary_adapter(Platform.API_SERVER, api_adapter)
+            asyncio.run(host._publish_primary_adapter(Platform.API_SERVER, api_adapter))
         except sqlite3.OperationalError as exc:
             pytest.fail(f"the retained store's read error stopped API adapter publication: {exc}")
         assert host.adapters[Platform.API_SERVER] is api_adapter

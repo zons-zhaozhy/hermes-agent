@@ -22,8 +22,8 @@ from plugins.read_think_gate_host import ReadThinkGate, ReadThinkGateConfig
 def _strict_gate() -> ReadThinkGate:
     cfg = ReadThinkGateConfig.from_mapping(
         {
-            "unlock_after_investigation": False,
             "use_llm_judge": False,
+            "use_llm_intent_classifier": False,
             "complexity_adaptive": False,
             "min_read_only_calls": 2,
             "min_reasoning_chars": 200,
@@ -31,7 +31,7 @@ def _strict_gate() -> ReadThinkGate:
         }
     )
     gate = ReadThinkGate(cfg)
-    gate.reset_for_turn(user_message="")
+    gate.reset_for_turn(user_message="修复这个问题")
     return gate
 
 
@@ -58,26 +58,25 @@ def test_diversity_gap_listed_when_reads_met():
     assert "④ 四轴缺「影响面、原意图、根因、风险」" in msg  # 期望: 四轴仍缺
 
 
-def test_no_block_when_all_gates_met():
+def test_no_block_when_all_gates_met(tmp_path):
     """All gates met (reads+search+chars+four axes) → check_batch returns None."""
     gate = _strict_gate()
     gate._read_only_count = 2
     gate._investigation_evidence = ["search_files: callers"]  # 期望: 满足搜索类
     gate._four_axis_found = {"影响面", "原意图", "根因", "风险"}
-    result = gate.check_batch("x" * 300, ["patch"])
+    target = tmp_path / "new_module.py"
+    result = gate.check_batch(
+        "x" * 300,
+        ["write_file"],
+        [{"path": str(target), "content": "x = 1\n"}],
+    )
     assert result is None  # 期望: 四关全过 → 放行不拦
 
 
-def test_terminal_batch_has_no_four_axis_item():
-    """terminal-only batch (write-shaped) → gaps listed but ④ absent.
-
-    _try_unlock only enforces four axes for FILE_WRITE_TOOLS batches;
-    the gap panel must not advertise a requirement the unlock path never
-    checks (a listed-but-unneeded item sends the blocked side hunting
-    evidence that does not unlock anything).
-    """
+def test_terminal_write_still_requires_four_axis_evidence():
+    """Every modification channel, including terminal, requires all four axes."""
     gate = _strict_gate()
     gate._gated_tools.add("terminal")  # 模拟 _terminal_writes_file 动态门控
     msg = gate._build_block_message("terminal", 50, ["terminal"])
     assert "① 只读调查 0/2" in msg  # 期望: terminal 批次同样列调查量缺口
-    assert "④" not in msg  # 期望: terminal 批次不列四轴项
+    assert "④ 四轴缺" in msg  # 期望: terminal 直写不能绕过四轴证据

@@ -5,3 +5,9 @@ author: stan
 kind: standalone
 provides_hooks:
   - pre_verify
+tags:
+  - guard
+gate_suites:
+  - completion
+gate_policy: advisory
+gate_kind: enforcement

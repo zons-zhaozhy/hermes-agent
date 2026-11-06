@@ -26,6 +26,27 @@ def test_banner_snapshot_accepts_bom_without_weakening_freshness(tmp_path, monke
     (tmp_path / "config.yaml").write_text("display: {skin: mono}", encoding="utf-8")
     assert banner.load_banner_snapshot(["file"]) is None
 
+
+def test_git_banner_reads_both_revisions_in_one_rev_parse(tmp_path, monkeypatch):
+    """The startup banner must not spend three Git spawns when one rev-parse answers both SHAs."""
+    stdout_calls: list[list[str]] = []
+
+    def git_stdout(args: list[str], **_kwargs):
+        stdout_calls.append(args)
+        if args == ["rev-parse", "origin/main", "HEAD"]:
+            return "a" * 40 + "\n" + "b" * 40
+        return None
+
+    monkeypatch.setattr(banner, "_resolve_repo_dir", lambda: tmp_path)
+    monkeypatch.setattr(banner.source_check, "_git_stdout", git_stdout)
+    monkeypatch.setattr(banner.source_check, "_git_count", lambda args, **_kwargs: 2)
+
+    assert banner.get_git_banner_state(tmp_path) == {
+        "upstream": "a" * 8, "local": "b" * 8, "ahead": 2
+    }
+    assert stdout_calls == [["rev-parse", "origin/main", "HEAD"]]
+
+
 def test_cprint_falls_back_to_plain_print_when_prompt_toolkit_has_no_console(capsys):
     with patch(
         "prompt_toolkit.print_formatted_text",

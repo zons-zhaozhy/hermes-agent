@@ -17,7 +17,7 @@ Contract:
   Preconditions: plugin 系统提供 post_tool_call / pre_tool_batch /
     pre_tool_call 钩子；三钩子同进程派发，kwargs 携带 session_id。
   Postconditions: 本会话欠账未清且本会话本批正文无证据时写工具被 block；
-    证据出现即清本会话欠账；cron 会话（session_id 前缀 cron_）全链路豁免；
+    证据出现即清本会话欠账；cron 会话（platform=cron 或旧 cron_ 前缀）全链路豁免；
     state 读取异常按无欠账处理（fail-open——纪律增强层，误放行优于误死锁）。
   Invariants: 欠账与证据均按 session_id 分桶——网关单进程服务多会话
     （同进程可挂多个 bot profile），进程级共享 state 会让 A 会话的欠账
@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 # patch 工具自带 diff 回显——但义务是「贴进回复正文」，回显≠履行，
 # 统一记账统一判证据。execute_code/terminal 写入由 source_write 按
 # 命令特征另管，本防线不按工具名拦只读分析。
+from plugins.guards import session_policy
 from plugins.guards.tool_classification import (
     FILE_AND_SKILL_WRITE_TOOLS as _WRITE_TOOLS,
 )
@@ -102,8 +103,16 @@ def _session_key(kwargs: dict[str, Any]) -> str:
 
 
 def _is_cron_session(kwargs: dict[str, Any]) -> bool:
-    """cron 会话豁免——与 four_axis.on_pre_tool_call 同判定依据。"""
-    return _session_key(kwargs).startswith("cron_")
+    """cron 会话豁免——与 guards.session_policy 单一判定源一致。"""
+    return session_policy.is_cron_session(_session_key(kwargs))
+
+
+def _forget_session_state(session_id: str = "", **_kwargs: Any) -> None:
+    """Release one ended session's debt and batch-evidence state."""
+    sid = str(session_id or "")
+    with _LEDGER_LOCK:
+        _DIFF_DEBT.pop(sid, None)
+        _BATCH_EVIDENCE.pop(sid, None)
 
 
 def _record_debt(sid: str, tool_name: str, path: str) -> None:
@@ -251,4 +260,6 @@ def register(ctx: Any) -> None:
     ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("pre_tool_batch", on_pre_tool_batch)
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
+    ctx.register_hook("on_session_reset", _forget_session_state)
+    ctx.register_hook("on_session_end", _forget_session_state)
     ctx.register_system_prompt_section("diff_debt", _debt_section)

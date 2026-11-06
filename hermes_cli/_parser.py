@@ -145,6 +145,8 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
     """Top-level (pre-subcommand) flags; ``-m/--provider`` pair with ``-z`` without ``chat``."""
     add, inherited = parser.add_argument, _inherited_flag
     add("--version", "-V", action="store_true", help="Show version and exit")
+    add("--check-updates", action="store_true", help=(
+        "With --version/-V, also run the passive update check"))
     add("-z", "--oneshot", metavar="PROMPT", default=None, help=(
         "One-shot mode: send a single prompt and print ONLY the final "
         "response text to stdout. No banner, no spinner, no tool "

@@ -30,6 +30,24 @@ xvfb-run() { shift 2; "$@"; }
 sleep() { return 1; }
 '''
 
+# GitHub's hosted Bash is 4+; macOS still ships 3.2 as /bin/bash. The workflow
+# snippets under test legitimately use ``mapfile``, so provide only the syntax
+# those snippets use when the local replay interpreter lacks the builtin.
+_BASH3_MAPFILE = r'''
+mapfile() {
+  local name
+  while [ "$#" -gt 1 ] && [ "$1" != "-t" ]; do
+    shift
+  done
+  [ "$1" = "-t" ] && shift
+  name="$1"
+  eval "$name=()"
+  while IFS= read -r "__mapfile_line"; do
+    eval "$name+=(\"\$__mapfile_line\")"
+  done
+}
+'''
+
 
 # Workflows use Blacksmith's drop-in checkout (same inputs, cached on its runners;
 # it also works on the remaining GitHub-hosted jobs); a few still use actions/checkout.
@@ -73,6 +91,11 @@ def _run(step: dict, ctx: dict, cwd: Path | None = None, *, receipt: bool = Fals
         output.touch()
         calls.touch()
         bash = locate_command("bash").command[0]
+        bash_prefix = ""
+        if subprocess.run(
+            [bash, "-c", "type mapfile >/dev/null"], capture_output=True, check=False
+        ).returncode != 0:
+            bash_prefix = _BASH3_MAPFILE
         # Steps call git too. Linux reaches it through os.defpath; on Windows the bash found
         # first may be Git's usr\bin (no git.exe), so git's own dir rides along like bash's.
         git = locate_command("git").command[0]
@@ -84,7 +107,10 @@ def _run(step: dict, ctx: dict, cwd: Path | None = None, *, receipt: bool = Fals
             **{k: gha.to_string(gha.render(v, ctx)) for k, v in step.get("env", {}).items()},
         }
         script = root / "step.sh"
-        script.write_text((_RECEIPTS if receipt else "") + gha.render(step["run"], ctx), encoding="utf-8")
+        script.write_text(
+            (bash_prefix + (_RECEIPTS if receipt else "") + gha.render(step["run"], ctx)),
+            encoding="utf-8",
+        )
         # Files, not pipes: on Windows a timed-out run() kills bash and then calls communicate()
         # with no timeout, which blocks for good while any descendant (Git's bash.exe launcher
         # spawns usr/bin/bash.exe) still holds the pipe; the test file then died at the runner's

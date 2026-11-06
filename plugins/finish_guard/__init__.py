@@ -67,23 +67,26 @@ _DONE_RE = re.compile(
 
 
 def _is_false_continue(text: str) -> bool:
-    """Contract: Preconditions: text 为 str（可空）；Postconditions: 命中
-    宣言式继续句式、且不命中完成态/合法请示豁免时返回 True。
+    """Contract: Preconditions: text 为 str（可空）；Postconditions: 存在任一
+    非否定型宣言命中、且不命中完成态/合法请示豁免时返回 True。
 
     完成态豁免规则：完成词与继续宣言并存时（批间汇报「X已清零，继续Y」），
     只有完成词出现在宣言**之后**（真终态收尾）才放行；宣言在前=还有
-    未做之事=拦。"""
+    未做之事=拦。否定型引用（「无宣布而未做的『下一步』」类边界陈述）
+    跳过不计入宣言。"""
     if not text:
         return False
     if _LEGIT_ASK_RE.search(text):  # re-ok: 中文句式模糊匹配无str等价
         return False
-    m = _DECLARE_RE.search(text)  # re-ok: 同上
-    if not m:
-        return False
-    done = _DONE_RE.search(text)  # re-ok: 同上
-    if done and done.start() > m.start():
-        return False  # 完成词在宣言后=终态收尾，放行
-    return True  # 无完成词或完成词在宣言前=批间汇报，拦
+    for m in _DECLARE_RE.finditer(text):  # re-ok: 同上
+        window = text[max(0, m.start() - 13):m.end()]
+        if _NEG_DECLARE_RE.search(window):  # re-ok: 同上
+            continue  # 否定型引用=边界陈述，非继续宣言
+        done = _DONE_RE.search(text)  # re-ok: 同上
+        if done and done.start() > m.start():
+            return False  # 完成词在宣言后=终态收尾，放行
+        return True  # 无完成词或完成词在宣言前=批间汇报，拦
+    return False
 
 
 # pre_verify 单回合最多强制续跑次数（防请示/续跑死循环，量级对齐核心 max nudges）
@@ -104,7 +107,18 @@ _DEFER_RE = re.compile(
 
 # 推迟词的完成态否定形态（2026-10-25 实测 state.db：「无待办」在完成态收尾中
 # 出现 491 次量级的「待办」命中里占多数）——命中即视为完成声明，不拦。
-_NEG_DEFER_RE = re.compile(r"(无待办|没有待办|待办清零|待办已清|无未清|无残留待办)")
+# 归属型扩展（2026-11-05 副手巡检实测）：监控/巡检类汇报中「跨会话待办归属
+# 他会话」是归属陈述非外推，裸子串「待办」命中造成每轮至多 3 次误强制续跑。
+# 豁免锚定会话标识（会话/session/local-）或明确让渡动词，防归属话术包装真外推。
+_NEG_DEFER_RE = re.compile(
+    r"(无待办|没有待办|待办清零|待办已清|无未清|无残留待办"
+    r"|跨会话待办|待办[^。\n]{0,24}(归属|属于)[^。\n]{0,24}(会话|session|local-)"
+    r"|不代消费|自行消化)"
+)
+
+# 宣言词的否定型引用（2026-11-05 实测：「无宣布而未做的『下一步』」被拦）——
+# 「下一步」出现在否定语境（无/未/零/非…下一步）时是边界陈述不是继续宣言。
+_NEG_DECLARE_RE = re.compile(r"(无|没有|零|未|非)[^。\n]{0,10}[「『「']?下一步")
 
 
 def _is_defer_pushout(text: str) -> bool:
@@ -428,9 +442,8 @@ def _on_pre_verify(**kwargs) -> dict:
 def _transform_llm_output(response_text: str = "", **kwargs) -> "str | None":
     """Contract: Preconditions: response_text 为本回合 LLM 输出（核心键名）；
     Postconditions: L1/L2 未兜住且尾部命中请示式、或全文根因宣称无证据、
-    或拍板请求不自包含时返回打标文本（用户可见留痕），否则返回 None
-    （核心契约 first non-None wins：不改写必须返回 None，返回原文会
-    占据槽位短路其后 transform 插件）。"""
+    或拍板请求不自包含时返回打标文本（用户可见留痕），否则返回 None。
+    transform 链会继续执行后续插件；不改写时必须返回 None，不能伪报成功。"""
     output = response_text or ""
     if not output.strip():
         return None
@@ -481,4 +494,8 @@ def register(ctx: Any) -> None:
     from . import todo_debt
     ctx.register_hook("post_tool_call", todo_debt.on_todo_write)
     ctx.register_hook("pre_llm_call", todo_debt.on_session_open)
-    logger.info("finish_guard v2 已注册——clarify 拦截 + pre_verify 续跑 + 可见标记 + 跨会话任务债务闭环")
+    from . import lazy_blocker
+    ctx.register_hook("pre_llm_call", lazy_blocker._on_pre_llm_call)
+    from . import completion_boundary_audit
+    completion_boundary_audit.register(ctx)
+    logger.info("finish_guard v2 已注册——clarify 拦截 + pre_verify 续跑 + 可见标记 + 跨会话任务债务闭环 + 卡点替代通道 + 完成边界消项审计")

@@ -32,6 +32,12 @@ _CALLS: tuple[tuple[str, dict[str, Any]], ...] = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _reset_judge_state() -> None:
+    _llm_judge.reset_judge_circuit()
+    _llm_judge.reset_capability_cache()
+
+
 @pytest.mark.parametrize("entry", _ENTRIES)
 def test_timeout_default_defers_to_config(entry: str) -> None:
     fn = getattr(_llm_judge, entry)

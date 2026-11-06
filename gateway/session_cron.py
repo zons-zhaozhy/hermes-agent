@@ -174,7 +174,8 @@ async def operation(authority, name, params, actor=None):
         request_id = cron_request_id(params['job_id'], params['request_id'])
         sid = local_identity(authority.profile_id, actor.subject, request_id)
         from hermes_state_runtime import list_session_admissions
-        rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+        rows = await asyncio.to_thread(
+            list_session_admissions, authority.db, session_id=sid, pending_only=False)
         from gateway.owner_identity import same_owner
         row = next((r for r in rows if r['request_id'] == request_id and same_owner(r['principal_id'], actor.subject)), None)
         if row is None:
