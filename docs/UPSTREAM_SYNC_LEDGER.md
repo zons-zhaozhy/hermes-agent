@@ -226,303 +226,368 @@ git rev-list --count main..upstream/main   # 应为 0
 
 ```yaml
 version: 1
-baseline: ed1afb082eb3e46cf2edae9d8f68fb67b09ee4df
+baseline: 90d6b98fd86d20981ee06ddd5b7d93e4320f26a4
 official_paths:
-  - .github/workflows/lint.yml
-  - .gitignore
-  - acp_adapter/gateway_server.py
-  - acp_adapter/tools.py
-  - agent/agent_init.py
-  - agent/auxiliary_client.py
-  - agent/auxiliary_reasoning_floor.py
-  - agent/codex_runtime.py
-  - agent/coding_context.py
-  - agent/context_compressor_telemetry.py
-  - agent/conversation_compression.py
-  - agent/curator.py
-  - agent/curator_backup.py
-  - agent/display.py
-  - agent/error_classifier.py
-  - agent/periodic_scheduler.py
-  - agent/prepared_compaction.py
-  - agent/prompt_builder.py
-  - agent/relay_runtime.py
-  - agent/retry_utils.py
-  - agent/skill_utils.py
-  - agent/system_prompt.py
-  - agent/tool_dispatch_helpers.py
-  - agent/tool_executor.py
-  - agent/tool_guardrails.py
-  - agent/tool_result_classification.py
-  - agent/turn_context.py
-  - agent/turn_facade_lease.py
-  - agent/turn_finalizer.py
-  - agent/turn_stop_gates.py
-  - agent/turn_tool_round.py
-  - apps/desktop/src/plugins/hermes-bots/cron-detail.test.tsx
-  - apps/desktop/src/store/voice-prefs.test.ts
-  - cron/scheduler.py
-  - cron/scheduler_authority.py
-  - cron/scheduler_delivery.py
-  - cron/scheduler_liveness.py
-  - cron/scheduler_provider.py
-  - cron/scheduler_script.py
-  - cron/scheduler_tick.py
-  - cron/unreachable_retry.py
-  - evals/postmortem/review_probes/goal_scope_probe.py
-  - gateway/config.py
-  - gateway/config_loader.py
-  - gateway/hosted_rooms_gateway_import.py
-  - gateway/platforms/webhook_ingress.py
-  - gateway/relay/media.py
-  - gateway/run.py
-  - gateway/run_bootstrap.py
-  - gateway/run_adapters.py
-  - gateway/run_adapters_recovery.py
-  - gateway/run_goals.py
-  - gateway/run_inbound.py
-  - gateway/run_notifications.py
-  - gateway/run_notifications_update.py
-  - gateway/run_runtime.py
-  - gateway/run_runtime_init.py
-  - gateway/run_startup.py
-  - gateway/run_turn_runner.py
-  - gateway/session_a2a.py
-  - gateway/session_ancillary.py
-  - gateway/session_api_turn.py
-  - gateway/session_authority.py
-  - gateway/session_bot.py
-  - gateway/session_controls.py
-  - gateway/session_cron.py
-  - gateway/session_detached.py
-  - gateway/session_envelope.py
-  - gateway/session_group_controls.py
-  - gateway/session_hosted_rpc.py
-  - gateway/session_hosted_service.py
-  - gateway/session_ingress.py
-  - gateway/session_local_recovery.py
-  - gateway/session_route_recovery.py
-  - gateway/session_settlement_recovery.py
-  - gateway/session_viewer_automation.py
-  - gateway/session_viewer_close.py
-  - gateway/slash_commands.py
-  - gateway/slash_commands_goals.py
-  - gateway/slash_commands_model.py
-  - hermes_cli/_parser.py
-  - hermes_cli/_startup_fast.py
-  - hermes_cli/banner.py
-  - hermes_cli/cli_chat_turn_mixin.py
-  - hermes_cli/cli_init_mixin.py
-  - hermes_cli/cli_loops_mixin.py
-  - hermes_cli/cli_model_switch_mixin.py
-  - hermes_cli/cli_modern_layout.py
-  - hermes_cli/cli_stream_mixin.py
-  - hermes_cli/cli_subagent_monitor.py
-  - hermes_cli/cli_tui_mixin.py
-  - hermes_cli/config_defaults.py
-  - hermes_cli/desktop_update_verify.py
-  - hermes_cli/gateway_client.py
-  - hermes_cli/goal_command.py
-  - hermes_cli/goals.py
-  - hermes_cli/hooks.py
-  - hermes_cli/kanban_db_dispatch.py
-  - hermes_cli/main.py
-  - hermes_cli/observability/shared_metrics_prepared_compaction.py
-  - hermes_cli/plugin_validate.py
-  - hermes_cli/plugins.py
-  - hermes_cli/plugins_cmd.py
-  - hermes_cli/plugins_cmd_listing.py
-  - hermes_cli/plugins_dispatch.py
-  - hermes_cli/plugins_manifest.py
-  - hermes_cli/stderr_timestamp.py
-  - hermes_cli/subcommands/plugins.py
-  - hermes_cli/version_info.py
-  - hermes_state.py
-  - hermes_state_local.py
-  - hermes_state_local_lineage.py
-  - hermes_state_maintenance.py
-  - hermes_state_mutation_branch.py
-  - hermes_state_mutation_prepared.py
-  - hermes_state_mutation_reset.py
-  - hermes_state_readpool.py
-  - lefthook.yml
-  - locales/af.yaml
-  - locales/ar.yaml
-  - locales/de.yaml
-  - locales/en.yaml
-  - locales/es.yaml
-  - locales/fr.yaml
-  - locales/ga.yaml
-  - locales/hu.yaml
-  - locales/it.yaml
-  - locales/ja.yaml
-  - locales/ko.yaml
-  - locales/pt.yaml
-  - locales/ru.yaml
-  - locales/tr.yaml
-  - locales/uk.yaml
-  - locales/zh-hant.yaml
-  - locales/zh.yaml
-  - package-lock.json
-  - plugins/image_gen/openai/__init__.py
-  - plugins/model-providers/zai/__init__.py
-  - plugins/platforms/dingtalk/adapter.py
-  - plugins/platforms/dingtalk/gateway_env.py
-  - plugins/platforms/dingtalk/plugin.yaml
-  - plugins/platforms/photon/adapter.py
-  - plugins/platforms/weixin/adapter.py
-  - plugins/security-guidance/patterns.py
-  - pm/index_config.py
-  - pyproject.toml
-  - ruff.pre-commit.toml
-  - run_agent.py
-  - scripts/check
-  - scripts/ci/prompt_surface.py
-  - scripts/run_tests_parallel.py
-  - skills/software-development/requesting-code-review/SKILL.md
-  - skills/software-development/systematic-debugging/SKILL.md
-  - skills/software-development/test-driven-development/SKILL.md
-  - tests/agent/test_auxiliary_client.py
-  - tests/agent/test_auxiliary_error_classification.py
-  - tests/agent/test_auxiliary_reasoning_floor.py
-  - tests/agent/test_coding_context.py
-  - tests/agent/test_curator_backup.py
-  - tests/agent/test_error_classifier.py
-  - tests/agent/test_periodic_scheduler.py
-  - tests/agent/test_pre_llm_block_hook.py
-  - tests/agent/test_prepared_compaction.py
-  - tests/agent/test_skill_utils.py
-  - tests/cron/test_cron_inactivity_timeout.py
-  - tests/cron/test_cron_recover_pause.py
-  - tests/cron/test_cron_script.py
-  - tests/cron/test_lifecycle_guard_profile_scan.py
-  - tests/cron/test_misfire_catchup.py
-  - tests/cron/test_unreachable_retry.py
-  - tests/fixtures/prompt_surface/prompts/cli-code.claude.txt
-  - tests/fixtures/prompt_surface/prompts/cli.claude.txt
-  - tests/fixtures/prompt_surface/prompts/cli.gemini.txt
-  - tests/fixtures/prompt_surface/prompts/cli.gpt.txt
-  - tests/fixtures/prompt_surface/prompts/cli.hermes.txt
-  - tests/fixtures/prompt_surface/prompts/cron.claude.txt
-  - tests/fixtures/prompt_surface/prompts/desktop.claude.txt
-  - tests/fixtures/prompt_surface/prompts/discord.claude.txt
-  - tests/fixtures/prompt_surface/prompts/telegram.claude.txt
-  - tests/fixtures/prompt_surface/surfaces.json
-  - tests/fixtures/prompt_surface/tools/delegate_task.json
-  - tests/fixtures/prompt_surface/tools/skills_list.json
-  - tests/fixtures/prompt_surface/tools/write_file.json
-  - tests/fixtures/provider_wire_snapshot.json
-  - tests/gateway/fixtures/operator_cross_surface_peer.py
-  - tests/gateway/test_bot_chat_unadoptable_local_title.py
-  - tests/gateway/test_busy_followup_guard_release.py
-  - tests/gateway/test_dingtalk.py
-  - tests/gateway/test_dingtalk_reconnect_circuit_breaker.py
-  - tests/gateway/test_feishu_card_action_gateway_authz.py
-  - tests/gateway/test_goal_continuation_drain.py
-  - tests/gateway/test_hosted_mux_runtime.py
-  - tests/gateway/test_hosted_rooms_gateway_import.py
-  - tests/gateway/test_local_session_orphan_end.py
-  - tests/gateway/test_loop_liveness_watchdog.py
-  - tests/gateway/test_native_http_auth.py
-  - tests/gateway/test_resume_display_history.py
-  - tests/gateway/test_runtime_bootstrap_lifecycle.py
-  - tests/gateway/test_runtime_listener_supervision.py
-  - tests/gateway/test_runtime_token_identity.py
-  - tests/gateway/test_session_authority_adopted_stop.py
-  - tests/gateway/test_session_viewer_automation.py
-  - tests/gateway/test_viewer_close_lifecycle.py
-  - tests/gateway/test_startup_recovery_parks_profile.py
-  - tests/gateway/test_watch_notification_reset_pin.py
-  - tests/hermes_cli/test_banner.py
-  - tests/hermes_cli/test_cli_goal_interrupt.py
-  - tests/hermes_cli/test_cli_goal_parked_resume.py
-  - tests/hermes_cli/test_cli_modern_layout.py
-  - tests/hermes_cli/test_cli_user_message_preview.py
-  - tests/hermes_cli/test_desktop_swap_file_lock_retry.py
-  - tests/hermes_cli/test_desktop_update_verify.py
-  - tests/hermes_cli/test_doctor_journal_modes.py
-  - tests/hermes_cli/test_doctor_wal_checkpoint_guard.py
-  - tests/hermes_cli/test_gateway_automation.py
-  - tests/hermes_cli/test_gateway_disconnect_outcome.py
-  - tests/hermes_cli/test_gateway_multiplex_status.py
-  - tests/hermes_cli/test_goals.py
-  - tests/hermes_cli/test_inventory_pricing.py
-  - tests/hermes_cli/test_kanban_db.py
-  - tests/hermes_cli/test_lazy_secrets_dispatch.py
-  - tests/hermes_cli/test_model_options_account_usage.py
-  - tests/hermes_cli/test_plugin_config_state_bridge.py
-  - tests/hermes_cli/test_plugin_manifest_v2.py
-  - tests/hermes_cli/test_plugin_validate.py
-  - tests/hermes_cli/test_plugins.py
-  - tests/hermes_cli/test_plugins_cmd_activation_keys.py
-  - tests/hermes_cli/test_session_recovery_lost_and_found.py
-  - tests/hermes_cli/test_sessions_held_store_gate.py
-  - tests/hermes_cli/test_shared_metrics_harness.py
-  - tests/hermes_cli/test_shared_metrics_prepared_compaction.py
-  - tests/hermes_cli/test_source_check.py
-  - tests/hermes_cli/test_startup_fast_guards.py
-  - tests/hermes_cli/test_stderr_timestamp.py
-  - tests/hermes_cli/test_subagent_monitor_gateway.py
-  - tests/hermes_cli/test_uninstall_full_wipe_sweep.py
-  - tests/hermes_cli/test_update_fleet_restart_pending.py
-  - tests/hermes_cli/test_update_target_identity.py
-  - tests/hermes_cli/test_user_providers_model_switch.py
-  - tests/hermes_cli/test_version_command.py
-  - tests/hermes_cli/test_version_info.py
-  - tests/home_io_guard.py
-  - tests/plugins/test_a2a_plugin.py
-  - tests/plugins/test_security_guidance_plugin.py
-  - tests/scripts/test_code_health_cli.py
-  - tests/skills/test_document_env_blocks.py
-  - tests/tools/test_browser_use_cli.py
-  - tests/tools/test_budget_config.py
-  - tests/tools/test_connector_bridge_wiring.py
-  - tests/tools/test_delegate.py
-  - tests/tools/test_mcp_tool.py
-  - tests/tools/test_process_registry.py
-  - tests/tools/test_skills_tool.py
-  - tests/tools/test_tool_result_storage.py
-  - tests/tui_gateway/test_backend_heartbeat.py
-  - tests/tui_gateway/test_compaction_status.py
-  - tools/browser_session.py
-  - tools/browser_session_lifecycle.py
-  - tools/browser_use_cli.py
-  - tools/budget_config.py
-  - tools/code_execution_tool.py
-  - tools/delegate_tool.py
-  - tools/delegate_tool_progress.py
-  - tools/file_operations.py
-  - tools/file_operations_common.py
-  - tools/file_tools.py
-  - tools/mcp_tool_config.py
-  - tools/mcp_tool_handlers.py
-  - tools/mcp_tool_registration.py
-  - tools/memory_tool_store.py
-  - tools/process_registry.py
-  - tools/process_registry_checkpoint.py
-  - tools/skill_manager_batch.py
-  - tools/skills_tool.py
-  - tools/terminal_tool_guards.py
-  - tools/tool_labels.py
-  - tools/tool_result_storage.py
-  - tools/tool_search_validation.py
-  - tui_gateway/hosted_room_driver.py
-  - tui_gateway/prompt_turn.py
-  - tui_gateway/session_compression.py
-  - tui_gateway/ws.py
-  - ui-tui/src/app/useLongRunToolCharms.ts
-  - uv.lock
-  - website/docs/developer-guide/context-compression-and-caching.md
-  - website/docs/developer-guide/plugins/index.md
-  - website/docs/reference/cli-commands.md
-  - website/docs/reference/mcp-config-reference.md
-  - website/docs/reference/skills-catalog.md
-  - website/docs/user-guide/cli.md
-  - website/docs/user-guide/configuration.md
-  - website/docs/user-guide/features/curator.md
-  - website/docs/user-guide/features/hooks.md
-  - website/docs/user-guide/features/mcp.md
-  - website/docs/user-guide/features/plugins.md
-  - website/docs/user-guide/messaging/dingtalk.md
-  - website/sidebars.ts
+- .github/workflows/lint.yml
+- .gitignore
+- acp_adapter/gateway_server.py
+- acp_adapter/tools.py
+- agent/agent_init.py
+- agent/auxiliary_client.py
+- agent/auxiliary_reasoning_floor.py
+- agent/codex_runtime.py
+- agent/coding_context.py
+- agent/context_compressor_telemetry.py
+- agent/conversation_compression.py
+- agent/curator.py
+- agent/curator_backup.py
+- agent/display.py
+- agent/error_classifier.py
+- agent/periodic_scheduler.py
+- agent/prepared_compaction.py
+- agent/prompt_builder.py
+- agent/relay_runtime.py
+- agent/retry_utils.py
+- agent/skill_utils.py
+- agent/system_prompt.py
+- agent/tool_dispatch_helpers.py
+- agent/tool_executor.py
+- agent/tool_guardrails.py
+- agent/tool_result_classification.py
+- agent/turn_context.py
+- agent/turn_facade_lease.py
+- agent/turn_finalizer.py
+- agent/turn_stop_gates.py
+- agent/turn_tool_round.py
+- apps/desktop/e2e/boot-failure.spec.ts
+- apps/desktop/e2e/boot.spec.ts
+- apps/desktop/e2e/cross-gateway-group.spec.ts
+- apps/desktop/e2e/interim-messages.spec.ts
+- apps/desktop/e2e/onboarding.spec.ts
+- apps/desktop/e2e/sidebar-states.spec.ts
+- apps/desktop/e2e/unread-dot-restart.spec.ts
+- apps/desktop/e2e/warm-resume-jitter.spec.ts
+- apps/desktop/electron/connection-config.test.ts
+- apps/desktop/electron/main.ts
+- apps/desktop/scripts/gen-share-codes.ts
+- apps/desktop/src/plugins/hermes-bots/cron-detail.test.tsx
+- apps/desktop/src/store/voice-prefs.test.ts
+- cron/scheduler.py
+- cron/scheduler_authority.py
+- cron/scheduler_delivery.py
+- cron/scheduler_liveness.py
+- cron/scheduler_provider.py
+- cron/scheduler_script.py
+- cron/scheduler_tick.py
+- cron/unreachable_retry.py
+- evals/postmortem/review_probes/goal_scope_probe.py
+- gateway/config.py
+- gateway/config_loader.py
+- gateway/hosted_rooms_gateway_import.py
+- gateway/platforms/webhook_ingress.py
+- gateway/relay/media.py
+- gateway/run.py
+- gateway/run_adapters.py
+- gateway/run_adapters_recovery.py
+- gateway/run_api.py
+- gateway/run_bootstrap.py
+- gateway/run_goals.py
+- gateway/run_inbound.py
+- gateway/run_notifications.py
+- gateway/run_notifications_update.py
+- gateway/run_runtime.py
+- gateway/run_runtime_init.py
+- gateway/run_startup.py
+- gateway/run_turn_hygiene.py
+- gateway/run_turn_runner.py
+- gateway/run_turn_runner_approval_settle.py
+- gateway/session_a2a.py
+- gateway/session_ancillary.py
+- gateway/session_api_turn.py
+- gateway/session_authority.py
+- gateway/session_bot.py
+- gateway/session_controls.py
+- gateway/session_cron.py
+- gateway/session_detached.py
+- gateway/session_envelope.py
+- gateway/session_group_controls.py
+- gateway/session_hosted_rpc.py
+- gateway/session_hosted_service.py
+- gateway/session_ingress.py
+- gateway/session_local_migration.py
+- gateway/session_local_recovery.py
+- gateway/session_route_recovery.py
+- gateway/session_settlement_recovery.py
+- gateway/session_viewer_automation.py
+- gateway/session_viewer_close.py
+- gateway/slash_commands.py
+- gateway/slash_commands_goals.py
+- gateway/slash_commands_model.py
+- hermes_cli/_parser.py
+- hermes_cli/_startup_fast.py
+- hermes_cli/banner.py
+- hermes_cli/cli_chat_turn_mixin.py
+- hermes_cli/cli_init_mixin.py
+- hermes_cli/cli_loops_mixin.py
+- hermes_cli/cli_model_switch_mixin.py
+- hermes_cli/cli_modern_layout.py
+- hermes_cli/cli_stream_mixin.py
+- hermes_cli/cli_subagent_monitor.py
+- hermes_cli/cli_tui_mixin.py
+- hermes_cli/config_defaults.py
+- hermes_cli/desktop_update_verify.py
+- hermes_cli/gateway_client.py
+- hermes_cli/goal_command.py
+- hermes_cli/goals.py
+- hermes_cli/hooks.py
+- hermes_cli/kanban_db_dispatch.py
+- hermes_cli/main.py
+- hermes_cli/observability/shared_metrics_prepared_compaction.py
+- hermes_cli/plugin_validate.py
+- hermes_cli/plugins.py
+- hermes_cli/plugins_cmd.py
+- hermes_cli/plugins_cmd_listing.py
+- hermes_cli/plugins_dispatch.py
+- hermes_cli/plugins_manifest.py
+- hermes_cli/stderr_timestamp.py
+- hermes_cli/subcommands/plugins.py
+- hermes_cli/version_info.py
+- hermes_cli/worktree_sweep.py
+- hermes_state.py
+- hermes_state_local.py
+- hermes_state_local_lineage.py
+- hermes_state_maintenance.py
+- hermes_state_mutation_branch.py
+- hermes_state_mutation_prepared.py
+- hermes_state_mutation_reset.py
+- hermes_state_readpool.py
+- lefthook.yml
+- locales/af.yaml
+- locales/ar.yaml
+- locales/de.yaml
+- locales/en.yaml
+- locales/es.yaml
+- locales/fr.yaml
+- locales/ga.yaml
+- locales/hu.yaml
+- locales/it.yaml
+- locales/ja.yaml
+- locales/ko.yaml
+- locales/pt.yaml
+- locales/ru.yaml
+- locales/tr.yaml
+- locales/uk.yaml
+- locales/zh-hant.yaml
+- locales/zh.yaml
+- plugins/image_gen/openai/__init__.py
+- plugins/model-providers/zai/__init__.py
+- plugins/platforms/dingtalk/adapter.py
+- plugins/platforms/dingtalk/gateway_env.py
+- plugins/platforms/dingtalk/plugin.yaml
+- plugins/platforms/photon/adapter.py
+- plugins/platforms/weixin/adapter.py
+- plugins/security-guidance/patterns.py
+- pm/index_config.py
+- pm/shell.py
+- pyproject.toml
+- ruff.pre-commit.toml
+- run_agent.py
+- scripts/check
+- scripts/ci/prompt_surface.py
+- scripts/run_tests_parallel.py
+- scripts/sandbox/pick-release-tags.sh
+- skills/software-development/requesting-code-review/SKILL.md
+- skills/software-development/systematic-debugging/SKILL.md
+- skills/software-development/test-driven-development/SKILL.md
+- tests/agent/test_auxiliary_client.py
+- tests/agent/test_auxiliary_error_classification.py
+- tests/agent/test_auxiliary_reasoning_floor.py
+- tests/agent/test_coding_context.py
+- tests/agent/test_curator_backup.py
+- tests/agent/test_error_classifier.py
+- tests/agent/test_periodic_scheduler.py
+- tests/agent/test_pre_llm_block_hook.py
+- tests/agent/test_prepared_compaction.py
+- tests/agent/test_skill_utils.py
+- tests/ci/workflow_steps.py
+- tests/cron/test_cron_inactivity_timeout.py
+- tests/cron/test_cron_recover_pause.py
+- tests/cron/test_cron_script.py
+- tests/cron/test_lifecycle_guard_profile_scan.py
+- tests/cron/test_misfire_catchup.py
+- tests/cron/test_unreachable_retry.py
+- tests/fixtures/prompt_surface/prompts/cli-code.claude.txt
+- tests/fixtures/prompt_surface/prompts/cli.claude.txt
+- tests/fixtures/prompt_surface/prompts/cli.gemini.txt
+- tests/fixtures/prompt_surface/prompts/cli.gpt.txt
+- tests/fixtures/prompt_surface/prompts/cli.hermes.txt
+- tests/fixtures/prompt_surface/prompts/cron.claude.txt
+- tests/fixtures/prompt_surface/prompts/desktop.claude.txt
+- tests/fixtures/prompt_surface/prompts/discord.claude.txt
+- tests/fixtures/prompt_surface/prompts/telegram.claude.txt
+- tests/fixtures/prompt_surface/surfaces.json
+- tests/fixtures/prompt_surface/tools/delegate_task.json
+- tests/fixtures/prompt_surface/tools/skills_list.json
+- tests/fixtures/prompt_surface/tools/write_file.json
+- tests/fixtures/provider_wire_snapshot.json
+- tests/gateway/fixtures/operator_cross_surface_peer.py
+- tests/gateway/fixtures/tui_desktop_routes_peer.py
+- tests/gateway/test_api_admission_off_loop.py
+- tests/gateway/test_api_run_steer_before_adopt.py
+- tests/gateway/test_bootstrap_deferred_integrity_scan.py
+- tests/gateway/test_bot_chat_unadoptable_local_title.py
+- tests/gateway/test_busy_followup_guard_release.py
+- tests/gateway/test_dingtalk.py
+- tests/gateway/test_dingtalk_reconnect_circuit_breaker.py
+- tests/gateway/test_feishu_card_action_gateway_authz.py
+- tests/gateway/test_gateway_trust_env.py
+- tests/gateway/test_goal_continuation_drain.py
+- tests/gateway/test_hosted_mux_runtime.py
+- tests/gateway/test_hosted_rooms_gateway_import.py
+- tests/gateway/test_local_session_orphan_end.py
+- tests/gateway/test_loop_liveness_watchdog.py
+- tests/gateway/test_multiplex_residue_parity.py
+- tests/gateway/test_native_http_auth.py
+- tests/gateway/test_readiness.py
+- tests/gateway/test_resume_display_history.py
+- tests/gateway/test_run_runtime_hot_serve_cleanup.py
+- tests/gateway/test_runtime_bootstrap_lifecycle.py
+- tests/gateway/test_runtime_listener_supervision.py
+- tests/gateway/test_runtime_token_identity.py
+- tests/gateway/test_session_authority_adopted_stop.py
+- tests/gateway/test_session_client_env.py
+- tests/gateway/test_session_hosted_daemon.py
+- tests/gateway/test_session_viewer_automation.py
+- tests/gateway/test_startup_recovery_parks_profile.py
+- tests/gateway/test_viewer_close_lifecycle.py
+- tests/gateway/test_watch_notification_reset_pin.py
+- tests/hermes_cli/test_banner.py
+- tests/hermes_cli/test_cli_gateway_model_route.py
+- tests/hermes_cli/test_cli_goal_interrupt.py
+- tests/hermes_cli/test_cli_goal_parked_resume.py
+- tests/hermes_cli/test_cli_modern_layout.py
+- tests/hermes_cli/test_cli_user_message_preview.py
+- tests/hermes_cli/test_desktop_swap_file_lock_retry.py
+- tests/hermes_cli/test_desktop_update_verify.py
+- tests/hermes_cli/test_doctor_journal_modes.py
+- tests/hermes_cli/test_doctor_wal_checkpoint_guard.py
+- tests/hermes_cli/test_gateway_automation.py
+- tests/hermes_cli/test_gateway_disconnect_outcome.py
+- tests/hermes_cli/test_gateway_multiplex_status.py
+- tests/hermes_cli/test_gateway_runtime_ensure.py
+- tests/hermes_cli/test_goals.py
+- tests/hermes_cli/test_inventory_pricing.py
+- tests/hermes_cli/test_kanban_db.py
+- tests/hermes_cli/test_lazy_secrets_dispatch.py
+- tests/hermes_cli/test_model_options_account_usage.py
+- tests/hermes_cli/test_plugin_config_state_bridge.py
+- tests/hermes_cli/test_plugin_manifest_v2.py
+- tests/hermes_cli/test_plugin_validate.py
+- tests/hermes_cli/test_plugins.py
+- tests/hermes_cli/test_plugins_cmd_activation_keys.py
+- tests/hermes_cli/test_real_home_tripwire.py
+- tests/hermes_cli/test_relay_shared_metrics_runtime.py
+- tests/hermes_cli/test_session_recovery_lost_and_found.py
+- tests/hermes_cli/test_sessions_held_store_gate.py
+- tests/hermes_cli/test_shared_metrics_harness.py
+- tests/hermes_cli/test_shared_metrics_prepared_compaction.py
+- tests/hermes_cli/test_source_check.py
+- tests/hermes_cli/test_startup_fast_guards.py
+- tests/hermes_cli/test_stderr_timestamp.py
+- tests/hermes_cli/test_subagent_monitor_gateway.py
+- tests/hermes_cli/test_uninstall_full_wipe_sweep.py
+- tests/hermes_cli/test_update_autostash.py
+- tests/hermes_cli/test_update_finish.py
+- tests/hermes_cli/test_update_fleet_restart_pending.py
+- tests/hermes_cli/test_update_interrupted_pull.py
+- tests/hermes_cli/test_update_target_identity.py
+- tests/hermes_cli/test_update_zip_webapp_preserve.py
+- tests/hermes_cli/test_user_providers_model_switch.py
+- tests/hermes_cli/test_version_command.py
+- tests/hermes_cli/test_version_info.py
+- tests/hermes_state/test_cross_vm_fs_wal_refusal.py
+- tests/hermes_state/test_guest_durability_barriers.py
+- tests/home_io_guard.py
+- tests/plugins/test_a2a_plugin.py
+- tests/plugins/test_security_guidance_plugin.py
+- tests/pm/test_declined_extras.py
+- tests/pm/test_shell_discovery.py
+- tests/scripts/test_code_health_cli.py
+- tests/scripts/test_run_tests_parallel.py
+- tests/scripts/test_run_tests_parallel_stdio.py
+- tests/scripts/test_run_tests_parallel_timeout_scaling.py
+- tests/scripts/test_source_driver.py
+- tests/skills/test_document_env_blocks.py
+- tests/tools/test_bot_desktop_resources.py
+- tests/tools/test_browser_launcher.py
+- tests/tools/test_browser_use_cli.py
+- tests/tools/test_budget_config.py
+- tests/tools/test_connector_bridge_wiring.py
+- tests/tools/test_delegate.py
+- tests/tools/test_mcp_tool.py
+- tests/tools/test_mcp_tool_session_expired.py
+- tests/tools/test_process_registry.py
+- tests/tools/test_skills_tool.py
+- tests/tools/test_terminal_pipeline_status.py
+- tests/tools/test_tool_result_storage.py
+- tests/tui_gateway/test_backend_heartbeat.py
+- tests/tui_gateway/test_compaction_status.py
+- tests/tui_gateway/test_legacy_submit_forwards_to_owner.py
+- tests/tui_gateway/test_multi_client_fanout.py
+- tests/tui_gateway/test_profiles_list_canonical_session.py
+- tests/tui_gateway/test_profiles_list_session_field_cache.py
+- tests/tui_gateway/test_profiles_list_ui_meta_cache.py
+- tools/browser_session.py
+- tools/browser_session_lifecycle.py
+- tools/browser_use_cli.py
+- tools/budget_config.py
+- tools/code_execution_tool.py
+- tools/delegate_tool.py
+- tools/delegate_tool_progress.py
+- tools/file_operations.py
+- tools/file_operations_common.py
+- tools/file_tools.py
+- tools/mcp_tool_config.py
+- tools/mcp_tool_errors.py
+- tools/mcp_tool_handlers.py
+- tools/mcp_tool_registration.py
+- tools/mcp_tool_transport.py
+- tools/memory_tool_store.py
+- tools/process_registry.py
+- tools/process_registry_checkpoint.py
+- tools/skill_manager_batch.py
+- tools/skills_tool.py
+- tools/terminal_tool_guards.py
+- tools/tool_labels.py
+- tools/tool_result_storage.py
+- tools/tool_search_validation.py
+- tools/transcription_local.py
+- tui_gateway/hosted_room_driver.py
+- tui_gateway/prompt_turn.py
+- tui_gateway/session_compression.py
+- tui_gateway/ws.py
+- ui-tui/scripts/bench-native-history.tsx
+- ui-tui/scripts/bench-streaming-md.tsx
+- ui-tui/scripts/billing-fixtures.tsx
+- ui-tui/scripts/i18n-export-en.ts
+- ui-tui/scripts/visual/render.tsx
+- ui-tui/src/app/useLongRunToolCharms.ts
+- uv.lock
+- website/docs/developer-guide/context-compression-and-caching.md
+- website/docs/developer-guide/plugins/index.md
+- website/docs/reference/cli-commands.md
+- website/docs/reference/mcp-config-reference.md
+- website/docs/reference/skills-catalog.md
+- website/docs/user-guide/cli.md
+- website/docs/user-guide/configuration.md
+- website/docs/user-guide/features/curator.md
+- website/docs/user-guide/features/hooks.md
+- website/docs/user-guide/features/mcp.md
+- website/docs/user-guide/features/plugins.md
+- website/docs/user-guide/messaging/dingtalk.md
+- website/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review.md
+- website/docs/user-guide/skills/bundled/software-development/software-development-systematic-debugging.md
+- website/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development.md
+- website/sidebars.ts
+
 ```
