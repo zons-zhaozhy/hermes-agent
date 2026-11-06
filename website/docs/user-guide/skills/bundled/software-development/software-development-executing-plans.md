@@ -21,7 +21,7 @@ Run written plans with checkpoints and evidence.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `plan-execution`, `implementation`, `checkpoints`, `tdd`, `verification`, `change-control` |
-| Related skills | [`writing-plans`](../../bundled/software-development/software-development-writing-plans.md), [`test-driven-development`](../../bundled/software-development/software-development-test-driven-development.md), [`systematic-debugging`](../../bundled/software-development/software-development-systematic-debugging.md), [`requesting-code-review`](../../bundled/software-development/software-development-requesting-code-review.md) |
+| Related skills | [`writing-plans`](../../bundled/software-development/software-development-writing-plans.md), [`test-driven-development`](../../bundled/software-development/software-development-test-driven-development.md), [`systematic-debugging`](../../bundled/software-development/software-development-systematic-debugging.md), [`requesting-code-review`](../../bundled/software-development/software-development-requesting-code-review.md), [`using-git-worktrees`](../../bundled/software-development/software-development-using-git-worktrees.md), [`finishing-a-development-branch`](../../bundled/software-development/software-development-finishing-a-development-branch.md) |
 
 ## Reference: full SKILL.md
 
@@ -80,6 +80,9 @@ plan's assumptions.
 Read the plan and the cited spec. For each task, inspect the current versions of every file
 named by that task immediately before editing. Do not patch from memory or from the plan's
 quoted old text when the file has changed.
+
+If the plan or checkout requires isolation, load `using-git-worktrees` before editing and
+establish its verified baseline.
 
 ### 2. Review before execution
 
@@ -157,6 +160,10 @@ Stop before each such effect and show the exact target and action.
 Run the plan's final verification commands. Load
 `skill_view("verification-before-completion")` before summarizing success. Report what was
 verified, what was not, and any remaining blocker from fresh command output.
+
+When the user asks to integrate, clean up, or hand off the branch, load
+`finishing-a-development-branch`; plan completion itself does not authorize merge, push, PR,
+publication, or cleanup.
 
 ## Pitfalls
 

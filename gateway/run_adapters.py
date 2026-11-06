@@ -27,6 +27,7 @@ from gateway.config import (
 )
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.helpers import carry_inbound_dedup, hand_over_held_inbound
+from gateway.restart import is_global_startup_conflict
 from gateway.run_adapters_recovery import (
     GatewaySecondaryReconnectMixin,
     _adapter_unavailable_message,

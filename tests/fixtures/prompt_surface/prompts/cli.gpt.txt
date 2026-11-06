@@ -136,14 +136,23 @@ After difficult/iterative tasks, offer to save as a skill. If a skill you loaded
     - grounded-citations: Ground answers and documents in cited, verifiable sources.
   - xurl: X/Twitter via xurl CLI: raw post search, posting, DM, media.
   software-development:
+    - brainstorming: Design architecture and changes before code.
     - codebase-inspection: Inspect codebases w/ pygount: LOC, languages, ratios.
+    - condition-based-waiting: Wait on events and observable conditions with deadlines.
     - dogfood: Exploratory QA of web apps: find bugs, evidence, reports.
+    - executing-plans: Run written plans with checkpoints and evidence.
+    - finishing-a-development-branch: Branch integration verification and safe cleanup.
     - github: GitHub via gh CLI: PRs, issues, reviews, repos, auth.
-    - requesting-code-review: Pre-commit review: security scan, quality gates, auto-fix.
+    - receiving-code-review: Verify review feedback before changing code.
+    - repository-investigation: Map code, callers, history, and invariants before changes.
+    - requesting-code-review: Review changes before commit with fresh evidence.
     - simplify-code: Parallel 4-agent cleanup of recent code changes.
     - spike: Throwaway experiments to validate an idea before build.
-    - systematic-debugging: 4-phase root cause debugging: understand bugs before fixing.
-    - test-driven-development: TDD: enforce RED-GREEN-REFACTOR, tests before code.
+    - systematic-debugging: Find root causes with evidence before fixing.
+    - test-driven-development: Drive changes with RED-GREEN-REFACTOR tests first.
+    - using-git-worktrees: Use Git worktree isolation with a verified baseline.
+    - verification-before-completion: Prove completion with fresh command output.
+    - writing-plans: Turn approved specs into test-first task plans.
   - blocked-page-recovery: Use when a fetch fails: 403/429, paywall, WAF, bot wall.
 </available_skills>
 

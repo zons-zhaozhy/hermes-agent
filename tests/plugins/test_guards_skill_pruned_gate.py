@@ -86,12 +86,13 @@ def test_guard_exception_fail_open(monkeypatch) -> None:
 def test_status_line_all_loaded_and_missing() -> None:
     line = guards_init._guards_status_line()
     assert "guards 在岗" in line  # 期望: 全员加载给确认行
-    assert "16/16" in line  # 期望: 套件 16 个子护栏全部导入成功
+    total = len(guards_init._SUB_GUARD_NAMES)
+    assert f"{total}/{total}" in line  # 期望: 声明的子护栏全部导入成功
     real = guards_init._LOADED
     try:  # 模拟一个子护栏 import 失败
         guards_init._LOADED = [t for t in real if t[0] != "plain_vocab"]
         degraded = guards_init._guards_status_line()
-        assert "15/16" in degraded  # 期望: 缺一个时计数降 1
+        assert f"{total - 1}/{total}" in degraded  # 期望: 缺一个时计数降 1
         assert "plain_vocab" in degraded  # 期望: 缺失名单点名失效守卫
     finally:
         guards_init._LOADED = real

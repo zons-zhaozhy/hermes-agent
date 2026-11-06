@@ -21,7 +21,7 @@ Turn approved specs into test-first task plans.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `planning`, `implementation-plan`, `spec`, `tdd`, `interfaces`, `verification` |
-| Related skills | [`brainstorming`](../../bundled/software-development/software-development-brainstorming.md), [`executing-plans`](../../bundled/software-development/software-development-executing-plans.md), [`test-driven-development`](../../bundled/software-development/software-development-test-driven-development.md) |
+| Related skills | [`brainstorming`](../../bundled/software-development/software-development-brainstorming.md), [`executing-plans`](../../bundled/software-development/software-development-executing-plans.md), [`test-driven-development`](../../bundled/software-development/software-development-test-driven-development.md), [`using-git-worktrees`](../../bundled/software-development/software-development-using-git-worktrees.md) |
 
 ## Reference: full SKILL.md
 
@@ -188,7 +188,9 @@ Fix issues inline.
 
 ### 10. Hand off
 
-After saving the plan, load `executing-plans`. Do not begin implementation as part of planning.
+After saving the plan, load `executing-plans`. Its executor starts with
+`using-git-worktrees` when isolation is required or the checkout needs protection. Do not begin
+implementation as part of planning.
 
 ## Pitfalls
 

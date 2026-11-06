@@ -21,7 +21,7 @@ Design architecture and changes before code.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `planning`, `architecture`, `design`, `change-control`, `investigation`, `approval`, `workflow` |
-| Related skills | [`spike`](../../bundled/software-development/software-development-spike.md), [`writing-plans`](../../bundled/software-development/software-development-writing-plans.md), [`grill-me`](../../optional/software-development/software-development-grill-me.md), [`test-driven-development`](../../bundled/software-development/software-development-test-driven-development.md) |
+| Related skills | [`spike`](../../bundled/software-development/software-development-spike.md), [`repository-investigation`](../../bundled/software-development/software-development-repository-investigation.md), [`writing-plans`](../../bundled/software-development/software-development-writing-plans.md), [`test-driven-development`](../../bundled/software-development/software-development-test-driven-development.md) |
 
 ## Reference: full SKILL.md
 
@@ -103,6 +103,9 @@ Resolve discoverable facts yourself with `read_file`, `search_files`, `terminal`
 Ask the user one decision question at a time only when the answer cannot be found and two
 reasonable choices would materially change the result. Do not ask for facts the environment
 can answer.
+
+For an unfamiliar subsystem or broad refactor, load `repository-investigation` first and carry
+its evidence map into the design.
 
 ### 4. Apply the authorization matrix
 
