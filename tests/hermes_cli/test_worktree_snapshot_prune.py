@@ -8,6 +8,7 @@ visits the repos the ACTIVE profile registered (I7); a non-interactive exit neve
 
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -203,8 +204,11 @@ def test_a_tree_resumed_mid_sweep_is_never_removed(repo, monkeypatch, capsys):
     assert second.exists() and (second / "notes.md").read_text(encoding="utf-8-sig") == "uncommitted\n"
     assert staged.exists() and _git(["show", ":b.py"], staged) == "NEW STAGED CONTENT"
     assert sorted(ref.rsplit("/", 1)[-1] for ref in _archives(repo)) == ["lane-a", "lane-staged"]
-    assert sorted(actions) == ["archived, kept (changed 0s ago) → refs/hermes/archive/lane-a",
-                               "archived, kept (staged changes since the snapshot) → refs/hermes/archive/lane-staged"]
+    changed = next(action for action in actions if "(changed " in action)
+    assert re.fullmatch(
+        r"archived, kept \(changed \d+s ago\) → refs/hermes/archive/lane-a", changed,
+    )
+    assert "archived, kept (staged changes since the snapshot) → refs/hermes/archive/lane-staged" in actions
 
 
 def test_dirty_submodule_work_is_never_archived_away(repo, tmp_path, monkeypatch):

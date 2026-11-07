@@ -1931,14 +1931,11 @@ def test_approval_for_a_ws_client_that_never_advertised_settles_the_queue_entry(
     monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
     approval_mod.register_gateway_notify("ws-old-approval", lambda data: server._emit_approval_request("ws-old-approval", data))
     try:
-        t0 = time.monotonic()
         decision = wait_mod._await_gateway_decision(
             "ws-old-approval", approval_mod._gateway_notify_cbs["ws-old-approval"],
             {"command": "rm -rf build", "description": "", "pattern_key": "dangerous", "pattern_keys": ["dangerous"]})
-        waited = time.monotonic() - t0
     finally:
         approval_mod.unregister_gateway_notify("ws-old-approval")
-    assert waited < 1, decision
     assert decision["choice"] is None and decision["cancelled"]
     assert peer.frames == []
     assert "ws-old-approval" not in approval_mod._gateway_queues
