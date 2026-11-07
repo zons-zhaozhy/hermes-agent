@@ -137,6 +137,8 @@ _PY_RELEVANT_CONTRACT_FILES = {
     "apps/desktop/src/lib/tool-render-class.ts",
     # tests/website/test_catalog_rules_mirror.py (docs page mirrors the canonical rules)
     "plugin-catalog/README.md",
+    # tests/hermes_cli/test_plugin_docs_public_imports.py (its examples import only the plugin API)
+    "plugins/AGENTS.md",
 }
 
 # Catalog entry data: read by the catalog tests and the Plugin Catalog CI
@@ -347,6 +349,7 @@ _UPDATE_DEPENDENCIES = (
     "pm/plugins_state.py",
     "pm/install.py",  # also sealed()/lazy_installs_allowed(): every update's default-tool install
     "pm/packages.py",  # source_build's pnpm environment (pnpm_env)
+    "pm/index_config.py",  # source_build's npmrc bridge (read_npmrc, user_npmrc, hermes_npmrc)
     "hermes_cli/desktop_build_lock.py",
     "hermes_cli/desktop_build_reuse.py",  # source_build keeps the packaged app when no input changed
     "hermes_cli/desktop_release_holders.py",  # main_desktop names/closes a holder of release/ on a failed swap

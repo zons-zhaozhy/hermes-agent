@@ -19,12 +19,12 @@
  * their own useInput); Esc/Enter behave as in production. Ctrl-C to exit.
  */
 import { render } from '@hermes/ink'
+import type { BillingStateResponse, SubscriptionStateResponse, SubscriptionTierOption } from '@hermes/shared/gateway-types'
 import React from 'react'
 
 import type { BillingOverlayState, SubscriptionOverlayState, SubscriptionScreen } from '../src/app/interfaces.js'
 import { BillingOverlay } from '../src/components/billingOverlay.js'
 import { SubscriptionOverlay } from '../src/components/subscriptionOverlay.js'
-import type { BillingStateResponse, SubscriptionStateResponse, SubscriptionTierOption } from '../src/gatewayTypes.js'
 import { DEFAULT_THEME } from '../src/theme.js'
 
 const t = DEFAULT_THEME
