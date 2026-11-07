@@ -1,0 +1,64 @@
+"""Local session creation leaves the shared gateway loop responsive.
+
+Creation's preflight, staging and post-commit restore all touch SQLite. Running any one of them on
+the owner loop lets a slow state.db read freeze every profile and disconnect the client that only
+asked for a new chat.
+"""
+
+import threading
+
+import pytest
+
+
+CONFIG = (
+    'platform_toolsets: {cli: []}\n'
+    'model: {provider: custom, default: frozen, base_url: http://off-loop.invalid/v1}\n'
+)
+
+
+@pytest.mark.asyncio
+async def test_local_create_preflight_staging_and_restore_run_off_the_owner_loop(
+        tmp_path, monkeypatch):
+    from gateway import session_local, session_local_recovery, session_local_title
+    from tests.gateway.test_local_create_env_refs import _owner
+
+    home = tmp_path / 'home'
+    home.mkdir()
+    (home / 'config.yaml').write_text(CONFIG)
+    authority, connection = await _owner(home, monkeypatch)
+    loop_thread = threading.get_ident()
+    call_threads: dict[str, int] = {}
+
+    def wrap(module, name: str) -> None:
+        real = getattr(module, name)
+
+        def recorded(*args: object, **kwargs: object) -> object:
+            call_threads[name] = threading.get_ident()
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(module, name, recorded)
+
+    wrap(session_local_title, 'resolve_titled_session')
+    wrap(session_local, 'staged_creation_follows')
+    wrap(session_local, 'stage_local_session')
+    wrap(session_local_recovery, 'restore_local_session')
+
+    async def resume(_ref: object, _params: dict[str, object]) -> dict[str, object]:
+        return {'session_id': 'attached', 'attached': True}
+
+    monkeypatch.setattr(connection, 'resume', resume)
+    params = {'request_id': 'off-loop', 'source': 'cli', 'cwd': str(home), 'toolsets': [],
+              'model': 'frozen', 'title': 'Bot Chat'}
+    try:
+        assert await connection.create(object(), params) == {
+            'session_id': 'attached', 'attached': True}
+        assert set(call_threads) == {
+            'resolve_titled_session', 'staged_creation_follows', 'stage_local_session',
+            'restore_local_session',
+        }
+        assert loop_thread not in call_threads.values(), (
+            f'session.create ran blocking work on the owner loop: {call_threads}'
+        )
+    finally:
+        await connection.close()
+        authority.db.close()
