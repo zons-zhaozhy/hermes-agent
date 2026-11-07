@@ -44,6 +44,7 @@ async def test_local_create_preflight_staging_and_restore_run_off_the_owner_loop
     wrap(session_local, 'stage_local_session')
     wrap(session_local_recovery, 'restore_local_session')
     wrap(session_local_recovery, 'transcript_target')
+    wrap(session_local, 'local_session_info')
     wrap(session_local_migration, 'resolve_local_target')
 
     params = {'request_id': 'off-loop', 'source': 'cli', 'cwd': str(home), 'toolsets': [],
@@ -54,6 +55,7 @@ async def test_local_create_preflight_staging_and_restore_run_off_the_owner_loop
         assert set(call_threads) == {
             'resolve_titled_session', 'staged_creation_follows', 'stage_local_session',
             'restore_local_session', 'transcript_target',
+            'local_session_info',
         }
         assert loop_thread not in call_threads.values(), (
             f'session.create ran blocking work on the owner loop: {call_threads}'

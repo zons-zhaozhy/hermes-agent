@@ -193,7 +193,7 @@ async def snapshot_info(authority, ref):
     """``local_session_info`` plus main's inventory, the builders run off the owner loop."""
     from gateway.session_local import local_session_info
     from gateway.session_policy import policy_for_source
-    info = local_session_info(authority, ref)
+    info = await asyncio.to_thread(local_session_info, authority, ref)
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     agent = authority.agent(ref)
     inventory = await asyncio.to_thread(session_inventory, authority, policy, agent, info.get("cwd"))
