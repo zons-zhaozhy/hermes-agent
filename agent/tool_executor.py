@@ -37,6 +37,7 @@ from agent.onboarding import observe_tool_result as observe_onboarding_result
 from agent import plugin_live_notes
 from agent.lsp import deferred as lsp_deferred
 from agent.prompt_cache_scope import conversation_id
+from agent.tool_executor_display import delegate_spinner_label, preview
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
     InlineToolContext,
@@ -1015,7 +1016,7 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
             print(f"  📞 {prefix}: {function_name}({list(display_args.keys())})")
             print(agent._wrap_verbose("Args: ", json.dumps(display_args, indent=2, ensure_ascii=False)))
         else:
-            print(f"  📞 {prefix}: {function_name}({list(function_args.keys())}) - {_preview(json.dumps(display_args, ensure_ascii=False), agent.log_prefix_chars)}")
+            print(f"  📞 {prefix}: {function_name}({list(function_args.keys())}) - {preview(json.dumps(display_args, ensure_ascii=False), agent.log_prefix_chars)}")
 
     agent._current_tool = function_name
     agent._touch_activity(f"executing tool: {function_name}")
@@ -1023,11 +1024,11 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
 
     if agent.tool_progress_callback:
         try:
-            preview = _build_tool_preview(function_name, display_args)
+            tool_preview = _build_tool_preview(function_name, display_args)
         except Exception as callback_error:
             logging.debug("Tool progress callback error: %s", callback_error)
         else:
-            _safe_callback(agent.tool_progress_callback, "Tool progress", "tool.started", function_name, preview, display_args)
+            _safe_callback(agent.tool_progress_callback, "Tool progress", "tool.started", function_name, tool_preview, display_args)
     _safe_callback(agent.tool_start_callback, "Tool start", tool_call_id, function_name, display_args)
 
     if not agent._checkpoint_mgr.enabled:
@@ -1226,17 +1227,13 @@ def _tool_progress_enabled(agent) -> bool:
     return not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off"
 
 
-def _preview(text: str, limit: int) -> str:
-    return text[:limit] + "..." if len(text) > limit else text
-
-
 def _print_tool_completed(agent, index: int, tool_duration: float, result) -> None:
     """Non-quiet ``✅ Tool N completed`` line (full result under verbose logging)."""
     if agent.verbose_logging:
         print(f"  ✅ Tool {index} completed in {tool_duration:.2f}s")
         print(agent._wrap_verbose("Result: ", result))
     else:
-        print(f"  ✅ Tool {index} completed in {tool_duration:.2f}s - {_preview(result if isinstance(result, str) else str(result), agent.log_prefix_chars)}")
+        print(f"  ✅ Tool {index} completed in {tool_duration:.2f}s - {preview(result if isinstance(result, str) else str(result), agent.log_prefix_chars)}")
 
 
 # ── Concurrent batch machinery ──────────────────────────────────────────────
@@ -1713,17 +1710,6 @@ def _finish_quiet_tool_spinner(agent, spinner, function_name: str, function_args
         spinner.stop(cute) if spinner else agent._vprint(f"  {cute}")
 
 
-def _delegate_spinner_label(function_args: dict) -> str:
-    action = str(function_args.get("action") or "").strip().lower()
-    tasks = function_args.get("tasks")
-    if action in ("list", "steer", "stop"):
-        return f"🔀 subagent {action}"
-    if tasks and isinstance(tasks, list):
-        return f"🔀 delegating {len(tasks)} tasks · (/agents to monitor)"
-    goal_preview = (function_args.get("goal") or "")[:30]
-    return f"🔀 {goal_preview} · (/agents to monitor)" if goal_preview else "🔀 delegating · (/agents to monitor)"
-
-
 @dataclass
 class _SequentialDispatch:
     """How one sequential call executes: the callable plus its spinner/error policy."""
@@ -1753,7 +1739,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
         inline_ctx = InlineToolContext(effective_task_id=effective_task_id, tool_call_id=tool_call_id, messages=messages)
         return _SequentialDispatch(lambda next_args: inline_executor(agent, next_args, inline_ctx), finish_in_finally=False)
     if function_name == "delegate_task":
-        spinner = _start_quiet_tool_spinner(agent, function_name, function_args, label=_delegate_spinner_label(function_args))
+        spinner = _start_quiet_tool_spinner(agent, function_name, function_args, label=delegate_spinner_label(function_args))
         agent._delegate_spinner = spinner
         return _SequentialDispatch(agent._dispatch_delegate_task, spinner=spinner, is_delegate=True)
     if agent._context_engine_tool_names and function_name in agent._context_engine_tool_names:
