@@ -51,7 +51,9 @@ def host_gateway_note() -> str:
     return f" ({topology.describe()})" if topology is not None else ""
 
 
-def _render_state_db_stats(stats: dict, holders=None, host_note: str = "") -> list:
+def _render_state_db_stats(
+    stats: dict, holders=None, host_note: str = "", auto_prune_enabled: bool = False
+) -> list:
     """Turn a collect_state_db_stats() dict into ``(kind, text, detail)`` rows, kind 'info' / 'warn'.
 
     Pure formatting — no I/O — so it is unit-testable without the doctor CLI. Tolerates None in every field.
@@ -97,7 +99,11 @@ def _render_state_db_stats(stats: dict, holders=None, host_note: str = "") -> li
     # pending, an earlier run stopped before tearing down the old index, or the stored FTS layout is an
     # older release's (not just a lagging marker).
     if logical is not None and logical > STATE_DB_SIZE_WARN_BYTES:
-        detail = "consider enabling sessions.auto_prune in config.yaml to bound growth"
+        detail = (
+            "sessions.auto_prune is already enabled; review retention and prune old sessions"
+            if auto_prune_enabled
+            else "consider enabling sessions.auto_prune in config.yaml to bound growth"
+        )
         structural_fts_upgrade = bool(stats.get("fts_storage_upgrade_needed"))
         if stats.get("fts_rebuild_pending") or stats.get("fts_teardown_pending") or structural_fts_upgrade:
             detail += "; run 'hermes sessions optimize-storage' offline (with the host gateway stopped) to compact FTS storage"
@@ -408,16 +414,37 @@ def _state_db_stats(issues: list, state_db_path: Path) -> None:
     the gateway; any failure degrades to one info line rather than failing doctor."""
     with warn_on_error("state.db stats unavailable ({e})", "", report=lambda t, _d: check_info(t)):
         from hermes_state_dbfile import collect_state_db_stats, count_db_holders
-        rows = _render_state_db_stats(collect_state_db_stats(state_db_path), holders=count_db_holders(state_db_path),
-                                      host_note=host_gateway_note())
+        rows = _render_state_db_stats(
+            collect_state_db_stats(state_db_path),
+            holders=count_db_holders(state_db_path),
+            host_note=host_gateway_note(),
+            auto_prune_enabled=_state_db_auto_prune_enabled(state_db_path.parent),
+        )
         for _kind, _text, _detail in rows:
             if _kind != "warn":
                 check_info(_text + (f" {_detail}" if _detail else ""))
                 continue
             check_warn(_text, _detail)
             if "auto_prune" in _detail:
-                issues.append("state.db is large — enable sessions.auto_prune in config.yaml"
+                action = (
+                    "sessions.auto_prune is already enabled; review retention and prune old sessions"
+                    if "already enabled" in _detail
+                    else "enable sessions.auto_prune in config.yaml"
+                )
+                issues.append("state.db is large — " + action
                               + (" and run 'hermes sessions optimize-storage' offline (gateway stopped)" if "optimize-storage" in _detail else ""))
+
+
+def _state_db_auto_prune_enabled(hermes_home: Path) -> bool:
+    """Whether the owning profile's effective config enables startup session pruning."""
+    from hermes_cli.config_backend import config_exists
+    from hermes_cli.config_effective import load_user_config_effective
+
+    config_path = hermes_home / "config.yaml"
+    if not config_exists(config_path):
+        return False
+    sessions = load_user_config_effective(config_path).get("sessions")
+    return isinstance(sessions, dict) and bool(sessions.get("auto_prune"))
 
 
 def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:

@@ -500,8 +500,13 @@ def _check_tool_availability(should_fix: bool, f: Finding) -> None:
     # Only toolsets enabled for the CLI count toward the summary; default-off or
     # disabled toolsets may warn above but must not pollute it.
     api_disabled = _missing_api_key_toolsets_for_summary(unavailable)
-    if api_disabled or any(status != "ok" for status, _, _ in web_rows):
-        f.issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
+    setup_targets = [str(item.get("name") or "unknown") for item in api_disabled]
+    if any(status != "ok" for status, _, _ in web_rows):
+        setup_targets.append("web search/extract")
+    if setup_targets:
+        f.issues.append(
+            "Run 'hermes setup' to configure missing API keys: " + ", ".join(setup_targets)
+        )
     _warn_partially_stripped_toolsets(f)
 
 
