@@ -286,7 +286,7 @@ def _fit_archive(live_rows, display):
 
 async def prepare_history(authority, ref):
     """``local_history``'s lineage read, off the owner loop; the locked part re-reads only the live tip."""
-    target = transcript_target(authority, ref)
+    target = await asyncio.to_thread(transcript_target, authority, ref)
     return target, await asyncio.to_thread(display_rows, authority.db, target)
 
 
