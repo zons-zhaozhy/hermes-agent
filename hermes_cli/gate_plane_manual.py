@@ -118,6 +118,7 @@ def manual_repo_fingerprint(subject: str) -> str | None:
             ["git", "-C", str(repo), *args],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=15,
             check=False,
         )
