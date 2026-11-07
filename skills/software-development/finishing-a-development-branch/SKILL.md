@@ -31,6 +31,8 @@ remain open.
 - Current diff, branch, fork base, and worktree state.
 - The repository's canonical test and quality commands.
 - Explicit user choice for merge, push/PR, or keep-as-is.
+- For remote cleanup, an authenticated `gh` client plus the branch remote and
+  the remote that owns the PRs (these differ in a fork).
 
 ## How to Run
 
@@ -39,7 +41,8 @@ remain open.
 3. Identify the fork base and linked-worktree ownership.
 4. Present integration choices without executing an external effect.
 5. Execute only the user-selected local operation.
-6. Clean only managed, safe worktrees; preserve refused cleanup.
+6. Guard remote deletion with the bundled open-PR helper, then clean only
+   managed, safe worktrees; preserve refused cleanup.
 
 ## Quick Reference
 
@@ -92,7 +95,23 @@ and worktree in place and investigate.
 Delete a branch only with a safe delete after the merged result is green and no unique commits
 remain.
 
-### 6. Preserve cleanup refusals
+### 6. Guard remote branch deletion
+
+Never send raw `git push <remote> --delete` from `terminal`. First check every
+head with `gh pr list --state open --head <branch>`, or use the deterministic
+skill helper:
+
+```bash
+python scripts/guarded_remote_branch_delete.py \
+  --branch-remote <branch-remote> --pr-remote <pr-remote> <branches...>
+```
+
+The helper queries the PR remote first, reports and skips every head attached
+to an open PR, and deletes only unattached heads. A protected head can be
+deleted only after the user separately confirms the exact branch and PR number
+with `--confirm-pr <branch>=<PR>`.
+
+### 7. Preserve cleanup refusals
 
 When worktree removal refuses because it contains uncommitted or untracked files, never
 force-remove it. Show the status, explain that unique work would be lost, and ask whether to
@@ -110,7 +129,8 @@ uncommitted files, and receive unambiguous confirmation.
 4. Turning implementation approval into push or publication authority.
 5. Force-removing a dirty worktree to finish quickly.
 6. Deleting a branch that still holds unique review fixes.
-7. Leaving review findings unmentioned while claiming completion.
+7. Deleting a PR head branch without querying open PRs.
+8. Leaving review findings unmentioned while claiming completion.
 
 ## Verification
 
@@ -121,4 +141,6 @@ Before leaving this skill:
 - [ ] Base branch, diff, untracked files, and unpushed commits were inspected.
 - [ ] Review findings were resolved or explicitly reported.
 - [ ] No unauthorized push, PR, publication, message, spend, or remote write occurred.
+- [ ] Every remote branch deletion was preceded by an open-PR query; open-PR
+      heads were skipped or explicitly confirmed by branch and PR number.
 - [ ] Refused cleanup preserved all unique work.

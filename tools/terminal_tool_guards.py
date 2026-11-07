@@ -64,6 +64,70 @@ def _blocked_json(error: str, status: str) -> str:
     return json.dumps({"output": "", "exit_code": 1, "error": error, "status": status}, ensure_ascii=False)
 
 
+def _tokens_command_deletes_remote_branch(tokens: list[str]) -> bool:
+    """Whether tokenized words include a git push that deletes remote refs.
+
+    Tokenization keeps quoted prose inert. A conservative token match is
+    intentional: missing a deletion can close an open PR, while a false
+    positive only asks for the guarded helper.
+    """
+    lowercase = [token.lower() for token in tokens]
+    if "git" in lowercase and "push" in lowercase:
+        push_at = lowercase.index("push")
+        if "--delete" in lowercase[push_at:] or "-d" in lowercase[push_at:]:
+            return True
+        if any(token.startswith(":") for token in tokens[push_at + 1 :]):
+            return True
+    return False
+
+
+def _command_deletes_remote_branch(command: str) -> bool:
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        # Unparsable shell cannot be proven safe; fail closed.
+        return bool(re.search(r"(?:^|\s)git\s+.*(?:^|\s)push(?:\s|$)", command, re.IGNORECASE))
+
+    if _tokens_command_deletes_remote_branch(tokens):
+        return True
+    shells = {"sh", "bash", "dash", "zsh", "ksh"}
+    for index, token in enumerate(tokens):
+        if Path(token).name.lower() not in shells:
+            continue
+        for option_at in range(index + 1, len(tokens) - 1):
+            option = tokens[option_at]
+            if not option.startswith("-"):
+                break
+            if option in ("-c", "-lc", "-rc") and _command_deletes_remote_branch(
+                tokens[option_at + 1]
+            ):
+                return True
+    return False
+
+
+def remote_branch_delete_block(command: str) -> Optional[str]:
+    """Refuse raw remote-branch deletion so open-PR heads cannot be swept away.
+
+    GitHub closes a PR when its head branch disappears. Route cleanup through
+    the bundled helper, which queries open PRs first and requires an exact
+    branch/PR confirmation before deleting a protected head.
+    """
+    if not _command_deletes_remote_branch(command):
+        return None
+    logger.warning(
+        "Blocked raw remote branch deletion (command: %s)", _safe_command_preview(command)
+    )
+    return _blocked_json(
+        "Blocked: raw remote branch deletion can close an open PR. First inspect the head with "
+        "`gh pr list --state open --head <branch>`. For batch cleanup, run "
+        "`python skills/software-development/finishing-a-development-branch/scripts/"
+        "guarded_remote_branch_delete.py --branch-remote <remote> --pr-remote <remote> "
+        "<branches...>`; it skips every open-PR head unless the user separately confirms "
+        "the exact branch and PR number.",
+        "blocked",
+    )
+
+
 _SHELL_LEVEL_BACKGROUND_RE = re.compile(
     r"(?:^|[;&|]\s*|&&\s*|\|\|\s*|\$\(\s*)(?:nohup|disown|setsid)\b", re.IGNORECASE | re.MULTILINE
 )

@@ -134,6 +134,10 @@ Every former god file is a **facade** (public entry points + the names other pac
   § Boundary lint.
 - **Commits and PRs:** rebase onto `main` before merging (a squash from a stale branch silently
   reverts newer fixes); 1–2 invariant tests per fix, proven red on the base.
+- **Remote branch deletion is hard-gated:** never send raw `git push --delete`; query
+  `gh pr list --state open` first. Skip and report every open-PR head unless the user separately
+  confirms the exact branch and PR number (use the bundled
+  `skills/software-development/finishing-a-development-branch/scripts/guarded_remote_branch_delete.py`).
 - **Tests:** always `scripts/run_tests.sh`, never bare `pytest`; behaviour contracts, never
   change-detectors or source-reading tests; host-specific behaviour is tested on that host with
   `@pytest.mark.platforms(...)`, never by faking `sys.platform`; tests never write to `~/.hermes/`.
