@@ -13,6 +13,7 @@ class Agent(InterruptControlMixin):
     def __init__(self):
         self._pending_steer = None
         self._interrupt_requested = False
+        self._execution_thread_id = None
 
     def interrupt(self, *args, **kwargs):
         self._interrupt_requested = True
