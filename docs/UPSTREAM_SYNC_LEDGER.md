@@ -235,7 +235,7 @@ git rev-list --count main..upstream/main   # 应为 0
 
 ```yaml
 version: 1
-baseline: 90d6b98fd86d20981ee06ddd5b7d93e4320f26a4
+baseline: 9de30f85137be718799e171ad2219e190f4c98cc
 official_paths:
 - .github/workflows/lint.yml
 - .gitignore
@@ -354,6 +354,7 @@ official_paths:
 - hermes_cli/main.py
 - hermes_cli/observability/shared_metrics_prepared_compaction.py
 - hermes_cli/plugin_validate.py
+- hermes_cli/plugins_context.py
 - hermes_cli/plugins.py
 - hermes_cli/plugins_cmd.py
 - hermes_cli/plugins_cmd_listing.py
@@ -579,9 +580,7 @@ official_paths:
 - tui_gateway/ws.py
 - ui-tui/scripts/bench-native-history.tsx
 - ui-tui/scripts/bench-streaming-md.tsx
-- ui-tui/scripts/billing-fixtures.tsx
 - ui-tui/scripts/i18n-export-en.ts
-- ui-tui/scripts/visual/render.tsx
 - ui-tui/src/app/useLongRunToolCharms.ts
 - uv.lock
 - website/docs/developer-guide/context-compression-and-caching.md
