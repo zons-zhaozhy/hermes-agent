@@ -302,7 +302,8 @@ class GatewayConnection:
         logger.info("Gateway dial failed (%s); redialling in %.1fs", error, pause)
         self._error = None
         time.sleep(pause)
-        return True
+        # The pause may have used the budget up: dialing now would report past the caller's deadline.
+        return deadline - time.monotonic() > 0
 
     def _run(self):
         try:

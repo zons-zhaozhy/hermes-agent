@@ -9,6 +9,7 @@ miss ``connect_gateway``'s 10 s open timeout the launch's one dial failed and th
 The retry is bounded, and a dial failure that is a verdict about the gateway — it could not start,
 an update holds the install — is reported on the first attempt: waiting cannot change it.
 """
+import threading
 from contextlib import asynccontextmanager
 
 import pytest
@@ -25,10 +26,12 @@ class Dial:
         self.failures = failures
         self.error = error
         self.dials = 0
+        self.first = threading.Event()  # a caller that gives up may return before its dial runs
 
     @asynccontextmanager
     async def dial(self):
         self.dials += 1
+        self.first.set()
         if self.dials <= self.failures:
             raise self.error("timed out during opening handshake")
         yield Client()
@@ -126,4 +129,5 @@ def test_the_retry_budget_does_not_outlive_its_deadline(connections):
     with pytest.raises(GatewayClientError, match="no local fallback"):
         connection.start(0.001)
 
+    assert dial.first.wait(5)  # it dialled once, then the deadline ended the wait
     assert dial.dials == 1
