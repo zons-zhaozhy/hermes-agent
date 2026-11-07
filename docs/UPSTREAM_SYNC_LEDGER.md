@@ -112,6 +112,8 @@ f799fd8578 在官方 Linux CI "Python tests / Run tests" = success。
 | 2026-11-04 | 776618988d4（漏记补建） | 371 文件/15572+/7616- | test_vision_routing 取上游 _seed_models_dev 助手；uv.lock 取 fork 侧（双侧校验均被 github 直连阻断，待网络恢复 pm repair） | 133 passed + imports OK + 8/8 enabled |
 | 2026-11-05 | 98134a247cb | 468 文件/13421+/2266- | session_bot.py 融合：fork 离 loop 读结构 + 上游 Principal→SessionActor 改名（顺带根修 fork 测试 test_goal_pause 的旧类名断链） | 125 passed + imports OK + 8/8 enabled |
 | 2026-11-06 | 2db2fa2872 | 830 文件（上游 11-05 单日 577 提交） | 零冲突（干跑预判=实测） | 125 passed(worktree PYTHONPATH 验证) + imports OK + 插件面异常见下 |
+| 2026-11-06 补注 | — | — | 插件面异常详情（补 1106 轮「见下」缺失）：deep-test-gate 与 outcome-collector 由 enabled 翻转为 disabled；定性=profile 运行时状态翻转（仓库 plugin.yaml 无启用语义改动），非合并损伤；1107 复核仍 disabled，未擅动待用户确认知情 | — |
+| 2026-11-07 | 3a2fd4d338 | 499 文件 | plugins.py 取 upstream（PluginContext 抽至新模块 plugins_context.py，fork 的 PluginManualGateCtxMixin 第二基类移植入新模块，MRO 验证）；hosted_room_driver.py 互补并集（fork 防退避行+upstream maintain 块）；连带修复上游 render.tsx 重复导入 2 错误解 lefthook 拦截 | 125 passed + imports OK + 插件仍 6/8（同 1106 补注） |
 
 ## 二、防冲突铁律（同步操作规程）
 
