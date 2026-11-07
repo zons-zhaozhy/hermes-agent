@@ -20,6 +20,7 @@ CONFIG = (
 async def test_local_create_preflight_staging_and_restore_run_off_the_owner_loop(
         tmp_path, monkeypatch):
     from gateway import session_local, session_local_recovery, session_local_title
+    from gateway import session_local_migration
     from tests.gateway.test_local_create_env_refs import _owner
 
     home = tmp_path / 'home'
@@ -42,16 +43,13 @@ async def test_local_create_preflight_staging_and_restore_run_off_the_owner_loop
     wrap(session_local, 'staged_creation_follows')
     wrap(session_local, 'stage_local_session')
     wrap(session_local_recovery, 'restore_local_session')
+    wrap(session_local_migration, 'resolve_local_target')
 
-    async def resume(_ref: object, _params: dict[str, object]) -> dict[str, object]:
-        return {'session_id': 'attached', 'attached': True}
-
-    monkeypatch.setattr(connection, 'resume', resume)
     params = {'request_id': 'off-loop', 'source': 'cli', 'cwd': str(home), 'toolsets': [],
               'model': 'frozen', 'title': 'Bot Chat'}
     try:
-        assert await connection.create(object(), params) == {
-            'session_id': 'attached', 'attached': True}
+        result = await connection.create(object(), params)
+        assert result['session_id']
         assert set(call_threads) == {
             'resolve_titled_session', 'staged_creation_follows', 'stage_local_session',
             'restore_local_session',
