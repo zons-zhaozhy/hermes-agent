@@ -498,10 +498,12 @@ class AuthorityConnection:
         hidden = params.pop('hidden', False)
         if type(hidden) is not bool:
             raise RuntimeStoreError('invalid_params', field='hidden', detail='must be a boolean')
-        ref = title and resolve_titled_session(self.authority, self.actor, title, missing_ok=True)
+        ref = (await asyncio.to_thread(resolve_titled_session, self.authority, self.actor, title,
+                                       missing_ok=True) if title else None)
         if (not ref and title == 'Bot Chat'
                 and not any(params.get(name) is True for name in BYPASS_FIELDS)
-                and staged_creation_follows(self.authority, self.actor, params.get('request_id'))):
+                and await asyncio.to_thread(staged_creation_follows, self.authority, self.actor,
+                                            params.get('request_id'))):
             # ``chat -c "Bot Chat" --create-if-missing`` and any other titled create. A safe-mode
             # or ignore-user-config launch never reads the profile, so it stays frozen. An exact
             # retry of a creation staged without the flag keeps that frozen request.
@@ -515,24 +517,27 @@ class AuthorityConnection:
                 from gateway.session_policy import render_launch_skills
                 params.setdefault('request_id', uuid.uuid4().hex)
                 sid = local_identity(self.authority.profile_id, self.actor.subject, params['request_id'])
-                if self.authority.db.get_session(sid) is None:
+                if await asyncio.to_thread(self.authority.db.get_session, sid) is None:
                     skills_prompt = await asyncio.to_thread(render_launch_skills, params, sid)
             # Host-bound client values apply only over the gateway's own ticketed attach (run_api).
-            ref = stage_local_session(self.authority, self.actor, params, skills_prompt=skills_prompt,
-                                      client_local=self.native_owner,
-                                      desktop_local=getattr(self.transport, 'desktop_local', False))
+            ref = await asyncio.to_thread(
+                stage_local_session, self.authority, self.actor, params, skills_prompt=skills_prompt,
+                client_local=self.native_owner,
+                desktop_local=getattr(self.transport, 'desktop_local', False))
             if isinstance(ref, dict):
                 # The creation commit runs off the owner loop: a held writer must not freeze
                 # every session behind one new chat (N50).
                 receipt = ref
                 await tracked_write(self.authority, partial(
                     commit_local_session, self.authority.db, epoch=self.authority.epoch, receipt=receipt))
-                ref = restore_local_session(self.authority, receipt['session_id'])
+                ref = await asyncio.to_thread(restore_local_session, self.authority,
+                                              receipt['session_id'])
             # `--accept-hooks`: record this launch's consent; ``resume`` below registers the hooks.
             if params.get('accept_hooks') is True:
                 from gateway.session_policy import accept_launch_hooks, restore_policy
                 from hermes_state_local import local_receipt
-                policy = restore_policy(local_receipt(self.authority.db, ref.session_id)['policy'])
+                receipt = await asyncio.to_thread(local_receipt, self.authority.db, ref.session_id)
+                policy = restore_policy(receipt['policy'])
                 await asyncio.to_thread(accept_launch_hooks, policy)
             if title:
                 await tracked_write(self.authority, partial(title_new_session, self.authority, ref, title))
