@@ -27,6 +27,14 @@ from dataclasses import dataclass
 # 与 shell 语义对应的 sink 目标: 重定向到它们不构成文件写。
 HARMLESS_SINKS = frozenset({"/dev/null", "/dev/stderr", "/dev/stdout"})
 
+# 系统暂存目录前缀——OS 约定的临时区（日志采集/跑批输出落点）。本模块只
+# 提供判定原子，不改变任何既有写语义；消费方按自身策略决定是否豁免
+# （read_think_gate 豁免远端跑批日志，source_write/approval 不豁免）。
+SCRATCH_PATH_PREFIXES: tuple[str, ...] = (
+    "/tmp/", "/private/tmp/", "/var/tmp/", "/dev/shm/",  # no-tmp: ok — 只识别 shell scratch 前缀，不创建或访问路径。
+)
+
+
 # 段首命令名判定为只读的基础集合。具体命令仍需先经过重定向/专用语义
 # （例如 sed 写形态）排除；这不是“任意参数都安全”的完整命令分析器。
 READ_COMMANDS: frozenset[str] = frozenset({

@@ -36,6 +36,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -230,6 +231,30 @@ def _terminal_is_investigation(command: str) -> bool:
     return not _terminal_writes_file(command)
 
 
+def _scrub_scratch_log_targets(command: str) -> str:
+    """把 tee/重定向到系统暂存目录的目标改写为 sink 形态（仅 gate 语义）。
+
+    远端跑批的日志采集（``ssdt run … | tee /tmp/quick336.log``、
+    ``run_tests.sh > /tmp/x.log``）不属于本 gate 门禁的「仓库源码写」，
+    却被高置信度 tee 模式判写，导致会话内每次重启跑批都要重新过完整
+    授权（2026-11-08 agent.log 实测 8 连拦）。tee 改写为无路径形态
+    （``tee DEVNULL``——不能用 ``tee /dev/null``，仍含 ``tee /`` 模式），
+    重定向改写为 /dev/null。sed -i/cp/mv 等其他写通道不受影响。
+
+    Contract:
+      Postconditions: 纯字符串替换不抛异常；仅 ``tee <scratch>``/``> <scratch>``
+        形态被改写，暂存前缀取 terminal_semantics.SCRATCH_PATH_PREFIXES
+        （单一事实源，不另持清单）。
+    """
+    from plugins.guards.terminal_semantics import SCRATCH_PATH_PREFIXES
+
+    scrubbed = command
+    for prefix in SCRATCH_PATH_PREFIXES:
+        scrubbed = scrubbed.replace("tee " + prefix, "tee DEVNULL ")
+        scrubbed = scrubbed.replace("> " + prefix, "> /dev/null ")
+    return scrubbed
+
+
 def _terminal_writes_file(command: str) -> bool:
     """检测 terminal 命令是否包含文件写入操作。
 
@@ -247,6 +272,8 @@ def _terminal_writes_file(command: str) -> bool:
     """
     if not command:
         return False
+
+    command = _scrub_scratch_log_targets(command)
 
     # 0. 解释器 heredoc（python3 <<'PY'）吃 stdin——形态级不判写。解释器
     #    载荷的写检测由四处内容级判定负责（tools/approval 结构性 -c 扫描/
@@ -279,23 +306,12 @@ def _terminal_writes_file(command: str) -> bool:
     if redirect_writes_file(command):
         return True
 
-    # 3. cp/mv——要求前面有管道或空格（排除 grep 'cp '），且目标像文件路径
-    for cmd_prefix in (" cp ", " mv "):
-        pos = command.find(cmd_prefix)
-        if pos == -1:
-            continue
-        # 确保不是在引号内（grep 'cp ...'）
-        # 简单检查：如果 cp/mv 前面是引号或不是命令边界，跳过
-        # 实际 cp/mv 作为命令时前面通常是行首、管道、分号、&& 或 ||
-        preceding = command[:pos].rstrip()
-        if preceding and not preceding.endswith(("|", ";", "&&", "||")):
-            # 检查 preceding 的最后一个 token 是否是 cp/mv 的合法前导
-            last_word = preceding.split()[-1] if preceding.split() else ""
-            # 如果 last_word 不像是命令结束符，可能是 grep/docker 等参数内的 cp
-            if last_word and not last_word.endswith(("cp", "mv", "&&", "||", ";")):
-                continue
-        return True
-
+    # 3. cp/mv 只有处在命令边界才视为写通道；引号内或普通参数中的 cp/mv
+    # （grep 'cp ...'、echo cp）不误伤。
+    for match in re.finditer(r"\b(?:cp|mv)(?=\s)", command, re.IGNORECASE):
+        preceding = command[:match.start()].rstrip()
+        if not preceding or preceding.endswith(("|", ";", "&&", "||", "(")):
+            return True
     return False
 
 
@@ -431,7 +447,8 @@ _CONFIRMATION_CHECK_TERMS = frozenset({
     "确认一下", "请确认一下", "我确认一下", "确认下", "请确认下", "我确认下",
 })
 _OPERATIONAL_FEEDBACK_TERMS = (
-    "啥情况", "进度", "汇报", "反馈", "闷头", "定时说明",
+    "啥情况", "进度", "进展", "怎么样", "跑批", "汇报", "反馈", "闷头",
+    "定时说明",
     "status", "progress", "update me",
 )
 

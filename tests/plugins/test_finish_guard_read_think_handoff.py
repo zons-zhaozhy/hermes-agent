@@ -40,7 +40,7 @@ def test_gate_publishes_waiting_for_user_authorization() -> None:
     result = gate.check_batch(
         "尚未获得用户授权。",
         ["terminal"],
-        [{"command": "printf done > /tmp/result.txt"}],
+        [{"command": "printf done > result.txt"}],
     )
 
     assert result is not None
