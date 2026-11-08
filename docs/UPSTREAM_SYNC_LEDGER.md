@@ -236,10 +236,11 @@ git rev-list --count main..upstream/main   # 应为 0
 
 ```yaml
 version: 1
-baseline: 9de30f85137be718799e171ad2219e190f4c98cc
+baseline: 8202da899b84b6f5783dbf098ddd060b5404a8d6
 official_paths:
 - .github/workflows/lint.yml
 - .gitignore
+- AGENTS.md
 - acp_adapter/gateway_server.py
 - acp_adapter/tools.py
 - agent/agent_init.py
@@ -271,14 +272,12 @@ official_paths:
 - agent/turn_tool_round.py
 - apps/desktop/e2e/boot-failure.spec.ts
 - apps/desktop/e2e/boot.spec.ts
-- apps/desktop/e2e/cross-gateway-group.spec.ts
 - apps/desktop/e2e/interim-messages.spec.ts
 - apps/desktop/e2e/onboarding.spec.ts
 - apps/desktop/e2e/sidebar-states.spec.ts
 - apps/desktop/e2e/unread-dot-restart.spec.ts
 - apps/desktop/e2e/warm-resume-jitter.spec.ts
 - apps/desktop/electron/connection-config.test.ts
-- apps/desktop/electron/main.ts
 - apps/desktop/scripts/gen-share-codes.ts
 - apps/desktop/src/plugins/hermes-bots/cron-detail.test.tsx
 - apps/desktop/src/store/voice-prefs.test.ts
@@ -324,6 +323,7 @@ official_paths:
 - gateway/session_hosted_rpc.py
 - gateway/session_hosted_service.py
 - gateway/session_ingress.py
+- gateway/session_local_inventory.py
 - gateway/session_local_migration.py
 - gateway/session_local_recovery.py
 - gateway/session_route_recovery.py
@@ -346,6 +346,8 @@ official_paths:
 - hermes_cli/cli_tui_mixin.py
 - hermes_cli/config_defaults.py
 - hermes_cli/desktop_update_verify.py
+- hermes_cli/doctor_state.py
+- hermes_cli/doctor_tools.py
 - hermes_cli/gateway_client.py
 - hermes_cli/gateway_connection.py
 - hermes_cli/goal_command.py
@@ -355,10 +357,10 @@ official_paths:
 - hermes_cli/main.py
 - hermes_cli/observability/shared_metrics_prepared_compaction.py
 - hermes_cli/plugin_validate.py
-- hermes_cli/plugins_context.py
 - hermes_cli/plugins.py
 - hermes_cli/plugins_cmd.py
 - hermes_cli/plugins_cmd_listing.py
+- hermes_cli/plugins_context.py
 - hermes_cli/plugins_dispatch.py
 - hermes_cli/plugins_manifest.py
 - hermes_cli/stderr_timestamp.py
@@ -406,6 +408,7 @@ official_paths:
 - run_agent.py
 - scripts/check
 - scripts/ci/prompt_surface.py
+- scripts/install_root_lint_baseline.json
 - scripts/run_tests_parallel.py
 - scripts/sandbox/pick-release-tags.sh
 - skills/software-development/requesting-code-review/SKILL.md
@@ -469,6 +472,7 @@ official_paths:
 - tests/gateway/test_session_authority_adopted_stop.py
 - tests/gateway/test_session_client_env.py
 - tests/gateway/test_session_hosted_daemon.py
+- tests/gateway/test_session_steer_before_adopt.py
 - tests/gateway/test_session_viewer_automation.py
 - tests/gateway/test_startup_recovery_parks_profile.py
 - tests/gateway/test_viewer_close_lifecycle.py
@@ -518,6 +522,7 @@ official_paths:
 - tests/hermes_cli/test_user_providers_model_switch.py
 - tests/hermes_cli/test_version_command.py
 - tests/hermes_cli/test_version_info.py
+- tests/hermes_cli/test_worktree_snapshot_prune.py
 - tests/hermes_state/test_cross_vm_fs_wal_refusal.py
 - tests/hermes_state/test_guest_durability_barriers.py
 - tests/home_io_guard.py
@@ -550,6 +555,8 @@ official_paths:
 - tests/tui_gateway/test_profiles_list_canonical_session.py
 - tests/tui_gateway/test_profiles_list_session_field_cache.py
 - tests/tui_gateway/test_profiles_list_ui_meta_cache.py
+- tests/tui_gateway/test_protocol.py
+- tools/approval_detection.py
 - tools/browser_session.py
 - tools/browser_session_lifecycle.py
 - tools/browser_use_cli.py
@@ -570,6 +577,7 @@ official_paths:
 - tools/process_registry_checkpoint.py
 - tools/skill_manager_batch.py
 - tools/skills_tool.py
+- tools/terminal_tool.py
 - tools/terminal_tool_guards.py
 - tools/tool_labels.py
 - tools/tool_result_storage.py
@@ -600,5 +608,4 @@ official_paths:
 - website/docs/user-guide/skills/bundled/software-development/software-development-systematic-debugging.md
 - website/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development.md
 - website/sidebars.ts
-
 ```
