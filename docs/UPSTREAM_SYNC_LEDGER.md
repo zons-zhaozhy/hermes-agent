@@ -350,6 +350,7 @@ official_paths:
 - hermes_cli/doctor_tools.py
 - hermes_cli/gateway_client.py
 - hermes_cli/gateway_connection.py
+- hermes_cli/gateway_launchd.py
 - hermes_cli/goal_command.py
 - hermes_cli/goals.py
 - hermes_cli/hooks.py
@@ -475,6 +476,7 @@ official_paths:
 - tests/gateway/test_session_steer_before_adopt.py
 - tests/gateway/test_session_viewer_automation.py
 - tests/gateway/test_startup_recovery_parks_profile.py
+- tests/gateway/test_status.py
 - tests/gateway/test_viewer_close_lifecycle.py
 - tests/gateway/test_watch_notification_reset_pin.py
 - tests/hermes_cli/test_banner.py
