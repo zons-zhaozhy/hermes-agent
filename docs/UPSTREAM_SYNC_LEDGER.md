@@ -114,6 +114,7 @@ f799fd8578 在官方 Linux CI "Python tests / Run tests" = success。
 | 2026-11-06 | 2db2fa2872 | 830 文件（上游 11-05 单日 577 提交） | 零冲突（干跑预判=实测） | 125 passed(worktree PYTHONPATH 验证) + imports OK + 插件面异常见下 |
 | 2026-11-06 补注 | — | — | 插件面异常详情（补 1106 轮「见下」缺失）：deep-test-gate 与 outcome-collector 由 enabled 翻转为 disabled；定性=profile 运行时状态翻转（仓库 plugin.yaml 无启用语义改动），非合并损伤；1107 复核仍 disabled，未擅动待用户确认知情 | — |
 | 2026-11-07 | 3a2fd4d338 | 499 文件 | plugins.py 取 upstream（PluginContext 抽至新模块 plugins_context.py，fork 的 PluginManualGateCtxMixin 第二基类移植入新模块，MRO 验证）；hosted_room_driver.py 互补并集（fork 防退避行+upstream maintain 块）；连带修复上游 render.tsx 重复导入 2 错误解 lefthook 拦截 | 125 passed + imports OK + 插件仍 6/8（同 1106 补注） |
+| 2026-11-07 | d8b75d4068（1108 执行） | 795 文件 | 6 冲突：webhook_ingress 融合（fork 离 loop _committed + 上游 live 参数）；run_bootstrap 融合（fork recovery 模块导入 + 上游 config 重载逻辑）；run_startup 取 fork（函数外迁至 run_startup_recovery.py）；run_startup_recovery 移植上游演进体（返回 list[str]/bool 驱动重载）；hermes_state 融合（上游 pinned 连接快路径 + fork owner_loop_db_guard 守卫）；test_code_health_cli 双 hunk 并集；e2e spec 取上游重写版 | 125 passed + imports OK + 插件仍 6/8（同前） |
 
 ## 二、防冲突铁律（同步操作规程）
 
