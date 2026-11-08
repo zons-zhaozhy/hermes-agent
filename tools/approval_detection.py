@@ -502,6 +502,11 @@ DANGEROUS_PATTERNS = [
     (_CMDPOS + r'mkfs\b', "format filesystem"),
     (_CMDPOS + r'dd\s+.*if=', "disk copy"),
     (r'>\s*/dev/sd', "write to block device"),
+    (
+        r'--target(?:=|\s+)[\'"]?/dev/(?:(?:sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*'
+        r'|disk/by-id/(?:ata|nvme|scsi|usb|wwn)-[^\s\'";&|]*)',
+        "target raw block device",
+    ),
     (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
     # [^\n]* not .*: under DOTALL a WHERE on the *next* line would satisfy the lookahead and
     # silently allow DELETE without WHERE.
