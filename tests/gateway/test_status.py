@@ -1524,23 +1524,23 @@ class TestLaunchdPlistRespawnGovernance:
         assert "<key>ExitTimeOut</key>" in plist
         assert "<key>KeepAlive</key>" in plist
 
-    def test_plist_exit_timeout_uses_full_gui_domain_clamp(self, tmp_path, monkeypatch):
-        """launchd's gui domain clamps ExitTimeOut at 60s; ask for all of it.
+    def test_plist_exit_timeout_covers_ninety_second_drain(self, tmp_path, monkeypatch):
+        """The shipped LaunchAgent budget covers this fork's 90s chat drain.
 
-        Anything above 60 is silently clamped, anything below throws away
-        drain headroom the gateway could have used before SIGKILL.
+        A 60s ExitTimeOut left only 50s of signal-driven drain after launchd's
+        cleanup reserve, so a configured 90s drain was forcibly truncated.
         """
         import re
 
-        from gateway.restart import LAUNCHD_GUI_EXIT_TIMEOUT_CLAMP_S, LAUNCHD_STOP_CLEANUP_RESERVE_S
+        from gateway.restart import LAUNCHD_STOP_CLEANUP_RESERVE_S
         from hermes_cli.gateway import generate_launchd_plist
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         plist = generate_launchd_plist()
         m = re.search(r"<key>ExitTimeOut</key>\s*<integer>(\d+)</integer>", plist)
         assert m, plist
-        # Ask for the whole gui-domain clamp, and leave room for post-drain cleanup inside it.
-        assert int(m.group(1)) >= LAUNCHD_GUI_EXIT_TIMEOUT_CLAMP_S > LAUNCHD_STOP_CLEANUP_RESERVE_S
+        assert int(m.group(1)) == 120
+        assert int(m.group(1)) >= 90 + LAUNCHD_STOP_CLEANUP_RESERVE_S
 
 
 class TestPermissionErrorOnLockFile:
