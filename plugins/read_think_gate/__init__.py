@@ -29,6 +29,7 @@ config.yaml — the same section the former core init read.
 from __future__ import annotations
 
 import contextvars
+import json
 import logging
 from typing import Any, Dict, Optional
 
@@ -183,6 +184,51 @@ def pre_tool_batch(
     return {"action": "block", "message": block}
 
 
+def on_post_tool_call(
+    tool_name: str = "",
+    result: Any = None,
+    session_id: str = "",
+    platform: str = "",
+    **_kwargs: Any,
+) -> None:
+    """Feed an answered clarify form back to the gate as user input.
+
+    The clarify result carries the user's own answers (tools/clarify_tool.py
+    ``_result`` builds it from the platform callback's form answers), so it is
+    authorization-grade input, not model-fabricated tool output. Without this
+    hook the turn-open intent snapshot ignored a mid-turn「修」selection and the
+    write stayed blocked until a fresh chat message restarted the turn.
+
+    Contract:
+      Postconditions: never raises; only ``tool_name == "clarify"`` with an
+        ``answered`` response whose ``user_response`` is non-empty reaches the
+        gate. Unanswered/skipped/cancelled results, malformed payloads, and
+        sessions without a gate are no-ops (logged, not silent).
+    """
+    if tool_name != "clarify":
+        return
+    try:
+        gate = _current_gate(effective_session_id(session_id), platform)
+        if gate is None:
+            return
+        payload = json.loads(result) if isinstance(result, str) else result
+        if not isinstance(payload, dict):
+            return
+        texts: list[str] = []
+        for response in payload.get("responses") or []:
+            if not isinstance(response, dict) or response.get("status") != "answered":
+                continue
+            value = response.get("user_response")
+            if isinstance(value, list):
+                texts.extend(str(item) for item in value if str(item).strip())
+            elif isinstance(value, str) and value.strip():
+                texts.append(value)
+        if texts:
+            gate.note_user_clarification("；".join(texts))
+    except Exception:
+        logger.warning("read-think-gate: clarify authorization intake failed", exc_info=True)
+
+
 def register(ctx) -> None:
     """Plugin-loader contract — without this the loader refuses the plugin
     (``Plugin 'read-think-gate' has no register() function``) and the four-axis
@@ -193,7 +239,8 @@ def register(ctx) -> None:
     """
     ctx.register_hook("pre_tool_batch", pre_tool_batch)
     ctx.register_hook("pre_llm_call", pre_llm_call)
+    ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("on_session_start", on_session_start)
     ctx.register_hook("on_session_reset", on_session_reset)
     ctx.register_hook("on_session_end", on_session_end)
-    logger.info("read-think-gate registered (5 hooks)")
+    logger.info("read-think-gate registered (6 hooks)")

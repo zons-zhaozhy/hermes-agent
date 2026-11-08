@@ -1,10 +1,11 @@
 name: read-think-gate
-version: "1.1.1"
-description: Turn 级意图与推理门控——先由交互硬证据区分只读请求、明确修改请求和确认执行，模糊语句才调用语义分类器兜底，再要求目标现状、影响面、测试配置、必要历史意图与验证方案齐备后才放行写入。每 assistant_message 恰一次 check_batch，四轴证据轮内累积，连续失败后交还用户决策；调查评审仍为显式 opt-in。
+version: "1.2.0"
+description: Turn 级意图与推理门控——先由交互硬证据区分只读请求、明确修改请求和确认执行，模糊语句才调用语义分类器兜底，再要求目标现状、影响面、测试配置、必要历史意图与验证方案齐备后才放行写入。每 assistant_message 恰一次 check_batch，四轴证据轮内累积，连续失败后交还用户决策；调查评审仍为显式 opt-in。clarify 表单中用户的回答与聊天消息同等构成修改授权（post_tool_call 回传重判意图）。
 author: stan
 hooks:
   - pre_tool_batch
   - pre_llm_call
+  - post_tool_call
   - on_session_start
   - on_session_reset
   - on_session_end
