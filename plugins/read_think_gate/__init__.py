@@ -47,6 +47,9 @@ _GATES: dict[str, ReadThinkGate] = {}
 _ACTIVE_SESSION_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "rtg_active_session_id", default=None,
 )
+_INTERNAL_TURN_DISPLAY_KINDS = frozenset(
+    {"internal_notification", "process_complete", "async_delegation_complete"}
+)
 
 
 def _config_section() -> dict[str, Any]:
@@ -135,6 +138,7 @@ def pre_llm_call(
     platform: str = "",
     is_first_turn: bool = False,
     conversation_history: list[dict] | None = None,
+    turn_display_kind: str = "",
     **_kwargs: Any,
 ) -> None:
     """Per-turn reset — the turn's user message drives complexity classification.
@@ -148,9 +152,11 @@ def pre_llm_call(
         if gate is None:
             return
         message = user_message if isinstance(user_message, str) else str(user_message or "")
+        internal = turn_display_kind in _INTERNAL_TURN_DISPLAY_KINDS
         gate.reset_for_turn(
             user_message=message or None,
             conversation_history=conversation_history,
+            internal=internal,
         )
     except Exception:
         logger.warning("read-think-gate: reset_for_turn failed", exc_info=True)

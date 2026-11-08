@@ -239,6 +239,15 @@ def _clarify_gap_fingerprint(args: dict) -> str:
     return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:12]
 
 
+def _waiting_for_read_think_authorization(session_id: object) -> bool:
+    """Whether ReadThinkGate handed this turn to the user for authorization."""
+    from plugins._shared_state import get_session_state
+    from plugins.read_think_gate_host import _STATE_NAMESPACE
+
+    state = get_session_state(str(session_id or ""), _STATE_NAMESPACE)
+    return state.get("awaiting_user_authorization") is True
+
+
 def _on_pre_tool_call(**kwargs) -> dict:
     """Contract: Preconditions: kwargs 含 tool_name/args（clarify 为 questions 列表）；
     Postconditions: 命中推责式提问时返回 {"action":"block","message":...}（同问题
@@ -246,6 +255,12 @@ def _on_pre_tool_call(**kwargs) -> dict:
     fail-closed 兜底。"""
     tool_name = kwargs.get("tool_name", "")
     if tool_name != "clarify":
+        return {}
+    if _waiting_for_read_think_authorization(kwargs.get("session_id")):
+        _gap_streaks.clear()
+        logger.info(
+            "finish_guard: ReadThinkGate is waiting for user authorization; allowing clarify",
+        )
         return {}
     args = kwargs.get("args") or {}
     try:
@@ -335,6 +350,13 @@ def _on_pre_verify(**kwargs) -> dict:
     强制续跑，否则返回 {} 放行。"""
     attempt = int(kwargs.get("attempt") or 0)
     if attempt >= _MAX_PRE_VERIFY_NUDGES:
+        return {}
+    if _waiting_for_read_think_authorization(
+        kwargs.get("session_id") or kwargs.get("task_id")
+    ):
+        logger.info(
+            "finish_guard: ReadThinkGate is waiting for user authorization; stopping turn",
+        )
         return {}
     final_response = kwargs.get("final_response") or ""
     tail = _tail_text(final_response)

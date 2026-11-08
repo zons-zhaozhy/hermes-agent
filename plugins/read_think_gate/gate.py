@@ -26,7 +26,8 @@
   - guardrails 检测"循环失败"（重复调用同一工具失败）
   - read_think_gate 执行"推理期/执行期分离"（先调查再动手）
 
-生命周期：per-turn，由 build_turn_context 重置。
+生命周期：调查证据 per-turn，由 build_turn_context 重置；同一 session 的用户修改授权
+跨 turn 持久，直到用户给出新的只读意图或显式撤销修改。
 """
 
 from __future__ import annotations
@@ -405,8 +406,9 @@ _EXPLICIT_NO_MODIFY_TERMS = (
     "不要修改", "不要改", "不要动", "别修改", "别改", "别动",
     "不要创建", "不要新建", "别创建", "别新建",
     "只看", "只分析", "仅分析", "只调查", "仅调查",
+    "只汇报", "仅汇报", "只报告", "仅报告",
     "do not modify", "don't modify", "do not create", "don't create",
-    "read-only", "read only",
+    "read-only", "read only", "report only",
 )
 
 _STRONG_MODIFY_TERMS = (
@@ -417,7 +419,7 @@ _STRONG_MODIFY_TERMS = (
 )
 
 _CONFIRMATION_TERMS = (
-    "同意", "可以", "好", "行", "没问题", "按这个来", "按这个做", "照这个做",
+    "同意", "可以", "好", "行", "没问题", "允许", "按这个来", "按这个做", "照这个做",
     "就这么办", "就这么改", "动手吧", "开始吧", "执行吧", "实施吧",
     "批准", "继续",
     "go ahead", "proceed", "do it", "approved", "sounds good",
@@ -428,6 +430,10 @@ _EXECUTION_CONFIRMATION_TERMS = (
 _CONFIRMATION_CHECK_TERMS = frozenset({
     "确认一下", "请确认一下", "我确认一下", "确认下", "请确认下", "我确认下",
 })
+_OPERATIONAL_FEEDBACK_TERMS = (
+    "啥情况", "进度", "汇报", "反馈", "闷头", "定时说明",
+    "status", "progress", "update me",
+)
 
 _PROPOSAL_TERMS = (
     *_MODIFY_TERMS,
@@ -1002,6 +1008,9 @@ class ReadThinkGate:
         if self.config.gated_tools:
             self._gated_tools.update(self.config.gated_tools)
         self._four_axis_found: set[str] = set()  # 本 turn 四轴证据集合
+        self._session_modification_authorized: bool = False
+        self._authorized_user_message: str = ""
+        self._awaiting_user_authorization: bool = False
         self.reset_for_turn()
 
     # ── Per-turn state ──────────────────────────────────────────────
@@ -1010,6 +1019,7 @@ class ReadThinkGate:
         self,
         user_message: str | None = None,
         conversation_history: list[dict] | None = None,
+        internal: bool = False,
     ) -> None:
         """每轮开始时重置——回到推理阶段。
 
@@ -1033,6 +1043,8 @@ class ReadThinkGate:
         self._intent: str = INTENT_AMBIGUOUS
         self._modification_authorized: bool = False
         self._investigation_complete: bool = False
+        if not internal:
+            self._awaiting_user_authorization = False
         # 四轴闸门——每 turn 重新计数
         self._four_axis_found: set[str] = set()
         # 清除本会话上一 turn 的四轴 marker 文件（不触碰其他会话的桶）
@@ -1042,12 +1054,40 @@ class ReadThinkGate:
         if "terminal" not in self.config.gated_tools:
             self._gated_tools.discard("terminal")
 
-        self._intent = _detect_user_intent(
-            user_message,
-            conversation_history,
-            use_llm=self.config.use_llm_intent_classifier,
-        )
-        self._modification_authorized = self._intent == INTENT_MODIFY
+        if internal:
+            self._intent = (
+                INTENT_MODIFY
+                if self._session_modification_authorized
+                else INTENT_AMBIGUOUS
+            )
+            self._modification_authorized = self._session_modification_authorized
+            if self._session_modification_authorized:
+                self._user_message = self._authorized_user_message
+        else:
+            self._intent = _detect_user_intent(
+                user_message,
+                conversation_history,
+                use_llm=self.config.use_llm_intent_classifier,
+            )
+            if self._intent == INTENT_MODIFY:
+                self._session_modification_authorized = True
+                self._authorized_user_message = user_message or ""
+            elif (
+                self._session_modification_authorized
+                and self._is_operational_feedback(user_message)
+                and not any(
+                    term in (user_message or "").lower()
+                    for term in _EXPLICIT_NO_MODIFY_TERMS
+                )
+            ):
+                self._intent = INTENT_MODIFY
+                self._user_message = (
+                    f"{self._authorized_user_message}\n[follow-up] {user_message or ''}"
+                ).strip()
+            else:
+                self._session_modification_authorized = False
+                self._authorized_user_message = ""
+            self._modification_authorized = self._intent == INTENT_MODIFY
         self._publish_state()
 
         if self.config.complexity_adaptive:
@@ -1055,8 +1095,15 @@ class ReadThinkGate:
             if conversation_history:
                 history_summary = _build_history_summary(conversation_history)
 
-            if self.config.use_llm_classifier and user_message:
-                detected = _classify_via_llm(user_message, history_summary) or "normal"
+            classification_message = (
+                self._authorized_user_message
+                if internal and self._session_modification_authorized
+                else user_message
+            )
+            if self.config.use_llm_classifier and classification_message:
+                detected = (
+                    _classify_via_llm(classification_message, history_summary) or "normal"
+                )
             else:
                 # 2026-08-18 修复：use_llm_classifier=False 时必须真正绕过 LLM。
                 # 此前 else 分支调 detect_complexity()，其内部无条件优先
@@ -1064,8 +1111,8 @@ class ReadThinkGate:
                 # 每 turn 仍烧一次同步 LLM 调用（timeout=10s，阻塞回合启动），
                 # 实测日志 110 次 "LLM classified" 均发生在 false 配置下。
                 detected = (
-                    _fallback_detect(user_message.lower())
-                    if user_message
+                    _fallback_detect(str(classification_message or "").lower())
+                    if classification_message
                     else "normal"
                 )
             self._active_complexity = detected
@@ -1104,8 +1151,15 @@ class ReadThinkGate:
                 "intent": self._intent,
                 "modification_authorized": self._modification_authorized,
                 "investigation_complete": self._investigation_complete,
+                "awaiting_user_authorization": self._awaiting_user_authorization,
             }
         )
+
+    @staticmethod
+    def _is_operational_feedback(user_message: str | None) -> bool:
+        """Whether a human message steers an active task without replacing it."""
+        text = (user_message or "").strip().lower()
+        return bool(text) and any(term in text for term in _OPERATIONAL_FEEDBACK_TERMS)
 
     @property
     def user_intent(self) -> str:
@@ -1147,6 +1201,7 @@ class ReadThinkGate:
         """Unlock writes and publish the evidence verdict to pre_write."""
         self._satisfied = True
         self._investigation_complete = True
+        self._awaiting_user_authorization = False
         self._publish_state()
 
     def _scan_four_axis(self, content: str | None) -> None:
@@ -1446,6 +1501,8 @@ class ReadThinkGate:
 
         if self._intent != INTENT_MODIFY:
             self._reasoning_rounds += 1
+            self._awaiting_user_authorization = True
+            self._publish_state()
             first_gated = next(
                 (t for t in tool_names if t in self._gated_tools),
                 "terminal",
@@ -1482,6 +1539,8 @@ class ReadThinkGate:
 
         first_gated = next(t for t in tool_names if t in self._gated_tools) if any(t in self._gated_tools for t in tool_names) else "terminal"
         if self._reasoning_rounds >= self._active_profile.max_reasoning_rounds:
+            self._awaiting_user_authorization = True
+            self._publish_state()
             return _make_synthetic_result(
                 first_gated,
                 self._build_handoff_message(first_gated),
@@ -1593,8 +1652,11 @@ class ReadThinkGate:
               ——read_only/ambiguous 回答永不降级既有授权。
         """
         text = (answer_text or "").strip()
-        if not text or self._modification_authorized:
+        if not text:
             return
+        authorized_message = (
+            self._user_message + "\n[clarify] " + text[:500]
+        ).strip()
         history = (
             [{"role": "assistant", "content": self._clarify_context}]
             if self._clarify_context
@@ -1610,7 +1672,10 @@ class ReadThinkGate:
             return
         self._intent = INTENT_MODIFY
         self._modification_authorized = True
-        self._user_message = (self._user_message + "\n[clarify] " + text[:500]).strip()
+        self._session_modification_authorized = True
+        self._authorized_user_message = authorized_message
+        self._awaiting_user_authorization = False
+        self._user_message = authorized_message
         self._publish_state()
         logger.info("read-think gate: clarify answer authorizes modification")
 
