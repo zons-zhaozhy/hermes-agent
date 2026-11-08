@@ -107,6 +107,7 @@ _GUARDS = {
     "no-tmp": ["scripts/check_no_tmp_literals.py"],
     "tool-classification": ["scripts/check_tool_classification.py"],
     "detached-spawns": ["scripts/check_detached_spawns.py"],
+    "install-root": ["scripts/install_root_lint.py"],
     "config-writers": ["scripts/check_config_yaml_writers.py"],
     "config-readers": ["scripts/check_config_yaml_readers.py"],
     "owner-loop-io": ["scripts/ci/check_owner_loop_io.py"],
