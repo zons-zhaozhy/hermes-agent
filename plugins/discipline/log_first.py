@@ -2,7 +2,8 @@
 错误诊断强制拦截插件
 ====================
 
-机制：双 hook 联动——post_tool_call 检测错误信号，pre_llm_call 注入提醒。
+机制：双 hook 联动——post_tool_call 按会话记录错误信号，pre_llm_call
+      只向同一会话注入提醒。
 
 检测层：纯结构化字段判断，零信号词枚举，零正则。
   四个字段任一命中即为错误：
@@ -17,15 +18,14 @@
 
 import json
 import logging
-import os
 import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-from hermes_constants import get_scratch_dir
+from ._pending_state import owner_id, state_path, take_pending, write_pending
 
-_STATE_FILE = str(get_scratch_dir() / ".hermes_log_first_pending")
+_STATE_PREFIX = ".hermes_log_first_pending"
 
 _REMINDER = """\
 [错误诊断强制提醒]
@@ -93,11 +93,15 @@ def _detect_error(result: Any, status: str = "") -> bool:
 
 
 def _on_post_tool_call(**kwargs) -> None:
-    """post_tool_call 回调：检测错误信号，写入状态文件。"""
+    """post_tool_call 回调：检测错误信号，写入本会话状态文件。"""
     tool_name = kwargs.get("tool_name", "")
     status = kwargs.get("status", "")
     result = kwargs.get("result")
     error_message = kwargs.get("error_message", "")
+    session_id = owner_id(kwargs)
+    if not session_id:
+        logger.warning("log-first-diagnosis: post_tool_call 缺少 session_id/task_id，丢弃提醒状态")
+        return
 
     if _detect_error(result, status):
         detail = error_message or ""
@@ -108,12 +112,12 @@ def _on_post_tool_call(**kwargs) -> None:
 
         try:
             payload = {
+                "session_id": session_id,
                 "tool_name": tool_name,
                 "detail": detail[:200],
                 "timestamp": time.time(),
             }
-            with open(_STATE_FILE, "w", encoding="utf-8") as f:
-                json.dump(payload, f)
+            write_pending(state_path(_STATE_PREFIX, session_id), payload)
             logger.debug(
                 "log-first-diagnosis: 检测到错误 [%s] %s",
                 tool_name, detail[:80],
@@ -123,22 +127,12 @@ def _on_post_tool_call(**kwargs) -> None:
 
 
 def _on_pre_llm_call(**kwargs) -> dict:
-    """pre_llm_call 回调：如果有未处理的错误，注入诊断提醒。"""
-    if not os.path.exists(_STATE_FILE):
+    """pre_llm_call 回调：本会话有未处理错误时注入诊断提醒。"""
+    session_id = owner_id(kwargs)
+    if not session_id:
         return {}
-
-    try:
-        with open(_STATE_FILE, encoding="utf-8-sig") as f:
-            payload = json.load(f)
-        os.remove(_STATE_FILE)
-    except (json.JSONDecodeError, KeyError, OSError):
-        try:
-            os.remove(_STATE_FILE)
-        except OSError:
-            pass
-        return {}
-
-    if time.time() - payload.get("timestamp", 0) > 60:
+    payload = take_pending(state_path(_STATE_PREFIX, session_id), session_id)
+    if payload is None:
         return {}
 
     logger.info(

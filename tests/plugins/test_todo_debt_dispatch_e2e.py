@@ -126,8 +126,9 @@ def test_resume_session_also_injects(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     _seed_home(home, "e2e_owner")
     out = todo_debt.on_session_open(
+        user_message="继续干活",
         conversation_history=[
-            {"role": "user", "content": "早"},
+            {"role": "user", "content": "继续干活"},
             {"role": "assistant", "content": "已开工"},
         ],
         session_id="e2e_resume_proc",

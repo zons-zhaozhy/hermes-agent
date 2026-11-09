@@ -69,20 +69,37 @@ def test_cross_slot_settlement_clears_foreign():
 def test_session_open_injects_foreign_debt_once():
     """T4：进程内首见注入他账一次；同会话不重复；续开会话（历史含 assistant）同样注入；本会话槽位排除。"""
     _write_snapshot("s_owner", [{"id": "5", "content": "跨会话未清事项X", "status": "pending"}])
-    first = todo_debt.on_session_open(conversation_history=[{"role": "user", "content": "hi"}],
+    first = todo_debt.on_session_open(user_message="继续干活",
+                                      conversation_history=[{"role": "user", "content": "继续干活"}],
                                       session_id="s_fresh")
     assert first is not None and "todo_debt" in first["context"]  # 期望: 进程内首见注入
     assert "跨会话未清事项X" in first["context"]  # 期望: 清单含他账内容
-    again = todo_debt.on_session_open(conversation_history=[{"role": "user", "content": "hi"}],
+    again = todo_debt.on_session_open(user_message="继续干活",
+                                      conversation_history=[{"role": "user", "content": "继续干活"}],
                                       session_id="s_fresh")
     assert again is None  # 期望: 同会话只注入一次（debt_injected 标记）
-    own = todo_debt.on_session_open(conversation_history=[], session_id="s_owner")
+    own = todo_debt.on_session_open(user_message="继续干活",
+                                    conversation_history=[],
+                                    session_id="s_owner")
     assert own is None  # 期望: 本会话自己的在途任务不算他账
     resumed = todo_debt.on_session_open(
-        conversation_history=[{"role": "user", "content": "早"},
+        user_message="继续干活",
+        conversation_history=[{"role": "user", "content": "继续干活"},
                               {"role": "assistant", "content": "已开工"}],
         session_id="s_resume")
     assert resumed is not None and "跨会话未清事项X" in resumed["context"]  # 期望: 续开会话进程内首见同样注入
+
+
+def test_ordinary_first_turn_does_not_spend_debt_injection():
+    """普通状态/情绪消息不注入他账，也不消耗后续工程轮的注入机会。"""
+    _write_snapshot("s_chat_owner", [{"id": "6", "content": "普通对话不应消费的账", "status": "pending"}])
+    sid = "s_ordinary_then_work"
+    for message in ("你还在工作吗", "我今天有点累"):
+        assert todo_debt.on_session_open(user_message=message, session_id=sid) is None
+
+    work = todo_debt.on_session_open(user_message="继续干活", session_id=sid)
+    assert work is not None and "普通对话不应消费的账" in work["context"]
+    assert todo_debt.on_session_open(user_message="继续干活", session_id=sid) is None
 
 
 def test_non_todo_tool_no_side_effect():
@@ -107,7 +124,7 @@ def test_foreign_completed_rows_not_injected():
         ],
     }
     todo_debt._save_debt(data)
-    out = todo_debt.on_session_open(session_id="s_zfresh")
+    out = todo_debt.on_session_open(user_message="继续处理这些任务", session_id="s_zfresh")
     assert out is not None and "真未清事项Y" in out["context"]  # 期望: active 项注入
     assert "已销账旧事项" not in out["context"]  # 期望: completed 僵尸行不注入
     assert "检测到 1 项" in out["context"]  # 期望: 计数只算 active
@@ -120,7 +137,7 @@ def test_all_active_foreign_rows_listed():
     data = todo_debt._load_debt()
     data["sessions"]["s_many"] = {"updated_at": 2, "items": items}
     todo_debt._save_debt(data)
-    out = todo_debt.on_session_open(session_id="s_mfresh")
+    out = todo_debt.on_session_open(user_message="继续处理这些任务", session_id="s_mfresh")
     assert out is not None
     for i in range(12):
         assert f"债项{i:02d}" in out["context"]  # 期望: 全量可见可 merge

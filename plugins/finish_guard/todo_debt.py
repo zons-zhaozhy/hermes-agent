@@ -10,14 +10,14 @@ session），会话结束即蒸发；新会话启动不注入任何未清账，�
      pending/in_progress 项按会话槽位持久化到 <HERMES_HOME>/cache/
      todo_debt.json（原子写）；快照中 completed/cancelled 的 id 从其他
      会话槽位剔除（跨槽位销账）。
-  2. on_session_open（pre_llm_call）：会话首轮注入其他会话的未清账清单，
-     要求 merge 进本会话 todo_list（保留原 id）逐项消化，或显式 cancelled
-     并说明理由。
+  2. on_session_open（pre_llm_call）：会话内首个工程请求注入其他会话的
+     未清账清单，要求 merge 进本会话 todo_list（保留原 id）逐项消化，
+     或显式 cancelled 并说明理由；普通状态/情绪对话不注入。
 
 Contract:
-  Preconditions: post_tool_call 载荷含 tool_name/args/result/session_id
+    Preconditions: post_tool_call 载荷含 tool_name/args/result/session_id
     （model_tools._emit_post_tool_call_hook 的键）；pre_llm_call 载荷含
-    conversation_history/session_id/task_id/turn_id。
+    user_message/session_id/task_id/turn_id。
   Postconditions: 回调永不 raise（异常吞入 logger.exception）；账本文件
     损坏/不可解析时视为空账本；删除账本文件即完全清零（可恢复）。
 """
@@ -30,6 +30,8 @@ import os
 import time
 from pathlib import Path
 from typing import Any
+
+from plugins._message_intent import has_engineering_intent
 
 logger = logging.getLogger("hermes.plugins.finish_guard.todo_debt")
 
@@ -235,6 +237,12 @@ def _render_debt_context(rows: list[dict[str, Any]]) -> str:
     )
 
 
+def _is_work_request(user_message: Any) -> bool:
+    """Return whether this turn may consume cross-session engineering debt."""
+    message = str(user_message or "").strip()
+    return bool(message and has_engineering_intent(message))
+
+
 def on_todo_write(**kwargs: Any) -> None:
     """post_tool_call 观察者：todo_list 写入后同步债务账本。
 
@@ -255,22 +263,23 @@ def on_todo_write(**kwargs: Any) -> None:
 
 
 def on_session_open(**kwargs: Any) -> dict[str, Any] | None:
-    """pre_llm_call 注入器：会话进程内首见时注入跨会话未清账（一次/进程会话）。
+    """pre_llm_call 注入器：会话进程内首个工程请求注入跨会话未清账。
 
     首轮判定=debt_injected 标记缺失（进程内该会话首次 pre_llm_call），不按
     历史推断——续开会话（恢复的 conversation_history 已含 assistant 消息）
     同样命中注入，修复「按历史推断把续开首轮误判非首轮、永不注入」的缺口；
     进程重启后同会话重注入一次属幂等无害（账单文本只读提示）。
 
-    Contract: Preconditions: kwargs 含 session_id/task_id（is_first_turn/
-    conversation_history 不再参与判定）；
-    Postconditions: 首见且存在他账时返回 {"context": 提醒文本} 并置 injected
-    标记；否则 None；永不 raise。
+    Contract: Preconditions: kwargs 含 user_message/session_id/task_id；
+    Postconditions: 工程请求首见且存在他账时返回 {"context": 提醒文本}
+    并置 injected 标记；普通消息不注入且不置标记；否则 None；永不 raise。
     """
     try:
         from plugins._shared_state import get_session_state
 
         sid = str(kwargs.get("session_id") or kwargs.get("task_id") or "__default__")
+        if not _is_work_request(kwargs.get("user_message")):
+            return None
         state = get_session_state(sid, _NAMESPACE)
         if state.get("debt_injected"):
             return None

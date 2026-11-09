@@ -2,8 +2,8 @@
 HTTP 请求安全拦截插件
 ====================
 
-机制：pre_tool_call 事前拦截——检测到 curl/httpx/requests 调用时写入状态文件，
-      pre_llm_call 注入「先查 API 签名」提醒。
+机制：pre_tool_call 事前拦截——检测到 curl/httpx/requests 调用时按会话写入
+      状态文件，pre_llm_call 只向同一会话注入「先查 API 签名」提醒。
 
 预防目标：禁止瞎猜 API 路径和参数。
   正确流程：读源码路由定义 / OpenAPI 文档 → 确认路径+方法+参数名+请求体结构 → 再发请求
@@ -13,16 +13,14 @@ HTTP 请求安全拦截插件
   检测标记是 HTTP 协议标准工具和 Python 标准库（有限集合）。
 """
 
-import json
 import logging
-import os
 import time
 
 logger = logging.getLogger(__name__)
 
-from hermes_constants import get_scratch_dir
+from ._pending_state import owner_id, state_path, take_pending, write_pending
 
-_STATE_FILE = str(get_scratch_dir() / ".hermes_curl_safety_pending")
+_STATE_PREFIX = ".hermes_curl_safety_pending"
 
 _REMINDER = """\
 [HTTP 请求安全提醒]
@@ -84,52 +82,36 @@ def _is_http_request(tool_name: str, args: dict) -> bool:
 
 
 def _on_pre_tool_call(**kwargs) -> None:
-    """pre_tool_call 回调：检测 HTTP 请求，写入状态文件。"""
+    """pre_tool_call 回调：检测 HTTP 请求，写入本会话状态文件。"""
     tool_name = kwargs.get("tool_name", "")
     args = kwargs.get("args", {})
+    session_id = owner_id(kwargs)
+    if not session_id:
+        logger.warning("curl-safety: pre_tool_call 缺少 session_id/task_id，丢弃提醒状态")
+        return
 
     if _is_http_request(tool_name, args):
         try:
             payload = {
+                "session_id": session_id,
                 "tool_name": tool_name,
                 "command": str(args.get("command", args.get("code", "")))[:200],
                 "timestamp": time.time(),
             }
-            with open(_STATE_FILE, "w", encoding="utf-8") as f:
-                json.dump(payload, f)
+            write_pending(state_path(_STATE_PREFIX, session_id), payload)
             logger.debug("curl-safety: 检测到 HTTP 请求 [%s]", tool_name)
         except OSError as e:
             logger.warning("curl-safety: 写入状态文件失败: %s", e)
 
 
 def _on_pre_llm_call(**kwargs) -> dict:
-    """pre_llm_call 回调：如果有 HTTP 请求待提醒，注入安全提醒。"""
-    if not os.path.exists(_STATE_FILE):
+    """pre_llm_call 回调：本会话有 HTTP 请求待提醒时注入安全提醒。"""
+    session_id = owner_id(kwargs)
+    if not session_id:
         return {}
-
-    try:
-        with open(_STATE_FILE, encoding="utf-8-sig") as f:
-            payload = json.load(f)
-    except (json.JSONDecodeError, KeyError, OSError) as e:
-        try:
-            os.remove(_STATE_FILE)
-        except OSError:
-            logger.warning("curl-safety: 状态文件清理失败")
-        logger.warning("curl-safety: 状态文件读取失败: %s", e)
+    payload = take_pending(state_path(_STATE_PREFIX, session_id), session_id)
+    if payload is None:
         return {}
-
-    # 超过 60 秒视为过期
-    if time.time() - payload.get("timestamp", 0) > 60:
-        try:
-            os.remove(_STATE_FILE)
-        except OSError:
-            logger.debug("curl-safety: 过期状态文件清理失败")
-        return {}
-
-    try:
-        os.remove(_STATE_FILE)
-    except OSError:
-        logger.warning("curl-safety: 状态文件清理失败")
 
     logger.info(
         "curl-safety: 注入 HTTP 请求安全提醒 (工具=%s)",

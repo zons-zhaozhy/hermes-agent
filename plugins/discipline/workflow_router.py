@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import logging
 from collections import OrderedDict
-import re
 from typing import Any
+
+from plugins._message_intent import has_engineering_intent
 
 logger = logging.getLogger(__name__)
 
@@ -41,15 +42,6 @@ _ROUTING_HINT = (
     )
     + "用 skill_view 读取；被拦截时先读拦截信息并补证据，禁止换工具重复尝试。"
 )
-_ENGINEERING_HINT_RE = re.compile(
-    r"代码|文件|报错|错误|bug|测试|接口|函数|数据库|表结构|字段|配置|部署|构建|编译|"
-    r"服务|页面|样式|日志|性能|分支|提交|仓库|git|api|http|python|typescript|"
-    r"javascript|java|vue|react|pytest|ci|pr",
-    re.IGNORECASE,
-)
-_ENGINEERING_ACTION_RE = re.compile(
-    r"继续|接着|重构|实现|开发|迁移|修复|编写|创建|删除|清理|部署|提交"
-)
 _injected_sessions: OrderedDict[str, None] = OrderedDict()
 
 
@@ -71,8 +63,7 @@ def on_pre_llm_call(**kwargs: Any) -> dict[str, str]:
         for item in history
         if isinstance(item, dict)
     )
-    combined = message + "\n" + history_text
-    if not (_ENGINEERING_HINT_RE.search(combined) or _ENGINEERING_ACTION_RE.search(message)):
+    if not has_engineering_intent(message, history_text):
         return {}
     _injected_sessions[session_id] = None
     _injected_sessions.move_to_end(session_id)
