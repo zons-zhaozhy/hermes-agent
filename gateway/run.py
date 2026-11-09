@@ -1796,8 +1796,8 @@ def _profile_runtime_scope(
 @_asynccontextmanager
 async def _async_profile_runtime_scope(profile_home: Path):
     """Enter a profile scope without loading secret files on the event loop."""
-    secrets = await asyncio.to_thread(_load_profile_secret_scope, Path(profile_home))
-    with _profile_runtime_scope(Path(profile_home), secrets):
+    from gateway.run_profile_scope import async_profile_runtime_scope
+    async with async_profile_runtime_scope(Path(profile_home), _profile_runtime_scope):
         yield
 
 

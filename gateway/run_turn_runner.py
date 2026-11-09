@@ -76,6 +76,22 @@ _LEDGER_PASSTHROUGH_KEYS = (
 # so the authority's ``message.complete`` carries the same error card the TUI path builds;
 # ``usage_window_message`` also marks a window-plan refusal for the chat rewording.
 _FAILURE_DESCRIPTOR_KEYS = ("free_tier", "failure_retryable", "failure_resets_at", "usage_window_message")
+_APPROVAL_OWNER_UNSET = object()
+
+
+def resolve_approval_owner(runner: GatewayRunner, ctx: TurnContext) -> object:
+    """Resolve an approval owner and generation; the SessionDB read is blocking."""
+    from gateway.session_authorities import active_authority
+    authority = active_authority(runner)
+    if authority is None:
+        return None
+    source = getattr(ctx, "source", None)
+    owner_id = (source.chat_id if getattr(source, "platform", None) == Platform.LOCAL
+                else authority.logical_owner(ctx.session_id))
+    if owner_id not in authority.sessions:
+        return None
+    generation = authority.db.get_session(owner_id)["runtime_generation"]
+    return authority, owner_id, generation
 
 
 def _finite_viewer_turn() -> bool:
@@ -191,18 +207,15 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
     # controls snapshot. Class-level so every publish/snapshot seam can read it unconditionally.
     _approval_owner = None
 
-    def __init__(self, runner: GatewayRunner, ctx: TurnContext) -> None:
+    def __init__(
+        self, runner: GatewayRunner, ctx: TurnContext, *,
+        approval_owner: object = _APPROVAL_OWNER_UNSET,
+    ) -> None:
         self._runner = runner
         self._ctx = ctx
-        from gateway.session_authorities import active_authority
-        authority = active_authority(runner)
-        if authority is not None:
-            source = getattr(ctx, 'source', None)
-            owner_id = (source.chat_id if getattr(source, 'platform', None) == Platform.LOCAL
-                        else authority.logical_owner(ctx.session_id))
-            if owner_id in authority.sessions:
-                generation = authority.db.get_session(owner_id)["runtime_generation"]
-                self._approval_owner = (authority, owner_id, generation)
+        self._approval_owner = (
+            resolve_approval_owner(runner, ctx) if approval_owner is _APPROVAL_OWNER_UNSET
+            else approval_owner)
 
 
     def _publish_execution(self, event_type, payload):

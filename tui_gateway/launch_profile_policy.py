@@ -17,6 +17,7 @@ Two facts anchor this module:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import os
@@ -184,7 +185,11 @@ def launch_body() -> Iterator[None]:
 
 
 @contextlib.contextmanager
-def launch_profile_runtime_scope(launch_home: str | Path) -> Iterator[None]:
+def launch_profile_runtime_scope(
+    launch_home: str | Path, *,
+    prepared_secret_scope: Optional[dict[str, str]] = None,
+    prepared_terminal_scope: Optional[dict[str, str]] = None,
+) -> Iterator[None]:
     """Bind the launch profile's own runtime scope for one body: HERMES_HOME override naming the
     launch home, ``launch_secret_scope``, and its terminal policy over the frozen launch
     ``TERMINAL_*`` overlay. For hosts whose launch-profile bodies are not RPC sessions (the
@@ -198,14 +203,21 @@ def launch_profile_runtime_scope(launch_home: str | Path) -> Iterator[None]:
     (``gateway/run.py::_profile_runtime_scope``); the launch profile is a tenant like any other."""
     from agent.secret_scope import reset_secret_scope, set_secret_scope
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
+    from tools.terminal_scope import (
+        install_profile_terminal_scope, reset_terminal_scope, set_terminal_scope,
+    )
 
     home = Path(launch_home)
     home_token = secret_token = terminal_token = None
     try:
         home_token = set_hermes_home_override(str(home))
-        secret_token = set_secret_scope(launch_secret_scope(home))  # own home: no foreign stamp
-        terminal_token = install_profile_terminal_scope(home, env_overlay=launch_terminal_env())
+        secrets = launch_secret_scope(home) if prepared_secret_scope is None else prepared_secret_scope
+        secret_token = set_secret_scope(secrets)  # own home: no foreign stamp
+        if prepared_terminal_scope is None:
+            terminal_token = install_profile_terminal_scope(
+                home, env_overlay=launch_terminal_env())
+        else:
+            terminal_token = set_terminal_scope(prepared_terminal_scope)
         yield
     finally:
         if terminal_token is not None:
@@ -237,7 +249,32 @@ def launch_profile_scope_if_multiplexed():
 
 @contextlib.asynccontextmanager
 async def async_launch_profile_scope_if_multiplexed():
-    """``async with`` twin of :func:`launch_profile_scope_if_multiplexed` (no I/O of its own: the
-    launch scope is rebuilt from already-hydrated sources, so there is nothing to move off-loop)."""
-    with launch_profile_scope_if_multiplexed():
+    """``async with`` twin that prepares the launch profile's files off the event loop."""
+    from agent.secret_scope import is_multiplex_active
+    if not is_multiplex_active():
+        with launch_profile_scope_if_multiplexed():
+            yield
+        return
+    from hermes_constants import get_process_hermes_home
+    home = get_process_hermes_home()
+    secrets, terminal = await asyncio.to_thread(
+        prepare_launch_profile_runtime_scope, home)
+    with launch_profile_runtime_scope(
+            home, prepared_secret_scope=secrets, prepared_terminal_scope=terminal):
         yield
+
+
+def prepare_launch_profile_runtime_scope(launch_home: str | Path) -> tuple[dict[str, str], dict[str, str]]:
+    """Load the launch profile's secret and terminal scopes under its home override."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.terminal_scope import prepare_profile_terminal_scope
+
+    home = Path(launch_home)
+    token = set_hermes_home_override(str(home))
+    try:
+        return (
+            launch_secret_scope(home),
+            prepare_profile_terminal_scope(home, env_overlay=launch_terminal_env()),
+        )
+    finally:
+        reset_hermes_home_override(token)

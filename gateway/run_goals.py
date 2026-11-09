@@ -13,7 +13,7 @@ import json
 import logging
 import time
 from contextlib import nullcontext, suppress
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
@@ -590,8 +590,6 @@ class GatewayGoalsMixin:
             return async_launch_profile_scope_if_multiplexed()
 
         async def _scan_one_store(profile_name: Optional[str]) -> None:
-            from hermes_cli.loops import list_active_loops
-
             # Warm once per scan: the scan reads every persisted loop and a cold cache would
             # run the state.db init on the loop thread before the first read.
             await self._warm_goals_session_db("loop wakeup")
@@ -603,6 +601,8 @@ class GatewayGoalsMixin:
 
         while self._running:
             try:
+                list_active_loops = await self._run_in_executor_with_context(
+                    import_list_active_loops)
                 # Multiplex resolution walks the filesystem off-loop; a stalled walk on the loop
                 # trips the loop-liveness watchdog (exit 75).
                 for profile_name, profile_home in await _resolve_handoff_watch_scopes(self):
@@ -616,3 +616,9 @@ class GatewayGoalsMixin:
             except Exception as exc:
                 logger.debug("loop wakeup watcher error: %s", exc)
             await asyncio.sleep(interval)
+
+
+def import_list_active_loops() -> Callable[..., list]:
+    """Import the loop scanner; a cold plugin/module import can take seconds."""
+    from hermes_cli.loops import list_active_loops
+    return list_active_loops

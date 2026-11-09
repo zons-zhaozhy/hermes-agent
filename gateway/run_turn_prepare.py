@@ -26,6 +26,7 @@ from gateway.session import (
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
+from gateway.warning_notifications import diagnostic_turn_muted
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -93,6 +94,51 @@ def _recover_or_remember_model(runner, skey, model):
 
 
 class GatewayTurnPrepareMixin:
+    async def _run_agent_build_turn_context(
+        self, disp: GatewayRunner._RunAgentDisplay, AIAgent: Any, *, message: str, source: SessionSource,
+        session_key: Optional[str], run_generation: Optional[int], **turn_params,
+    ) -> tuple[TurnContext, TurnRunner, Any]:
+        """Build the ``TurnContext`` and its ``TurnRunner``; ``turn_params`` (history, context_prompt,
+        session_id, persist_user_*, …) are stored verbatim. Returns ``(turn_ctx, turn_runner,
+        cleanup_adapter)``."""
+        from gateway.run_turn_runner import TurnRunner, resolve_approval_owner
+        # Discord voice "verbal ack" on the FIRST tool call (discord.voice_fx enabled): resolve the
+        # guild whose voice connection is bound to this text channel (mirrors DiscordAdapter.play_tts).
+        _voice_ack_guild: list[Optional[int]] = [self._voice_ack_guild_for(source)]
+
+        # Auto-cleanup of temporary progress bubbles needs a real ``delete_message`` (getattr on
+        # the type: a fake adapter without it means "can't delete", not a crash).
+        _cleanup_progress = bool(
+            disp.resolve_display_setting(disp.user_config, disp.platform_key, "cleanup_progress")
+        )
+        _cleanup_adapter = self._delivery_adapter_for(source) if _cleanup_progress else None
+        if _cleanup_adapter is not None and getattr(type(_cleanup_adapter), "delete_message", None) in (
+            None, BasePlatformAdapter.delete_message,
+        ):
+            _cleanup_progress = False
+            _cleanup_adapter = None
+
+        # The one-slot progress/holder containers shared with the callbacks are TurnContext defaults.
+        turn_ctx = TurnContext(
+            source=source, message=message, AIAgent=AIAgent, session_key=session_key,
+            run_generation=run_generation, _cleanup_progress=_cleanup_progress,
+            _run_still_current=self._run_still_current_fn(session_key, run_generation),
+            progress_queue=queue.Queue() if disp.needs_progress_queue else None,
+            _voice_ack_guild=_voice_ack_guild, _voice_ack_loop=asyncio.get_running_loop(),
+            **{name: getattr(disp, name) for name in self._DISPLAY_TO_TURN_CTX}, **turn_params,
+        )
+        approval_owner = await asyncio.to_thread(
+            resolve_approval_owner, self, turn_ctx)
+        turn_runner = TurnRunner(self, turn_ctx, approval_owner=approval_owner)
+        turn_ctx.mute_notification_reply = diagnostic_turn_muted(
+            turn_ctx.persist_user_display_metadata, source.platform, turn_ctx.user_config)
+        # Agent tool-lifecycle callbacks live on the runner (bound methods, same signatures).
+        turn_ctx.progress_callback = turn_runner.progress_callback
+        turn_ctx.voice_ack_callback = turn_runner.voice_ack_callback
+        turn_ctx.native_tool_start_callback = turn_runner.combined_tool_start_callback
+        turn_ctx.native_tool_complete_callback = turn_runner.native_tool_complete_callback
+        return turn_ctx, turn_runner, _cleanup_adapter
+
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
         user_config: Optional[dict] = None, fallback: bool = True,

@@ -294,7 +294,8 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 reply_expected=event.reply_expected,
             )
             response = self._usage_window_chat_wording(agent_result, self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence))
-            _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
+            _footer_line = await asyncio.to_thread(
+                self._hmwa_runtime_footer_line, agent_result, source, _turn_seconds)
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
@@ -968,49 +969,6 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         "user_config", "enabled_toolsets", "disabled_toolsets", "log_mode_enabled",
         "interim_assistant_messages_enabled", "needs_progress_queue", "_native_slack_task_cards",
     )
-
-    def _run_agent_build_turn_context(
-        self, disp: GatewayRunner._RunAgentDisplay, AIAgent: Any, *, message: str, source: SessionSource,
-        session_key: Optional[str], run_generation: Optional[int], **turn_params,
-    ) -> tuple[TurnContext, TurnRunner, Any]:
-        """Build the ``TurnContext`` and its ``TurnRunner``; ``turn_params`` (history, context_prompt,
-        session_id, persist_user_*, …) are stored verbatim. Returns ``(turn_ctx, turn_runner,
-        cleanup_adapter)``."""
-        from gateway.run_turn_runner import TurnRunner
-        # Discord voice "verbal ack" on the FIRST tool call (discord.voice_fx.enabled): resolve the
-        # guild whose voice connection is bound to this text channel (mirrors DiscordAdapter.play_tts).
-        _voice_ack_guild: list[Optional[int]] = [self._voice_ack_guild_for(source)]
-
-        # Auto-cleanup of temporary progress bubbles needs a real ``delete_message`` (getattr on the
-        # type: a fake adapter without it means "can't delete", not a crash).
-        _cleanup_progress = bool(
-            disp.resolve_display_setting(disp.user_config, disp.platform_key, "cleanup_progress")
-        )
-        _cleanup_adapter = self._delivery_adapter_for(source) if _cleanup_progress else None
-        if _cleanup_adapter is not None and getattr(type(_cleanup_adapter), "delete_message", None) in (
-            None, BasePlatformAdapter.delete_message,
-        ):
-            _cleanup_progress = False
-            _cleanup_adapter = None
-
-        # The one-slot progress/holder containers shared with the callbacks are TurnContext defaults.
-        turn_ctx = TurnContext(
-            source=source, message=message, AIAgent=AIAgent, session_key=session_key,
-            run_generation=run_generation, _cleanup_progress=_cleanup_progress,
-            _run_still_current=self._run_still_current_fn(session_key, run_generation),
-            progress_queue=queue.Queue() if disp.needs_progress_queue else None,
-            _voice_ack_guild=_voice_ack_guild, _voice_ack_loop=asyncio.get_running_loop(),
-            **{name: getattr(disp, name) for name in self._DISPLAY_TO_TURN_CTX}, **turn_params,
-        )
-        turn_runner = TurnRunner(self, turn_ctx)
-        turn_ctx.mute_notification_reply = diagnostic_turn_muted(
-            turn_ctx.persist_user_display_metadata, source.platform, turn_ctx.user_config)
-        # Agent tool-lifecycle callbacks live on the runner (bound methods, same signatures).
-        turn_ctx.progress_callback = turn_runner.progress_callback
-        turn_ctx.voice_ack_callback = turn_runner.voice_ack_callback
-        turn_ctx.native_tool_start_callback = turn_runner.combined_tool_start_callback
-        turn_ctx.native_tool_complete_callback = turn_runner.native_tool_complete_callback
-        return turn_ctx, turn_runner, _cleanup_adapter
 
     def _thread_metadata_for_progress(
         self, source: SessionSource, event_message_id: Optional[str], _progress_thread_id: Any,
@@ -2171,7 +2129,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 disp, tool_progress_enabled=False, _thinking_enabled=False, _native_slack_task_cards=False,
                 needs_progress_queue=False,
             )
-        turn_ctx, turn_runner, _cleanup_adapter = self._run_agent_build_turn_context(
+        turn_ctx, turn_runner, _cleanup_adapter = await self._run_agent_build_turn_context(
             disp, AIAgent, message=message, source=source, session_key=session_key,
             run_generation=run_generation, context_prompt=context_prompt, history=history,
             session_id=session_id, _interrupt_depth=_interrupt_depth,

@@ -9,7 +9,6 @@ client drives the REAL ``_connect_websocket`` / ``_run_official_feishu_ws_client
 """
 
 import asyncio
-from contextlib import contextmanager
 import sys
 import types
 from pathlib import Path
@@ -82,7 +81,7 @@ def test_drive_comment_agent_turn_runs_under_the_adapter_profile_scope(routed_sc
     assert seen["turn"] == ("routed", "routed-value")
 
 
-def test_drive_comment_agent_turn_binds_the_unscoped_launch_profile(tmp_path):
+def test_drive_comment_agent_turn_binds_the_unscoped_launch_profile(tmp_path, monkeypatch):
     """A default-adapter SDK callback has no contextvar scope after multiplexing.
 
     The comment entry point must install the launch profile scope before the
@@ -95,16 +94,6 @@ def test_drive_comment_agent_turn_binds_the_unscoped_launch_profile(tmp_path):
     launch_home.mkdir()
     seen = {}
 
-    @contextmanager
-    def _launch_scope():
-        home_token = set_hermes_home_override(str(launch_home))
-        secret_token = set_secret_scope({"FEISHU_PROBE_TOKEN": "launch-value"})
-        try:
-            yield
-        finally:
-            reset_secret_scope(secret_token)
-            reset_hermes_home_override(home_token)
-
     def _fake_agent(prompt, client, session_key=""):
         seen["turn"] = _observe(launch_home)
         return "NO_REPLY"
@@ -116,8 +105,11 @@ def test_drive_comment_agent_turn_binds_the_unscoped_launch_profile(tmp_path):
     })
     set_multiplex_active(True)
     try:
-        with patch("tui_gateway.launch_profile_policy.launch_profile_scope_if_multiplexed", _launch_scope), \
-             patch.object(rules, "load_config", return_value=object()), \
+        monkeypatch.setattr("hermes_constants.get_process_hermes_home", lambda: launch_home)
+        monkeypatch.setattr(
+            "tui_gateway.launch_profile_policy.prepare_launch_profile_runtime_scope",
+            lambda _home: ({"FEISHU_PROBE_TOKEN": "launch-value"}, {}))
+        with patch.object(rules, "load_config", return_value=object()), \
              patch.object(rules, "resolve_rule", return_value=rules.ResolvedCommentRule(True, "allowlist", frozenset(), "top")), \
              patch.object(rules, "has_wiki_keys", return_value=False), \
              patch.object(rules, "is_user_allowed", return_value=True), \

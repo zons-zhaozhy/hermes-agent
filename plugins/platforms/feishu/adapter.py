@@ -3908,7 +3908,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
     async def _connect_websocket(self) -> None:
         if not FEISHU_WEBSOCKET_AVAILABLE:
             raise RuntimeError("websockets not installed; websocket mode unavailable")
-        domain = self._prepare_client()
+        domain = await asyncio.to_thread(self._prepare_client)
         loop = self._loop
         if loop is None or loop.is_closed():
             raise RuntimeError("adapter loop is not ready")
@@ -3934,7 +3934,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:
             raise RuntimeError("aiohttp not installed; webhook mode unavailable")
-        self._prepare_client()
+        await asyncio.to_thread(self._prepare_client)
         await self._hydrate_bot_identity()
         # client_max_size backstops the bounded reader in _handle_webhook_request on every read path.
         # See #58536, #58902, #59180.
