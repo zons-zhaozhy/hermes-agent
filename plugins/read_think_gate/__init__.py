@@ -149,6 +149,31 @@ def on_session_end(session_id: str = "", **_kwargs: Any) -> None:
         _ACTIVE_SESSION_ID.set(None)
 
 
+def _warm_user_side_judge(message: str) -> None:
+    """点燃用户侧合并判定（yinyang-restate-guard 的 judge_user_side）。
+
+    为什么从这里点：本插件此刻即将阻塞在一次 LLM 判定上，而这条消息的其他守卫
+    （yinyang 的 challenge、scope_gate 的 authorized）用的是同一个合并判定——它们
+    每来一条新消息都会判一次，所以这次预热不存在"白判"的情形。合并通道不可用
+    （插件未加载/被禁用）时就地放弃。
+
+    Contract:
+      Preconditions: message 为非空的当轮用户原话
+      Postconditions: 立刻返回；判定在后台线程执行，异常全部吞掉；绝不 raise
+    """
+    from plugins._judge_warm import warm
+    # 运行时插件模块名 = hermes_plugins.<slug>（连字符目录 → 下划线模块名），
+    # 与 declare_act_guard → reply-certainty-checker 同一约定；两个命名空间都试。
+    try:
+        from hermes_plugins.yinyang_restate_guard import judge_user_side
+    except ImportError:
+        try:
+            from plugins.yinyang_restate_guard import judge_user_side
+        except ImportError:
+            return  # 合并通道不可用（插件未加载）：本轮照旧，只是少了并行
+    warm(judge_user_side, message)
+
+
 def pre_llm_call(
     user_message: str = "",
     session_id: str = "",
@@ -165,13 +190,19 @@ def pre_llm_call(
     so the gate sees exactly one reset per turn, before the first LLM call fires.
     """
     try:
-        gate = _current_gate(session_id or _ACTIVE_SESSION_ID.get() or "", platform)
-        if gate is None:
-            return
         message = user_message if isinstance(user_message, str) else str(user_message or "")
         internal = turn_display_kind in _INTERNAL_TURN_DISPLAY_KINDS
         if not internal and _is_gateway_machine_message(message):
             internal = True
+        # 本轮马上要做意图判定（~4s）。同一条消息上，其他守卫还要一份用户侧合并判定
+        # （challenge/decision/authorized，~2.5s），两者互不依赖——先把那边点燃，
+        # 让两次判定并行，本轮只等一次。它们后到时命中判定缓存，不会重复付费。
+        # 放在 gate 判空之前：本闸是否对本会话启用，不影响别的守卫是否要判定。
+        if not internal and message.strip():
+            _warm_user_side_judge(message)
+        gate = _current_gate(session_id or _ACTIVE_SESSION_ID.get() or "", platform)
+        if gate is None:
+            return
         gate.reset_for_turn(
             user_message=message or None,
             conversation_history=conversation_history,
