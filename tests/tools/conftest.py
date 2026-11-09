@@ -166,6 +166,33 @@ def grant_computer_use_approvals(monkeypatch):
 
 
 @pytest.fixture
+def require_pty():
+    """Skip a test whose premise is a real PTY when this host cannot allocate one.
+
+    ``ProcessRegistry`` degrades to pipe mode when the PTY opens fail (with a warning), which is
+    correct product behaviour — but a test asserting PTY-mode semantics (EOF delivery over a PTY
+    master) has no premise left on such a host. Sandboxes and macOS's PTY limit hit this: probe by
+    actually opening one, so the gate reports the real capability instead of guessing from the OS.
+    """
+    try:
+        import pty
+
+        master, slave = pty.openpty()
+    except (ImportError, OSError) as exc:
+        pytest.skip(f"no PTY devices available on this host ({exc})")
+    try:
+        yield
+    finally:
+        for fd in (master, slave):
+            try:
+                import os
+
+                os.close(fd)
+            except OSError:
+                pass
+
+
+@pytest.fixture
 def web_registry_populated():
     """Populate the web-search-provider registry for one test, then reset."""
     register_all_web_providers()

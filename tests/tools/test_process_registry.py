@@ -622,13 +622,15 @@ class TestStdinHelpers:
         proc.stdin.close.assert_called_once()
         assert result["status"] == "ok"
 
-    def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path):
+    def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path, require_pty):
         """PTY mode: writing data + sending EOF lets an EOF-driven child finish.
 
         Background non-PTY mode used to expose subprocess stdin via a pipe,
         but PR #214b95392 detached non-PTY stdin to DEVNULL to fix keyboard
         lockout (#17959). For interactive stdin → PTY mode is now the only
-        supported path.
+        supported path. On a host that cannot allocate a PTY the registry
+        falls back to pipe mode (with a warning), so the premise of a
+        PTY-mode assertion is absent there, not broken.
         """
         command = f'{shlex.quote(sys.executable)} -c "import sys; print(sys.stdin.read().strip())"'
         session = registry.spawn_local(
