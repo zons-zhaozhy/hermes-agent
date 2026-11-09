@@ -10,14 +10,13 @@
   - 会话内恒定: 聚合结果缓存 7 天（周期内指纹不变,不破坏缓存前缀）。
   - fail-open: 库不可用/查询失败返回旧缓存或空串,段渲染绝不因数据面
     故障报错。
-  - 宁缺毋滥: 只输出命中静态映射表的签名（正解来自既有拦截消息的修复
-    指引语义）,未映射的原始错误文案一律不进段。
+  - 宁缺毋滥: 只输出已知护栏的短正解；未知护栏与原始拦截文案不进段。
   - 零核心改动: 挂在 guards_preflight 渲染器尾部,复用既有段注册通道。
 
 Contract:
   Preconditions: session_info 为 core 冻结的只读映射,含 platform 键。
-  Postconditions: 排除平台/无数据/查询失败 → 空串; 正常返回带日期头+
-    ≤5 条映射命中的提示文本（≤_BUDGET_CHARS 字符）。
+  Postconditions: 排除平台/无数据/查询失败 → 空串; 正常返回 ≤3 条、
+    ≤_BUDGET_CHARS 字符的短正解文本。
 """
 
 import json
@@ -30,16 +29,29 @@ from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
 
-_BUDGET_CHARS = 600
-_TIP_LIMIT = 5
+_BUDGET_CHARS = 300
+_TIP_LIMIT = 3
+_CACHE_VERSION = 2
 _FRESH_SECONDS = 7 * 86400
+_TIP_TEXT: dict[str, str] = {
+    "SlowSearchGuard": "用 search_files；terminal grep 加 timeout 和排除目录。",
+    "DBSafety": "先查表结构，再执行 SQL。",
+    "PreWriteGuard": "写前先读目标文件。",
+    "patch-first": "改源码用 patch，新建文件用 write_file。",
+    "SourceCodeWriteGuard": "改源码用 patch，新建文件用 write_file。",
+    "diff 欠账闸门": "每个写调用前出示上一步 diff。",
+    "护栏聚合": "同轮修完全部拦截项再重试。",
+    "CodingStandardsGuard": "先修正拦截给出的规范违规。",
+    "scientific-programming-guard": "复杂逻辑拆小函数并补类型与断言。",
+    "CasebookGate": "写 OntoX 前先查病例库索引。",
+    "TOOL-BLACKLIST BLOCK": "按拦截说明改用正解工具。",
+}
 
 
 def _guard_label(msg: str) -> str:
     """从拦截消息提取护栏标识（``[XxxGuard] …`` 前缀形态）。
 
-    拦截消息原文自带修复指引（护栏拦截文案既有约定）,动态段直接消费
-    原文——新增子护栏零同步成本（2026-11-03 用户点名根治静态映射表）。
+    动态段不复制拦截原文；只有能转成短正解的已知标识才进段。
     无 ``[标识]`` 前缀的消息（回调超时等基础设施噪音）跳过,不进段。
 
     Contract:
@@ -94,17 +106,16 @@ def _aggregate_tips() -> str:
     lines: list[str] = []
     for msg, count in rows:
         label = _guard_label(msg)
-        if not label or label in used:
+        tip = _TIP_TEXT.get(label, "")
+        if not tip or label in used:
             continue
         used.add(label)
-        first_line = msg.strip().splitlines()[0] if msg.strip() else ""
-        tip = first_line[:90]
         lines.append(f"- {label}({count}次): {tip}")
         if len(lines) >= _TIP_LIMIT:
             break
     if not lines:
         return ""
-    head = f"[高频拦截教训·近7天实测聚合 {time.strftime('%Y-%m-%d')}]"
+    head = "[近期高频拦截教训]"
     text = head + "\n" + "\n".join(lines)
     while len(text) > _BUDGET_CHARS and len(lines) > 1:
         lines.pop()
@@ -113,11 +124,13 @@ def _aggregate_tips() -> str:
 
 
 def _load_cached(now: float, max_age: float) -> str:
-    """读缓存;未过期（now-generated < max_age）返回文本,否则空串。"""
+    """读同版本缓存;未过期（now-generated < max_age）返回文本,否则空串。"""
     cache = _cache_path()
     if not cache.exists():
         return ""
     data = json.loads(cache.read_text(encoding="utf-8-sig"))
+    if data.get("version") != _CACHE_VERSION:
+        return ""
     if now - float(data.get("generated", 0)) >= max_age:
         return ""
     return str(data.get("text", ""))
@@ -128,7 +141,10 @@ def _store_cache(text: str, now: float) -> None:
     cache = _cache_path()
     tmp = cache.with_suffix(".json.tmp")
     tmp.write_text(
-        json.dumps({"generated": now, "text": text}, ensure_ascii=False),
+        json.dumps(
+            {"generated": now, "text": text, "version": _CACHE_VERSION},
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
     os.replace(tmp, cache)

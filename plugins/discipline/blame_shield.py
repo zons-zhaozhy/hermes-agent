@@ -3,29 +3,19 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
 _SELF_CHECK_RULE = """\
-[回复前自检——必检项，违反即自动重写]
-在输出回复之前，对回复内容执行以下自检：
-
-1. 推责自检：回复中是否包含"不是我改的"/"不是我的代码"/"不是我的问题"/"不是我写的"/"这个不是我负责的"/"不是我配置的"/"不是我引入的"等推卸诊断责任的话术？
-   → 如果有：删除推责句子，直接从问题现象→根因追踪→修复方案→验证证据开始写。不需要解释代码归属。代码在视野内就是你的责任。
-
-2. 免责自检：回复中是否包含"可能"/"应该"/"大概率"/"一般来说"等不基于实测验证的模糊断言，且该断言涉及技术事实（而非社交用语）？
-   → 如果有：要么替换为实测证据（"[实测] xxx"），要么改为"未查证"。社交用语（"你可能需要..."）不拦截。
-
-3. 偷懒自检：是否在解释"为什么不做"而不是直接动手做？
-   → 如果有：停止解释，直接执行。
-
-4. 理想化自检：本次回复若交付代码实现，是否基于理想情况假设（输入恒合法/环境恒正常/依赖恒可用/执行恒成功）而未附分支处置清单？
-   → 如果是：停止交付，先逐类排查非理想分支（输入面：非法/缺失/空值/量级；环境面：平台/版本/时区/编码；时序面：并发/幂等/乱序；对端面：网络失败/超时/异常返回；资源面：不足/耗尽），每条给出处置——显式处理、报错阻断、或判定本场景不可达并记录理由——且测试覆盖非理想路径而非只测理想路径，再输出。
-
-自检不通过时，不是简单剥离违规划句，而是用正确的认知重写整段内容。
-"""
+[回复前自检]
+1. 不写代码归属推责；直接给现象、根因、修复和验证证据。
+2. 技术事实不用「可能/应该/大概」替代验证；无证据写「未查证」。
+3. 能执行的不解释为什么不执行。
+4. 交付代码时先做理想化自检，再排查非理想分支：非法或缺失输入、环境失败、并发重复、
+对端失败、资源不足；每项显式处理、报错阻断或说明不可达理由。"""
 
 _CHAT_TOKENS = frozenset({
     "你好", "您好", "早", "早上好", "上午好", "中午好", "下午好", "晚上好",
@@ -34,28 +24,37 @@ _CHAT_TOKENS = frozenset({
     "谢谢", "谢谢哈", "多谢", "感谢", "辛苦了", "辛苦啦", "麻烦你了",
     "拜拜", "再见", "晚安", "加油", "牛", "牛逼", "厉害", "赞",
 })
+_TASK_HINT_RE = re.compile(
+    r"代码|文件|报错|错误|bug|测试|接口|函数|数据库|字段|配置|部署|构建|编译|"
+    r"服务|页面|样式|日志|性能|分支|提交|仓库|build|git|api|http|python|"
+    r"typescript|javascript|java|vue|react|pytest|ci|pr",
+    re.IGNORECASE,
+)
+_TASK_ACTION_RE = re.compile(
+    r"给|把|帮我|继续|接着|开始|写|建|创建|改|修|重构|实现|开发|迁移|删除|"
+    r"清理|配置|安装|执行|测试|部署|提交|生成|画|做"
+)
 
 
 def _is_task_message(user_message: str) -> bool:
     """Return whether a message gets the generation-time self-check.
 
-    Task requests are open-ended, so the default is to inject. Only a whole
-    short message in the closed chat-acknowledgement set is exempt.
+    Engineering requests contain a technical object or an editing action. Casual
+    status, mood, and generic questions do not need this self-check.
     """
     if not user_message:
         return False
     msg = str(user_message).strip()
     if not msg:
         return False
-    if "?" in msg or "？" in msg:
-        return True
-
     stripped = msg.strip("。，！!？?~～ \t\n")
     for tail in ("哈", "呀", "啦", "呢", "哦", "噢", "喽", "嘛", "吧", "嘿", "诶"):
         if stripped.endswith(tail) and len(stripped) > 1:
             stripped = stripped[: -len(tail)]
     stripped = stripped.strip("。，！!？?~～ \t\n")
-    return stripped not in _CHAT_TOKENS
+    if stripped in _CHAT_TOKENS:
+        return False
+    return bool(_TASK_HINT_RE.search(msg) or _TASK_ACTION_RE.search(msg))
 
 
 def _on_pre_llm_call(**kwargs: object) -> dict[str, str]:

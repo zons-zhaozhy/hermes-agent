@@ -10,6 +10,7 @@ from hermes_cli.plugins import (
     PluginContext,
     PluginManager,
     PluginManifest,
+    registered_system_prompt_section_ids,
 )
 
 
@@ -38,6 +39,14 @@ def test_registration_validates_stable_id_position_budget_and_duplicates():
         _context(manager, "other-plugin").register_system_prompt_section(
             "example.rules", "other content"
         )
+
+
+def test_registered_section_ids_are_sorted_and_include_only_live_registrations(monkeypatch):
+    class Manager:
+        _system_prompt_sections = {"z.last": object(), "a.first": object()}
+
+    monkeypatch.setattr("hermes_cli.plugins._delivery_manager", lambda: Manager())
+    assert registered_system_prompt_section_ids() == ("a.first", "z.last")
 
 
 def test_render_is_deterministic_bounded_and_session_info_is_read_only(caplog):

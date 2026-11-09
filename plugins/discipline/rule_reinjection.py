@@ -6,9 +6,9 @@ pre_llm_call 通道(agent/turn_context.py _collect_pre_llm_call_context,
 长会话/上下文压缩后纪律约束力衰减是实测缺陷
 (docs/investigations/2026-08-28-patch-first-root-cause.md)。
 
-本模块每轮重读规则文件注入其摘要,规则永不衰减:
+本模块重读规则文件并按版本注入其摘要:
   - 规则文件按序探测:cwd/.hermes-rules.md → git root/.hermes-rules.md
-  - 每轮重新读盘(规则文件改动即生效,无需重启会话)
+  - 首轮注入一次;文件内容变化后注入新版;版本未变不重复注入
   - 无规则文件=零开销 no-op;读失败=告警不拦
   - 注入体量硬上限,控制每轮 token 成本
 
@@ -34,10 +34,6 @@ _RULES_FILENAME = ".hermes-rules.md"
 # 余量 <150 字符即须压缩或扩容上限。2026-09-25 实测 4860→压缩后 4799。
 # 2026-10-23 新增思维方法位次节 4754→5014 超限,扩容至 5600。
 _MAX_DIGEST_CHARS = 5600
-# 周期性重注入间隔:注入会随用户消息持久化进历史,每轮都注=历史里堆积
-# 大量重复副本(本身也是一种污染)。科学节奏:首注 + 版本变更即注 +
-# 每 N 轮补一注对抗衰减。N 取 10:足够稀疏不堆积,足够密集不衰减。
-_REINJECT_INTERVAL = 10
 
 # 冲突消解头:不是简单重复注入,而是宣告本段为唯一权威版本。衰减残留
 # (压缩摘要弱化转述/memory 旧表述/历史轮次旧注入)仍躺在上下文里,
@@ -49,7 +45,7 @@ _PREFIX_TEMPLATE = (
     "记忆条目/压缩残留)一律作废,以本段为准。]\n"
 )
 
-# 会话态:session_id → {"version": str, "calls": int}
+# 会话态:session_id → {"version": str}
 _session_state: dict[str, dict[str, Any]] = {}
 
 # 缺失告警去重(进程级):规则源丢失曾静默整整一天无人察觉——按 cwd 各喊一次,
@@ -58,11 +54,7 @@ _WARNED_MISSING_CWD: set[str] = set()
 
 
 def _find_rules_file() -> Optional[Path]:
-    """按序探测规则文件:cwd → git root → 代码根。
-
-    代码根候选(本文件上三级=仓库根)覆盖 gateway/cron 类会话:它们的 cwd
-    是 HERMES_HOME(~/.hermes),既非仓库也非其 git root 内,却加载着本仓库
-    代码——规则文件住在代码根,不进候选链则这类会话永久零注入。"""
+    """按序探测规则文件:cwd → git root；不做代码根回退。"""
     candidates = [Path.cwd() / _RULES_FILENAME]
     try:
         cwd = Path.cwd()
@@ -72,7 +64,6 @@ def _find_rules_file() -> Optional[Path]:
                 break
     except OSError:
         pass
-    candidates.append(Path(__file__).resolve().parent.parent.parent / _RULES_FILENAME)
     for candidate in candidates:
         try:
             if candidate.is_file():
@@ -105,7 +96,7 @@ def _digest(text: str) -> str:
 
 
 def _on_pre_llm_call(**kwargs) -> dict[str, Any]:
-    """重读规则文件,按「首注+版本变更+周期补注」节奏注入权威版摘要。"""
+    """重读规则文件,按「首注+版本变更」节奏注入权威版摘要。"""
     rules_path = _find_rules_file()
     if rules_path is None:
         cwd = str(Path.cwd())
@@ -127,16 +118,12 @@ def _on_pre_llm_call(**kwargs) -> dict[str, Any]:
         return {}
 
     session_id = str(kwargs.get("session_id") or "")
-    state = _session_state.setdefault(
-        session_id, {"version": "", "calls": 0}
-    )
-    state["calls"] += 1
+    state = _session_state.setdefault(session_id, {"version": ""})
     version = hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]
 
     first = state["version"] == ""
     changed = version != state["version"]
-    periodic = state["calls"] % _REINJECT_INTERVAL == 0
-    if not (first or changed or periodic):
+    if not (first or changed):
         return {}
     state["version"] = version
 
@@ -144,8 +131,8 @@ def _on_pre_llm_call(**kwargs) -> dict[str, Any]:
     if not digest:
         return {}
     logger.info(
-        "rule-reinjection: 注入常驻规则摘要 (v%s, %d chars, 源=%s, 首注=%s, 变更=%s, 周期=%s)",
-        version, len(digest), rules_path, first, changed, periodic and not (first or changed),
+        "rule-reinjection: 注入常驻规则摘要 (v%s, %d chars, 源=%s, 首注=%s, 变更=%s)",
+        version, len(digest), rules_path, first, changed,
     )
     return {"context": _PREFIX_TEMPLATE.format(version=version) + digest}
 

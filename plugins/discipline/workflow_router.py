@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from collections import OrderedDict
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -33,12 +34,21 @@ WORKFLOW_ROUTES: tuple[tuple[str, str], ...] = (
 )
 WORKFLOW_SKILLS = frozenset(skill for _situation, skill in WORKFLOW_ROUTES)
 _ROUTING_HINT = (
-    "[工程工作流路由·非阻断] 若本会话进入工程工作，先完整读取对应 skill，再动手："
+    "[工程工作流路由·非阻断] 先完整读取对应 skill，再动手："
     + "".join(
-        f"{situation}→skill_view(name='{skill}')；"
+        f"{situation}→{skill}；"
         for situation, skill in WORKFLOW_ROUTES
     )
-    + "被护栏拦截时，把拦截原因当作证据进入 systematic-debugging，禁止换工具重复尝试。"
+    + "用 skill_view 读取；被拦截时先读拦截信息并补证据，禁止换工具重复尝试。"
+)
+_ENGINEERING_HINT_RE = re.compile(
+    r"代码|文件|报错|错误|bug|测试|接口|函数|数据库|表结构|字段|配置|部署|构建|编译|"
+    r"服务|页面|样式|日志|性能|分支|提交|仓库|git|api|http|python|typescript|"
+    r"javascript|java|vue|react|pytest|ci|pr",
+    re.IGNORECASE,
+)
+_ENGINEERING_ACTION_RE = re.compile(
+    r"继续|接着|重构|实现|开发|迁移|修复|编写|创建|删除|清理|部署|提交"
 )
 _injected_sessions: OrderedDict[str, None] = OrderedDict()
 
@@ -53,6 +63,16 @@ def on_pre_llm_call(**kwargs: Any) -> dict[str, str]:
     session_id = str(kwargs.get("session_id") or kwargs.get("task_id") or "")
     platform = str(kwargs.get("platform") or "")
     if not session_id or platform in _EXCLUDED_PLATFORMS or session_id in _injected_sessions:
+        return {}
+    message = str(kwargs.get("user_message") or "")
+    history = kwargs.get("conversation_history") or []
+    history_text = " ".join(
+        str(item.get("content", ""))
+        for item in history
+        if isinstance(item, dict)
+    )
+    combined = message + "\n" + history_text
+    if not (_ENGINEERING_HINT_RE.search(combined) or _ENGINEERING_ACTION_RE.search(message)):
         return {}
     _injected_sessions[session_id] = None
     _injected_sessions.move_to_end(session_id)

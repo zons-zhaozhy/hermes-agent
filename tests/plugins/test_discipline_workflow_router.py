@@ -11,8 +11,12 @@ def test_first_engineering_turn_receives_one_routing_hint() -> None:
     session_id = "workflow-router-first"
     workflow_router._forget(session_id)
     try:
-        first = workflow_router.on_pre_llm_call(session_id=session_id, platform="cli")
-        second = workflow_router.on_pre_llm_call(session_id=session_id, platform="cli")
+        first = workflow_router.on_pre_llm_call(
+            session_id=session_id, platform="cli", user_message="帮我修复这个报错"
+        )
+        second = workflow_router.on_pre_llm_call(
+            session_id=session_id, platform="cli", user_message="继续修复测试"
+        )
     finally:
         workflow_router._forget(session_id)
 
@@ -66,16 +70,46 @@ def test_automation_surfaces_do_not_receive_the_hint(platform: str) -> None:
         workflow_router._forget(session_id)
 
 
+def test_ordinary_conversation_does_not_receive_routing_hint() -> None:
+    from plugins.discipline import workflow_router
+
+    session_id = "workflow-router-ordinary"
+    workflow_router._forget(session_id)
+    try:
+        assert workflow_router.on_pre_llm_call(
+            session_id=session_id,
+            platform="cli",
+            user_message="你还在工作吗",
+            conversation_history=[],
+        ) == {}
+        assert workflow_router.on_pre_llm_call(
+            session_id=session_id,
+            platform="cli",
+            user_message="我今天有点累",
+            conversation_history=[],
+        ) == {}
+        assert workflow_router.on_pre_llm_call(
+            session_id=session_id,
+            platform="cli",
+            user_message="帮我看这个报错",
+            conversation_history=[],
+        ).get("context")
+    finally:
+        workflow_router._forget(session_id)
+
+
 def test_session_end_forgets_state() -> None:
     from plugins.discipline import workflow_router
 
     session_id = "workflow-router-reset"
     workflow_router._forget(session_id)
     try:
-        workflow_router.on_pre_llm_call(session_id=session_id, platform="cli")
+        workflow_router.on_pre_llm_call(
+            session_id=session_id, platform="cli", user_message="重构这个接口"
+        )
         workflow_router.on_session_end(session_id=session_id)
         assert workflow_router.on_pre_llm_call(
-            session_id=session_id, platform="cli"
+            session_id=session_id, platform="cli", user_message="继续重构"
         ).get("context")
     finally:
         workflow_router._forget(session_id)

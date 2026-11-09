@@ -24,13 +24,13 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
+from plugins.guards.tool_classification import FILE_WRITE_TOOLS as _WRITE_TOOLS
+
 logger = logging.getLogger("hermes.plugins.brief_before_act")
 
 _NAMESPACE = "brief_before_act"
 _MAX_INJECTS = 5          # 每会话注入封顶（防噪音循环）
 _MARKERS = ("理解", "方案", "决策", "动作")
-# 写工具语义 owner = plugins/guards/tool_classification（C2 收敛，禁各持字面量）
-from plugins.guards.tool_classification import FILE_WRITE_TOOLS as _WRITE_TOOLS
 
 
 def _msg_text(msg: dict) -> str:

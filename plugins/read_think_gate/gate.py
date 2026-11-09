@@ -443,6 +443,7 @@ _CONFIRMATION_TERMS = (
 _EXECUTION_CONFIRMATION_TERMS = (
     "确认执行", "执行确认", "按方案执行", "按这个方案执行",
 )
+_EXACT_CONFIRMATION_TERMS = frozenset({"确认", "执行", "好", "好的", "行", "行的"})
 _CONFIRMATION_CHECK_TERMS = frozenset({
     "确认一下", "请确认一下", "我确认一下", "确认下", "请确认下", "我确认下",
 })
@@ -501,32 +502,41 @@ def _last_assistant_proposal(conversation_history: list[dict] | None) -> bool:
 def _is_confirmation(message: str, conversation_history: list[dict] | None) -> bool:
     """Recognize terse approval only when it refers to an actual proposal.
 
-    句级判定：一条消息里授权句与追问句可以共存（「执行\\n\\n门禁怎么了？」
-    的授权不得被追问句的问号整体否决）。按换行/句末标点切句，逐句沿用
-    原有门槛（短、无问号、无只读词、含确认词），任一句通过即确认。
+    句级判定：一条消息里授权句与追问句可以共存。切句时保留句末标点，
+    问号分隔出的句子整体视为疑问句；单字确认词只允许整句匹配，避免
+    「不行」因为包含「行」而被误判为授权。
     """
     text = (message or "").strip().lower()
     if not text:
         return False
-    sentences = [seg.strip() for seg in _SENTENCE_SPLIT_RE.split(text) if seg.strip()]
-    for sentence in sentences:
+    parts = _SENTENCE_SPLIT_RE.split(text)
+    for index, sentence in enumerate(parts):
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        delimiter = parts[index + 1] if index + 1 < len(parts) else ""
+        if delimiter in {"?", "？"}:
+            continue
         normalized = "".join(char for char in sentence if char.isalnum())
         if not normalized or len(normalized) > 40:
             continue
-        if "?" in sentence or "？" in sentence:
+        if normalized.endswith(("吗", "么", "呢")):
             continue
-        # 「确认/确认执行」是精确授权形态，须先于只读词否决（「确认」本身在只读词表）
-        if normalized == "确认" or any(term in normalized for term in _EXECUTION_CONFIRMATION_TERMS):
+        if any(term in sentence for term in _EXPLICIT_NO_MODIFY_TERMS):
+            continue
+        if normalized in _EXACT_CONFIRMATION_TERMS:
+            return _last_assistant_proposal(conversation_history)
+        if any(term in normalized for term in _EXECUTION_CONFIRMATION_TERMS):
             return _last_assistant_proposal(conversation_history)
         if any(term in sentence for term in _READ_ONLY_TERMS):
             continue
-        if any(term in sentence for term in _CONFIRMATION_TERMS):
+        if any(term in normalized for term in _CONFIRMATION_TERMS if len(term) > 1):
             return _last_assistant_proposal(conversation_history)
     return False
 
 
-# 句级切分：换行/中英文句末标点（问号切分后授权句不再携带问号，授权与追问互不污染）
-_SENTENCE_SPLIT_RE = re.compile(r"[\n。！？?;；]")  # re-ok: 句末标点字符类切句，无回溯风险
+# 句级切分并保留分隔符：问号本身决定该句是疑问句，不能在丢弃标点后再猜测。
+_SENTENCE_SPLIT_RE = re.compile(r"([\n。！？?;；])")  # re-ok: 句末标点字符类切句，无回溯风险
 
 _OPTION_ASSIGN_RE = re.compile(r"^\s*([A-Za-z0-9]{1,3})\s*(?:[=＝:：]|表示|代表|即|是)\s*(.+)$")
 _OPTION_REPLY_RE = re.compile(r"^\s*(?:回复|回|选|按)\s*([A-Za-z0-9]{1,3})\s*(?:[=＝:：]|表示|代表|即|是)?\s*(.+)$")

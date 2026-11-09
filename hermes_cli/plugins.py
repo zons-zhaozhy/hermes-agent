@@ -1027,6 +1027,17 @@ def render_system_prompt_sections(session_info: Mapping[str, Any]) -> list[Rende
     return _ensure_plugins_discovered().render_system_prompt_sections(session_info)
 
 
+def registered_system_prompt_section_ids() -> tuple[str, ...]:
+    """Return sorted live system-prompt section ids after idempotent discovery.
+
+    Consumers such as reinjection use this to render only sections the current
+    plugin set actually registered; disabled plugins must not re-enter a session
+    through a library-wide fallback.
+    """
+    manager = _delivery_manager()
+    return tuple(sorted(manager._system_prompt_sections))
+
+
 def invoke_middleware(kind: str, **kwargs: Any) -> list[Any]:
     """Invoke registered middleware callbacks (lazy-discovers like :func:`invoke_hook`).
 

@@ -12,7 +12,8 @@
 
 用途:
   - load_section(id): 各插件注册段的渲染器读盘取最新——新会话首注即最新;
-  - fingerprint(): 段库内容指纹, 供重注入通道判「段是否变过」;
+  - fingerprint(): 段库内容指纹, 供重注入通道判「段是否变过」; 可传入 id
+    子集, 只对当前启用插件的段计算;
   - section_ids(): 段 id 清单（对账与测试用）。
 
 Contract:
@@ -28,7 +29,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -108,11 +109,38 @@ def load_section(section_id: str) -> str:
     return text.strip()
 
 
-def fingerprint() -> str:
+def _selected_library_sections(requested_ids: Iterable[str]) -> dict[str, str]:
+    """Return the non-empty requested sections present in the library.
+
+    Unknown ids are loud: a typo would otherwise make a registered section
+    disappear from reinjection without any signal.
+    """
+    library = _load_library()
+    requested = set(requested_ids)
+    unknown = requested - library.keys()
+    if unknown:
+        logger.warning("prompt_sections: 请求的段不在段库中: %s", ", ".join(sorted(unknown)))
+    return {
+        section_id: text.strip()
+        for section_id in sorted(requested & library.keys())
+        if (text := library[section_id]).strip()
+    }
+
+
+def fingerprint(section_ids: Iterable[str] | None = None) -> str:
     """段库内容指纹（判「段是否变过」，供重注入通道使用）。
 
-    Postconditions: 返回 8 位十六进制; 库文件缺失或不可读时返回 ""。
+    Args:
+        section_ids: None=全库; 否则只指纹这些 id（不在段库的 id 告警后忽略）。
+
+    Postconditions: 返回 8 位十六进制; 库文件/选定段缺失或为空时返回 ""。
     """
+    if section_ids is not None:
+        selected = _selected_library_sections(section_ids)
+        if not selected:
+            return ""
+        material = "".join(f"{section_id}\\0{text}\\0" for section_id, text in selected.items())
+        return hashlib.sha1(material.encode("utf-8")).hexdigest()[:8]
     try:
         raw = _LIBRARY.read_bytes()
     except OSError as exc:
@@ -121,17 +149,22 @@ def fingerprint() -> str:
     return hashlib.sha1(raw).hexdigest()[:8]
 
 
-def render_all(max_chars: int) -> str:
+def render_all(max_chars: int, section_ids: Iterable[str] | None = None) -> str:
     """拼接全部段文本（重注入通道用）。
 
     Preconditions: max_chars 为正整数（注入体量上限）。
-    Postconditions: 返回各段以空行分隔的拼接文本; 超 max_chars 即截断并告警
-      （截断=尾部段本轮不进上下文, 属两态状态, 故响亮告警）。
+    Postconditions: section_ids=None 时拼接全库; 否则只拼接指定段。返回各段
+      以空行分隔的拼接文本; 超 max_chars 即截断并告警（截断=尾部段本轮
+      不进上下文, 属两态状态, 故响亮告警）。
     """
     blocks: list[str] = []
     size = 0
-    for section_id in section_ids():
-        block = load_section(section_id)
+    selected = (
+        _selected_library_sections(section_ids)
+        if section_ids is not None
+        else _selected_library_sections(_load_library().keys())
+    )
+    for section_id, block in selected.items():
         if not block:
             continue
         if size + len(block) + 2 > max_chars:

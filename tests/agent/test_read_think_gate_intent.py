@@ -319,6 +319,28 @@ def test_question_alone_stays_read_only(tmp_path: Path) -> None:
     assert gate.user_intent != "modify"
 
 
+@pytest.mark.parametrize(
+    "message",
+    ("执行吗？", "好吗？", "不行吗？", "不执行吗？"),
+)
+def test_interrogative_or_negated_confirmation_does_not_authorize(
+    tmp_path: Path,
+    message: str,
+) -> None:
+    """疑问式确认和否定式确认不得因为句内含有「执行/好/行」而放行写操作。"""
+    history = [
+        {
+            "role": "assistant",
+            "content": "方案：修复注册跳转与校验、删除内部信息暴露，共三处。确认请回复：执行",
+        }
+    ]
+    gate = _strict_gate(tmp_path)
+
+    gate.reset_for_turn(message, history)
+
+    assert gate.user_intent != "modify"
+
+
 def test_confirmation_check_is_hard_read_only_intent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

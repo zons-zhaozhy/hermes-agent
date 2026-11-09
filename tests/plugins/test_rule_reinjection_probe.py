@@ -1,9 +1,4 @@
-"""rule_reinjection 规则源探测链不变量。
-
-覆盖 gateway/cron 类会话的第三候选(代码根):cwd 不在仓库内时
-仍能找到仓库根的 .hermes-rules.md——该缺口曾致 ~/.hermes 为 cwd
-的会话永久零注入(gateway.log 0924 23:21 起实测告警)。
-"""
+"""rule_reinjection 规则源探测与注入节奏不变量。"""
 
 from __future__ import annotations
 
@@ -23,26 +18,26 @@ def test_probe_finds_rules_from_repo_cwd() -> None:
     assert result == repo_root / ".hermes-rules.md"
 
 
-def test_probe_finds_rules_from_outside_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """cwd 在仓库外(如 ~/.hermes):cwd 与 git root 候选皆空,代码根候选兜底命中。
+def test_probe_does_not_fallback_to_hermes_code_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """cwd 在仓库外(如 ~/.hermes):不得把 Hermes 仓库规则注入普通会话。
 
     Contract:
-      Preconditions: cwd 被切到无 .git 的临时目录。
-      Postconditions: 返回非 None,且指向本仓库根的 .hermes-rules.md。
+      Preconditions: cwd 被切到无 .git、无 .hermes-rules.md 的临时目录。
+      Postconditions: 返回 None；规则只属于当前 cwd 或其 git root。
     """
-    # 期望: 代码根候选(文件上三级=仓库根)命中,禁返回 None
+    # 期望: 代码根候选必须移除,否则 OntoX/AML/普通网关会话都会收到 Hermes fork 规则
     outside = tmp_path / "hermes-home-like"
     outside.mkdir()
     monkeypatch.chdir(outside)
-    result = _find_rules_file()
-    repo_root = Path(__file__).resolve().parents[2]
-    assert result == repo_root / ".hermes-rules.md"
+    assert _find_rules_file() is None
 
 
 def test_probe_returns_none_when_no_rules_anywhere(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """三候选全空(仓库外 cwd + 代码根无规则文件):返回 None,由调用方告警。
+    """候选全空(仓库外 cwd + 无项目规则文件):返回 None,由调用方告警。
 
     模拟方式:将模块 __file__ 指向临时树,代码根候选落空;cwd 也落空。
     """
@@ -58,6 +53,30 @@ def test_probe_returns_none_when_no_rules_anywhere(
     monkeypatch.chdir(outside)
     monkeypatch.setattr(rr, "__file__", str(fake_mod), raising=False)
     assert _find_rules_file() is None
+
+
+def test_reinjection_repeats_only_when_version_changes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """首轮登记后，未变化的规则不得每 10 轮再次全文注入。"""
+    import plugins.discipline.rule_reinjection as rr
+
+    rules = tmp_path / ".hermes-rules.md"
+    rules.write_text("# 项目规则\n- 先读现状\n", encoding="utf-8")
+    monkeypatch.setattr(rr, "_find_rules_file", lambda: rules)
+    session_id = "rule-version-only"
+    rr._session_state.pop(session_id, None)
+    try:
+        first = rr._on_pre_llm_call(session_id=session_id)
+        assert "先读现状" in first["context"]
+        for _ in range(35):
+            assert rr._on_pre_llm_call(session_id=session_id) == {}
+
+        rules.write_text("# 项目规则\n- 规则已更新\n", encoding="utf-8")
+        changed = rr._on_pre_llm_call(session_id=session_id)
+        assert "规则已更新" in changed["context"]
+    finally:
+        rr._session_state.pop(session_id, None)
 
 
 def test_digest_keeps_every_line_when_under_cap() -> None:

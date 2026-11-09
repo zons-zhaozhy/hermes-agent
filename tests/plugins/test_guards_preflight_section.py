@@ -9,15 +9,17 @@ discipline/section_reinjection 按版本指纹补注。本测试锁三件事:
 
   1. 段库键与注册 id 一一对应（键缺失=该段静默不注入, 属两态状态）;
   2. 各套件注册的是「读段库的渲染器」, 段文本逐条覆盖判据并带阈值/豁免;
-  3. 重注入节奏: 首轮不注入 / 指纹变更即注入 / 每 10 轮补注。
+  3. 重注入节奏: 首轮登记 / 指纹变更即注入 / 版本未变不重注。
 """
 from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from plugins import discipline, guards
 from plugins.discipline import section_reinjection
-from plugins.prompt_sections import fingerprint, load_section, section_ids
+from plugins.prompt_sections import fingerprint, load_section, render_all, section_ids
 
 _EXPECTED_SECTIONS = frozenset({
     "guards_preflight",
@@ -35,7 +37,8 @@ _GUARD_CLAUSES = (
     "批量写红线",
     "病例库",
     "新目录树",
-    "源码直写",
+    "patch 或 write_file",
+    "diff 出示",
 )
 
 
@@ -67,6 +70,16 @@ def test_section_library_keys_match_registrations() -> None:
     assert fingerprint() != ""  # 期望: 段库可读, 指纹非空
 
 
+def test_selected_sections_have_independent_fingerprint_and_render() -> None:
+    """子集接口只处理指定段, 禁用插件的段不进入指纹或注入文本。"""
+    selected = ("db_safety",)
+    assert fingerprint(selected) != fingerprint(("test_discipline",))
+    rendered = render_all(10_000, selected)
+    assert load_section("db_safety") in rendered
+    assert load_section("test_discipline") not in rendered
+    assert render_all(10_000, ()) == ""
+
+
 def test_guards_registers_file_backed_sections() -> None:
     """guards 套件注册两个文件型段, 且不挤掉原有执法钩子。"""
     ctx = _register_guards()
@@ -86,9 +99,19 @@ def test_guards_sections_read_library_content() -> None:
     assert "≤8 个代码文件" in text  # 期望: 单 commit 文件数上限=8, 与 batch_write 一致
     assert "30 分钟" in text  # 期望: 四轴 marker 有效期=30 分钟(four_axis._MARKER_MAX_AGE_SECONDS=1800, 600s 旧值实测不够已调), 与段库/架构文档一致
     assert "terminal 豁免" in text  # 期望: 四轴对 terminal 的豁免, 与主门禁一致
+    assert "新开目录" in text  # 期望: 新目录树需用户当轮授权
+    assert "拦截信息" in text  # 期望: 被拦时先读拦截信息, 不重复试探
     blacklist = ctx.sections["tool_blacklist"]({"platform": "cli"})
     assert "vision_analyze" in blacklist  # 期望: 必败调用在段内
     assert "mcp__glm_vision__analyze_image" in blacklist  # 期望: 段内给出正解工具
+
+
+def test_guards_preflight_text_stays_compact() -> None:
+    """文件型正文保留执法要点,但不承载长事故叙述。"""
+    text = load_section("guards_preflight")
+    assert 700 <= len(text) <= 1_000
+    assert "1105 事故" not in text
+    assert "商业产品绝对标准" not in text
 
 
 def test_sections_skip_platforms_without_write_loop() -> None:
@@ -125,8 +148,13 @@ def test_coding_section_writes_measured_violation_forms() -> None:
     assert "圈复杂度 ≤10" in text
 
 
-def test_reinjection_skips_first_turn_then_injects_on_change() -> None:
+def test_reinjection_skips_first_turn_then_injects_on_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """重注入节奏: 首轮不注入(起点已有同名段) / 指纹变更即注入。"""
+    monkeypatch.setattr(
+        section_reinjection, "_active_section_ids", lambda: frozenset(_EXPECTED_SECTIONS)
+    )
     session_id = "test-reinjection-change"
     section_reinjection._session_state.pop(session_id, None)
     first = section_reinjection._on_pre_llm_call(session_id=session_id)
@@ -140,13 +168,34 @@ def test_reinjection_skips_first_turn_then_injects_on_change() -> None:
     assert load_section("guards_preflight")[:20] in changed["context"]  # 期望: 段文本随注入
 
 
-def test_reinjection_periodic_after_interval() -> None:
-    """周期补注: 一个周期内注入一次（对抗长会话纪律衰减）。"""
+def test_reinjection_periodic_after_interval(monkeypatch: pytest.MonkeyPatch) -> None:
+    """未变化的守卫段不得周期性重注；只有版本变化才补注。"""
+    monkeypatch.setattr(
+        section_reinjection, "_active_section_ids", lambda: frozenset(_EXPECTED_SECTIONS)
+    )
     session_id = "test-reinjection-periodic"
     section_reinjection._session_state.pop(session_id, None)
     payloads: list[dict[str, Any]] = []
-    for _ in range(section_reinjection._REINJECT_INTERVAL):
+    for _ in range(12):
         payloads.append(section_reinjection._on_pre_llm_call(session_id=session_id))
-    injected = [p for p in payloads if p]
-    assert len(injected) == 1  # 期望: 一个周期内恰好注入一次(第 N 轮)
-    assert "context" in injected[0]  # 期望: 注入体为 context 字段
+    assert payloads == [{} for _ in payloads]  # 期望: 指纹未变不重复注入
+
+
+def test_reinjection_renders_only_registered_sections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """禁用插件不得通过重注入通道回到运行中会话。"""
+    active = {"guards_preflight", "tool_blacklist", "db_safety", "test_discipline", "diff_debt"}
+    monkeypatch.setattr(section_reinjection, "_active_section_ids", lambda: frozenset(active))
+    session_id = "test-active-section-reinjection"
+    section_reinjection._session_state.pop(session_id, None)
+    try:
+        assert section_reinjection._on_pre_llm_call(session_id=session_id) == {}
+        section_reinjection._session_state[session_id]["version"] = "stale-version"
+        changed = section_reinjection._on_pre_llm_call(session_id=session_id)
+        assert "guards_preflight" not in changed["context"]  # 段正文不输出 id,用判据锚定
+        assert load_section("guards_preflight")[:20] in changed["context"]
+        assert "科学编程预算" not in changed["context"]
+        assert "单函数圈复杂度" not in changed["context"]
+    finally:
+        section_reinjection._session_state.pop(session_id, None)

@@ -31,9 +31,15 @@ def test_continuation_command_injects():
     assert mod._is_task_message("接着改") is True  # 期望: 续作指令注入
 
 
-def test_question_still_injects():
-    assert mod._is_task_message("为什么慢？") is True  # 期望: 提问回归不破
-    assert mod._is_task_message("how does this work?") is True  # 期望: 英文提问注入
+def test_technical_question_injects():
+    assert mod._is_task_message("这个接口为什么报错？") is True  # 期望: 工程提问保留自检
+    assert mod._is_task_message("how does this build fail?") is True  # 期望: 英文工程提问注入
+
+
+def test_ordinary_conversation_does_not_inject():
+    assert mod._is_task_message("你还在工作吗") is False  # 期望: 状态确认不注入
+    assert mod._is_task_message("我今天有点累") is False  # 期望: 情绪表达不注入
+    assert mod._is_task_message("为什么慢？") is False  # 期望: 无工程对象的泛化提问不注入
 
 
 def test_legacy_prefix_still_injects():
@@ -55,6 +61,10 @@ def test_hook_delivers_idealization_check():
     ctx = out.get("context") or ""
     assert "理想化" in ctx  # 期望: 注入文本含第 4 检
     assert "分支" in ctx  # 期望: 第 4 检的五类分支面在场
+
+
+def test_self_check_rule_stays_bounded():
+    assert len(mod._SELF_CHECK_RULE) <= 500  # 期望: 事前提示不超过 500 字符
 
 
 class _OwnerCtx:

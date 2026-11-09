@@ -1,11 +1,9 @@
 """dynamic_tips 动态提示段回归测试。
 
-期望值来源: 双保险闭环业务语义——①排除平台不触库 ②聚合只收映射命中的
-签名且带实测次数 ③未映射签名宁缺毋滥不进段 ④新鲜缓存直用不触库
-⑤库缺失/无缓存 fail-open 空串 ⑥聚合失败旧缓存兜底。
-预算截断分支（>600 字符）豁免测试: _TIP_LIMIT=5 与现有 _TIP_MAP 最长
-条目（约 90 字符）联合保证 5 条总长 < 600,该分支为防御性兜底,当前
-输入空间不可达。
+期望值来源: 双保险闭环业务语义——①排除平台不触库 ②聚合只输出已知护栏的
+短正解并带实测次数 ③未映射签名与原始拦截文案不进段 ④最多 3 条且总量
+≤300 字符 ⑤新鲜缓存直用不触库 ⑥库缺失 fail-open ⑦聚合失败用同版本
+旧缓存兜底。
 """
 
 import json
@@ -63,28 +61,34 @@ def test_render_platform_excluded(
 def test_aggregate_maps_signatures_with_counts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """护栏前缀消息进段且带实测次数+消息原文;无前缀噪音不进段。"""
+    """已知护栏输出短正解;原始拦截文案、未知护栏和噪音不进段。"""
     _wire(
         monkeypatch,
         tmp_path,
-        [("[SlowSearchGuard] terminal 中检测到无保护的递归 grep, 请限定子目录", 3),
+        [("[SlowSearchGuard] terminal 中检测到无保护的递归 grep, 请限定子目录", 5),
          ("[DBSafety] SQL 查询前必须先确认 schema", 2),
-         ("callback timed out 通道超时噪音", 5)],
+         ("[PreWriteGuard] write_file/patch/execute_code 前必须先读目标文件", 1),
+         ("[UnknownGuard] 新护栏原文不进提示段", 9),
+         ("callback timed out 通道超时噪音", 4)],
     )
     out = dt.render({"platform": "cli"})
-    assert "- SlowSearchGuard(3次):" in out  # 期望: 护栏标识+次数聚合
-    assert "[SlowSearchGuard] terminal 中检测到无保护的递归 grep" in out  # 期望: 消息原文(修复指引)进段
-    assert "- DBSafety(2次):" in out  # 期望: 第二护栏也进段
+    assert "- SlowSearchGuard(5次): 用 search_files；terminal grep 加 timeout 和排除目录。" in out
+    assert "- DBSafety(2次): 先查表结构，再执行 SQL。" in out
+    assert "- PreWriteGuard(1次): 写前先读目标文件。" in out
+    assert "UnknownGuard" not in out
+    assert "terminal 中检测到" not in out
     assert "callback timed out" not in out  # 期望: 无 [护栏] 前缀的噪音不进段
-    assert "[高频拦截教训" in out  # 期望: 带日期头
+    assert "[近期高频拦截教训]" in out  # 期望: 带短日期头
+    assert out.count("\n- ") <= dt._TIP_LIMIT  # 期望: 最多 3 条
+    assert len(out.strip()) <= dt._BUDGET_CHARS  # 期望: 动态提示总量受控
 
 
 def test_unmapped_only_returns_empty(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """全部为无前缀消息 → 空段（基础设施噪音不进提示段）。"""
-    _wire(monkeypatch, tmp_path, [("callback timed out", 9)])
-    assert dt.render({"platform": "cli"}) == ""  # 期望: 无护栏前缀空串
+    _wire(monkeypatch, tmp_path, [("callback timed out", 9), ("[UnknownGuard] x", 8)])
+    assert dt.render({"platform": "cli"}) == ""  # 期望: 未映射与噪音均不进段
 
 
 def test_fresh_cache_short_circuits(
@@ -93,7 +97,10 @@ def test_fresh_cache_short_circuits(
     """新鲜缓存直接复用,不触发聚合（7 天周期内输出恒定）。"""
     cache = _wire(monkeypatch, tmp_path, [])
     cache.write_text(
-        json.dumps({"generated": time.time() - 60, "text": "CACHED_TIP"}, ensure_ascii=False),
+        json.dumps(
+            {"generated": time.time() - 60, "text": "CACHED_TIP", "version": dt._CACHE_VERSION},
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -110,7 +117,10 @@ def test_utf8_bom_cache_short_circuits(
     """Windows 工具写入的 BOM 缓存仍是新鲜缓存,直接复用而不是触库重建。"""
     cache = _wire(monkeypatch, tmp_path, [])
     cache.write_text(
-        json.dumps({"generated": time.time() - 60, "text": "BOM_TIP"}, ensure_ascii=False),
+        json.dumps(
+            {"generated": time.time() - 60, "text": "BOM_TIP", "version": dt._CACHE_VERSION},
+            ensure_ascii=False,
+        ),
         encoding="utf-8-sig",
     )
     monkeypatch.setattr(
@@ -131,15 +141,32 @@ def test_db_missing_fail_open(
 def test_stale_cache_used_when_aggregate_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """聚合失败（库锁死）时旧缓存兜底——宁旧勿空。"""
+    """聚合失败（库锁死）时同版本旧缓存兜底——宁旧勿空。"""
     cache = tmp_path / "guard_dynamic_tips.json"
     cache.write_text(
-        json.dumps({"generated": time.time() - 999999, "text": "OLD_TIP"}, ensure_ascii=False),
+        json.dumps(
+            {"generated": time.time() - 999999, "text": "OLD_TIP", "version": dt._CACHE_VERSION},
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(dt, "_db_path", lambda: tmp_path / "nope.db")
     monkeypatch.setattr(dt, "_cache_path", lambda: cache)
     assert "OLD_TIP" in dt.render({"platform": "cli"})  # 期望: 旧缓存兜底
+
+
+def test_legacy_cache_is_rebuilt_instead_of_replaying_raw_tips(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """旧版缓存没有版本号,不得把 600 字符原始拦截文案继续注入新会话。"""
+    cache = _wire(monkeypatch, tmp_path, [("[DBSafety] SQL 查询前必须先确认 schema", 2)])
+    cache.write_text(
+        json.dumps({"generated": time.time() - 60, "text": "OLD_RAW_TIP"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    out = dt.render({"platform": "cli"})
+    assert "OLD_RAW_TIP" not in out
+    assert "- DBSafety(2次):" in out
 
 
 def test_reinjection_fingerprint_includes_dynamic_tips(
@@ -155,6 +182,7 @@ def test_reinjection_fingerprint_includes_dynamic_tips(
     _wire(monkeypatch, tmp_path, [])
     sid = "test-dyn-reinject"
     sr._session_state.pop(sid, None)
+    monkeypatch.setattr(sr, "_active_section_ids", lambda: frozenset({"guards_preflight"}))
     monkeypatch.setattr(dt, "peek", lambda: "DYN_V1")
     assert sr._on_pre_llm_call(session_id=sid) == {}  # 期望: 首轮登记不注入
     assert sr._on_pre_llm_call(session_id=sid) == {}  # 期望: 指纹未变不注入
