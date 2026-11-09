@@ -8,6 +8,11 @@
 判定走 LLM 语义 judge（plugins/_llm_judge.llm_judge_bool），禁词表/正则
 （用户 0918 拍板「词表做法很傻逼」：自然语言宣告意图不可穷举）。
 
+判定时机（2026-11-10）：在上一条回复**刚产出的时刻**（post_llm_call）就先判一次，
+结果落进 plugins._llm_judge 的内容寻址判定缓存；下一轮 pre_llm_call 读同一段文本
+直接命中缓存，关键路径上零等待。缓存未命中（进程刚起、插件热载）时 pre_llm_call
+回退为就地判定——行为与以前完全一致，只是不再每次都付一次同步 3~4s。
+
 Contract:
   Preconditions: pre_llm_call kwargs 含 conversation_history（list[dict]）；
     末条 assistant 消息可含 tool_calls 字段（OpenAI 形态）
@@ -186,7 +191,35 @@ def _on_pre_llm_call(**kwargs: Any) -> Optional[dict[str, Any]]:
         return None
 
 
+def _on_post_llm_call(**kwargs: Any) -> None:
+    """post_llm_call 预热：在回复刚产出时先判一次，把结论放进判定缓存。
+
+    为什么在这里：这一轮已经结束了，判定的 3~4s 不再落在「用户发下一条消息之后」
+    的关键路径上。pre_llm_call 仍按原逻辑判同一段文本，但会直接命中缓存。
+
+    Contract:
+      Preconditions: kwargs 含 session_id / assistant_response / conversation_history
+      Postconditions: 只预热判定缓存，不注入、不改回复、不写 session state；永不 raise
+    """
+    try:
+        # 文本必须与 pre_llm_call 取到的那一段逐字节一致，否则缓存键不同、预热白做
+        history = kwargs.get("conversation_history") or []
+        msg = _last_assistant(history)
+        text = _msg_text(msg)
+        if len(text.strip()) < _MIN_TEXT_LEN:
+            return
+        if _has_tool_calls(msg):
+            return  # 已动手的回合不审（与 pre_llm_call 同一前置）
+        _judge_violation(text)
+    except Exception:  # 预热失败只影响下一次的等待时长，绝不影响本轮
+        logger.debug("declare_act_guard: post_llm_call warm failed", exc_info=True)
+    return
+
+
 def register(ctx: Any) -> None:
-    """插件入口：注册 pre_llm_call 单钩。"""
+    """插件入口：注册 pre_llm_call（判定+注入）与 post_llm_call（判定预热）。"""
     ctx.register_hook("pre_llm_call", _on_pre_llm_call)
-    logger.info("declare_act_guard 已注册——宣告-动手配对语义守卫(pre_llm_call)")
+    ctx.register_hook("post_llm_call", _on_post_llm_call)
+    logger.info(
+        "declare_act_guard 已注册——宣告-动手配对语义守卫(pre_llm_call + post_llm_call 判定预热)"
+    )
