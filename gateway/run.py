@@ -4655,9 +4655,9 @@ def _replace_target_belongs_to_other_profile(existing_pid: int) -> bool:
     try:
         from gateway.status import (
             _get_pid_path, _get_process_hermes_home, _get_process_start_time, _pid_from_record,
-            _read_pid_record, _record_looks_like_gateway, _read_process_cmdline, _same_hermes_home)
+            _read_pid_record, _record_looks_like_gateway, _read_process_cmdline)
+        from gateway.status_identity import same_hermes_home
         our_home = _get_process_hermes_home()
-
         def refuse(msg: str, *args, level=logging.WARNING) -> bool:
             logger.log(level, "Refusing --replace: " + msg, *args)
             return True
@@ -4679,7 +4679,7 @@ def _replace_target_belongs_to_other_profile(existing_pid: int) -> bool:
         if not isinstance(recorded_home, str) or not recorded_home.strip():
             return refuse("pid record predates hermes_home stampings; ownership of PID %s unprovable.",
                           existing_pid)
-        if not _same_hermes_home(recorded_home, our_home):
+        if not same_hermes_home(recorded_home, our_home):
             return refuse("pid record belongs to a different HERMES_HOME (%s, ours %s). Remove the stale PID "
                           "record or stop the owning profile explicitly.", recorded_home, our_home,
                           level=logging.ERROR)

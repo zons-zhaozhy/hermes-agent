@@ -3,6 +3,7 @@ import asyncio
 import hashlib
 import json
 import uuid
+from typing import Any
 
 
 class CronExecutionUnknown(RuntimeError):
@@ -37,6 +38,12 @@ def pause_for_unknown(job_id, execution_id, reason):
         record = json.loads(journal.read_text(encoding='utf-8-sig'))
         record['pause_recorded'] = _pause_identity(paused)
         atomic_json_write(journal, record, mode=0o600, fsync_dir=True)
+
+
+async def cancel_requested_off_loop(cancel_event: Any) -> bool:
+    if cancel_event is None:
+        return False
+    return await asyncio.to_thread(cancel_event.is_set)
 
 
 def _lift_pause(job_id, pause):
@@ -106,7 +113,7 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
         save()
         delay, progress = .1, None
         while True:
-            if cancel_event is not None and cancel_event.is_set():
+            if await cancel_requested_off_loop(cancel_event):
                 await call('cancel', receipt)
             state = await call('status', receipt)
             if state.get('progress_at') not in (None, progress):

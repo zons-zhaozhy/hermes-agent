@@ -148,7 +148,10 @@ class GatewayProfileReconcileMixin:
         firing. A home seen for the first time syncs once (consent may have landed after startup
         registered). Hook registration only: adapters and sessions are never touched."""
         from hermes_constants import get_process_hermes_home
-        homes = {Path(h) for h in (get_process_hermes_home(), *(self._served_profile_homes or {}).values())}
+        homes = {
+            str(h): h for h in (
+                get_process_hermes_home(), *(self._served_profile_homes or {}).values())
+        }
         self._hook_consent_signatures = await asyncio.to_thread(
             self._resync_changed_hook_consent, homes, self._hook_consent_signatures or {})
 

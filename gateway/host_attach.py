@@ -125,10 +125,10 @@ def launched_by_other_tenant(owner_home: Path | str, our_home: Path | str) -> bo
     """
     if not str(owner_home or ""):
         return False
-    from gateway.status import _same_hermes_home
+    from gateway.status_identity import same_hermes_home
     from hermes_constants import get_default_hermes_root
 
-    return not _same_hermes_home(get_default_hermes_root(home=owner_home),
+    return not same_hermes_home(get_default_hermes_root(home=owner_home),
                                  get_default_hermes_root(home=our_home))
 
 
@@ -174,9 +174,9 @@ def _identity_matches(identity, record, home: Path) -> bool:
     if not reported:
         return True  # older gateway: PID + a socket keyed by this home is all it can prove
     try:
-        from gateway.status import _same_hermes_home
+        from gateway.status_identity import same_hermes_home
 
-        return bool(_same_hermes_home(Path(str(reported)), home))
+        return bool(same_hermes_home(Path(str(reported)), home))
     except Exception:
         return str(reported) == str(home)
 

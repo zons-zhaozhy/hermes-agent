@@ -115,6 +115,7 @@ from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
+from gateway.platforms.api_server_status import APIServerStatusMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 from gateway.platforms.api_server_bot_chat import reset_local_title_owner
 from gateway.platforms.base import (
@@ -171,8 +172,6 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 # Send a comment before remote API clients' common 20-second idle deadline.
 # This constant is shared by OpenAI chat/Responses and native session SSE.
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 10.0
-API_SERVER_HEARTBEAT_SECONDS = 30.0
-API_SERVER_LATENCY_SAMPLE_LIMIT = 512
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT = 100
@@ -1031,7 +1030,7 @@ def _run_route_delegate(name: str):
     return _handler
 
 
-class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
+class APIServerAdapter(APIServerStatusMixin, OpenAICompatRoutesMixin, BasePlatformAdapter):
     """aiohttp server routing OpenAI-format requests through hermes-agent's AIAgent."""
 
     # Stateless request/response (``send()`` is a stub): async-delivery tools must not promise
@@ -1224,89 +1223,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except Exception:
             return default
         return max(0, value)
-
-    @staticmethod
-    def _metrics_day_key(timestamp: Optional[float] = None) -> str:
-        """Return the UTC day bucket for daily API metrics."""
-        return time.strftime("%Y-%m-%d", time.gmtime(timestamp or time.time()))
-
-    @staticmethod
-    def _iso_timestamp(timestamp: Optional[float]) -> Optional[str]:
-        if timestamp is None:
-            return None
-        return datetime.fromtimestamp(timestamp, UTC).isoformat()
-
-    def _reset_metrics_if_needed(self) -> None:
-        current_day = self._metrics_day_key()
-        if self._metrics_day == current_day:
-            return
-        self._metrics_day = current_day
-        self._metrics_requests_today = 0
-        self._metrics_messages_today = 0
-        self._metrics_tokens_today = 0
-        self._metrics_latency_ms.clear()
-
-    @staticmethod
-    def _total_tokens_from_usage(usage: Optional[dict[str, Any]]) -> int:
-        if not isinstance(usage, dict):
-            return 0
-        try:
-            return max(0, int(usage.get("total_tokens") or 0))
-        except (TypeError, ValueError):
-            return 0
-
-    @staticmethod
-    def _latency_p95_ms(samples: list[float]) -> Optional[float]:
-        if not samples:
-            return None
-        ordered = sorted(samples)
-        index = max(0, min(len(ordered) - 1, int(len(ordered) * 0.95 + 0.999999) - 1))
-        return round(ordered[index], 2)
-
-    def _api_server_status_payload(self, *, heartbeat_at: Optional[float] = None) -> dict[str, Any]:
-        self._reset_metrics_if_needed()
-        heartbeat = self._metrics_last_heartbeat_at if heartbeat_at is None else heartbeat_at
-        return {
-            "host": self._host,
-            "port": self._port,
-            "active_runs": self._active_structured_run_count() + self._inflight_agent_runs,
-            "stored_runs": len(self._run_statuses),
-            "last_request_at": self._iso_timestamp(self._metrics_last_request_at),
-            "last_heartbeat": self._iso_timestamp(heartbeat),
-            "metrics_today": {
-                "day": self._metrics_day,
-                "requests": self._metrics_requests_today,
-                "messages": self._metrics_messages_today,
-                "tokens": self._metrics_tokens_today,
-                "latency_p95_ms": self._latency_p95_ms(self._metrics_latency_ms),
-            },
-        }
-
-    def _publish_runtime_status(self) -> None:
-        self._metrics_last_heartbeat_at = time.time()
-        self._write_runtime_status_safe(
-            "api_server_heartbeat",
-            platform_state="connected" if self.is_connected else "disconnected",
-            platform_metrics=self._api_server_status_payload(),
-        )
-
-    def _record_api_metrics(self, usage: Optional[dict[str, Any]], latency_seconds: float) -> None:
-        self._reset_metrics_if_needed()
-        self._metrics_requests_today += 1
-        self._metrics_messages_today += 1
-        self._metrics_tokens_today += self._total_tokens_from_usage(usage)
-        self._metrics_last_request_at = time.time()
-        self._metrics_latency_ms.append(max(0.0, latency_seconds * 1000.0))
-        if len(self._metrics_latency_ms) > API_SERVER_LATENCY_SAMPLE_LIMIT:
-            del self._metrics_latency_ms[:-API_SERVER_LATENCY_SAMPLE_LIMIT]
-        self._publish_runtime_status()
-
-    async def _heartbeat_loop(self) -> None:
-        while self.is_connected:
-            self._publish_runtime_status()
-            if not self.is_connected:
-                break
-            await asyncio.sleep(API_SERVER_HEARTBEAT_SECONDS)
 
     @staticmethod
     def _resolve_model_name(explicit: str) -> str:
@@ -3833,7 +3749,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         finally:
             self._inflight_agent_runs -= 1
             if usage is not None:
-                self._record_api_metrics(usage, time.perf_counter() - started_at)
+                        await self._record_api_metrics_off_loop(
+                            usage, time.perf_counter() - started_at)
 
     # -- /v1/runs, room grants, room dispatch: thin delegators (real methods: tests assert
     # __dict__ membership and patch the module-level implementations) ---------------------
@@ -4046,10 +3963,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     self.name, self._host, self._port, exc)
                 return False
             from gateway.platforms.shared_ingress import listener_base_url
-            self._mark_connected(listener_base=listener_base_url(self._host, self._port))
+            await asyncio.to_thread(
+                self._mark_connected,
+                listener_base=listener_base_url(self._host, self._port))
             # Publish a metrics-bearing snapshot at bind and keep it fresh: the
             # heartbeat loop updates last_heartbeat/metrics_today (#52323).
-            self._publish_runtime_status()
+            await self._publish_runtime_status_off_loop()
             self._track_background_task(asyncio.create_task(self._heartbeat_loop()))
             logger.info(
                 "[%s] API server listening on http://%s:%d (model: %s)",

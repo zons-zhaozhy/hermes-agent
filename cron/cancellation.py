@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Protocol
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, hermes_home_key
 
 from cron.executions import cancellable_execution
 
@@ -33,8 +33,8 @@ _DEFAULT_REASON = "cancelled on request (hermes cron cancel)"
 
 
 def _cancels_dir() -> Path:
-    """Resolved per call so a multiplexed gateway never writes into another profile's home."""
-    return get_hermes_home().resolve() / "cron" / "cancels"
+    """Resolve through the per-home cache so polling never pays repeated path syscalls."""
+    return Path(hermes_home_key(get_hermes_home())) / "cron" / "cancels"
 
 
 def _marker_path(execution_id: str) -> Path:

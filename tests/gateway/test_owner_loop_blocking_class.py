@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -196,6 +197,176 @@ async def test_feishu_client_preparation_runs_off_loop(monkeypatch):
     await adapter._connect_websocket()
 
     assert threads and threads[0] != loop_thread
+
+
+@pytest.mark.asyncio
+async def test_cron_cancel_poll_runs_off_loop():
+    from cron.scheduler_authority import cancel_requested_off_loop
+
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+
+    class CancelEvent:
+        def is_set(self) -> bool:
+            threads.append(threading.get_ident())
+            return False
+
+    assert await cancel_requested_off_loop(CancelEvent()) is False
+    assert threads and threads[0] != loop_thread
+
+
+def test_cron_cancel_home_resolution_is_cached(monkeypatch, tmp_path):
+    from cron import cancellation
+    from hermes_constants import (
+        reset_hermes_home_key_cache, reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    calls: list[Path] = []
+    real_resolve = Path.resolve
+
+    def counted_resolve(path: Path, strict: bool = False) -> Path:
+        if path == tmp_path:
+            calls.append(path)
+        return real_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", counted_resolve)
+    reset_hermes_home_key_cache()
+    token = set_hermes_home_override(tmp_path)
+    try:
+        first = cancellation._cancels_dir()
+        second = cancellation._cancels_dir()
+    finally:
+        reset_hermes_home_override(token)
+
+    assert first == second
+    assert len(calls) == 1
+
+
+def test_runtime_status_home_resolution_is_cached(monkeypatch, tmp_path):
+    from gateway.status_identity import canonical_hermes_home
+    from hermes_constants import reset_hermes_home_key_cache
+
+    calls: list[Path] = []
+    real_resolve = Path.resolve
+
+    def counted_resolve(path: Path, strict: bool = False) -> Path:
+        if path == tmp_path:
+            calls.append(path)
+        return real_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", counted_resolve)
+    reset_hermes_home_key_cache()
+    try:
+        first = canonical_hermes_home(tmp_path)
+        second = canonical_hermes_home(tmp_path)
+    finally:
+        reset_hermes_home_key_cache()
+
+    assert first == second
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_api_heartbeat_status_publish_runs_off_loop(monkeypatch):
+    from gateway.platforms import api_server
+
+    adapter = object.__new__(api_server.APIServerAdapter)
+    adapter._running = True
+    adapter._metrics_last_heartbeat_at = None
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+
+    def publish(*_args, **_kwargs):
+        threads.append(threading.get_ident())
+
+    adapter._write_runtime_status_safe = publish
+    adapter._api_server_status_payload = dict
+
+    async def stop_after_first_heartbeat(_delay):
+        adapter._running = False
+
+    monkeypatch.setattr(api_server.asyncio, "sleep", stop_after_first_heartbeat)
+    await adapter._heartbeat_loop()
+
+    assert threads and threads[0] != loop_thread
+
+
+@pytest.mark.asyncio
+async def test_control_socket_peer_subject_runs_off_loop():
+    from gateway.control_socket import GatewayControlServer
+
+    server = object.__new__(GatewayControlServer)
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+
+    def subject(_writer):
+        threads.append(threading.get_ident())
+        return "uid:1"
+
+    class Dispatcher:
+        async def dispatch(self, _handler, _line, _subject):
+            return b"{}\n"
+
+    class Reader:
+        async def readline(self):
+            return b"{}\n"
+
+    class Writer:
+        def __init__(self):
+            self.closed = False
+
+        def write(self, _data):
+            return None
+
+        async def drain(self):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    server._request_dispatch = Dispatcher()
+    server._posix_peer_subject = subject
+    writer = Writer()
+    await server._handle_connection(Reader(), writer)
+
+    assert writer.closed
+    assert threads and threads[0] != loop_thread
+
+
+@pytest.mark.asyncio
+async def test_profile_reconcile_avoids_path_hashing_on_loop(monkeypatch, tmp_path):
+    from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
+
+    class RecordedPath(Path):
+        def __hash__(self):
+            path_threads.append(threading.get_ident())
+            return super().__hash__()
+
+    loop_thread = threading.get_ident()
+    path_threads: list[int] = []
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "gateway.run_profile_reconcile.Path", RecordedPath)
+    monkeypatch.setattr(
+        "hermes_constants.get_process_hermes_home", lambda: RecordedPath(tmp_path))
+
+    runner = SimpleNamespace(
+        _served_profile_homes={"profile": RecordedPath(tmp_path / "profile")},
+        _hook_consent_signatures=None,
+    )
+
+    def resync(homes, seen):
+        captured["homes"] = homes
+        captured["seen"] = seen
+        return {}
+
+    runner._resync_changed_hook_consent = resync
+    await GatewayProfileReconcileMixin._sync_hooks_on_consent_change(runner)
+
+    assert isinstance(captured["homes"], dict)
+    assert captured["seen"] == {}
+    assert all(thread != loop_thread for thread in path_threads)
 
 
 def _make_async(value):

@@ -27,7 +27,10 @@ from gateway.status_inline_source import (
     inline_bootstrap_argv,
     inline_source_flag_index,
 )
-from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
+from gateway.status_identity import canonical_hermes_home, same_hermes_home
+from hermes_constants import (
+    _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home,
+)
 from hermes_cli._subprocess_compat import pid_exists_stdlib
 from gateway.status_lock_dir import unusable_lock_dir, unusable_lock_dir_recovered
 from utils import atomic_json_write
@@ -244,17 +247,6 @@ def _get_process_hermes_home() -> Path:
     return get_process_hermes_home()
 
 
-def _canonical_hermes_home(path: Path | str) -> Path:
-    """Stable absolute HERMES_HOME path for persisted identity data."""
-    return Path(path).expanduser().resolve(strict=False)
-
-
-def _same_hermes_home(left: Path | str, right: Path | str) -> bool:
-    """Compare HERMES_HOME paths with the host platform's case semantics."""
-    left_c = os.path.normcase(str(_canonical_hermes_home(left)))
-    return left_c == os.path.normcase(str(_canonical_hermes_home(right)))
-
-
 def recorded_gateway_home_conflicts(
     record: Optional[dict[str, Any]], *, expected_home: Optional[Path | str] = None
 ) -> bool:
@@ -267,7 +259,7 @@ def recorded_gateway_home_conflicts(
         return False
     try:
         base = expected_home if expected_home is not None else _get_process_hermes_home()
-        return not _same_hermes_home(recorded_home, base)
+        return not same_hermes_home(recorded_home, base)
     except Exception:
         return True
 
@@ -280,7 +272,7 @@ _PROFILE_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 def _profile_label_for_home(home: Path | str) -> Optional[str]:
     """Best-effort label: ``<root>/profiles/<name>`` -> name, root home -> "default", else None."""
     try:
-        canonical = _canonical_hermes_home(home)
+        canonical = canonical_hermes_home(home)
     except Exception:
         return None
     if canonical.parent.name == "profiles" and _PROFILE_LABEL_RE.match(canonical.name):
@@ -289,7 +281,7 @@ def _profile_label_for_home(home: Path | str) -> Optional[str]:
     default_homes = (hermes_constants.get_default_hermes_root, _get_platform_default_hermes_home)
     for default_home in default_homes:
         with contextlib.suppress(Exception):
-            if _same_hermes_home(canonical, default_home()):
+            if same_hermes_home(canonical, default_home()):
                 return "default"
     return None
 
@@ -792,7 +784,7 @@ def _build_pid_record() -> dict:
         "start_time": _get_process_start_time(os.getpid()),
         # Scoped locks are machine-global; the owner's home lets a cross-profile
         # --replace place its takeover marker where the target will read it.
-        "hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())),
+        "hermes_home": str(canonical_hermes_home(_get_process_hermes_home())),
     }
 
 
@@ -820,7 +812,7 @@ def _pid_record_belongs_to_current_profile(record: Optional[dict[str, Any]]) -> 
     if not isinstance(record, dict):
         return False
     record_home = record.get("hermes_home")
-    return not record_home or _same_hermes_home(record_home, _get_process_hermes_home())
+    return not record_home or same_hermes_home(record_home, _get_process_hermes_home())
 
 
 def _build_runtime_status_record() -> dict[str, Any]:
@@ -1310,7 +1302,7 @@ def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, d
     # The roster is matched by NAME, and the multiplexer only serves ``<default root>/profiles/<name>``:
     # a profile directory copied to another root (sandbox, restore-from-backup) keeps the name but is
     # not the home being served, so it must not borrow the multiplexer's PID.
-    if name != "default" and not _same_hermes_home(profile_dir, get_default_hermes_root() / "profiles" / name):
+    if name != "default" and not same_hermes_home(profile_dir, get_default_hermes_root() / "profiles" / name):
         return None
     topology = host_gateway_topology()
     # The multiplexer's record lives in the home that LAUNCHED it; a named-hosted multiplexer leaves
@@ -1588,7 +1580,7 @@ _PLANNED_STOP_MARKER_TTL_S = 60
 
 def _get_takeover_marker_path(hermes_home: Optional[Path] = None) -> Path:
     """Takeover marker path; ``hermes_home`` is given only for a verified cross-home handoff."""
-    home = _canonical_hermes_home(hermes_home or _get_process_hermes_home())
+    home = canonical_hermes_home(hermes_home or _get_process_hermes_home())
     return home / _TAKEOVER_MARKER_FILENAME
 
 
@@ -1645,11 +1637,11 @@ def _consume_pid_marker_for_self(path: Path, *, ttl_s: int, on_consume=None, kee
     our_home = _get_process_hermes_home()
     target_home = record.get("target_hermes_home")
     if target_home is not None:
-        if not isinstance(target_home, str) or not _same_hermes_home(target_home, our_home):
+        if not isinstance(target_home, str) or not same_hermes_home(target_home, our_home):
             return False
     else:
         replacer_home = record.get("replacer_hermes_home")
-        if replacer_home is not None and not _same_hermes_home(replacer_home, our_home):
+        if replacer_home is not None and not same_hermes_home(replacer_home, our_home):
             return False
     matches = _pid_marker_names_self(target_pid, target_start_time)
     if matches and on_consume is not None:
@@ -1667,13 +1659,13 @@ def write_takeover_marker(
     passes ``target_home`` + validated ``target_start_time`` so the marker lands in the target's
     home; such callers must fail closed on False (the target's supervisor could revive it)."""
     try:
-        marker_home = _canonical_hermes_home(target_home or _get_process_hermes_home())
+        marker_home = canonical_hermes_home(target_home or _get_process_hermes_home())
         if target_start_time is _UNSET:
             target_start_time = _get_process_start_time(target_pid)
         return _write_marker(_get_takeover_marker_path(marker_home), {
             "target_pid": target_pid, "target_start_time": target_start_time,
             "target_hermes_home": str(marker_home), "replacer_pid": os.getpid(),
-            "replacer_hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())),
+            "replacer_hermes_home": str(canonical_hermes_home(_get_process_hermes_home())),
             "written_at": _utc_now_iso(),
         })
     except OSError:
@@ -1715,7 +1707,7 @@ def _validated_scoped_lock_gateway_owner(record: dict[str, Any]) -> Optional[tup
         or not Path(raw_home).expanduser().is_absolute()
     ):
         return None
-    target_home = _canonical_hermes_home(raw_home)
+    target_home = canonical_hermes_home(raw_home)
     if _scoped_lock_owner_state(owner_pid, owner_start_time) != "same":
         return None
     live_cmdline = _read_process_cmdline(owner_pid)
@@ -1729,7 +1721,7 @@ def _validated_scoped_lock_gateway_owner(record: dict[str, Any]) -> Optional[tup
         or _pid_from_record(pid_record) != owner_pid
         or pid_record.get("start_time") != owner_start_time
         or not isinstance(pid_record_home, str)
-        or not _same_hermes_home(pid_record_home, target_home)
+        or not same_hermes_home(pid_record_home, target_home)
     ):
         return None
     return owner_pid, owner_start_time, target_home

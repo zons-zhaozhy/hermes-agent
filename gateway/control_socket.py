@@ -432,8 +432,9 @@ class GatewayControlServer:
             dispatcher = self._request_dispatch
             if dispatcher is None:
                 return  # listener shutdown won the race with this connection's read
+            peer_subject = await asyncio.to_thread(self._posix_peer_subject, writer)
             response = await dispatcher.dispatch(
-                self.handle_request_line, raw.rstrip(b"\n"), self._posix_peer_subject(writer))
+                self.handle_request_line, raw.rstrip(b"\n"), peer_subject)
             writer.write(response)
             await asyncio.wait_for(writer.drain(), timeout=_DEFAULT_CLIENT_TIMEOUT)
         except (TimeoutError, ConnectionError, OSError):
