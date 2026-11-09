@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 _SUB_GUARD_NAMES = ("tool_blacklist", "four_axis", "pre_write", "duplicate_check", "source_write",
                     "patch_first", "coding_standards", "diff_debt", "casebook_gate", "batch_write",
                     "scope_gate", "groundbreaking_gate", "slow_search", "db_target_audit",
-                    "plain_vocab", "experience_gate", "skill_pruned_gate")
+                    "plain_vocab", "experience_gate", "skill_pruned_gate", "watch_pattern")
 _LOADED: list[tuple[str, Any]] = []
 for _name in _SUB_GUARD_NAMES:
     try:
