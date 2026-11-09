@@ -332,6 +332,11 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._hook_timeout_suppressed_until: dict[tuple, float] = {}
         self._hook_timeout_lock = threading.Lock()
         self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
+        # (hook_name, id(cb)) -> (callback, veto_on_timeout, gate_policy) for the fail-closed
+        # policy hooks. A timed-out callback whose owner did not ask to veto degrades to its own
+        # "no verdict" contract instead of manufacturing a block from infrastructure failure; the
+        # strong callback ref keeps ``id()`` from being recycled while the entry is live.
+        self._hook_gate_policy: dict[tuple[str, int], tuple[Callable, bool, str]] = {}
         # (hook_name, id(cb), repr(exc)) already reported at WARNING; identical repeats go to DEBUG.
         self._hook_failures_reported: set = set()
         # Ledger per plugin (ownership) plus global order (reverse teardown across plugins). Process-

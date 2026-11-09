@@ -57,7 +57,8 @@ def test_sync_pass_and_block_results_are_recorded_without_payloads() -> None:
     assert "must-not-enter-ledger" not in str(manager.gate_plane.events())
 
 
-def test_exception_records_unknown_and_preserves_fail_closed_directive() -> None:
+def test_exception_records_unknown_and_degrades_the_directive() -> None:
+    """The evidence ledger keeps the failure; the turn keeps going with a loud UNKNOWN note."""
     manager = PluginManager()
 
     def broken(**_kwargs):
@@ -68,7 +69,8 @@ def test_exception_records_unknown_and_preserves_fail_closed_directive() -> None
         "pre_llm_call", session_id="session-2", turn_id="turn-2",
     )
 
-    assert len(results) == 1 and results[0]["action"] == "block"
+    assert len(results) == 1 and "action" not in results[0]
+    assert "judge backend unavailable" in results[0]["context"]
     event = _events(manager, "pre_llm_call")[0]
     assert event["status"] == "unknown"
     assert event["detail"] == "RuntimeError: judge backend unavailable"

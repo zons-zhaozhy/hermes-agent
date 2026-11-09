@@ -739,9 +739,19 @@ class PluginContext(PluginCapabilityCtxMixin, PluginManualGateCtxMixin):
                 _facade().logger.warning("Plugin '%s' locale file %s skipped: %s", self.manifest.name, file, exc)
         return handles
 
-    def register_hook(self, hook_name: str, callback: Callable, *, hold_stream: bool = False) -> PluginRegistration:
-        """Register a lifecycle hook callback (``PluginDispatchMixin.track_hook``)."""
-        return self._manager.track_hook(self, hook_name, callback, hold_stream=hold_stream)
+    def register_hook(
+        self, hook_name: str, callback: Callable, *, hold_stream: bool = False,
+        veto_on_timeout: bool = False,
+    ) -> PluginRegistration:
+        """Register a lifecycle hook callback (``PluginDispatchMixin.track_hook``).
+
+        ``veto_on_timeout=True`` opts a fail-closed hook callback out of the default timeout
+        degradation: when its own budget expires it fails the unit of work closed. Reserve it for
+        a decision whose unknown case genuinely must stop that work — a callback that only
+        injects context must not be able to kill a turn by being slow.
+        """
+        return self._manager.track_hook(
+            self, hook_name, callback, hold_stream=hold_stream, veto_on_timeout=veto_on_timeout)
 
     def register_middleware(self, kind: str, callback: Callable) -> PluginRegistration:
         """Register behavior-changing middleware (request kinds rewrite the payload, execution kinds

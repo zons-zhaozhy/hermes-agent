@@ -43,6 +43,11 @@ class PluginRegistration:
     # A ``transform_llm_output`` registration that must see the reply before the user does
     # (``register_hook(..., hold_stream=True)``; read by ``PluginDispatchMixin.holds_stream``).
     hold_stream: bool = False
+    # A fail-closed hook registration that turns a budget timeout into a real veto
+    # (``register_hook(..., veto_on_timeout=True)``; recorded by
+    # ``PluginDispatchMixin.track_hook`` and read by ``_hook_timeout_directive``). Default
+    # False: a timed-out guard degrades to its own no-verdict contract instead of blocking.
+    veto_on_timeout: bool = False
     # Staged change applied only once the plugin's load succeeded (``_publish_staged_registrations``); a failed
     # or timed-out load disposes the handle first, so the change is never applied.
     publish: Optional[Callable[[], Any]] = None

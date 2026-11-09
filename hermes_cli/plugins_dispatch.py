@@ -57,28 +57,44 @@ _HOOK_CALL_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
     "pre_command": ("session_key",), "post_compaction": ("session_id",),
 }
 
-# Policy hooks: timeout / still-running must fail closed. The intent gate runs before any
-# inference; the verification gate runs before accepting a completion claim.
+# Policy hooks: timeout / still-running are not a verdict, so they go through
+# ``_HOOK_TIMEOUT_DEGRADE_HOOKS`` below before any directive is produced. A hook listed here either
+# fails the unit of work closed or degrades to the callback's own no-verdict contract.
 _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {
     "pre_tool_call", "pre_tool_batch", "pre_llm_call", "pre_verify",
 }
 # Of those, the ones that decide ONCE per unit of user-visible work and whose timeout therefore
-# destroys that whole unit: a turn (``pre_llm_call``) or a completion claim (``pre_verify``).
-# Only these earn the automatic retry below. The per-tool-call gates do not: they fail closed
-# into an error result the agent can adapt to, and retrying would add another full budget to
-# every blocked tool call for the length of an outage.
+# costs that whole unit: a turn (``pre_llm_call``) or a completion claim (``pre_verify``).
+# Only a VETO-GRADE callback here earns the automatic retry below. The per-tool-call gates do not:
+# they fail closed into an error result the agent can adapt to, and retrying would add another
+# full budget to every blocked tool call for the length of an outage.
 _HOOK_TIMEOUT_RETRY_HOOKS: set[str] = {"pre_llm_call", "pre_verify"}
+# Hooks whose timeout must NOT become a veto by itself (``_hook_timeout_directive``). Their
+# callbacks' normal output is additive — a context injection — and every registration in this
+# tree already answers "no verdict" with fail-open (``guards.scope_gate``: 「判定失败或不可用 →
+# 放行」, ``declare_act_guard``: 「judge 失败(None=放行)」, ``read_think_gate``'s ``pre_llm_call``:
+# always returns None). A 30 s budget expiring is not a verdict about the turn; turning it into
+# one inverts the plugin's own contract and costs the user the whole turn for zero information.
+# Denial stays where it is load-bearing and cheap: ``pre_tool_call`` (adaptable error result),
+# ``pre_verify`` (don't certify the claim), or an explicit ``veto_on_timeout=True`` registration.
+_HOOK_TIMEOUT_DEGRADE_HOOKS: set[str] = {"pre_llm_call"}
+# One turn's total ``pre_llm_call`` budget, as a multiple of the per-callback budget. Without it
+# 20+ registered callbacks can each pay a full budget + retry, which is a many-minute turn even
+# once nothing blocks. The remainder is spent callback by callback; past it, callbacks degrade
+# unstarted instead of queueing more wall clock.
+_HOOK_TURN_BUDGET_FACTOR = 1.5
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
 _HOOK_CALLER_THREAD_HOOKS: set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
 _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
 # Live workers a hung callback may accumulate before it is skipped outright (#105223 / #98382).
 _HOOK_MAX_ABANDONED_WORKERS = 3
-# A fail-closed (policy) callback that blew its budget gets ONE automatic retry under this cap.
-# Without it a transient infrastructure hiccup ends the user's whole turn: a guard's auxiliary
-# judge stalled in DNS/connect, the abandoned worker never returns, and a retry inside the 60s
-# suppression window is skipped — which fail-closed turns into a second identical veto. The
-# first attempt's budget is already spent, so the retry is capped to bound the added latency.
+# A veto-grade (``veto_on_timeout=True``) policy callback that blew its budget gets ONE automatic
+# retry under this cap. Without it a transient infrastructure hiccup ends the user's whole turn: a
+# guard's auxiliary judge stalled in DNS/connect, the abandoned worker never returns, and a retry
+# inside the 60s suppression window is skipped — which veto-grade turns into a second identical
+# veto. The first attempt's budget is already spent, so the retry is capped to bound the added
+# latency. A degrading callback is never retried: there is no verdict to recover.
 _HOOK_RETRY_TIMEOUT_SECS = 15.0
 _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call plugin callback timed out or is still running"
 
@@ -130,6 +146,37 @@ def _hook_timeout_block_message(
         state = f"超出 {timeout:g}s 预算未返回" + ("，自动重试一次仍无判定" if retried else "")
     return (f"[{hook_name} 门禁暂不可用 / UNKNOWN] {who}{state}——本轮未发起任何模型调用；"
             "稍后重发即可。")
+
+
+def _hook_timeout_unknown_note(
+    hook_name: str, callback: Optional[Callable] = None, *, timeout: float = 0.0,
+    cooling_down: bool = False,
+) -> str:
+    """Degradation note for a timed-out hook whose verdict is not load-bearing alone.
+
+    Loud, not silent: the agent is told which guard did not judge this turn, that its context
+    injection is missing, and where denial still applies. That keeps the failure visible without
+    letting a slow judge delete the user's turn.
+    """
+    who = ""
+    if callback is not None:
+        who = (f"插件回调 {getattr(callback, '__name__', repr(callback))} "
+               f"({getattr(callback, '__module__', '') or '未知插件'}) ")
+    state = ("本轮未启动（该回调仍在超时冷却、已达放弃线程上限，或本轮钩子预算已用尽）"
+             if cooling_down else f"超出 {timeout:g}s 预算未返回")
+    return (f"[{hook_name} 门禁未判定 / UNKNOWN] {who}{state}——本轮按该守卫自己的「无判定」"
+            "契约继续：它没有否决本轮，但它本该注入的上下文/纪律提示本轮缺失，相关自检请自行补上。"
+            "动作级否决（pre_tool_call / pre_verify）不受影响，仍按原语义拦截。")
+
+
+def _hook_error_unknown_note(hook_name: str, callback: Callable, exc: BaseException) -> str:
+    """Degradation note for a callback that raised: same contract as a timeout, with the error."""
+    who = (f"插件回调 {getattr(callback, '__name__', repr(callback))} "
+           f"({getattr(callback, '__module__', '') or '未知插件'}) ")
+    return (f"[{hook_name} 门禁未判定 / UNKNOWN] {who}抛出 {type(exc).__name__}: {str(exc)[:200]}"
+            "——本轮按该守卫自己的「无判定」契约继续：它没有否决本轮，但它本该注入的上下文/"
+            "纪律提示本轮缺失，相关自检请自行补上。动作级否决（pre_tool_call / pre_verify）"
+            "不受影响，仍按原语义拦截；该守卫本身需要修。")
 
 
 def _policy_error_block_directive(hook_name: str, cb: Callable, exc: BaseException) -> dict[str, str]:
@@ -457,6 +504,61 @@ class PluginDispatchMixin:
                 return suppressed_until - now
         return None
 
+    def _record_hook_policy(
+        self, hook_name: str, callback: Callable, *, veto_on_timeout: bool, policy: str,
+    ) -> None:
+        """Remember what a fail-closed hook registration is allowed to do when it cannot decide."""
+        self._hook_gate_policy[(hook_name, id(callback))] = (
+            callback, bool(veto_on_timeout), str(policy or "required"))
+
+    def _forget_hook_policy(self, hook_name: str, callback: Callable) -> None:
+        self._hook_gate_policy.pop((hook_name, id(callback)), None)
+
+    def _hook_policy(self, hook_name: str, callback: Callable) -> tuple[bool, str]:
+        """``(veto_on_timeout, gate_policy)`` for one registration; the fail-open default for
+        callbacks registered outside ``track_hook`` (memory-provider fallback hooks, shell hooks)."""
+        entry = self._hook_gate_policy.get((hook_name, id(callback)))
+        if entry is None or entry[0] is not callback:
+            return False, "required"
+        return entry[1], entry[2]
+
+    def _hook_timeout_directive(
+        self, hook_name: str, cb: Callable, kwargs: dict[str, Any], *, timeout: float,
+        cooling_down: bool, retried: bool,
+    ) -> Optional[dict[str, str]]:
+        """What a timed-out / skipped callback contributes to this call.
+
+        A veto-grade registration blocks, as before. Everything else degrades to the plugin's own
+        no-verdict contract: a ``required`` gate's absence is injected as an explicit UNKNOWN note
+        (the agent has to cover the missing self-check itself), an ``advisory`` gate's absence is
+        logged and recorded and contributes nothing — an advisory gate owes no turn-level claim.
+        """
+        veto_on_timeout, policy = self._hook_policy(hook_name, cb)
+        if hook_name not in _HOOK_TIMEOUT_DEGRADE_HOOKS or veto_on_timeout:
+            return {"action": "block", "message": _hook_timeout_block_message(
+                hook_name, cb, timeout=timeout, cooling_down=cooling_down,
+                retry_in=self._hook_cooldown_remaining(hook_name, cb, kwargs) or 0.0,
+                retried=retried and not cooling_down)}
+        if policy == "advisory":
+            return None
+        return {"context": _hook_timeout_unknown_note(
+            hook_name, cb, timeout=timeout, cooling_down=cooling_down)}
+
+    def _hook_error_directive(
+        self, hook_name: str, cb: Callable, exc: BaseException,
+    ) -> Optional[dict[str, str]]:
+        """What a callback that RAISED contributes: a veto only for a veto-grade registration.
+
+        A guard that crashes on every turn must not delete every turn; it degrades like a timeout
+        (the note names the exception) and the failure is still reported once at WARNING.
+        """
+        veto_on_timeout, policy = self._hook_policy(hook_name, cb)
+        if hook_name not in _HOOK_TIMEOUT_DEGRADE_HOOKS or veto_on_timeout:
+            return _policy_error_block_directive(hook_name, cb, exc)
+        if policy == "advisory":
+            return None
+        return {"context": _hook_error_unknown_note(hook_name, cb, exc)}
+
     def _run_hook_callbacks(self, hook_name: str, callbacks: Any, kwargs: dict[str, Any],
                             failed: Optional[list] = None) -> list[Any]:
         """:meth:`invoke_hook`'s loop over ``callbacks``; each one that raised or timed out is
@@ -466,16 +568,30 @@ class PluginDispatchMixin:
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
-        retryable = hook_name in _HOOK_TIMEOUT_RETRY_HOOKS
+        retryable_hook = hook_name in _HOOK_TIMEOUT_RETRY_HOOKS
+        turn_deadline = (
+            time.monotonic() + timeout * _HOOK_TURN_BUDGET_FACTOR
+            if use_timeout and hook_name in _HOOK_TIMEOUT_DEGRADE_HOOKS else None
+        )
         for cb in callbacks:
             started = time.perf_counter()
             try:
                 if use_timeout:
-                    ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
+                    veto_grade = fail_closed and (
+                        hook_name not in _HOOK_TIMEOUT_DEGRADE_HOOKS
+                        or self._hook_policy(hook_name, cb)[0])
+                    budget = timeout
+                    if turn_deadline is not None:
+                        budget = min(timeout, turn_deadline - time.monotonic())
+                    ret = (self._run_hook_callback_bounded(hook_name, cb, kwargs, budget)
+                           if budget > 0 else _HOOK_SKIPPED_UNSTARTED)
                     retried = False
-                    if (ret is _HOOK_SKIPPED or ret is _HOOK_SKIPPED_UNSTARTED) and retryable:
+                    if (ret is _HOOK_SKIPPED or ret is _HOOK_SKIPPED_UNSTARTED) \
+                            and retryable_hook and veto_grade:
                         # One retry, past the suppression window: the first attempt's budget is
-                        # already spent, so an unretried skip costs the user the whole turn.
+                        # already spent, so an unretried skip costs the whole unit of work. Only
+                        # a veto-grade callback buys that latency — a degrading one has nothing
+                        # to protect, so a retry would only stretch the turn.
                         retried = True
                         ret = self._run_hook_callback_bounded(
                             hook_name, cb, kwargs, min(timeout, _HOOK_RETRY_TIMEOUT_SECS),
@@ -488,12 +604,12 @@ class PluginDispatchMixin:
                         )
                         if failed is not None:
                             failed.append(cb)
-                        if fail_closed:  # policy hook: fail closed with a block directive
-                            never_ran = ret is _HOOK_SKIPPED_UNSTARTED
-                            results.append({"action": "block", "message": _hook_timeout_block_message(
-                                hook_name, cb, timeout=timeout, cooling_down=never_ran,
-                                retry_in=self._hook_cooldown_remaining(hook_name, cb, kwargs) or 0.0,
-                                retried=retried and not never_ran)})
+                        directive = self._hook_timeout_directive(
+                            hook_name, cb, kwargs, timeout=timeout,
+                            cooling_down=ret is _HOOK_SKIPPED_UNSTARTED, retried=retried,
+                        ) if fail_closed else None
+                        if directive is not None:
+                            results.append(directive)
                         continue
                 else:
                     ret = self._invoke_hook_callback(cb, kwargs)
@@ -515,8 +631,10 @@ class PluginDispatchMixin:
                 )
                 if failed is not None:
                     failed.append(cb)
-                if fail_closed:  # a guard that raised made no decision: same veto as a timeout
-                    results.append(_policy_error_block_directive(hook_name, cb, exc))
+                if fail_closed:  # a guard that raised made no decision: veto only if it asked to
+                    directive = self._hook_error_directive(hook_name, cb, exc)
+                    if directive is not None:
+                        results.append(directive)
         return results
 
     def _report_hook_failure(
@@ -770,10 +888,13 @@ class PluginDispatchMixin:
             return False
         return bool(self._hooks.get(hook_name))
 
-    def track_hook(self, context: Any, hook_name: str, callback: Callable, *, hold_stream: bool = False):
+    def track_hook(self, context: Any, hook_name: str, callback: Callable, *, hold_stream: bool = False,
+                   veto_on_timeout: bool = False):
         """Register ``callback`` for ``hook_name`` on behalf of ``context`` (unknown names warn but are
         still stored). ``hold_stream=True`` on ``transform_llm_output`` declares the rewrite must reach
-        the user first, so this profile's replies are not streamed (:meth:`holds_stream`)."""
+        the user first, so this profile's replies are not streamed (:meth:`holds_stream`).
+        ``veto_on_timeout=True`` on a fail-closed hook keeps the old semantics for that callback: a
+        budget timeout fails the unit of work closed instead of degrading to its no-verdict path."""
         from hermes_cli.plugins import VALID_HOOKS
 
         handle = context._track_callback("hook", hook_name, callback, self._hooks, VALID_HOOKS)
@@ -782,6 +903,26 @@ class PluginDispatchMixin:
                            context.manifest.name, hook_name, STREAM_HOLDING_HOOK)
         else:
             handle.hold_stream = hold_stream
+        if hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS:
+            policy = str(getattr(context.manifest, "gate_policy", "") or "required")
+            self._record_hook_policy(
+                hook_name, callback, veto_on_timeout=veto_on_timeout, policy=policy)
+            handle.veto_on_timeout = bool(veto_on_timeout)
+            # The policy entry outlives the callback otherwise: keep it exactly as long as the
+            # registration (a reload re-registers, and an id() may be recycled after unload).
+            previous_on_dispose = handle._on_dispose
+
+            def _forget_policy(disposed, _hook=hook_name, _cb=callback, _previous=previous_on_dispose):
+                self._forget_hook_policy(_hook, _cb)
+                if _previous is not None:
+                    _previous(disposed)
+
+            handle._on_dispose = _forget_policy
+        elif veto_on_timeout:
+            logger.warning("Plugin '%s' set veto_on_timeout on '%s'; only fail-closed policy hooks "
+                           "(%s) can veto a unit of work, ignored",
+                           context.manifest.name, hook_name,
+                           ", ".join(sorted(_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS)))
         return handle
 
     def holds_stream(self) -> bool:
@@ -879,15 +1020,29 @@ class PluginDispatchMixin:
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
+        retryable_hook = hook_name in _HOOK_TIMEOUT_RETRY_HOOKS
+        turn_deadline = (
+            time.monotonic() + timeout * _HOOK_TURN_BUDGET_FACTOR
+            if use_timeout and hook_name in _HOOK_TIMEOUT_DEGRADE_HOOKS else None
+        )
         for cb in self._hooks.get(hook_name, []):
             callback_name = getattr(cb, "__name__", repr(cb))
             started = time.perf_counter()
             try:
                 timed_out = False
                 if use_timeout:
-                    ret, timed_out = await self._await_hook_callback(
-                        hook_name, cb, kwargs, timeout,
-                        retry=hook_name in _HOOK_TIMEOUT_RETRY_HOOKS)
+                    veto_grade = fail_closed and (
+                        hook_name not in _HOOK_TIMEOUT_DEGRADE_HOOKS
+                        or self._hook_policy(hook_name, cb)[0])
+                    budget = timeout
+                    if turn_deadline is not None:
+                        budget = min(timeout, turn_deadline - time.monotonic())
+                    if budget <= 0:
+                        ret, timed_out = None, True
+                    else:
+                        ret, timed_out = await self._await_hook_callback(
+                            hook_name, cb, kwargs, budget,
+                            retry=retryable_hook and veto_grade)
                 else:
                     ret = cb(**self._hook_callback_kwargs(cb, kwargs))
                     if inspect.isawaitable(ret):
@@ -903,12 +1058,11 @@ class PluginDispatchMixin:
                         duration_ms=(time.perf_counter() - started) * 1000,
                     )
                     if fail_closed:
-                        results.append({
-                            "action": "block",
-                            "message": _hook_timeout_block_message(
-                                hook_name, cb, timeout=timeout,
-                                retried=hook_name in _HOOK_TIMEOUT_RETRY_HOOKS),
-                        })
+                        directive = self._hook_timeout_directive(
+                            hook_name, cb, kwargs, timeout=timeout, cooling_down=False,
+                            retried=retryable_hook and veto_grade)
+                        if directive is not None:
+                            results.append(directive)
                     continue
                 status = result_status(ret)
                 action = str(ret.get("action", "")).lower() if isinstance(ret, Mapping) else ""
@@ -933,7 +1087,9 @@ class PluginDispatchMixin:
                     duration_ms=(time.perf_counter() - started) * 1000,
                 )
                 if fail_closed:
-                    results.append(_policy_error_block_directive(hook_name, cb, exc))
+                    directive = self._hook_error_directive(hook_name, cb, exc)
+                    if directive is not None:
+                        results.append(directive)
         return results
 
     async def _arun_output_transform_chain(self, kwargs: dict[str, Any]) -> list[Any]:

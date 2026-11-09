@@ -1598,7 +1598,17 @@ A `{"action": "block", "message": "..."}` return vetoes the turn **before any in
 
 The blocked prompt is stored as `[Message withheld: a pre_llm_call policy hook blocked it.]`. That placeholder is what later turns replay and what compaction summaries, `session_search`, external memory providers and the background memory review read, so the prompt never reaches a model in this turn or a later one. What the user typed is kept only as display metadata, so the CLI `--resume` recap, the TUI, the desktop app and the dashboard still show it. The hook runs before turn-start compaction, and a blocked turn skips compaction, titling and external-memory prefetch/sync.
 
-A block applies only when a callback returns it. A callback that raises, or runs past `plugins.hook_callback_timeout` (30 s by default), is logged and skipped, and the turn goes ahead. A policy hook should therefore catch its own errors and return a block when it can't decide. Model metadata lookups (such as a `/models` context-length probe on a fresh session) can still run before the hook; they carry no message content.
+A block applies only when a callback returns it. A callback that raises, or runs past `plugins.hook_callback_timeout` (30 s by default), is logged and skipped, and the turn goes ahead — a budget expiry is not a verdict about the turn, so it never becomes one by itself. The skip is loud, not silent: the agent receives an explicit `[pre_llm_call 门禁未判定 / UNKNOWN]` note naming the callback and what it failed to inject, and the Gate Plane records the invocation as `unknown`. (`gate_policy: required` gates get that note; `advisory` ones are logged only, since an advisory gate owes no turn-level claim.) Denial lives where it is load-bearing and cheap: `pre_tool_call` and `pre_verify` stay fail-closed.
+
+One `pre_llm_call` also has ONE total budget (1.5×`plugins.hook_callback_timeout`), so a degraded judge endpoint cannot make twenty registered guards queue twenty full budgets before the turn starts; past it, the remaining callbacks degrade unstarted and their notes still arrive.
+
+A policy hook should still catch its own errors and return a block when it can't decide. A hook whose unknown case genuinely must stop the turn before inference — an authorization gate, not a context injector — registers with `veto_on_timeout=True`:
+
+```python
+ctx.register_hook("pre_llm_call", authorization_gate, veto_on_timeout=True)
+```
+
+A timeout then fails the turn closed exactly like a returned block, after one automatic retry under a shorter cap. Model metadata lookups (such as a `/models` context-length probe on a fresh session) can still run before the hook; they carry no message content.
 
 #### Oversized-context spill
 
