@@ -157,3 +157,40 @@ def test_logprob_label_miss_never_counts_as_a_failure(judge, monkeypatch):
     assert judge._capability_known("t") is False, "读空应记为「不支持 logprobs」"
     assert not judge._judge_circuit_open("t"), "读空不得打开熔断"
     assert len(calls) == 2, "一次读出尝试 + 一次文本回退"
+
+
+def test_auth_and_billing_errors_are_hard_failures_not_parse_failures(judge, monkeypatch):
+    """key 过期/欠费不是「模型答得不好」：一次即挂起端点，且日志说的是真因。
+
+    2026-11-10 实测：deepseek key 过期(401)、api.z.ai 欠费(429 Insufficient balance)、
+    scnet/yinfeng 全 401。当成解析失败会白跑 3 次才挂起，且误导成格式问题。
+    """
+    calls: list[int] = []
+
+    def expired(**kwargs):
+        calls.append(1)
+        raise RuntimeError(
+            "Error code: 401 - Authentication Fails, Your api key: ****ired is invalid"
+        )
+
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", expired)
+
+    judge.llm_judge_multi(task="t", system="s", text="a", keys=["done"])
+    judge.llm_judge_multi(task="t", system="s", text="b", keys=["done"])
+
+    assert len(calls) == 1, "认证失败一次即挂起，不得白跑 3 次"
+
+
+def test_insufficient_balance_is_a_hard_failure(judge, monkeypatch):
+    calls: list[int] = []
+
+    def broke(**kwargs):
+        calls.append(1)
+        raise RuntimeError("Error code: 429 - {'message': 'Insufficient balance or no resource package.'}")
+
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", broke)
+
+    judge.llm_judge_multi(task="t", system="s", text="a", keys=["done"])
+    judge.llm_judge_multi(task="t", system="s", text="b", keys=["done"])
+
+    assert len(calls) == 1

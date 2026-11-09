@@ -391,14 +391,24 @@ def _judge_endpoint_key(task: str) -> str:
 
 
 def _hard_judge_failure(exc: BaseException) -> bool:
-    """*exc* 是否意味着判定端点不可用（超时/连不通），而不是仅仅「答得不可用」。
+    """*exc* 是否意味着判定端点不可用（超时/连不通/认证欠费），而不是仅仅「答得不可用」。
 
     只有前者挂起端点：解析失败是模型答非所问，换一个 task 仍可能读到判定。
+    认证失败与欠费不是「模型答得不好」而是**这份配置根本用不了**——2026-11-10 实测：
+    deepseek_official 的 key 过期（401）、api.z.ai 欠费（429 Insufficient balance）、
+    scnet/yinfeng 一律 401。这类错误当成解析失败会白跑满 3 次才挂起，日志还误报成
+    「模型答的格式不对」，掩盖真因。
 
     Contract:
         Postconditions: 只看异常类型名与文本，永不 raise 且无副作用。
     """
     text = f"{type(exc).__name__} {exc}".lower()
+    if any(marker in text for marker in (
+        "authentication", "unauthorized", "invalid api key", "invalid token", "invalid_token",
+        "insufficient balance", "insufficient_quota", "payment", "no resource package",
+        "permission denied", "model not found", "does not exist",
+    )):
+        return True
     return any(marker in text for marker in (
         "timeout", "timed out", "connection", "connect", "unreachable", "broken pipe",
     ))
