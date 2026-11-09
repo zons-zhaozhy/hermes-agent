@@ -1528,7 +1528,10 @@ class TestLaunchdPlistRespawnGovernance:
         """The shipped LaunchAgent budget covers this fork's 90s chat drain.
 
         A 60s ExitTimeOut left only 50s of signal-driven drain after launchd's
-        cleanup reserve, so a configured 90s drain was forcibly truncated.
+        cleanup reserve, so a configured 90s drain was forcibly truncated; a
+        120s budget later left 8s of margin around a measured 112s teardown.
+        Asserted as the contract (drain + reserve), never as a snapshot of the
+        current pick: the shipped number moves with the field evidence.
         """
         import re
 
@@ -1539,7 +1542,6 @@ class TestLaunchdPlistRespawnGovernance:
         plist = generate_launchd_plist()
         m = re.search(r"<key>ExitTimeOut</key>\s*<integer>(\d+)</integer>", plist)
         assert m, plist
-        assert int(m.group(1)) == 120
         assert int(m.group(1)) >= 90 + LAUNCHD_STOP_CLEANUP_RESERVE_S
 
 
