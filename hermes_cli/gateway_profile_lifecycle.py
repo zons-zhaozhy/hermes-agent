@@ -179,7 +179,7 @@ def _pid_owned_by_home(pid: int, home) -> bool:
     host record (a file read plus an incarnation check) settles those without a dial.
     """
     from gateway import host_attach, host_rendezvous as hr
-    from gateway.status import _same_hermes_home
+    from gateway.status_identity import same_hermes_home as _same_hermes_home
     from hermes_cli.dashboard_procs import _hermes_home_for_pid
 
     record = hr.read_record(hr.ROLE_GATEWAY)
@@ -207,7 +207,8 @@ def _launch_record_owns(pid: int, home) -> bool:
     environment alone cannot prove.
     """
     from gateway.status import (
-        _GATEWAY_KIND, _get_process_start_time, _pid_from_record, _read_pid_record, _same_hermes_home)
+        _GATEWAY_KIND, _get_process_start_time, _pid_from_record, _read_pid_record)
+    from gateway.status_identity import same_hermes_home as _same_hermes_home
 
     record = _read_pid_record() or {}
     started, recorded_home = record.get("start_time"), record.get("hermes_home")

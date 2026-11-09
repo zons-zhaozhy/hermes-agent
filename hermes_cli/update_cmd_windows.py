@@ -1411,7 +1411,8 @@ def _unmapped_ready_filter(entry: dict, taken: set):
     captured (no key: a pre-durable-pause updater's token) keeps the argv-only match; a recorded
     ``home`` that is empty proves no runtime and is never matched."""
     import psutil
-    from gateway.status import _looks_like_gateway_process, _same_hermes_home, get_process_start_time
+    from gateway.status import _looks_like_gateway_process, get_process_start_time
+    from gateway.status_identity import same_hermes_home as _same_hermes_home
     from hermes_cli.update_fleet_scope import gateway_pid_home
     tail, old = list(entry.get("argv") or [])[1:], int(entry.get("pid") or 0)
     home, old_ct = entry.get("home"), entry.get("ct")

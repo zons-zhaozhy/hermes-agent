@@ -102,7 +102,8 @@ def record_serves_profile(record: Any, home: Optional[Path | str] = None) -> boo
     if not isinstance(record, dict):
         return False
     from gateway.status import (
-        _get_process_hermes_home, _profile_label_for_home, _same_hermes_home)
+        _get_process_hermes_home, _profile_label_for_home)
+    from gateway.status_identity import same_hermes_home as _same_hermes_home
 
     try:
         target = Path(home) if home is not None else get_hermes_home()

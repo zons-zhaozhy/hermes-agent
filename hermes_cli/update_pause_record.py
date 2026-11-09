@@ -493,7 +493,7 @@ def mark_stop_consumed(path: Path, marker: dict) -> None:
     Called under the pause mutex by the consumer. Preserve the holder's identity;
     this is evidence of a stop, not a transfer of the updater's custody.
     """
-    from gateway.status import _same_hermes_home
+    from gateway.status_identity import same_hermes_home as _same_hermes_home
     pid = str(marker["target_pid"])
     for src, body in _files(record_path()):
         token = body["token"]

@@ -285,7 +285,7 @@ def _own_gateway_pid(home: Path, owner) -> Optional[int]:
     if pid is None or owner is None or pid != owner.pid:
         return pid
     with contextlib.suppress(Exception):
-        from gateway.status import _same_hermes_home
+        from gateway.status_identity import same_hermes_home as _same_hermes_home
         return pid if _same_hermes_home(Path(owner.home), Path(home)) else None
     return None
 

@@ -34,6 +34,7 @@ PROJECT_ROOT = Path(_startup_fast.project_root_str())
 
 from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config
 from gateway.status import terminate_pid
+from gateway.status_identity import same_hermes_home
 from agent.deadline import poll_until
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -71,7 +72,6 @@ from hermes_cli.setup import (
 from hermes_cli.colors import Colors, color
 from hermes_cli.gateway_profile_lifecycle import owned_gateway_pid as _owned_gateway_pid
 logger = logging.getLogger(__name__)
-
 # Shared ``subprocess.run`` kwargs for text-mode probes (stdout/stderr captured, decode-tolerant).
 _CAPTURE_TEXT = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
 
@@ -4101,8 +4101,8 @@ def _served_by_another_host_gateway(profile_name: str | None = None):
     if gateway is None:
         return None
     try:
-        from gateway.status import _get_process_hermes_home, _same_hermes_home
-        if _same_hermes_home(gateway.home, _get_process_hermes_home()):
+        from gateway.status import _get_process_hermes_home
+        if same_hermes_home(gateway.home, _get_process_hermes_home()):
             return None
     except Exception:
         logger.debug("Host multiplexer home comparison failed", exc_info=True)
@@ -5256,8 +5256,8 @@ def _host_multiplexer_for_all_verb():
 
 def _host_multiplexer_is_ours(owner) -> bool:
     try:
-        from gateway.status import _get_process_hermes_home, _same_hermes_home
-        return bool(_same_hermes_home(owner.home, _get_process_hermes_home()))
+        from gateway.status import _get_process_hermes_home
+        return bool(same_hermes_home(owner.home, _get_process_hermes_home()))
     except Exception:
         return False
 
