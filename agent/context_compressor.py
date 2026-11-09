@@ -1943,13 +1943,26 @@ def _sum_template(template: str, **defaults):
     return summarize
 
 
+def _sum_patch(name, args, content, content_len, line_count):
+    """Keep the patch's net change visible after compression: the diff itself is
+    dropped, but ``+N/-M lines`` lets the post-compaction agent still answer
+    "what did you change" without re-running git against the working tree."""
+    path = args.get("path", "?")
+    diff = _json_dict(content).get("diff")
+    if not isinstance(diff, str) or not diff.strip():
+        return f"[patch] replace in {path} ({content_len:,} chars result)" + _result_failure_suffix(content)
+    added = sum(1 for ln in diff.splitlines() if ln.startswith("+") and not ln.startswith("+++"))
+    removed = sum(1 for ln in diff.splitlines() if ln.startswith("-") and not ln.startswith("---"))
+    return f"[patch] replace in {path} (+{added}/-{removed} lines)" + _result_failure_suffix(content)
+
+
 # tool_name -> (name, args, content, content_len, line_count) -> one-line summary.
 _TOOL_RESULT_SUMMARIZERS = {
     "terminal": _sum_terminal,
     "read_file": _sum_template("[read_file] read {path} from line {offset} ({content_len:,} chars)", path="?", offset=1),
     "write_file": _sum_write_file,
     "search_files": _sum_search_files,
-    "patch": _sum_template("[patch] {mode} in {path} ({content_len:,} chars result)", mode="replace", path="?"),
+    "patch": _sum_patch,
     **dict.fromkeys(
         ("browser_navigate", "browser_click", "browser_snapshot", "browser_type", "browser_scroll", "browser_vision"),
         _sum_browser,
