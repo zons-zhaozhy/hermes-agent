@@ -499,21 +499,34 @@ def _last_assistant_proposal(conversation_history: list[dict] | None) -> bool:
 
 
 def _is_confirmation(message: str, conversation_history: list[dict] | None) -> bool:
-    """Recognize terse approval only when it refers to an actual proposal."""
-    text = (message or "").strip().lower()
-    normalized = "".join(char for char in text if char.isalnum())
-    if not normalized or len(normalized) > 40 or "?" in text or "？" in text:
-        return False
-    if normalized == "确认":
-        return _last_assistant_proposal(conversation_history)
-    if any(term in normalized for term in _EXECUTION_CONFIRMATION_TERMS):
-        return _last_assistant_proposal(conversation_history)
-    if any(term in text for term in _READ_ONLY_TERMS):
-        return False
-    if not any(term in text for term in _CONFIRMATION_TERMS):
-        return False
-    return _last_assistant_proposal(conversation_history)
+    """Recognize terse approval only when it refers to an actual proposal.
 
+    句级判定：一条消息里授权句与追问句可以共存（「执行\\n\\n门禁怎么了？」
+    的授权不得被追问句的问号整体否决）。按换行/句末标点切句，逐句沿用
+    原有门槛（短、无问号、无只读词、含确认词），任一句通过即确认。
+    """
+    text = (message or "").strip().lower()
+    if not text:
+        return False
+    sentences = [seg.strip() for seg in _SENTENCE_SPLIT_RE.split(text) if seg.strip()]
+    for sentence in sentences:
+        normalized = "".join(char for char in sentence if char.isalnum())
+        if not normalized or len(normalized) > 40:
+            continue
+        if "?" in sentence or "？" in sentence:
+            continue
+        # 「确认/确认执行」是精确授权形态，须先于只读词否决（「确认」本身在只读词表）
+        if normalized == "确认" or any(term in normalized for term in _EXECUTION_CONFIRMATION_TERMS):
+            return _last_assistant_proposal(conversation_history)
+        if any(term in sentence for term in _READ_ONLY_TERMS):
+            continue
+        if any(term in sentence for term in _CONFIRMATION_TERMS):
+            return _last_assistant_proposal(conversation_history)
+    return False
+
+
+# 句级切分：换行/中英文句末标点（问号切分后授权句不再携带问号，授权与追问互不污染）
+_SENTENCE_SPLIT_RE = re.compile(r"[\n。！？?;；]")  # re-ok: 句末标点字符类切句，无回溯风险
 
 _OPTION_ASSIGN_RE = re.compile(r"^\s*([A-Za-z0-9]{1,3})\s*(?:[=＝:：]|表示|代表|即|是)\s*(.+)$")
 _OPTION_REPLY_RE = re.compile(r"^\s*(?:回复|回|选|按)\s*([A-Za-z0-9]{1,3})\s*(?:[=＝:：]|表示|代表|即|是)?\s*(.+)$")

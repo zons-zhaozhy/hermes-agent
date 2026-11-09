@@ -262,6 +262,63 @@ def test_execution_confirmation_authorizes_the_proposed_modification(
     assert gate.user_intent == "modify"
 
 
+def test_bare_execution_word_authorizes_proposed_modification(
+    tmp_path: Path,
+) -> None:
+    """裸「执行」单独成句、承接具体修改方案 = 修改授权。
+
+    回归锚：2026-11-09 实测用户原话「执行」被判 read_only——词表只有
+    「执行吧/确认执行」，裸二字漏网，三连误拦。
+    """
+    history = [
+        {
+            "role": "assistant",
+            "content": "方案：修复注册跳转与校验、删除内部信息暴露，共三处。确认请回复：执行",
+        }
+    ]
+    gate = _strict_gate(tmp_path)
+
+    gate.reset_for_turn("执行", history)
+
+    assert gate.user_intent == "modify"
+
+
+def test_execution_sentence_with_trailing_question_still_authorizes(
+    tmp_path: Path,
+) -> None:
+    """授权句 + 追问句混合消息：句级判定，问号不整体否决授权。
+
+    回归锚：2026-11-09 实测「执行\n\n门禁拦截是不是还有问题？到底咋回事？」
+    被整条消息级「含？即否决」规则判 read_only。
+    """
+    history = [
+        {
+            "role": "assistant",
+            "content": "方案：修复注册跳转与校验、删除内部信息暴露，共三处。确认请回复：执行",
+        }
+    ]
+    gate = _strict_gate(tmp_path)
+
+    gate.reset_for_turn("执行\n\n门禁拦截是不是还有问题？到底咋回事？", history)
+
+    assert gate.user_intent == "modify"
+
+
+def test_question_alone_stays_read_only(tmp_path: Path) -> None:
+    history = [
+        {
+            "role": "assistant",
+            "content": "方案：先补失败的回归测试，再修复解析器并运行相关测试。确认执行请回复：确认执行",
+        }
+    ]
+    gate = _strict_gate(tmp_path)
+
+    gate.reset_for_turn("门禁拦截是不是还有问题？到底咋回事？", history)
+
+    # 纯问句不得授权写操作（判定为 read_only 或 ambiguous 均阻断，皆可接受）
+    assert gate.user_intent != "modify"
+
+
 def test_confirmation_check_is_hard_read_only_intent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
