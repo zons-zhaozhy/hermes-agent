@@ -1,0 +1,13 @@
+name: brief_before_act
+description: "先亮牌后动手守卫——亮牌四要素(理解/方案/决策/动作)标记缺失而已执行写操作(patch/write_file)时,下轮注入SOP要求补亮牌;advisory起步"
+version: 1.0.0
+author: stan
+license: MIT
+hooks:
+  - pre_llm_call
+tags:
+  - guard
+gate_suites:
+  - intent
+gate_policy: advisory
+gate_kind: enforcement
