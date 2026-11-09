@@ -213,6 +213,13 @@ _SUPPORT_CACHE: dict[str, bool] = {}
 
 _JUDGE_RETRY_SECONDS = 300.0
 _JUDGE_RETRY_MAX_SECONDS = 3600.0
+# 解析失败（模型答了，但格式读不出来）不是端点故障：单次偶发必须允许下一次立刻重判，
+# 否则一次答非所问就把该 task 静默停摆 5 分钟——而判定件全是 fail-open，停摆期间没有任何
+# 外部信号，等于守卫被悄悄关掉。连续失败到这个数才认为「这个 task 的 prompt/模型配错了」，
+# 这时才挂起。硬失败（超时/连不通）不受此限，仍一次挂起（且是端点级的）。
+_PARSE_FAILURES_BEFORE_CIRCUIT = 3
+# 连续解析失败的记忆窗口：超过这个间隔算「新的一串」，避免昨天的偶发和今天的一次叠加成挂起。
+_PARSE_FAILURE_MEMORY_SECONDS = 600.0
 _JUDGE_CIRCUIT: dict[tuple[str, str], tuple[int, float]] = {}
 _JUDGE_CIRCUIT_LOCK = threading.Lock()
 
@@ -433,11 +440,21 @@ def _record_judge_failure(task: str, *, hard: bool = False) -> None:
             if len(_JUDGE_ENDPOINT_DOWN) > 128:
                 _JUDGE_ENDPOINT_DOWN.pop(next(iter(_JUDGE_ENDPOINT_DOWN)))
         previous = _JUDGE_CIRCUIT.get(key)
-        failures = (previous[0] if previous is not None else 0) + 1
+        # 只累计「距上次冷却结束以后的连续失败」：冷却期内的失败不叠加，否则一次故障会
+        # 在冷却中被后续调用越拖越长。
+        prior = (
+            previous[0]
+            if previous is not None and (now - previous[1]) <= _PARSE_FAILURE_MEMORY_SECONDS
+            else 0
+        )
+        if previous is not None and now < previous[1]:
+            return  # 已在冷却中：不重复计数、不重复记日志
+        failures = prior + 1
+        opens = hard or failures >= _PARSE_FAILURES_BEFORE_CIRCUIT
         retry_seconds = min(
             _JUDGE_RETRY_SECONDS * (2 ** min(failures - 1, 4)),
             _JUDGE_RETRY_MAX_SECONDS,
-        )
+        ) if opens else 0.0
         _JUDGE_CIRCUIT[key] = (failures, now + retry_seconds)
         if len(_JUDGE_CIRCUIT) > 128:
             _JUDGE_CIRCUIT.pop(next(iter(_JUDGE_CIRCUIT)))
@@ -447,7 +464,13 @@ def _record_judge_failure(task: str, *, hard: bool = False) -> None:
             "fail-open，不再逐个 task 重付超时 (profile=%s)",
             endpoint[1] or "未知", task, _JUDGE_ENDPOINT_DOWN_SECONDS, key[0],
         )
-    if previous is None or now >= previous[1]:
+    if retry_seconds <= 0:
+        logger.warning(
+            "llm_judge(%s): 解析失败 %d/%d（未达挂起阈值，下一次仍会重判；连续失败到这个数"
+            "才认为该 task 的 prompt/模型配错）。最近一次答的是不可用格式 (profile=%s)",
+            key[1], failures, _PARSE_FAILURES_BEFORE_CIRCUIT, key[0],
+        )
+    elif previous is None or now >= previous[1]:
         logger.warning(
             "llm_judge(%s): circuit open for %.0fs after failure #%d (profile=%s)",
             key[1], retry_seconds, failures, key[0],
