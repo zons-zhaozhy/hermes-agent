@@ -103,6 +103,46 @@ def test_endpoint_timeout_leaves_a_task_on_another_endpoint_alone(monkeypatch):
     assert calls == ["slow_guard", "fast_guard"]
 
 
+def test_unconfigured_task_shares_the_circuit_of_a_task_pinned_to_the_same_endpoint(monkeypatch):
+    """An ``auxiliary.<task>`` with no provider/model/base_url calls the MAIN provider.
+
+    Keying its circuit on the "auto" sentinel put it on a different endpoint identity than the
+    pinned tasks that really call the same host, so a dead endpoint made it pay a fresh timeout
+    every turn while its peers were already short-circuited. Regression for the 2026-11-09 stall:
+    ``read_think_intent`` (12 s × main + 3 global fallbacks) against the 30 s ``pre_llm_call``
+    budget, twice, with ``api_calls=0``.
+    """
+    module = _load_judge()
+    calls: list[str] = []
+    endpoint = "https://open.bigmodel.cn/api/coding/paas/v4"
+
+    def resolve(task, provider=None, model=None, base_url=None, api_key=None):
+        if task == "read_think_intent":
+            return ("auto", None, None, None, None)
+        return ("zai", "glm-5.3-flash", endpoint, None, None)
+
+    def main_route(_runtime, _task):
+        return ("zai", "glm-5.3", endpoint, None, None)
+
+    def unavailable(**kwargs):
+        calls.append(str(kwargs["task"]))
+        raise TimeoutError("judge timed out")
+
+    monkeypatch.setattr("agent.auxiliary_client._resolve_task_provider_model", resolve)
+    monkeypatch.setattr("agent.auxiliary_client._main_route_target", main_route)
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", unavailable)
+
+    assert module._judge_endpoint_key("read_think_intent") == module._judge_endpoint_key("scope_gate")
+    assert module.llm_judge_multi(
+        task="scope_gate", system="return JSON", text="continue", keys=["done"],
+    ) == {"done": None}
+    assert module.llm_judge_multi(
+        task="read_think_intent", system="return JSON", text="continue", keys=["done"],
+    ) == {"done": None}
+
+    assert calls == ["scope_gate"], "the dead endpoint costs one timeout per turn, not one per task"
+
+
 def test_unusable_answer_stays_task_scoped(monkeypatch):
     """A parse failure is model misbehaviour on ONE prompt, not a dead endpoint: a sibling
     task on the same endpoint must still be judged."""

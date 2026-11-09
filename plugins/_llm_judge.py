@@ -42,9 +42,11 @@ TOP_LOGPROBS = 20
 
 # 钩子内 judge 预算的唯一治理面是 auxiliary.<task>.timeout（config.yaml）——本模块
 # 三个公开入口的 timeout 默认一律 None（= 交给配置面解析），插件源码禁写死秒数
-# （tests/plugins/test_judge_timeout_governance.py 保护该契约）。注意 pre_llm_call /
-# post_tool_call / transform_llm_output 都在框架有界钩子内（hermes_cli/plugins_dispatch.py
-# 预算 30s，超时即 abandon 且调用路径先白等满预算），故这类任务应在 config 里显式配到 ≤10s。
+# （tests/plugins/test_judge_timeout_governance.py 保护该契约）。注意一个 task 的单次预算
+# 还要乘以它自己的 fallback_chain 与全局 fallback_providers 跳数：12s 的 task 在 3 家
+# 全局兜底下最坏 48s，早已超过框架 30s 的钩子预算（2026-11-09 实测打穿 pre_llm_call）。
+# 因此这类任务的 timeout 应配到 ≤10s 且兜底不超过一跳；端点硬失败由下面的端点级熔断
+# 兜住，不会每个 task 各付一次超时。
 
 
 def confidence_tier(probability: Optional[float]) -> str:
@@ -244,11 +246,29 @@ def _judge_endpoint_key(task: str) -> str:
                         的全部 task 生效——宁可少判，不可每轮空转。
     """
     try:
-        from agent.auxiliary_client import _resolve_task_provider_model
+        from agent.auxiliary_client import (
+            _main_route_target, _normalize_main_runtime, _read_main_field,
+            _resolve_task_provider_model,
+        )
 
         provider, _model, base_url, _api_key, _api_mode = _resolve_task_provider_model(
             task, None, None, None, None,
         )
+        if str(provider or "").strip().lower() in ("", "auto"):
+            # An unconfigured task (`auxiliary.<task>` without provider/model/base_url — e.g.
+            # `read_think_intent`) resolves to the "auto" sentinel: it really calls the MAIN
+            # provider. Keying the circuit on "auto|" would put it on a different endpoint than
+            # every pinned task on that same endpoint, so the endpoint-wide suppression below
+            # would never fire for it and it would pay a fresh timeout every turn while its
+            # peers were already short-circuited (2026-11-09: read_think_intent 12s × main +
+            # 3 global fallbacks against the 30s pre_llm_call budget). Resolve the destination
+            # the auto route actually uses.
+            main_provider, _main_model, main_base_url, _k, _m = _main_route_target(
+                _normalize_main_runtime(None), task)
+            if main_provider:
+                provider = main_provider
+                base_url = (main_base_url or base_url
+                            or _read_main_field("base_url", readonly=False))
     except Exception:
         # Deliberate boundary: config/env readers can fail in ways this module cannot
         # enumerate (malformed config.yaml, unreadable home, provider registry import).
