@@ -62,12 +62,24 @@ _HOOK_CALL_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
 _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {
     "pre_tool_call", "pre_tool_batch", "pre_llm_call", "pre_verify",
 }
+# Of those, the ones that decide ONCE per unit of user-visible work and whose timeout therefore
+# destroys that whole unit: a turn (``pre_llm_call``) or a completion claim (``pre_verify``).
+# Only these earn the automatic retry below. The per-tool-call gates do not: they fail closed
+# into an error result the agent can adapt to, and retrying would add another full budget to
+# every blocked tool call for the length of an outage.
+_HOOK_TIMEOUT_RETRY_HOOKS: set[str] = {"pre_llm_call", "pre_verify"}
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
 _HOOK_CALLER_THREAD_HOOKS: set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
 _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
 # Live workers a hung callback may accumulate before it is skipped outright (#105223 / #98382).
 _HOOK_MAX_ABANDONED_WORKERS = 3
+# A fail-closed (policy) callback that blew its budget gets ONE automatic retry under this cap.
+# Without it a transient infrastructure hiccup ends the user's whole turn: a guard's auxiliary
+# judge stalled in DNS/connect, the abandoned worker never returns, and a retry inside the 60s
+# suppression window is skipped — which fail-closed turns into a second identical veto. The
+# first attempt's budget is already spent, so the retry is capped to bound the added latency.
+_HOOK_RETRY_TIMEOUT_SECS = 15.0
 _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call plugin callback timed out or is still running"
 
 # The one hook whose callback rewrites the reply the user would otherwise see streaming.
@@ -94,12 +106,30 @@ def held_stream_transforms() -> tuple[Callable, ...]:
     return _delivery_manager().held_transforms()
 
 
-def _hook_timeout_block_message(hook_name: str) -> str:
-    """Fail-closed block message for a timed-out/still-running policy-hook callback,
-    naming the hook so the tool result tells the operator which guard hung."""
+def _hook_timeout_block_message(
+    hook_name: str, callback: Optional[Callable] = None, *, timeout: float = 0.0,
+    cooling_down: bool = False, retry_in: float = 0.0, retried: bool = False,
+) -> str:
+    """Fail-closed block message for a timed-out/still-running policy-hook callback.
+
+    Names the callback and its plugin, not just the hook: a bare ``pre_llm_call plugin
+    callback timed out`` leaves both the operator and the user unable to tell WHICH guard
+    hung, whether it already retried, and whether waiting will help — every one of those
+    changes what they should do next.
+    """
     if hook_name == "pre_tool_call":
         return _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE  # exact string asserted by existing tests
-    return f"{hook_name} plugin callback timed out or is still running"
+    who = ""
+    if callback is not None:
+        who = (f"插件回调 {getattr(callback, '__name__', repr(callback))} "
+               f"({getattr(callback, '__module__', '') or '未知插件'}) ")
+    if cooling_down:
+        wait = f"，约 {max(retry_in, 0.0):.0f}s 后解除" if retry_in > 0 else ""
+        state = f"仍在冷却（上一轮超时的回调尚未返回{wait}）"
+    else:
+        state = f"超出 {timeout:g}s 预算未返回" + ("，自动重试一次仍无判定" if retried else "")
+    return (f"[{hook_name} 门禁暂不可用 / UNKNOWN] {who}{state}——本轮未发起任何模型调用；"
+            "稍后重发即可。")
 
 
 def _policy_error_block_directive(hook_name: str, cb: Callable, exc: BaseException) -> dict[str, str]:
@@ -198,7 +228,13 @@ class _QueuedPluginEvent:
 # ``plugins.hook_callback_timeout``. Shell hooks enforce their own subprocess timeout.
 _HOOK_CALLBACK_TIMEOUT_SECS = 30.0
 _MAX_HOOK_CALLBACK_TIMEOUT_SECS = 600.0
-_HOOK_SKIPPED = object()  # returned by _run_hook_callback_bounded on skip/timeout
+# Returned by _run_hook_callback_bounded when the callback produced no decision: a worker ran
+# and blew its budget (or could not be started) — "timed out", vs _HOOK_SKIPPED_UNSTARTED below.
+_HOOK_SKIPPED = object()
+# ...and when nothing was invoked for this call at all (suppression window, abandoned-worker cap).
+# Kept apart so the fail-closed block can tell the user "retried, still no verdict" from "still
+# cooling down, wait" instead of re-reading the timeout bookkeeping at the call site.
+_HOOK_SKIPPED_UNSTARTED = object()
 
 
 def _hook_call_identity(kwargs: dict[str, Any], hook_name: str = "") -> Optional[str]:
@@ -404,6 +440,23 @@ class PluginDispatchMixin:
             current += _TRANSFORM_FAILURE_MARKER.format(callbacks=names)
         return [current] if current != original else []
 
+    def _hook_cooldown_remaining(self, hook_name: str, cb: Callable, kwargs: dict[str, Any]) -> Optional[float]:
+        """Seconds until *cb* may run again, or ``None`` when it is free to run now.
+
+        Read-only view of the timeout bookkeeping so the fail-closed block message can say
+        "timed out just now" instead of "still cooling down": those two need different advice
+        (retry vs wait), and the callback name alone never told the user which it was."""
+        suppression_key = (hook_name, id(cb))
+        gate_key = (*suppression_key, _hook_call_identity(kwargs, hook_name))
+        with self._hook_timeout_lock:
+            suppressed_until = self._hook_timeout_suppressed_until.get(suppression_key)
+            now = time.monotonic()
+            if gate_key in self._hook_running_callbacks:
+                return max(0.0, (suppressed_until or now) - now)
+            if suppressed_until is not None and suppressed_until > now:
+                return suppressed_until - now
+        return None
+
     def _run_hook_callbacks(self, hook_name: str, callbacks: Any, kwargs: dict[str, Any],
                             failed: Optional[list] = None) -> list[Any]:
         """:meth:`invoke_hook`'s loop over ``callbacks``; each one that raised or timed out is
@@ -413,12 +466,21 @@ class PluginDispatchMixin:
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
+        retryable = hook_name in _HOOK_TIMEOUT_RETRY_HOOKS
         for cb in callbacks:
             started = time.perf_counter()
             try:
                 if use_timeout:
                     ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
-                    if ret is _HOOK_SKIPPED:
+                    retried = False
+                    if (ret is _HOOK_SKIPPED or ret is _HOOK_SKIPPED_UNSTARTED) and retryable:
+                        # One retry, past the suppression window: the first attempt's budget is
+                        # already spent, so an unretried skip costs the user the whole turn.
+                        retried = True
+                        ret = self._run_hook_callback_bounded(
+                            hook_name, cb, kwargs, min(timeout, _HOOK_RETRY_TIMEOUT_SECS),
+                            retry_attempt=True)
+                    if ret is _HOOK_SKIPPED or ret is _HOOK_SKIPPED_UNSTARTED:
                         self._record_gate_event(
                             hook_name, cb, kwargs, GateStatus.UNKNOWN,
                             detail="callback skipped or timed out",
@@ -427,7 +489,11 @@ class PluginDispatchMixin:
                         if failed is not None:
                             failed.append(cb)
                         if fail_closed:  # policy hook: fail closed with a block directive
-                            results.append({"action": "block", "message": _hook_timeout_block_message(hook_name)})
+                            never_ran = ret is _HOOK_SKIPPED_UNSTARTED
+                            results.append({"action": "block", "message": _hook_timeout_block_message(
+                                hook_name, cb, timeout=timeout, cooling_down=never_ran,
+                                retry_in=self._hook_cooldown_remaining(hook_name, cb, kwargs) or 0.0,
+                                retried=retried and not never_ran)})
                         continue
                 else:
                     ret = self._invoke_hook_callback(cb, kwargs)
@@ -478,26 +544,35 @@ class PluginDispatchMixin:
             surface, hook_name, callback_name, exc, surface.lower(), ", ".join(sorted(kwargs)) or "no fields")
 
     def _run_hook_callback_bounded(
-        self, hook_name: str, cb: Callable, kwargs: dict[str, Any], timeout: float
+        self, hook_name: str, cb: Callable, kwargs: dict[str, Any], timeout: float, *,
+        retry_attempt: bool = False,
     ) -> Any:
-        """Run one callback on a daemon worker with a wall-clock cap; ``_HOOK_SKIPPED`` when
-        suppressed, still running for this call id, over the abandoned-worker cap, timed out
-        (worker abandoned, never joined), or the worker could not be started. Exceptions
-        propagate."""
+        """Run one callback on a daemon worker with a wall-clock cap; ``_HOOK_SKIPPED`` when it
+        timed out (worker abandoned, never joined) or its worker could not be started, and
+        ``_HOOK_SKIPPED_UNSTARTED`` when it was suppressed, still running for this call id, or
+        over the abandoned-worker cap. Exceptions propagate.
+
+        ``retry_attempt`` marks the one automatic retry of a fail-closed callback: it is new
+        work, not a duplicate of the worker it retries, so it takes its own gate token. It still
+        honours the abandoned-worker cap — the pile-up bound, not the time back-off, is what
+        keeps a permanently hung guard from leaking a thread per turn."""
         callback_name = getattr(cb, "__name__", repr(cb))
         # Suppression is a fact about the CALLBACK — a hung one must keep its back-off —
         # so that key stays coarse. The gate must instead tell CONCURRENT CALLS apart.
         suppression_key = (hook_name, id(cb))
         gate_key = (*suppression_key, _hook_call_identity(kwargs, hook_name))
+        if retry_attempt:
+            gate_key = (*gate_key, "retry")
         token = object()
         with self._hook_timeout_lock:
             suppressed_until = self._hook_timeout_suppressed_until.get(suppression_key)
-            if (gate_key in self._hook_running_callbacks
+            if not retry_attempt and (
+                    gate_key in self._hook_running_callbacks
                     or (suppressed_until is not None and suppressed_until > time.monotonic())):
                 logger.warning(
                     "Hook '%s' callback %s skipped after previous "
                     "timeout or while still running", hook_name, callback_name)
-                return _HOOK_SKIPPED
+                return _HOOK_SKIPPED_UNSTARTED
             # Workers abandoned on timeout still hold threads. Once the suppression window has
             # passed, a fresh call id may start a new worker (a hung guard must not fail every
             # later tool call closed until restart, #105223), but only up to a small cap per
@@ -510,7 +585,7 @@ class PluginDispatchMixin:
                     "Hook '%s' callback %s (%s) skipped: %d abandoned worker(s) still running — "
                     "the plugin is hung; fix or disable it (retried when a worker finishes)",
                     hook_name, callback_name, getattr(cb, "__module__", "unknown plugin"), len(abandoned))
-                return _HOOK_SKIPPED
+                return _HOOK_SKIPPED_UNSTARTED
             if suppressed_until is not None:
                 self._hook_timeout_suppressed_until.pop(suppression_key, None)
             self._hook_running_callbacks[gate_key] = token
@@ -759,6 +834,31 @@ class PluginDispatchMixin:
                 current = rewrite
         return (current if current != original else None), bool(failed_callbacks)
 
+    async def _await_hook_callback(
+        self, hook_name: str, cb: Callable, kwargs: dict[str, Any], timeout: float, *, retry: bool,
+    ) -> tuple[Any, bool]:
+        """Await one callback under *timeout*; ``(value, timed_out)``.
+
+        A coroutine callback is cancellable, so a timed-out one leaves nothing running: unlike
+        the threaded path, the retry needs no gate bypass. ``retry`` buys the fail-closed
+        callback one more attempt under ``_HOOK_RETRY_TIMEOUT_SECS`` — the same reason the sync
+        path retries: a transient stall in a guard's auxiliary judge must not veto the turn."""
+        value = cb(**self._hook_callback_kwargs(cb, kwargs))
+        if not inspect.isawaitable(value):
+            return value, False
+        try:
+            return await asyncio.wait_for(value, timeout), False
+        except TimeoutError:
+            if not retry:
+                return None, True
+        second = cb(**self._hook_callback_kwargs(cb, kwargs))
+        if not inspect.isawaitable(second):
+            return second, False
+        try:
+            return await asyncio.wait_for(second, min(timeout, _HOOK_RETRY_TIMEOUT_SECS)), False
+        except TimeoutError:
+            return None, True
+
     async def ainvoke_hook(self, hook_name: str, **kwargs: Any) -> list[Any]:
         """:meth:`invoke_hook` for callers that are already on an event loop.
 
@@ -783,26 +883,33 @@ class PluginDispatchMixin:
             callback_name = getattr(cb, "__name__", repr(cb))
             started = time.perf_counter()
             try:
-                ret = cb(**self._hook_callback_kwargs(cb, kwargs))
-                if inspect.isawaitable(ret):
-                    try:
-                        ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
-                    except TimeoutError:
-                        logger.warning(
-                            "Hook '%s' callback %s timed out after %.0fs",
-                            hook_name, callback_name, timeout,
-                        )
-                        self._record_gate_event(
-                            hook_name, cb, kwargs, GateStatus.UNKNOWN,
-                            detail="callback skipped or timed out",
-                            duration_ms=(time.perf_counter() - started) * 1000,
-                        )
-                        if fail_closed:
-                            results.append({
-                                "action": "block",
-                                "message": _hook_timeout_block_message(hook_name),
-                            })
-                        continue
+                timed_out = False
+                if use_timeout:
+                    ret, timed_out = await self._await_hook_callback(
+                        hook_name, cb, kwargs, timeout,
+                        retry=hook_name in _HOOK_TIMEOUT_RETRY_HOOKS)
+                else:
+                    ret = cb(**self._hook_callback_kwargs(cb, kwargs))
+                    if inspect.isawaitable(ret):
+                        ret = await ret
+                if timed_out:
+                    logger.warning(
+                        "Hook '%s' callback %s timed out after %.0fs",
+                        hook_name, callback_name, timeout,
+                    )
+                    self._record_gate_event(
+                        hook_name, cb, kwargs, GateStatus.UNKNOWN,
+                        detail="callback skipped or timed out",
+                        duration_ms=(time.perf_counter() - started) * 1000,
+                    )
+                    if fail_closed:
+                        results.append({
+                            "action": "block",
+                            "message": _hook_timeout_block_message(
+                                hook_name, cb, timeout=timeout,
+                                retried=hook_name in _HOOK_TIMEOUT_RETRY_HOOKS),
+                        })
+                    continue
                 status = result_status(ret)
                 action = str(ret.get("action", "")).lower() if isinstance(ret, Mapping) else ""
                 self._record_gate_event(

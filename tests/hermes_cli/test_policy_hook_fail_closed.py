@@ -12,7 +12,6 @@ import asyncio
 
 import pytest
 
-from hermes_cli import plugins_dispatch as dispatch
 from hermes_cli.plugins import PluginManager
 
 
@@ -55,7 +54,11 @@ def test_policy_timeout_returns_named_block(monkeypatch, hook_name: str) -> None
 
     assert len(results) == 1
     assert results[0]["action"] == "block"
-    assert results[0]["message"] == dispatch._hook_timeout_block_message(hook_name)
+    assert hook_name in results[0]["message"]
+    assert "hung_guard" in results[0]["message"], (
+        "the block names the callback, not only the hook: the operator must be able to tell "
+        "which guard hung and whether the automatic retry already happened"
+    )
 
 
 @pytest.mark.parametrize("hook_name", ["pre_llm_call", "pre_verify"])

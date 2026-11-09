@@ -41,7 +41,7 @@ class TestPreToolBatchFailClosed:
 
     def test_timed_out_callback_fails_closed(self, monkeypatch):
         """A hung batch-gate callback is abandoned at the timeout and fails
-        closed with a block directive naming the hook."""
+        closed with a block directive naming the hook and the callback."""
         monkeypatch.setattr(
             "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
         )
@@ -61,14 +61,16 @@ class TestPreToolBatchFailClosed:
         assert len(results) == 1
         directive = results[0]
         assert directive["action"] == "block"
-        assert directive["message"] == dispatch._hook_timeout_block_message("pre_tool_batch")
         assert "pre_tool_batch" in directive["message"]
+        assert "gate_hung" in directive["message"], (
+            "the block must name the callback: a bare hook name does not tell the operator "
+            "or the user which guard hung"
+        )
         hold.set()
 
     def test_timeout_warning_names_callback_module(self, monkeypatch, caplog):
         """A timed-out callback's WARNING carries its module, so one hung guard among
-        many same-named ``on_pre_tool_call`` callbacks is attributable to its plugin
-        (the fail-closed block copy itself stays operator-stable)."""
+        many same-named ``on_pre_tool_call`` callbacks is attributable to its plugin."""
         monkeypatch.setattr(
             "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
         )
