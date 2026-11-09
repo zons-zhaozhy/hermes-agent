@@ -964,7 +964,6 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         Each profile connects under its own HERMES_HOME + secret scope; credential/listener collisions
         are refused here — the only point seeing every profile's credentials together."""
         from gateway.run import MultiplexConfigError, _multiplex_profile_homes
-        from gateway.run_profile_reconcile import profile_serve_signature
         if not self._multiplex_on():
             # Runtime-status publication re-stamps the previous writer's record in place, so a multiplexer's
             # ``served_profiles`` would outlive it into this single-profile run and `hermes -p X ...`
@@ -991,11 +990,16 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         profile_homes = _multiplex_profile_homes(self.config)
         self._served_profile_signatures = {}
         transient_failed = set()
+        # Every profile's signature at once, off the loop (``_serve_signatures``): inline it was one
+        # whole-file digest per profile before the first adapter could connect. Taken before the
+        # connections below, so a setup save during an awaited handshake still needs another scan.
+        # The active profile is in the batch too: ``_note_served_profiles`` otherwise refills its
+        # missing entry with a digest on the loop.
+        scan_signatures = await self._serve_signatures(dict(profile_homes))
         for profile_name, profile_home in profile_homes:
             if profile_name == active:
                 continue  # handled by the primary startup loop
-            # Preserve changes made while the initial connection is awaiting I/O.
-            scan_signature = profile_serve_signature(profile_home)
+            scan_signature = scan_signatures[profile_name]
             try:
                 connected += await self._start_one_profile_adapters(profile_name, profile_home, claimed)
             except MultiplexConfigError:
@@ -1006,6 +1010,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
                 transient_failed.add(profile_name)
             else:
                 self._served_profile_signatures[profile_name] = scan_signature
+        self._served_profile_signatures = {**scan_signatures, **self._served_profile_signatures}
         self._record_served_profiles(active, profile_homes)
         # ``_note_served_profiles`` fills a missing signature with the current one; that refill
         # would park a transiently-failed profile before the first watcher tick can retry it.

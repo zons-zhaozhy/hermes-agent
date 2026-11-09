@@ -17,6 +17,12 @@ The same watcher tick (on every gateway, multiplexed or not) re-syncs a home's s
 ``shell-hooks-allowlist.json`` (or ``config.yaml``) changed: a non-TTY gateway skips unconsented hooks, so consent recorded
 afterwards must register them without a restart (#132993). That re-runs hook registration only, never
 an adapter rebuild.
+
+Every signature compared here reads and hashes whole files (``always_digest``), so it is taken through
+``_serve_signatures``, off the event loop. Inline, a hosted served set cost the loop 1-2.5 s per cycle
+(``slow_loop_monitor``), and a blocked loop answers no ws ``session.resume`` and no MCP keepalive: the
+viewer times out, reports "Gateway disconnected" and redials into the same stall, while the turn it
+lost runs on.
 """
 from __future__ import annotations
 
@@ -106,6 +112,13 @@ class GatewayProfileReconcileMixin:
         sigs = self._served_profile_signatures if isinstance(self._served_profile_signatures, dict) else {}
         self._served_profile_signatures = {name: sigs.get(name) or profile_serve_signature(home)
                                            for name, home in homes.items()}
+
+    async def _serve_signatures(self, homes) -> dict:
+        """``profile_serve_signature`` for each home, hashed OFF the event loop: one signature opens and
+        hashes a whole ``config.yaml`` and ``.env``, and a served set of profiles did that inline on the
+        loop every 30 s cycle (see the module docstring for what a blocked loop does to viewers)."""
+        return await asyncio.to_thread(
+            lambda: {name: profile_serve_signature(home) for name, home in homes.items()})
 
     # ── watcher ───────────────────────────────────────────────────────────────────────────────────
 
@@ -232,8 +245,9 @@ class GatewayProfileReconcileMixin:
             retry_parked = reason == "control-socket"
             added = [n for n in live if n not in known and n != active and (retry_parked or n not in parked)]
             removed = [n for n in known if n not in live and n != active]
-            changed = [n for n in live if n in known and n != active and n not in added
-                       and profile_serve_signature(live[n]) != sigs.get(n)]
+            rescannable = [n for n in live if n in known and n != active and n not in added]
+            now = await self._serve_signatures({n: live[n] for n in rescannable})
+            changed = [n for n in rescannable if now[n] != sigs.get(n)]
             current = {n: h for n, h in live.items() if n in known or n == active}
             return await self._apply_profile_changes(
                 current, added, removed, changed, reason=reason, live=live, result=result)
@@ -269,10 +283,11 @@ class GatewayProfileReconcileMixin:
         claimed = self._live_resource_claims(active)
         transient_failed = set()
         config_parked = set()
+        scan_signatures = await self._serve_signatures({n: current[n] for n in added + changed})
         for name in added + changed:
             # Only acknowledge the configuration observed before connecting;
             # a setup save during an awaited handshake needs another scan.
-            scan_signature = profile_serve_signature(current[name])
+            scan_signature = scan_signatures[name]
             if name in changed:
                 self._drop_stale_platform_verdicts(name)
             try:
@@ -312,6 +327,10 @@ class GatewayProfileReconcileMixin:
             await self._unserve_profile(name, current.pop(name))
             result["removed"].append(name)
             added = [n for n in added if n != name]
+        # Seed what this cycle hashed so ``_note_served_profiles`` has nothing left to digest inline.
+        for name in current:
+            if name not in sigs and name in scan_signatures:
+                sigs[name] = scan_signatures[name]
         self._record_served_profiles(active, list(current.items()))
         # ``_note_served_profiles`` fills a missing signature with the current one; that refill
         # would park a transiently-failed profile exactly like the config-error case above.

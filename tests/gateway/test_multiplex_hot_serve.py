@@ -575,3 +575,36 @@ async def test_hot_added_profile_cannot_double_claim_a_live_secondary_token(tmp_
         await runner.reconcile_served_profiles()
     fp = GatewayRunner._adapter_credential_fingerprint(_Adapter("shared"))
     assert seen_claims["dupe"].get((Platform.DISCORD, fp)) == "alpha"
+
+
+@pytest.mark.asyncio
+async def test_profile_signatures_are_hashed_off_the_event_loop(tmp_path, monkeypatch):
+    """A signature opens and hashes a whole ``config.yaml``/``.env`` (``always_digest``). Taken
+    inline — as the boot pass and every watcher tick did — a hosted served set cost the loop 1-2.5 s
+    per cycle (``slow_loop_monitor``), and a blocked loop answers no ws ``session.resume``: the
+    viewer times out, reports "Gateway disconnected", and redials into the same stall while its turn
+    runs on. Both call sites must hash on a worker thread, never on the loop."""
+    from gateway import run_profile_reconcile as reconcile_mod
+
+    runner, home = _runner(tmp_path, monkeypatch)
+    for name in ("alpha", "beta"):
+        _mkprofile(home, name, f"DISCORD_BOT_TOKEN={name}-token\n")
+
+    loop_thread = threading.current_thread()
+    hashed_on = []
+    real = reconcile_mod.profile_serve_signature
+
+    def _spy(profile_home):
+        hashed_on.append(threading.current_thread())
+        return real(profile_home)
+
+    monkeypatch.setattr(reconcile_mod, "profile_serve_signature", _spy)
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+        assert hashed_on and loop_thread not in hashed_on  # boot pass: every profile batched off-loop
+
+        hashed_on.clear()
+        (home / "profiles" / "alpha" / ".env").write_text("DISCORD_BOT_TOKEN=rotated\n", encoding="utf-8")
+        result = await runner.reconcile_served_profiles(reason="watcher")
+        assert result["rescanned"] == ["alpha"]
+    assert hashed_on and loop_thread not in hashed_on  # watcher tick: scan + rescan hashed off-loop
