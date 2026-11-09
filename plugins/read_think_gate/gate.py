@@ -522,14 +522,23 @@ _APPROVAL_HINT_TERMS = ("授权", "允许", "同意", "批准", "放行", "执�
 _DENIAL_HINT_TERMS = ("只读", "仅", "不修改", "不改", "不动", "不要", "别", "拒绝")
 
 
-def _pending_option_definition(pending: str, token: str) -> str | None:
-    """The definition a pending request gives for *token*, or None when unmapped."""
+def _pending_option_definitions(pending: str, token: str) -> tuple[str, ...]:
+    """The definitions a pending request gives for *token*."""
+    definitions: list[str] = []
     for segment in re.split(r"[；;。，,\n]", pending):
         for pattern in (_OPTION_ASSIGN_RE, _OPTION_REPLY_RE):
             mapped = pattern.match(segment)
             if mapped is not None and mapped.group(1).lower() == token:
-                return mapped.group(2).lower()
-    return None
+                definitions.append(mapped.group(2).lower())
+    return tuple(definitions)
+
+
+def _definition_authorizes(definition: str) -> bool:
+    """Whether one option definition unambiguously means "go ahead"."""
+    return (
+        not any(term in definition for term in _DENIAL_HINT_TERMS)
+        and any(term in definition for term in _APPROVAL_HINT_TERMS)
+    )
 
 
 def _pending_request_authorizes_reply(pending_request: str, message: str) -> bool:
@@ -546,18 +555,14 @@ def _pending_request_authorizes_reply(pending_request: str, message: str) -> boo
     token = "".join(char for char in str(message or "").strip().lower() if char.isalnum())
     if not pending or not token or len(token) > 4:
         return False
-    for quoted in _QUOTED_TOKEN_RE.finditer(pending):
-        if "".join(char for char in quoted.group(1).lower() if char.isalnum()) != token:
-            continue
-        # 只看这一句里引号之后的那段: 「B」不要继续 是否决, 「修」字授权修改 才是放行
-        tail = re.split(r"[；;。，,\n]", pending[quoted.end():], maxsplit=1)[0][:12]
-        if any(term in tail for term in _DENIAL_HINT_TERMS):
-            return False
-        return any(term in tail for term in _APPROVAL_HINT_TERMS)
-    definition = _pending_option_definition(pending, token)
-    if definition is None or any(term in definition for term in _DENIAL_HINT_TERMS):
-        return False
-    return any(term in definition for term in _APPROVAL_HINT_TERMS)
+    definitions = [
+        re.split(r"[；;。，,\n]", pending[quoted.end():], maxsplit=1)[0][:12]
+        for quoted in _QUOTED_TOKEN_RE.finditer(pending)
+        if "".join(char for char in quoted.group(1).lower() if char.isalnum()) == token
+    ]
+    # 只看这一句里引号之后的那段: 「B」不要继续 是否决, 「修」字授权修改 才是放行
+    definitions.extend(_pending_option_definitions(pending, token))
+    return bool(definitions) and all(_definition_authorizes(d) for d in definitions)
 
 
 def _fallback_detect_intent(

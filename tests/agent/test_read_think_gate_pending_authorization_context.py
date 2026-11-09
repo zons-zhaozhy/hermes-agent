@@ -142,6 +142,8 @@ def test_fallback_confirmation_resolves_against_pending_request(
         ("回复 n 表示不修改；回复 y 授权修改。", "y", INTENT_MODIFY),
         ("回复 n 表示不修改；回复 y 授权修改。", "n", INTENT_AMBIGUOUS),
         ("回复「B」不要继续；回复「A」授权修改。", "B", INTENT_AMBIGUOUS),
+        ("回复「B」授权修改；回复「B」不要继续。", "B", INTENT_AMBIGUOUS),
+        ("B=授权修改；B=只读继续。", "B", INTENT_AMBIGUOUS),
         ("请说明是否需要修改。", "B", INTENT_AMBIGUOUS),
         ("请说明是否需要修改。", "1", INTENT_AMBIGUOUS),
     ],
