@@ -13,6 +13,119 @@ from tests.gateway.test_session_authority_cancel_settlement import REF, _authori
 
 
 @pytest.mark.asyncio
+async def test_terminal_receipt_result_read_off_loop(tmp_path, monkeypatch):
+    from gateway import session_controls, session_results
+    from gateway.session_contract import AdmissionReceipt
+
+    _db, authority = _authority(tmp_path, monkeypatch)
+    connection = session_controls.AuthorityConnection(
+        authority, SimpleNamespace(write=lambda frame: None),
+        {'user_id': 'human', 'profile_id': authority.profile_id,
+         'instance_id': authority.instance_id})
+    receipt = AdmissionReceipt(
+        'admission', REF, 1, 'terminal', 'completed', authority.epoch, 1)
+
+    async def terminal_receipt(*args, **kwargs):
+        return receipt
+
+    saved = {'result': {'final_response': 'done', 'completed': True},
+             'usage': {'input_tokens': 3}}
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+
+    def recorded(*args, **kwargs):
+        threads.append(threading.get_ident())
+        return saved
+
+    monkeypatch.setattr(authority, 'receipt', terminal_receipt)
+    monkeypatch.setattr(session_results, 'admission_result', recorded)
+    out = await connection.receipt(
+        REF, {'admission_id': 'admission', 'include_result': True})
+
+    assert out['result'] == saved['result']
+    assert out['usage'] == saved['usage']
+    assert threads and loop_thread not in threads
+
+
+@pytest.mark.asyncio
+async def test_busy_redirect_approval_generation_read_off_loop(tmp_path, monkeypatch):
+    from gateway import session_busy_controls
+    from hermes_state_runtime import admit_session_input, claim_session_input
+    from tests.gateway.test_session_authority_cancel_settlement import ACTOR
+
+    db, authority = _authority(tmp_path, monkeypatch)
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+    real = authority.check_approval_generation
+
+    def recorded(session_id, generation):
+        threads.append(threading.get_ident())
+        return real(session_id, generation)
+
+    with db:
+        admit_session_input(
+            db, epoch=authority.epoch, principal_id='human', session_id='s',
+            request_id='redirect', payload={'text': 'new direction'})
+        row = claim_session_input(db, epoch=authority.epoch, session_id='s')
+        monkeypatch.setattr(authority, 'check_approval_generation', recorded)
+        monkeypatch.setattr(
+            authority, 'steer_agent', lambda ref, generation, text: (None, False))
+        connection = SimpleNamespace(authority=authority, actor=ACTOR)
+        outcome = await session_busy_controls.correct(
+            connection, REF,
+            {'session_id': 's', 'text': 'new direction',
+             'execution_generation': row['generation']},
+            verb='redirect')
+
+    assert outcome['status'] == 'rejected'
+    assert outcome['delivered'] is False
+    assert threads and loop_thread not in threads
+
+
+@pytest.mark.asyncio
+async def test_profile_reconcile_roster_scans_off_loop(tmp_path, monkeypatch):
+    from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
+
+    runner = GatewayProfileReconcileMixin()
+    runner._running = True
+    runner._multiplex_on = lambda: True
+    runner.config = SimpleNamespace(multiplex_profiles=True)
+    runner._primary_profile_name = 'default'
+    launch, profile = tmp_path / 'launch', tmp_path / 'profile'
+    runner._served_profile_homes = {'default': launch, 'profile': profile}
+    runner._served_profile_signatures = {'default': 'same', 'profile': 'old'}
+    runner.session_runtime_descriptor = {}
+    runner._drop_stale_platform_verdicts = lambda name: None
+    runner._live_resource_claims = lambda active: {}
+    runner._record_served_profiles = lambda active, homes: None
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+
+    def recorded(**kwargs):
+        threads.append(threading.get_ident())
+        assert kwargs == {'multiplex': True}
+        return [('default', launch), ('profile', profile)]
+
+    async def signatures(homes):
+        assert homes == {'profile': profile}
+        return {'profile': 'new'}
+
+    async def start_adapters(name, home, claimed):
+        return 0
+
+    runner._start_one_profile_adapters = start_adapters
+
+    monkeypatch.setattr('hermes_cli.profiles.profiles_to_serve', recorded)
+    monkeypatch.setattr(runner, '_serve_signatures', signatures)
+    result = await runner.reconcile_served_profiles(reason='watcher')
+
+    assert result['rescanned'] == ['profile']
+    assert result['served_profiles'] == ['default', 'profile']
+    assert len(threads) == 2
+    assert threads and all(thread != loop_thread for thread in threads)
+
+
+@pytest.mark.asyncio
 async def test_claim_preflight_reads_admissions_off_loop(tmp_path, monkeypatch):
     from gateway import session_authority
 

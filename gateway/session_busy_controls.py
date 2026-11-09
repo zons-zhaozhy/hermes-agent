@@ -189,7 +189,8 @@ async def correct(connection, ref, params, *, verb):
     generation = params['execution_generation']
     live = authority.sessions[ref.session_id]
     with live.event_stream.lock:
-        authority.check_approval_generation(ref.session_id, generation)
+        await asyncio.to_thread(
+            authority.check_approval_generation, ref.session_id, generation)
         # Managed workers have a separate control channel, not a cached owner
         # agent. Refuse explicitly instead of acknowledging undeliverable text.
         if ref.session_id in getattr(authority, '_managed_workers', {}):

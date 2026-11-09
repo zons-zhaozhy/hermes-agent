@@ -196,7 +196,8 @@ class GatewayProfileReconcileMixin:
             return {**result, "pending": True, "served_profiles": self.served_profile_names()}
         async with self._reconcile_lock():
             active = getattr(self, "_primary_profile_name", None) or "default"
-            live = {str(name): Path(home) for name, home in profiles_to_serve(multiplex=True)}
+            profile_homes = await asyncio.to_thread(profiles_to_serve, multiplex=True)
+            live = {str(name): Path(home) for name, home in profile_homes}
             listed = set(live)  # a probe skip below is not a deletion: it never clears a parked verdict
             known = dict(self._served_profile_homes or {})
             from gateway.status import live_gateway_pid_for_home
@@ -322,7 +323,8 @@ class GatewayProfileReconcileMixin:
         self._served_profile_signatures = sigs
         # A profile deleted while an adapter above was still connecting must not be recorded back
         # (the deleter's signal timed out against this lock and rmtree already ran).
-        live_now = {str(name) for name, _home in profiles_to_serve(multiplex=True)}
+        live_profiles = await asyncio.to_thread(profiles_to_serve, multiplex=True)
+        live_now = {str(name) for name, _home in live_profiles}
         for name in [n for n in current if n not in live_now and n != active]:
             await self._unserve_profile(name, current.pop(name))
             result["removed"].append(name)
@@ -400,7 +402,9 @@ class GatewayProfileReconcileMixin:
             launch = get_process_hermes_home().resolve()
             if launch != get_default_hermes_root().resolve():
                 return False  # only the default home runs the multiplexer (``_launch_home_may_multiplex``)
-            if len(profiles_to_serve(multiplex=True, include_parked=True)) < 2:
+            installed_profiles = await asyncio.to_thread(
+                profiles_to_serve, multiplex=True, include_parked=True)
+            if len(installed_profiles) < 2:
                 return False
             blocker = await self._run_housekeeping_in_executor(_added_profile_blocker, launch)
             if blocker is not None:
@@ -612,7 +616,8 @@ def _profile_lifecycle_verb(runner, *, serve: bool):
                 await runner._unserve_profile(name, known.pop(name))
                 runner._record_served_profiles(active, list(known.items()))
                 return {"unserved": name, "served_profiles": runner.served_profile_names()}
-            installed = dict(profiles_to_serve(True, include_parked=True))
+            installed = dict(await asyncio.to_thread(
+                profiles_to_serve, True, include_parked=True))
             if name not in installed:
                 return {"error": f"unknown profile '{name}'"}
             if name != "default" and profile_is_parked(installed[name]):

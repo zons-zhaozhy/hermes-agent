@@ -191,6 +191,11 @@ async def test_failed_hot_serve_with_a_live_writer_parks_without_aborting_or_re_
     runner.served_profile_names = lambda: sorted(runner._served_profile_homes)
     runner._serve_profile_runtime = GatewayProfileReconcileMixin._serve_profile_runtime.__get__(runner)
 
+    async def signatures(homes):
+        return {name: ("sig", name) for name in homes}
+
+    runner._serve_signatures = signatures
+
     async def start_adapters(name, home, claimed):
         started.append(name)
         return 0
