@@ -447,15 +447,17 @@ def generate_launchd_plist() -> str:
          ThrottleInterval raises launchd's default 10s minimum respawn interval
          to 30s so a crash-looping gateway can't hammer launchd into a rapid
          respawn storm; ExitTimeOut is the graceful-drain headroom before
-         launchd escalates from SIGTERM to SIGKILL on stop. 120s covers
-         agent.restart_drain_timeout=90 plus the ~10s teardown reserve; the
-         gateway reads the live value at boot and fits its signal-driven drain
-         inside it (gateway.restart.read_launchd_exit_timeout_s). -->
+         launchd escalates from SIGTERM to SIGKILL on stop. 180s covers
+         agent.restart_drain_timeout=90 plus the teardown reserve with real
+         margin: a restart teardown measured 112s end to end (2026-11-09),
+         leaving only 8s inside the old 120s. The gateway reads the live value
+         at boot and fits its signal-driven drain inside it
+         (gateway.restart.read_launchd_exit_timeout_s). -->
     <key>ThrottleInterval</key>
     <integer>30</integer>
 
     <key>ExitTimeOut</key>
-    <integer>120</integer>
+    <integer>180</integer>
 {nofile_block}
     <key>StandardOutPath</key>
     <string>{stdout_log}</string>
