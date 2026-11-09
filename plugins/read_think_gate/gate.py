@@ -459,6 +459,12 @@ _PROPOSAL_TERMS = (
 )
 
 
+_AUTH_REQUEST_FRAME = (
+    "[GATE: assistant 上一轮因等待用户授权而拦截，以下为该请求的结尾原文，"
+    "用户最新消息是对此请求的回应]\n{}"
+)
+
+
 def _message_text(content: object) -> str:
     """Extract textual content from a string or OpenAI-style content parts."""
     if isinstance(content, str):
@@ -509,15 +515,38 @@ def _is_confirmation(message: str, conversation_history: list[dict] | None) -> b
     return _last_assistant_proposal(conversation_history)
 
 
+_TERSE_APPROVAL_WORDS = frozenset({"修", "改", "修吧", "改吧", "可以", "行", "好", "同意", "批准", "ok", "yes"})
+
+
+def _is_terse_approval(message: str) -> bool:
+    """Recognize a one-token reply that can only mean "go" to a pending request.
+
+    A gate that blocked a turn asked the user a direct question, so the answer is
+    often a bare option letter, a digit, or a single verb ("修"). Those carry no
+    term ``_is_confirmation`` can anchor on, and re-reading the gate's own request
+    as ambiguity is the misfire this answers — only when that request is pending,
+    never in open conversation (a stray "b" must not authorize anything).
+    """
+    normalized = "".join(char for char in (message or "").strip().lower() if char.isalnum())
+    if not normalized or len(normalized) > 4:
+        return False
+    if normalized.isascii():
+        return (normalized.isdigit() and len(normalized) <= 2) or len(normalized) == 1
+    return normalized in _TERSE_APPROVAL_WORDS
+
+
 def _fallback_detect_intent(
     user_message: str,
     conversation_history: list[dict] | None = None,
+    *,
+    pending_auth_request: bool = False,
 ) -> str:
     """Conservative intent fallback for an unavailable semantic classifier.
 
     Explicit negated modification wins first; then explicit modification
-    verbs; then explicit read-only verbs; then a terse confirmation of the
-    latest concrete proposal. Everything else is ambiguous.
+    verbs; then a one-token reply to a pending authorization request; then
+    explicit read-only verbs; then a terse confirmation of the latest concrete
+    proposal. Everything else is ambiguous.
     """
     text = (user_message or "").strip().lower()
     if not text:
@@ -525,6 +554,8 @@ def _fallback_detect_intent(
     if any(term in text for term in _EXPLICIT_NO_MODIFY_TERMS):
         return INTENT_READ_ONLY
     if any(term in text for term in _STRONG_MODIFY_TERMS):
+        return INTENT_MODIFY
+    if pending_auth_request and _is_terse_approval(text):
         return INTENT_MODIFY
     asks_for_modification = any(term in text for term in _MODIFY_TERMS)
     asks_for_explanation = any(term in text for term in _READ_ONLY_TERMS)
@@ -542,13 +573,16 @@ def _fallback_detect_intent(
 def _hard_intent(
     user_message: str,
     conversation_history: list[dict] | None,
+    *,
+    pending_auth_request: bool = False,
 ) -> str | None:
     """Resolve intent when conversation evidence is stronger than semantics.
 
     Explicit prohibitions, explicit execution requests and a terse confirmation
     of a concrete proposal are protocol facts; so is a terse request merely to
-    check details. A semantic classifier may handle ambiguous phrasing, but
-    must not rewrite these verdicts.
+    check details, and a one-token reply to a request the gate itself is waiting
+    on. A semantic classifier may handle ambiguous phrasing, but must not rewrite
+    these verdicts.
     """
     text = (user_message or "").strip().lower()
     if any(term in text for term in _EXPLICIT_NO_MODIFY_TERMS):
@@ -557,6 +591,8 @@ def _hard_intent(
         return INTENT_MODIFY
     if _is_confirmation_check(text):
         return INTENT_READ_ONLY
+    if pending_auth_request and _is_terse_approval(text):
+        return INTENT_MODIFY
     if _is_confirmation(text, conversation_history):
         return INTENT_MODIFY
     return None
@@ -639,19 +675,24 @@ def _detect_user_intent(
     conversation_history: list[dict] | None,
     *,
     use_llm: bool,
+    pending_auth_request: bool = False,
 ) -> str:
     """Resolve intent from hard conversation evidence, then semantics."""
     message = user_message or ""
     if not message.strip():
         return INTENT_AMBIGUOUS
-    hard_intent = _hard_intent(message, conversation_history)
+    hard_intent = _hard_intent(
+        message, conversation_history, pending_auth_request=pending_auth_request
+    )
     if hard_intent is not None:
         return hard_intent
     if use_llm:
         detected = _classify_intent_via_llm(message, conversation_history)
         if detected in _INTENT_VALUES:
             return detected
-    return _fallback_detect_intent(message, conversation_history)
+    return _fallback_detect_intent(
+        message, conversation_history, pending_auth_request=pending_auth_request
+    )
 
 
 # ── LLM 复杂度分类 ─────────────────────────────────────────────────
@@ -1028,6 +1069,7 @@ class ReadThinkGate:
         self._session_modification_authorized: bool = False
         self._authorized_user_message: str = ""
         self._awaiting_user_authorization: bool = False
+        self._pending_auth_request: str = ""  # 拦截请求的 assistant 原文（授权回应分类用）
         self.reset_for_turn()
 
     # ── Per-turn state ──────────────────────────────────────────────
@@ -1060,6 +1102,8 @@ class ReadThinkGate:
         self._intent: str = INTENT_AMBIGUOUS
         self._modification_authorized: bool = False
         self._investigation_complete: bool = False
+        # 捕获上一 turn 结束时的等待授权状态（下方 :1064 会清零）。
+        prior_awaiting = self._awaiting_user_authorization
         if not internal:
             self._awaiting_user_authorization = False
         # 四轴闸门——每 turn 重新计数
@@ -1081,11 +1125,35 @@ class ReadThinkGate:
             if self._session_modification_authorized:
                 self._user_message = self._authorized_user_message
         else:
+            # 上一 turn 门禁因等待授权而拦截时，本条用户消息是对该请求的回应：
+            # 请求尾段注入分类上下文供指代消解（同 clarify 先例），短回复
+            # （"B"、"1"、裸「修」）也才有锚点可依，否则只能判成 ambiguous。
+            pending_auth = bool(
+                prior_awaiting
+                and self._pending_auth_request
+                and not any(
+                    term in (user_message or "").lower()
+                    for term in _EXPLICIT_NO_MODIFY_TERMS
+                )
+            )
+            history = conversation_history
+            if pending_auth:
+                history = [
+                    *(conversation_history or []),
+                    {
+                        "role": "assistant",
+                        "content": _AUTH_REQUEST_FRAME.format(
+                            self._pending_auth_request[-600:]
+                        ),
+                    },
+                ]
             self._intent = _detect_user_intent(
                 user_message,
-                conversation_history,
+                history,
                 use_llm=self.config.use_llm_intent_classifier,
+                pending_auth_request=pending_auth,
             )
+            self._pending_auth_request = ""
             if self._intent == INTENT_MODIFY:
                 self._session_modification_authorized = True
                 self._authorized_user_message = user_message or ""
@@ -1519,6 +1587,7 @@ class ReadThinkGate:
         if self._intent != INTENT_MODIFY:
             self._reasoning_rounds += 1
             self._awaiting_user_authorization = True
+            self._pending_auth_request = content_text[-2000:]
             self._publish_state()
             first_gated = next(
                 (t for t in tool_names if t in self._gated_tools),
@@ -1557,6 +1626,7 @@ class ReadThinkGate:
         first_gated = next(t for t in tool_names if t in self._gated_tools) if any(t in self._gated_tools for t in tool_names) else "terminal"
         if self._reasoning_rounds >= self._active_profile.max_reasoning_rounds:
             self._awaiting_user_authorization = True
+            self._pending_auth_request = content_text[-2000:]
             self._publish_state()
             return _make_synthetic_result(
                 first_gated,
