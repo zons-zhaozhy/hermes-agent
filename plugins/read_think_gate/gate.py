@@ -549,7 +549,11 @@ def _pending_request_authorizes_reply(pending_request: str, message: str) -> boo
     for quoted in _QUOTED_TOKEN_RE.finditer(pending):
         if "".join(char for char in quoted.group(1).lower() if char.isalnum()) != token:
             continue
-        return any(term in pending[quoted.end():quoted.end() + 8] for term in _APPROVAL_HINT_TERMS)
+        # 只看这一句里引号之后的那段: 「B」不要继续 是否决, 「修」字授权修改 才是放行
+        tail = re.split(r"[；;。，,\n]", pending[quoted.end():], maxsplit=1)[0][:12]
+        if any(term in tail for term in _DENIAL_HINT_TERMS):
+            return False
+        return any(term in tail for term in _APPROVAL_HINT_TERMS)
     definition = _pending_option_definition(pending, token)
     if definition is None or any(term in definition for term in _DENIAL_HINT_TERMS):
         return False
