@@ -369,6 +369,35 @@ async def test_profile_reconcile_avoids_path_hashing_on_loop(monkeypatch, tmp_pa
     assert all(thread != loop_thread for thread in path_threads)
 
 
+def test_hook_consent_resync_reads_home_values_not_dict_keys(monkeypatch, tmp_path):
+    from contextlib import nullcontext
+
+    from agent import shell_hooks
+    from gateway import run
+    from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
+    from gateway.run_turn import GatewayTurnMixin
+
+    launch_home = tmp_path / "launch-home"
+    served_home = tmp_path / "served-home"
+    launch_home.mkdir()
+    served_home.mkdir()
+    loaded: list[object] = []
+    synced: list[object] = []
+    monkeypatch.setattr(run, "_load_gateway_config", lambda config_path: loaded.append(config_path) or {})
+    monkeypatch.setattr(shell_hooks, "sync_from_config", lambda load: synced.append(load()))
+    monkeypatch.setattr(GatewayTurnMixin, "_standalone_launch_scope", staticmethod(nullcontext))
+    runner = SimpleNamespace(_multiplex_on=lambda: False)
+
+    current = GatewayProfileReconcileMixin._resync_changed_hook_consent(
+        runner, {str(launch_home): launch_home, str(served_home): served_home}, {}
+    )
+
+    assert [str(home) for home in loaded] == [
+        str(launch_home.resolve() / "config.yaml"), str(served_home.resolve() / "config.yaml")]
+    assert len(synced) == 2
+    assert list(current) == [str(launch_home.resolve()), str(served_home.resolve())]
+
+
 def _make_async(value):
     async def async_value(*_args, **_kwargs):
         return value(*_args, **_kwargs) if callable(value) else value

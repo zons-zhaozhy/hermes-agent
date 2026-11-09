@@ -163,7 +163,7 @@ class GatewayProfileReconcileMixin:
         from gateway.run import _load_gateway_config, _profile_runtime_scope
         from gateway.run_turn import GatewayTurnMixin
         current = {}
-        for home in (h.resolve() for h in homes):
+        for home in (Path(h).resolve() for h in homes.values()):
             sig = tuple(_stat_signature(home / name) for name in (ALLOWLIST_FILENAME, "config.yaml"))
             if seen.get(str(home), ()) == sig:
                 current[str(home)] = sig
