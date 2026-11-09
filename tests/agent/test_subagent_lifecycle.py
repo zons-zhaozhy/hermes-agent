@@ -17,6 +17,13 @@ from agent.subagent_lifecycle import (
 )
 
 
+# The fake child finishes in ~40 ms, so these bounds only stop a HUNG service from wedging the
+# suite — they are not latency assertions. `wait` is a contract assertion ("the child reaches a
+# terminal state"); a busy runner (several pytest files in parallel, load average in the tens)
+# must not turn scheduler jitter into a red test.
+_SETTLE_SECONDS = 15
+
+
 class FakeChild:
     def __init__(self, ident="sa-test"):
         self._subagent_id = ident
@@ -82,7 +89,7 @@ def lifecycle(monkeypatch):
 def test_cancel_is_cooperative_and_forged_handle_is_unknown(lifecycle):
     handle = lifecycle.launch(SubagentLaunchRequest(goal="x"))
     assert lifecycle.cancel(handle, reason="test").accepted
-    terminal = lifecycle.wait(handle, timeout_seconds=1)
+    terminal = lifecycle.wait(handle, timeout_seconds=_SETTLE_SECONDS)
     assert terminal.state is SubagentState.CANCELLED
     forged = handle.__class__(**{**handle.to_dict(), "capability": "forged"})
     assert lifecycle.status(forged).state is SubagentState.UNKNOWN
@@ -102,7 +109,7 @@ def test_cancel_uses_explicit_hard_interrupt(lifecycle):
     assert record.agent.interrupt_kind == "hard"
     assert "explicit user cancel" in record.agent.interrupt_message
     assert record.agent.tool_reason == "subagent cancellation requested"
-    lifecycle.wait(handle, timeout_seconds=1)
+    lifecycle.wait(handle, timeout_seconds=_SETTLE_SECONDS)
 
 
 
@@ -143,7 +150,7 @@ def test_public_lifecycle_runs_host_aggregation(monkeypatch):
 
     service = SubagentLifecycleService(lambda: parent)
     handle = service.launch(SubagentLaunchRequest(goal="aggregate me"))
-    assert service.wait(handle, timeout_seconds=1).state is SubagentState.SUCCEEDED
+    assert service.wait(handle, timeout_seconds=_SETTLE_SECONDS).state is SubagentState.SUCCEEDED
 
     memory.on_delegation.assert_called_once_with(
         task="aggregate me", result="aggregated", child_session_id="child-session"
@@ -233,7 +240,7 @@ def test_steer_queues_to_running_child_and_rejects_invalid_calls(steer_lifecycle
     forged = {**(dict(handle) if wire else handle.to_dict()), "capability": "forged"}
     assert service.steer(forged, "forged") is False
     finish.set()
-    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    assert service.wait(handle, timeout_seconds=_SETTLE_SECONDS).state is SubagentState.SUCCEEDED
     assert service.result(handle).summary == "done"
     assert service.steer(handle, "too late") is False
     assert child.steering == ["focus on correctness"]
@@ -269,7 +276,7 @@ def test_routing_delegation_provider_bundle(routing_lifecycle):
     service, build, config, resolve = routing_lifecycle
     config.return_value = {"provider": "openrouter", "model": "delegated-model"}
     handle = service.launch(SubagentLaunchRequest(goal="route"))
-    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    assert service.wait(handle, timeout_seconds=_SETTLE_SECONDS).state is SubagentState.SUCCEEDED
     kwargs = build.call_args.kwargs
     assert kwargs["model"] == "delegated-model"
     assert kwargs["override_provider"] == "openrouter"
@@ -281,7 +288,7 @@ def test_routing_delegation_provider_bundle(routing_lifecycle):
     assert kwargs["override_acp_args"] == []
     resolve.assert_called_once_with(requested="openrouter", target_model="delegated-model")
     handle = service.launch(SubagentLaunchRequest(goal="route", model="request-model"))
-    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    assert service.wait(handle, timeout_seconds=_SETTLE_SECONDS).state is SubagentState.SUCCEEDED
     assert build.call_args.kwargs["model"] == "request-model"
 
 
@@ -301,7 +308,7 @@ def test_routing_request_provider_wins_without_mixing_bundles(routing_lifecycle,
     if wire:
         assert request["provider"] == "openrouter"
     handle = service.launch(request)
-    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    assert service.wait(handle, timeout_seconds=_SETTLE_SECONDS).state is SubagentState.SUCCEEDED
     kwargs = build.call_args.kwargs
     assert kwargs["model"] == "m"
     assert kwargs["override_provider"] == "openrouter"
@@ -339,7 +346,7 @@ def test_plugin_toolsets_are_known_toolsets(lifecycle, monkeypatch):
     parent = SimpleNamespace(session_id="parent-plugin", enabled_toolsets=["file", "plugin-tools"])
     service = SubagentLifecycleService(lambda: parent)
     handle = service.launch(SubagentLaunchRequest(goal="use the plugin", allowed_toolsets=("plugin-tools",)))
-    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    assert service.wait(handle, timeout_seconds=_SETTLE_SECONDS).state is SubagentState.SUCCEEDED
     with pytest.raises(SubagentLifecycleError, match="Unknown toolsets: nope"):
         service.launch(SubagentLaunchRequest(goal="use the plugin", allowed_toolsets=("nope",)))
     narrow = SubagentLifecycleService(lambda: SimpleNamespace(session_id="parent-narrow", enabled_toolsets=["file"]))
