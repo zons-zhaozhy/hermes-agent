@@ -68,7 +68,9 @@ def _transport_failure(exc) -> bool:
         if isinstance(seen, (TimeoutError, OSError)):
             return True
         seen = seen.__cause__ or seen.__context__
-    return str(exc) == "Gateway connection failed; no local fallback"
+    # A ``connect_gateway`` wrapper that names its cause in the message still IS one, whatever
+    # ``(TypeName)`` suffix it carries.
+    return str(exc).startswith("Gateway connection failed; no local fallback")
 
 
 def _resume_plain(exc, session_id, typed):
@@ -310,8 +312,12 @@ class GatewayConnection:
             asyncio.run(self._main())
         except BaseException as exc:  # health: allow BLE001 -- the loop thread reports every failure to the waiting caller
             if self._error is None:
-                self._error = exc if isinstance(exc, GatewayClientError) else GatewayClientError(
-                    "Gateway connection failed; no local fallback")
+                # Through ``_connect_error``, not a bare string: it keeps the failure's own type in
+                # the message (the one trace of WHY a viewer died) and tags a transport failure
+                # redialable instead of making this connection final for the caller's deadline.
+                self._error = _connect_error(exc)
+                if not self._error.dial_transient:
+                    logger.warning("Gateway viewer stopped: %s", self._error, exc_info=exc)
         finally:
             self.closed = True
             self._ready.set()

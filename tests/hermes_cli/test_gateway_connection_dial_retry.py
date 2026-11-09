@@ -131,3 +131,31 @@ def test_the_retry_budget_does_not_outlive_its_deadline(connections):
 
     assert dial.first.wait(5)  # it dialled once, then the deadline ended the wait
     assert dial.dials == 1
+
+
+def test_a_connect_wrapper_with_no_visible_cause_still_reads_as_transport():
+    """``connect_gateway`` names its cause in the message, so the marker outlives a re-raise that
+    dropped ``__cause__``: without it a refused dial became a verdict and was never redialled."""
+    assert gateway_connection._transport_failure(
+        GatewayClientError("Gateway connection failed; no local fallback (TimeoutError)"))
+
+
+def test_a_refused_ws_dial_reports_the_transport_error(monkeypatch):
+    """The one line a viewer shows has to carry WHY: a refused connect (nothing listening) and a
+    missed open handshake (the owner's loop is stalled) are different problems with the same
+    remedy-free message before this."""
+    import asyncio
+
+    from hermes_cli.gateway_client import connect_gateway
+
+    monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", "ws://127.0.0.1:1/tui-gateway")
+
+    async def _dial():
+        async with connect_gateway():
+            raise AssertionError("a closed loopback port cannot answer a handshake")
+
+    with pytest.raises(GatewayClientError) as caught:
+        asyncio.run(_dial())
+
+    assert "no local fallback" in str(caught.value)
+    assert "ConnectionRefusedError" in str(caught.value)

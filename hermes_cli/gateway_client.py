@@ -387,4 +387,8 @@ async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 10
     except GatewayClientError:
         raise
     except (OSError, TimeoutError) as exc:
-        raise GatewayClientError("Gateway connection failed; no local fallback") from exc
+        # The cause's type is the whole diagnosis in the one line a viewer shows: a TimeoutError is
+        # the owner's loop missing the open handshake (a loaded or stalled host), a
+        # ConnectionRefusedError is nothing listening. A bare message read as both.
+        raise GatewayClientError(
+            f"Gateway connection failed; no local fallback ({type(exc).__name__})") from exc
