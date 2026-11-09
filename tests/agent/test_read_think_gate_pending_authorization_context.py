@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from plugins.read_think_gate_host import (
+    INTENT_AMBIGUOUS,
     INTENT_MODIFY,
     INTENT_READ_ONLY,
     ReadThinkGate,
@@ -48,9 +49,9 @@ def _gate(tmp_path: Path, tag: str, *, llm_classifier: bool) -> ReadThinkGate:
     )
 
 
-def _awaiting(gate: ReadThinkGate) -> None:
+def _awaiting(gate: ReadThinkGate, pending: str = _PENDING) -> None:
     gate._awaiting_user_authorization = True
-    gate._pending_auth_request = _PENDING
+    gate._pending_auth_request = pending
 
 
 def test_reply_to_pending_request_gets_request_injected(
@@ -123,9 +124,43 @@ def test_injection_is_one_shot(
 def test_fallback_confirmation_resolves_against_pending_request(
     tmp_path: Path,
 ) -> None:
-    gate = _gate(tmp_path, "fallback", llm_classifier=False)
-    _awaiting(gate)
-    gate.reset_for_turn("继续", conversation_history=[])
+    # _PENDING 只把「修」定义为授权; 未映射的选项 token 不能搭语义便车
+    for reply, expected in (("修", INTENT_MODIFY), ("继续", INTENT_MODIFY),
+                            ("B", INTENT_AMBIGUOUS), ("1", INTENT_AMBIGUOUS)):
+        gate = _gate(tmp_path, f"fallback-{reply}", llm_classifier=False)
+        _awaiting(gate)
+        gate.reset_for_turn(reply, conversation_history=[])
 
-    # 期望: 无 LLM 时, 注入的请求原文充当 proposal 指代, 简短批准判为 modify
-    assert gate.user_intent == INTENT_MODIFY
+        assert gate.user_intent == expected, reply
+
+
+@pytest.mark.parametrize(
+    ("pending_request", "reply", "expected"),
+    [
+        ("A=只读继续；B=授权修改。", "B", INTENT_MODIFY),
+        ("A=只读继续；B=授权修改。", "A", INTENT_AMBIGUOUS),
+        ("回复 n 表示不修改；回复 y 授权修改。", "y", INTENT_MODIFY),
+        ("回复 n 表示不修改；回复 y 授权修改。", "n", INTENT_AMBIGUOUS),
+        ("请说明是否需要修改。", "B", INTENT_AMBIGUOUS),
+        ("请说明是否需要修改。", "1", INTENT_AMBIGUOUS),
+    ],
+)
+def test_pending_option_mapping_governs_terse_replies(
+    tmp_path: Path, pending_request: str, reply: str, expected: str
+) -> None:
+    gate = _gate(tmp_path, f"option-{reply}", llm_classifier=False)
+    _awaiting(gate, pending_request)
+    gate.reset_for_turn(reply, conversation_history=[])
+
+    assert gate.user_intent == expected
+
+
+def test_terse_reply_does_not_authorize_without_pending_request(
+    tmp_path: Path,
+) -> None:
+    # 反例守卫: 没有待授权请求时, 同样的短回复不得构成授权
+    for reply in ("B", "1", "修"):
+        gate = _gate(tmp_path, f"open-{reply}", llm_classifier=False)
+        gate.reset_for_turn(reply, conversation_history=[])
+
+        assert gate.user_intent == INTENT_AMBIGUOUS, reply

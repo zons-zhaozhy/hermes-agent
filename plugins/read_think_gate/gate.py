@@ -515,31 +515,52 @@ def _is_confirmation(message: str, conversation_history: list[dict] | None) -> b
     return _last_assistant_proposal(conversation_history)
 
 
-_TERSE_APPROVAL_WORDS = frozenset({"修", "改", "修吧", "改吧", "可以", "行", "好", "同意", "批准", "ok", "yes"})
+_OPTION_ASSIGN_RE = re.compile(r"^\s*([A-Za-z0-9]{1,3})\s*(?:[=＝:：]|表示|代表|即|是)\s*(.+)$")
+_OPTION_REPLY_RE = re.compile(r"^\s*(?:回复|回|选|按)\s*([A-Za-z0-9]{1,3})\s*(?:[=＝:：]|表示|代表|即|是)?\s*(.+)$")
+_QUOTED_TOKEN_RE = re.compile(r'[「『"“]([^」』"”]{1,4})[」』"”]')
+_APPROVAL_HINT_TERMS = ("授权", "允许", "同意", "批准", "放行", "执行", "修改", "继续", "动手")
+_DENIAL_HINT_TERMS = ("只读", "仅", "不修改", "不改", "不动", "不要", "别", "拒绝")
 
 
-def _is_terse_approval(message: str) -> bool:
-    """Recognize a one-token reply that can only mean "go" to a pending request.
+def _pending_option_definition(pending: str, token: str) -> str | None:
+    """The definition a pending request gives for *token*, or None when unmapped."""
+    for segment in re.split(r"[；;。，,\n]", pending):
+        for pattern in (_OPTION_ASSIGN_RE, _OPTION_REPLY_RE):
+            mapped = pattern.match(segment)
+            if mapped is not None and mapped.group(1).lower() == token:
+                return mapped.group(2).lower()
+    return None
 
-    A gate that blocked a turn asked the user a direct question, so the answer is
-    often a bare option letter, a digit, or a single verb ("修"). Those carry no
-    term ``_is_confirmation`` can anchor on, and re-reading the gate's own request
-    as ambiguity is the misfire this answers — only when that request is pending,
-    never in open conversation (a stray "b" must not authorize anything).
+
+def _pending_request_authorizes_reply(pending_request: str, message: str) -> bool:
+    """Whether the pending request itself defines *message* as "go ahead".
+
+    A gate that blocked a turn asked a direct question, so the answer is often a
+    bare option label ("B", "1", 「修」). That label authorizes only when the
+    request it answers says so — "「修」字授权修改", "B=授权修改", "回复 y 授权修改".
+    A label the request maps to a read-only outcome ("A=只读继续"), or one it never
+    mentions, must not unlock writes; and with no pending request neither branch is
+    reached, so a stray "b" in open conversation authorizes nothing.
     """
-    normalized = "".join(char for char in (message or "").strip().lower() if char.isalnum())
-    if not normalized or len(normalized) > 4:
+    pending = str(pending_request or "")
+    token = "".join(char for char in str(message or "").strip().lower() if char.isalnum())
+    if not pending or not token or len(token) > 4:
         return False
-    if normalized.isascii():
-        return (normalized.isdigit() and len(normalized) <= 2) or len(normalized) == 1
-    return normalized in _TERSE_APPROVAL_WORDS
+    for quoted in _QUOTED_TOKEN_RE.finditer(pending):
+        if "".join(char for char in quoted.group(1).lower() if char.isalnum()) != token:
+            continue
+        return any(term in pending[quoted.end():quoted.end() + 8] for term in _APPROVAL_HINT_TERMS)
+    definition = _pending_option_definition(pending, token)
+    if definition is None or any(term in definition for term in _DENIAL_HINT_TERMS):
+        return False
+    return any(term in definition for term in _APPROVAL_HINT_TERMS)
 
 
 def _fallback_detect_intent(
     user_message: str,
     conversation_history: list[dict] | None = None,
     *,
-    pending_auth_request: bool = False,
+    pending_auth_request: str = "",
 ) -> str:
     """Conservative intent fallback for an unavailable semantic classifier.
 
@@ -555,7 +576,7 @@ def _fallback_detect_intent(
         return INTENT_READ_ONLY
     if any(term in text for term in _STRONG_MODIFY_TERMS):
         return INTENT_MODIFY
-    if pending_auth_request and _is_terse_approval(text):
+    if _pending_request_authorizes_reply(pending_auth_request, user_message):
         return INTENT_MODIFY
     asks_for_modification = any(term in text for term in _MODIFY_TERMS)
     asks_for_explanation = any(term in text for term in _READ_ONLY_TERMS)
@@ -574,15 +595,15 @@ def _hard_intent(
     user_message: str,
     conversation_history: list[dict] | None,
     *,
-    pending_auth_request: bool = False,
+    pending_auth_request: str = "",
 ) -> str | None:
     """Resolve intent when conversation evidence is stronger than semantics.
 
     Explicit prohibitions, explicit execution requests and a terse confirmation
     of a concrete proposal are protocol facts; so is a terse request merely to
-    check details, and a one-token reply to a request the gate itself is waiting
-    on. A semantic classifier may handle ambiguous phrasing, but must not rewrite
-    these verdicts.
+    check details, and a label reply the pending authorization request itself
+    defines as "go ahead". A semantic classifier may handle ambiguous phrasing,
+    but must not rewrite these verdicts.
     """
     text = (user_message or "").strip().lower()
     if any(term in text for term in _EXPLICIT_NO_MODIFY_TERMS):
@@ -591,7 +612,7 @@ def _hard_intent(
         return INTENT_MODIFY
     if _is_confirmation_check(text):
         return INTENT_READ_ONLY
-    if pending_auth_request and _is_terse_approval(text):
+    if _pending_request_authorizes_reply(pending_auth_request, user_message):
         return INTENT_MODIFY
     if _is_confirmation(text, conversation_history):
         return INTENT_MODIFY
@@ -675,7 +696,7 @@ def _detect_user_intent(
     conversation_history: list[dict] | None,
     *,
     use_llm: bool,
-    pending_auth_request: bool = False,
+    pending_auth_request: str = "",
 ) -> str:
     """Resolve intent from hard conversation evidence, then semantics."""
     message = user_message or ""
@@ -1102,7 +1123,7 @@ class ReadThinkGate:
         self._intent: str = INTENT_AMBIGUOUS
         self._modification_authorized: bool = False
         self._investigation_complete: bool = False
-        # 捕获上一 turn 结束时的等待授权状态（下方 :1064 会清零）。
+        # 捕获上一 turn 结束时的等待授权状态（下面的非 internal 分支会清零）。
         prior_awaiting = self._awaiting_user_authorization
         if not internal:
             self._awaiting_user_authorization = False
@@ -1151,7 +1172,7 @@ class ReadThinkGate:
                 user_message,
                 history,
                 use_llm=self.config.use_llm_intent_classifier,
-                pending_auth_request=pending_auth,
+                pending_auth_request=self._pending_auth_request if pending_auth else "",
             )
             self._pending_auth_request = ""
             if self._intent == INTENT_MODIFY:
