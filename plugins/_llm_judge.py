@@ -23,6 +23,7 @@ Contract:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -224,6 +225,108 @@ _JUDGE_CIRCUIT_LOCK = threading.Lock()
 # fail-open，挂起不降低纪律强度。
 _JUDGE_ENDPOINT_DOWN_SECONDS = 120.0
 _JUDGE_ENDPOINT_DOWN: dict[tuple[str, str], float] = {}
+
+
+# ── 判定结果缓存（跨插件、跨调用点共享）──────────────────────────────────────
+# 判定是纯函数：temperature=0，同一个 (task, system, 文本, 键集) 再判一次拿不到新信息，
+# 只是重复付费并重复阻塞整轮。各插件自带的进程内缓存只覆盖自己那条通道（reply-certainty
+# 缓存回复侧、yinyang 缓存用户侧、read_think 缓存意图），挡不住跨插件/跨调用点的重复：
+# 同一段回复被 declare_act_guard 与 completion_boundary_audit 先后判、同一条用户消息在
+# 重发/重试时被同一任务再判，都各付一次实话。
+# 只缓存**有结论**的判定：全 None（端点挂起/解析失败/熔断打开）不入缓存，否则一次故障
+# 会被钉满 TTL，端点恢复后仍读到「没判出来」。
+_VERDICT_CACHE_MAX = 512
+_VERDICT_CACHE_TTL_SECONDS = 600.0
+_VERDICT_CACHE: dict[tuple[str, str, str, tuple[str, ...]], tuple[float, Any]] = {}
+_VERDICT_CACHE_LOCK = threading.Lock()
+
+
+def _verdict_cache_key(task: str, system: str, text: str,
+                       keys: tuple[str, ...]) -> tuple[str, str, str, tuple[str, ...]]:
+    """判定缓存的唯一键：profile + task + (system, 文本) 摘要 + 键集。
+
+    Contract:
+        Preconditions: system/text 为非空 str；keys 为判定键元组
+        Postconditions: 返回可直接做 dict 键的元组；同一输入恒定，文本/系统提示
+                        任何变化都换键（判定依据变了就不是同一个判定）
+    """
+    digest = hashlib.sha1()
+    digest.update(system.encode("utf-8"))
+    digest.update(b"\x00")
+    digest.update(text[:4000].encode("utf-8"))
+    profile, task_key = _judge_circuit_key(task)
+    return (profile, task_key, digest.hexdigest(), tuple(keys))
+
+
+def _verdict_cache_get(key: tuple[str, str, str, tuple[str, ...]]) -> Any:
+    """取缓存结论；过期/未命中返回 None。"""
+    with _VERDICT_CACHE_LOCK:
+        entry = _VERDICT_CACHE.get(key)
+        if entry is None:
+            return None
+        expires_at, value = entry
+        if expires_at <= time.monotonic():
+            _VERDICT_CACHE.pop(key, None)
+            return None
+        return value
+
+
+def _verdict_cache_put(key: tuple[str, str, str, tuple[str, ...]], value: Any) -> None:
+    """存入一条有结论的判定（调用方负责只传有结论的值）。"""
+    with _VERDICT_CACHE_LOCK:
+        if len(_VERDICT_CACHE) >= _VERDICT_CACHE_MAX:
+            # 插入序淘汰最旧一条：判定件没有访问局部性，LRU 收益不抵复杂度
+            _VERDICT_CACHE.pop(next(iter(_VERDICT_CACHE)), None)
+        _VERDICT_CACHE[key] = (time.monotonic() + _VERDICT_CACHE_TTL_SECONDS, value)
+
+
+def reset_verdict_cache() -> None:
+    """清空判定缓存（测试与端点恢复后的手动复位用）。"""
+    with _VERDICT_CACHE_LOCK:
+        _VERDICT_CACHE.clear()
+
+# ── 并发单飞：同一判定同一时刻只允许一次真实调用 ─────────────────────────────
+# 多个守卫可能在同一瞬间要同一条判定（同一轮里 yinyang/scope_gate 都要用户侧判定、
+# 回复侧同一段文本被两个 transform 钩子同时索要）。各插件的缓存只在**结论返回后**
+# 生效，先到的那次已经在飞，后来的照样再发一次——白付一次调用与一次整轮等待。
+# 这里让后来者等先到者的结果：等待上限取 _INFLIGHT_WAIT_SECONDS，超时按 fail-open
+# 返回 None（判定件宁可不判，也不能把回合挂死）。
+_INFLIGHT_WAIT_SECONDS = 30.0
+_JUDGE_INFLIGHT: dict[tuple[str, str, str, tuple[str, ...]], list[Any]] = {}
+_JUDGE_INFLIGHT_LOCK = threading.Lock()
+
+
+def _single_flight(key: tuple[str, str, str, tuple[str, ...]], compute: Any) -> Any:
+    """同一 key 的并发判定只执行一次 *compute*，其余等待并复用其结果。
+
+    Contract:
+        Preconditions: compute 为无参 callable，返回值即判定结果
+        Postconditions: 恰好一次 compute 真正执行（同一 key 的并发调用者共享结果）；
+                        等待超时 → 返回 None，绝不 raise
+    """
+    with _JUDGE_INFLIGHT_LOCK:
+        slot = _JUDGE_INFLIGHT.get(key)
+        leader = slot is None
+        if leader:
+            slot = [threading.Event(), None]
+            _JUDGE_INFLIGHT[key] = slot
+    assert slot is not None
+    if not leader:
+        slot[0].wait(_INFLIGHT_WAIT_SECONDS)
+        return slot[1]
+    try:
+        slot[1] = compute()
+        return slot[1]
+    finally:
+        with _JUDGE_INFLIGHT_LOCK:
+            _JUDGE_INFLIGHT.pop(key, None)
+        slot[0].set()
+
+
+def reset_judge_inflight() -> None:
+    """清空并发单飞表（测试用；生产由 _single_flight 的 finally 自清理）。"""
+    with _JUDGE_INFLIGHT_LOCK:
+        _JUDGE_INFLIGHT.clear()
 
 
 def _judge_circuit_key(task: str) -> tuple[str, str]:
@@ -619,7 +722,18 @@ def llm_judge_bool(task: str, system: str, text: str,
       - 返回 True/False/None；解析失败或异常 → None 并记日志
       - 调用次数与既有行为完全不变（判定逻辑复用 _text_verdict 单一实现）
     """
-    return _text_verdict(task, system, text, true_key, timeout, max_tokens).verdict
+    cache_key = _verdict_cache_key(task, system, text, (true_key,))
+
+    def _compute() -> Optional[bool]:
+        cached = _verdict_cache_get(cache_key)
+        if cached is not None:
+            return cached
+        verdict = _text_verdict(task, system, text, true_key, timeout, max_tokens).verdict
+        if verdict is not None:
+            _verdict_cache_put(cache_key, verdict)
+        return verdict
+
+    return _single_flight(cache_key, _compute)
 
 
 # ── 验证信号分通道（arXiv 2609.15364 失败模式一的工程化对策）──────────────────
@@ -681,6 +795,22 @@ def llm_judge_multi(task: str, system: str, text: str,
     """
     assert system and text, "system and text must be non-empty"
     assert keys and len(set(keys)) == len(keys), "keys must be non-empty unique"
+    cache_key = _verdict_cache_key(task, system, text, tuple(keys))
+    return _single_flight(
+        cache_key,
+        lambda: _judge_multi_uncached(task, system, text, keys, timeout, max_tokens, extra_body),
+    )
+
+
+def _judge_multi_uncached(task: str, system: str, text: str, keys: list[str],
+                          timeout: Optional[float], max_tokens: int,
+                          extra_body: Optional[dict[str, Any]]
+                          ) -> dict[str, Optional[bool]]:
+    """llm_judge_multi 的真实调用体（缓存与并发单飞在外层，此处只做一次调用）。"""
+    cache_key = _verdict_cache_key(task, system, text, tuple(keys))
+    cached = _verdict_cache_get(cache_key)
+    if cached is not None:
+        return dict(cached)
     fail: dict[str, Optional[bool]] = {k: None for k in keys}
     if _judge_circuit_open(task):
         logger.debug("llm_judge_multi(%s): circuit open; returning UNKNOWN", task)
@@ -704,6 +834,7 @@ def llm_judge_multi(task: str, system: str, text: str,
         parsed = _parse_bool_keys(content, keys)
         if any(verdict is not None for verdict in parsed.values()):
             _record_judge_success(task)
+            _verdict_cache_put(cache_key, dict(parsed))
         else:
             _record_judge_failure(task)
         return parsed
@@ -730,6 +861,10 @@ def llm_judge_json(task: str, system: str, text: str, keys: list[str],
     """
     assert system and text, "system and text must be non-empty"
     assert keys and len(set(keys)) == len(keys), "keys must be non-empty unique"
+    cache_key = _verdict_cache_key(task, system, text, tuple(keys))
+    cached = _verdict_cache_get(cache_key)
+    if cached is not None:
+        return {k: list(v) if isinstance(v, list) else v for k, v in cached.items()}
     empty: dict[str, Any] = {k: [] for k in keys}
     if _judge_circuit_open(task):
         logger.debug("llm_judge_json(%s): circuit open; returning empty", task)
@@ -764,6 +899,8 @@ def llm_judge_json(task: str, system: str, text: str, keys: list[str],
             v = parsed.get(k)
             out[k] = [str(x).strip() for x in v if str(x).strip()] if isinstance(v, list) else []
         _record_judge_success(task)
+        if any(out.get(k) for k in keys):
+            _verdict_cache_put(cache_key, {k: list(v) for k, v in out.items()})
         return out
     except Exception as e:
         logger.warning("llm_judge_json(%s) failed: %s", task, e, exc_info=True)
