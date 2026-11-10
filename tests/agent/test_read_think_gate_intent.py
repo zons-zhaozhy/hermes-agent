@@ -84,7 +84,14 @@ def test_read_only_request_blocks_write_even_after_complete_investigation(tmp_pa
     assert "只读" in result
 
 
-def test_ambiguous_request_blocks_write(tmp_path: Path) -> None:
+def test_ambiguous_request_is_allowed_after_a_complete_investigation(tmp_path: Path) -> None:
+    """An undecidable request is not a refusal.
+
+    Refusing on "ambiguous" deadlocked the whole turn whenever the classifier
+    could not read an interjection such as 「加油」, and the user had no way out
+    but retyping. The undecided class now runs the same investigation contract
+    as an authorized modification instead.
+    """
     target = tmp_path / "app.py"
     target.write_text("value = 1\n", encoding="utf-8")
     gate = _strict_gate(tmp_path)
@@ -97,9 +104,55 @@ def test_ambiguous_request_blocks_write(tmp_path: Path) -> None:
         [{"path": str(target), "old": "value = 1", "new": "value = 2"}],
     )
 
+    assert gate.user_intent == "ambiguous"
+    assert result is None
+
+
+def test_ambiguous_investigation_block_states_the_unconfirmed_authorization(
+    tmp_path: Path,
+) -> None:
+    """The agent must not be told a request was authorized when it was not.
+
+    An ambiguous turn can now reach a write, so the investigation block is the
+    last place that says the intent was a guess; claiming "用户已请求修改" would
+    turn a guess into an unremarked write.
+    """
+    target = tmp_path / "app.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    gate = _strict_gate(tmp_path)
+    gate.reset_for_turn("帮我处理一下这个")
+    gate._read_only_count = 1
+    gate._files_read = {str(target)}
+    gate._investigation_evidence = [f"read_file: {target}"]
+
+    result = gate.check_batch(
+        "我准备改成 value = 2。",
+        ["patch"],
+        [{"path": str(target), "old": "value = 1", "new": "value = 2"}],
+    )
+
     assert result is not None
-    assert "用户意图" in result
-    assert "不明确" in result
+    assert "既没有明确授权修改" in result
+    assert "用户已请求修改" not in result
+
+
+def test_repeated_read_only_refusals_hand_control_back_instead_of_looping(
+    tmp_path: Path,
+) -> None:
+    """The refusal used to be unbounded: only the investigation path was budgeted."""
+    gate = _strict_gate(tmp_path)
+    gate.reset_for_turn("看一下这个文件为什么返回错误，不要修改")
+    gate._reasoning_rounds = gate._active_profile.max_reasoning_rounds
+
+    result = gate.check_batch(
+        "仍在调查。",
+        ["write_file"],
+        [{"path": str(tmp_path / "new_module.py"), "content": "x = 1\n"}],
+    )
+
+    assert result is not None
+    assert "停止自动重试" in result
+    assert not gate.is_satisfied
 
 
 def test_explanation_and_modification_language_requires_disambiguation(

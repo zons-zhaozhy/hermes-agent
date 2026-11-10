@@ -1,0 +1,101 @@
+{"id": "ro-neg-01", "text": "看一下这个文件为什么会崩，不要修改任何东西", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-neg-02", "text": "只分析，别动代码", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-neg-03", "text": "仅分析这个配置的差异，不要改", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-neg-04", "text": "先别改，我想知道现在的逻辑是什么", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-neg-05", "text": "只汇报结论，不要创建文件", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-neg-06", "text": "do not modify anything, just tell me what is wrong", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-neg-07", "text": "read only please — where does the retry budget come from", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-neg-08", "text": "调查一下这个 traceback，别修", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-ask-01", "text": "这个函数为什么返回 None？", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-ask-02", "text": "gateway 为什么在 18:13 重启了？", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-ask-03", "text": "这个报错是什么意思", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-ask-04", "text": "刚才那次超时是哪一层打穿的？", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-ask-05", "text": "现在网关是什么状态", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-ask-06", "text": "这两个配置项有什么区别？", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-ask-07", "text": "为什么 pre_llm_call 会超时？", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-ask-08", "text": "这条日志是哪来的", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-ask-09", "text": "你在改动之前确认过调用方吗？", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-ask-10", "text": "能不能解释一下这个 lease 是怎么回收的", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-ask-11", "text": "我们现在的 drain 预算是多少", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-ask-12", "text": "这个测试为什么挂了", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-ask-13", "text": "which file defines the drain timeout", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-ask-14", "text": "why does the hook timeout at 30s", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-ask-15", "text": "what does this status code mean", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-diag-01", "text": "排查一下为什么连不上这个端点", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-diag-02", "text": "定位一下这个泄漏是从哪进来的", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-diag-03", "text": "帮我看看这个 session 卡住的原因", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-diag-04", "text": "检查一下这个 plist 有没有写错", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-diag-05", "text": "审查一下这段并发代码", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-diag-06", "text": "评估一下这个方案的代价", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-diag-07", "text": "对比一下上游是怎么处理这个场景的", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-diag-08", "text": "investigate why the merge left 1310 files staged", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-howto-01", "text": "怎么修复这个错误？", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-howto-02", "text": "如果要改，应该动哪几个文件？", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-howto-03", "text": "改的话需要注意什么？", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-howto-04", "text": "先说说你会怎么改，别动手", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-howto-05", "text": "这个能不能换成异步实现？有什么代价", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-howto-06", "text": "how would you fix the retry budget", "label": "read_only", "read_only": true, "modify": false}
+{"id": "mod-01", "text": "修一下这个文件的错误", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-02", "text": "把 ExitTimeOut 从 120 改成 180", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-03", "text": "给这个函数加上重试", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-04", "text": "删掉这段死代码", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-05", "text": "重构这个文件，把 gate 拆成两个模块", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-06", "text": "补一个行为契约测试", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-07", "text": "新建一个 read_think_intent 的配置项，12 秒", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-08", "text": "把这两个 worktree 删掉", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-09", "text": "重启网关", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-10", "text": "提交推送", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-11", "text": "按性价比顺序推进", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-12", "text": "把 use_logprobs 打开再跑一遍", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-13", "text": "fix the typo in the docstring", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-14", "text": "add a retry to the hook dispatcher", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-15", "text": "refactor this into a sibling module", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-16", "text": "把 timeout 调到 12s，然后跑测试", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-17", "text": "现在开始，双方都改的文件优先沉成插件", "label": "modify", "read_only": true, "modify": false}
+{"id": "mod-18", "text": "这两个未提交的都提交推送", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-conf-01", "text": "继续", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-conf-02", "text": "可以", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-conf-03", "text": "按这个来", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-conf-04", "text": "好", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-conf-05", "text": "就这么办", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-conf-06", "text": "开始吧", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-conf-07", "text": "go ahead", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-conf-08", "text": "执行", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-conf-09", "text": "B", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-conf-10", "text": "好，继续修", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-conf-11", "text": "对，就这么改", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-conf-12", "text": "继续吧，别问了", "label": "modify", "read_only": false, "modify": true}
+{"id": "amb-phatic-01", "text": "加油", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-phatic-02", "text": "快点", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-phatic-03", "text": "嗯", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-phatic-04", "text": "辛苦了", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-phatic-05", "text": "好的知道了", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-phatic-06", "text": "我先看看", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-phatic-07", "text": "thanks", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-phatic-08", "text": "666", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-vague-01", "text": "帮我处理一下这个", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-vague-02", "text": "这个模块有点乱", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-vague-03", "text": "这里感觉不太对", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-vague-04", "text": "网关又抽风了", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-vague-05", "text": "你觉得呢？", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-vague-06", "text": "随便你", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-vague-07", "text": "改", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-vague-08", "text": "修", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-vague-09", "text": "这个性能不太行", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-vague-10", "text": "你看看能怎么办", "label": "ambiguous", "read_only": true, "modify": false}
+{"id": "amb-vague-11", "text": "it feels slow", "label": "ambiguous", "read_only": true, "modify": false}
+{"id": "amb-vague-12", "text": "not sure about this part", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-mixed-01", "text": "这个 bug 能修吗？", "label": "ambiguous", "read_only": true, "modify": false}
+{"id": "amb-mixed-02", "text": "看看这个怎么改比较好，改完再说", "label": "ambiguous", "read_only": true, "modify": false}
+{"id": "amb-mixed-03", "text": "为什么这么慢？顺便优化一下", "label": "ambiguous", "read_only": false, "modify": true}
+{"id": "amb-mixed-04", "text": "如果加个缓存会不会好点，你决定", "label": "ambiguous", "read_only": true, "modify": false}
+{"id": "amb-mixed-05", "text": "这个测试挂了，你看看", "label": "ambiguous", "read_only": true, "modify": false}
+{"id": "amb-mixed-06", "text": "能改成异步吗", "label": "ambiguous", "read_only": false, "modify": true}
+{"id": "amb-mixed-07", "text": "或许应该拆成两个文件？", "label": "ambiguous", "read_only": true, "modify": false}
+{"id": "amb-mixed-08", "text": "could we make this async somehow", "label": "ambiguous", "read_only": false, "modify": true}
+{"id": "ro-probe-01", "text": "提交推送了吗", "label": "read_only", "read_only": false, "modify": false}
+{"id": "ro-probe-02", "text": "是不是有没提交推送的？", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-probe-03", "text": "重启了吗", "label": "read_only", "read_only": false, "modify": false}
+{"id": "ro-probe-04", "text": "测试跑完了吗", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-probe-05", "text": "那个 worktree 还在吗", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-probe-06", "text": "我们自建的门禁做的科学吗", "label": "read_only", "read_only": true, "modify": false}

@@ -402,6 +402,9 @@ _INTENT_CLASSIFY_PROMPT = """判断用户最新消息要求的操作类型。只
 
 只回答 JSON。"""
 
+# 词表是有方向的：_MODIFY_TERMS 只能在「没有疑问形态」时**授予**（放行后仍要过调查
+# 契约），_READ_ONLY_TERMS 只在 _is_confirmation 里做**否决**（把提问排除在确认之外），
+# 永远不再凭它拒绝写入——拒绝只认显式禁止。见 _fallback_detect_intent 的说明。
 _MODIFY_TERMS = (
     "修复", "修好", "修改", "改成", "改掉", "改一下", "修一下", "调整",
     "实现", "增加", "新增", "删除", "移除", "重构", "创建", "新建",
@@ -411,6 +414,7 @@ _MODIFY_TERMS = (
     "refactor", "create ", "update ", "replace ", "rewrite", "write ",
     "generate ", "save ", "export ",
 )
+# 只用于否决：一句话含这些词时不能被当成对方案的确认（「看看能不能改」不是授权）。
 _READ_ONLY_TERMS = (
     "看看", "看一下", "查看", "检查", "确认", "解释", "分析", "审查", "评估", "为什么",
     "怎么回事", "排查", "调查", "定位原因", "给出建议", "给个方案",
@@ -419,7 +423,8 @@ _READ_ONLY_TERMS = (
     "why ", "how ", "what ", "whether ",
 )
 _EXPLICIT_NO_MODIFY_TERMS = (
-    "不要修改", "不要改", "不要动", "别修改", "别改", "别动",
+    "不要修改", "不要改", "不要修", "不要动", "别修改", "别改", "别修", "别动",
+    "不许改", "不准改", "不用改", "不必改",
     "不要创建", "不要新建", "别创建", "别新建",
     "只看", "只分析", "仅分析", "只调查", "仅调查",
     "只汇报", "仅汇报", "只报告", "仅报告",
@@ -588,6 +593,25 @@ def _pending_request_authorizes_reply(pending_request: str, message: str) -> boo
     return bool(definitions) and all(_definition_authorizes(d) for d in definitions)
 
 
+# 疑问形态是**句法**事实，不是语义猜测：句末问号与疑问助词都能照着字面判。
+# 它只用来阻止「动词表把提问当成指令」，不作为拒绝写入的依据——拒绝只认显式禁止。
+_INTERROGATIVE_MARKERS = ("怎么", "如何", "为什么", "是否", "能不能", "可不可以", "吗？", "吗?")
+
+
+def _is_interrogative(text: str) -> bool:
+    """Whether the message asks rather than tells.
+
+    Contract:
+        Preconditions: text is the lowercased, stripped user message.
+        Postconditions: True on a trailing question mark or an interrogative
+                        particle; never raises.
+    """
+    stripped = (text or "").strip()
+    if stripped.endswith(("?", "？")):
+        return True
+    return any(marker in stripped for marker in _INTERROGATIVE_MARKERS)
+
+
 def _fallback_detect_intent(
     user_message: str,
     conversation_history: list[dict] | None = None,
@@ -596,30 +620,34 @@ def _fallback_detect_intent(
 ) -> str:
     """Conservative intent fallback for an unavailable semantic classifier.
 
-    Explicit negated modification wins first; then explicit modification
-    verbs; then a one-token reply to a pending authorization request; then
-    explicit read-only verbs; then a terse confirmation of the latest concrete
-    proposal. Everything else is ambiguous.
+    The two directions are deliberately asymmetric, because the costs are: a
+    refusal the user did not deserve deadlocks the whole turn, while a grant
+    they did not ask for only costs an investigation they can still see and
+    stop. So the fallback may *grant* on a verb it reads as an imperative, but
+    may only *refuse* on an explicit prohibition — a phrase that literally says
+    "do not". Everything else is ambiguous, and an ambiguous turn runs the
+    investigation contract instead of being refused.
+
+    Scanning read-only verbs for the refusal made the verdict depend on which
+    verbs happened to be enumerated: 「看看这个 bug 然后修掉」 matched a
+    read-only verb and no listed modify verb, so the fallback refused a real fix
+    request and the turn deadlocked.
     """
     text = (user_message or "").strip().lower()
     if not text:
         return INTENT_AMBIGUOUS
     if any(term in text for term in _EXPLICIT_NO_MODIFY_TERMS):
         return INTENT_READ_ONLY
+    if _is_confirmation_check(text):
+        return INTENT_READ_ONLY
     if any(term in text for term in _STRONG_MODIFY_TERMS):
         return INTENT_MODIFY
     if _pending_request_authorizes_reply(pending_auth_request, user_message):
         return INTENT_MODIFY
-    asks_for_modification = any(term in text for term in _MODIFY_TERMS)
-    asks_for_explanation = any(term in text for term in _READ_ONLY_TERMS)
-    if asks_for_modification and asks_for_explanation:
-        return INTENT_AMBIGUOUS
-    if asks_for_modification:
+    if not _is_interrogative(text) and any(term in text for term in _MODIFY_TERMS):
         return INTENT_MODIFY
     if _is_confirmation(text, conversation_history):
         return INTENT_MODIFY
-    if asks_for_explanation:
-        return INTENT_READ_ONLY
     return INTENT_AMBIGUOUS
 
 
@@ -678,6 +706,27 @@ def _build_intent_context(
     return "\n".join(lines)[-4000:]
 
 
+def _intent_from_labels(read_only: bool | None, modify: bool | None) -> str | None:
+    """Map the classifier's two labels onto one intent.
+
+    Both false means the classifier declined to decide, which is the ambiguous
+    class; both true is a contradiction the prompt forbids, so it is treated as
+    "no usable answer" rather than silently picking a side.
+
+    Contract:
+        Preconditions: each argument is True, False or None.
+        Postconditions: returns one of INTENT_*; None only when the answer is
+                        unusable (missing label or contradictory labels).
+    """
+    if read_only is True and modify is False:
+        return INTENT_READ_ONLY
+    if read_only is False and modify is True:
+        return INTENT_MODIFY
+    if read_only is False and modify is False:
+        return INTENT_AMBIGUOUS
+    return None
+
+
 def _classify_intent_via_llm(
     user_message: str,
     conversation_history: list[dict] | None = None,
@@ -691,6 +740,7 @@ def _classify_intent_via_llm(
     key = _cache_key(context)
     cached = _intent_cache.get(key)
     if cached is not None:
+        logger.info("read-think gate: intent=%s channel=llm-cached", cached)
         return cached
     try:
         from plugins._llm_judge import llm_judge_multi
@@ -705,21 +755,18 @@ def _classify_intent_via_llm(
         logger.warning("read-think gate: intent classifier failed", exc_info=True)
         return None
 
-    read_only = verdict.get("read_only")
-    modify = verdict.get("modify")
-    if read_only is True and modify is False:
-        result = INTENT_READ_ONLY
-    elif read_only is False and modify is True:
-        result = INTENT_MODIFY
-    elif read_only is False and modify is False:
-        result = INTENT_AMBIGUOUS
-    else:
+    result = _intent_from_labels(verdict.get("read_only"), verdict.get("modify"))
+    if result is None:
+        logger.info(
+            "read-think gate: intent=unusable channel=llm labels=(%r,%r)",
+            verdict.get("read_only"), verdict.get("modify"),
+        )
         return None
 
     if len(_intent_cache) >= _INTENT_CACHE_MAX:
         _intent_cache.pop(next(iter(_intent_cache)))
     _intent_cache[key] = result
-    logger.info("read-think gate: user intent=%s", result)
+    logger.info("read-think gate: intent=%s channel=llm", result)
     return result
 
 
@@ -738,14 +785,17 @@ def _detect_user_intent(
         message, conversation_history, pending_auth_request=pending_auth_request
     )
     if hard_intent is not None:
+        logger.info("read-think gate: intent=%s channel=conversation", hard_intent)
         return hard_intent
     if use_llm:
         detected = _classify_intent_via_llm(message, conversation_history)
         if detected in _INTENT_VALUES:
             return detected
-    return _fallback_detect_intent(
+    fallback = _fallback_detect_intent(
         message, conversation_history, pending_auth_request=pending_auth_request
     )
+    logger.info("read-think gate: intent=%s channel=fallback", fallback)
+    return fallback
 
 
 # ── LLM 复杂度分类 ─────────────────────────────────────────────────
@@ -1624,7 +1674,7 @@ class ReadThinkGate:
         # read, a timer, or a round-budget exhaust.
         if (
             not self._satisfied
-            and self._intent == INTENT_MODIFY
+            and self._intent != INTENT_READ_ONLY
             and self._try_unlock(content_len, content_text, tool_names)
         ):
             self._mark_satisfied()
@@ -1637,20 +1687,8 @@ class ReadThinkGate:
             )
             return None
 
-        if self._intent != INTENT_MODIFY:
-            self._reasoning_rounds += 1
-            self._awaiting_user_authorization = True
-            self._pending_auth_request = content_text[-2000:]
-            self._publish_state()
-            first_gated = next(
-                (t for t in tool_names if t in self._gated_tools),
-                "terminal",
-            )
-            return _make_synthetic_result(
-                first_gated,
-                self._build_intent_block_message(first_gated),
-                content_len,
-            )
+        if self._intent == INTENT_READ_ONLY:
+            return self._refuse_read_only_intent(tool_names, content_text, content_len)
 
         unread_targets = self._unread_write_targets(tool_names, tool_args)
         if unread_targets:
@@ -1819,22 +1857,43 @@ class ReadThinkGate:
         self._publish_state()
         logger.info("read-think gate: clarify answer authorizes modification")
 
+    def _refuse_read_only_intent(
+        self, tool_names: list[str], content_text: str, content_len: int,
+    ) -> str:
+        """Refuse a write the user explicitly asked not to make.
+
+        Only the read-only verdict blocks. An ambiguous verdict is *not* a
+        refusal: refusing on it cost the whole turn whenever the classifier
+        could not read an interjection such as 「加油」, and repeating the
+        refusal was unbounded — the round budget was only checked on the
+        investigation path, so an agent that retried the same write looped
+        until the user typed something else. A repeated read-only attempt now
+        escalates to the handoff message instead of re-blocking in silence.
+        """
+        self._reasoning_rounds += 1
+        self._awaiting_user_authorization = True
+        self._pending_auth_request = content_text[-2000:]
+        self._publish_state()
+        first_gated = next((t for t in tool_names if t in self._gated_tools), "terminal")
+        exhausted = self._reasoning_rounds >= self._active_profile.max_reasoning_rounds
+        logger.info(
+            "read-think gate: intent refusal %s (round %d/%d, intent=%s, handoff=%s)",
+            first_gated, self._reasoning_rounds, self._active_profile.max_reasoning_rounds,
+            self._intent, exhausted,
+        )
+        message = (
+            self._build_handoff_message(first_gated) if exhausted
+            else self._build_intent_block_message(first_gated)
+        )
+        return _make_synthetic_result(first_gated, message, content_len)
+
     def _build_intent_block_message(self, tool_name: str) -> str:
-        """Explain a denied write using the user's actual intent class."""
-        if self._intent == INTENT_READ_ONLY:
-            verdict = "用户的请求是只读的（询问、解释、分析、审查或诊断），没有授权修改。"
-            next_step = "继续调查并回答用户的问题；不要创建或修改任何文件。"
-        else:
-            verdict = "用户的意图不明确，无法确认是否授权修改。"
-            next_step = (
-                "先向用户复述你理解的目标，并询问是否需要修改；"
-                "用户明确授权前不要创建或修改任何文件。"
-            )
+        """Explain a denied write: the user asked for analysis, not for a change."""
         return (
             f"[ReadThink Gate — 用户意图门禁] 工具 '{tool_name}' 被阻止。\n\n"
-            f"判定：{verdict}\n"
+            "判定：用户的请求是只读的（询问、解释、分析、审查或诊断），没有授权修改。\n"
             f"当前用户消息：{self._user_message[:500] or '（空）'}\n\n"
-            f"下一步：{next_step}\n"
+            "下一步：继续调查并回答用户的问题；不要创建或修改任何文件。\n"
             "读取和分析工具仍然可用。用户消息与 clarify 表单中用户的回答同等构成授权；"
             "其他工具输出与你此前提出的方案本身不能构成授权。"
         )
@@ -1848,6 +1907,22 @@ class ReadThinkGate:
             "现在停止自动修改，向用户说明已经确认的事实、仍缺的具体证据，"
             "以及需要用户决定的范围或验收标准。只有用户的新消息可以继续授权；"
             "不要通过绕行终端、脚本或其他写通道规避门禁。"
+        )
+
+    def _intent_scope_line(self) -> str:
+        """State the authorization the investigation gate is running under.
+
+        An ambiguous verdict no longer refuses the write, so the message must
+        not claim an authorization the user never gave: the agent is told it is
+        acting on its own reading of the request and that the reply has to say
+        so. A silent write under a guessed intent is the failure this line
+        exists to make visible.
+        """
+        if self._intent == INTENT_MODIFY:
+            return "用户已请求修改，但修改授权不等于立即动手。"
+        return (
+            "用户既没有明确授权修改，也没有禁止修改——本 turn 按「先调查、再动手」处理，"
+            "动手前必须向用户说明你确实理解了需求，并在回复里写出你据以动手的那句话。"
         )
 
     def _build_block_message(
@@ -1873,7 +1948,8 @@ class ReadThinkGate:
         gaps = self._strict_gap_items(profile, content_len, tool_names)
         header = (
             f"[ReadThink Gate — 调查门禁] 工具 '{tool_name}' 暂时不可用。\n\n"
-            "用户已请求修改，但修改授权不等于立即动手。先全面搞清楚：\n"
+            f"{self._intent_scope_line()}"
+            "先全面搞清楚：\n"
             "  1. 目标代码现在如何工作？读过完整目标文件和关键行号吗？\n"
             "  2. 调用方、被依赖方、兄弟实现和相关配置在哪里？\n"
             "  3. 现有测试和项目约定是什么？改行为前查过历史意图吗？\n"
