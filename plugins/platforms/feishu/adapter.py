@@ -94,6 +94,7 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import send_chunks
 from plugins.platforms.feishu.adapter_choice_cards import FeishuChoiceCardsMixin
+from plugins.platforms.feishu.adapter_webhook_security import FeishuWebhookSecurityMixin
 from gateway.status import acquire_scoped_lock
 from gateway.status_scoped_locks import release_scoped_lock
 from hermes_constants import get_hermes_home
@@ -160,12 +161,7 @@ _DEFAULT_WEBHOOK_PATH = "/feishu/webhook"
 _FEISHU_DEDUP_TTL_SECONDS = 24 * 60 * 60          # 24 hours — matches openclaw
 _FEISHU_SENDER_NAME_TTL_SECONDS = 10 * 60          # 10 minutes sender-name cache
 _FEISHU_WEBHOOK_MAX_BODY_BYTES = 1 * 1024 * 1024   # 1 MB body limit
-_FEISHU_WEBHOOK_RATE_WINDOW_SECONDS = 60            # sliding window for rate limiter
-_FEISHU_WEBHOOK_RATE_LIMIT_MAX = 120               # max requests per window per IP — matches openclaw
-_FEISHU_WEBHOOK_RATE_MAX_KEYS = 4096               # max tracked keys (prevents unbounded growth)
 _FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS = 30          # max seconds to read request body
-_FEISHU_WEBHOOK_ANOMALY_THRESHOLD = 25             # consecutive error responses before WARNING log
-_FEISHU_WEBHOOK_ANOMALY_TTL_SECONDS = 6 * 60 * 60  # anomaly tracker TTL (6 hours) — matches openclaw
 _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS = 15 * 60    # card action token dedup window (15 min)
 
 _APPROVAL_CHOICE_MAP: dict[str, str] = {
@@ -1286,7 +1282,7 @@ def _sdk_build(request_cls: Any, **fields: Any) -> Any:
     return builder.build()
 
 
-class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
+class FeishuAdapter(FeishuWebhookSecurityMixin, FeishuChoiceCardsMixin, BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
@@ -1322,8 +1318,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         # inbound messages cannot land their writes out of order.
         self._dedup_persist_lock = asyncio.Lock()
         self._sender_name_cache: dict[str, tuple[str, float]] = {}  # sender_id → (name, expire_at)
-        self._webhook_rate_counts: dict[str, tuple[int, float]] = {}  # rate_key → (count, window_start)
-        self._webhook_anomaly_counts: dict[str, tuple[int, str, float]] = {}  # ip → (count, last_status, first_seen)
+        self._init_webhook_security_state()
         self._card_action_tokens: dict[str, float] = {}  # token → first_seen_time
         # Inbound events that arrived before the loop was ready; one drainer thread replays them.
         self._pending_inbound_events: list[Any] = []
@@ -2621,25 +2616,6 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         if outcome is ProcessingOutcome.FAILURE:
             await self._add_reaction(message_id, _FEISHU_REACTION_FAILURE)
 
-    # --- Webhook server and security ---
-    def _record_webhook_anomaly(self, remote_ip: str, status: str) -> None:
-        """Count consecutive error responses per IP (openclaw createWebhookAnomalyTracker); WARN every threshold."""
-        now = time.time()
-        count, _last_status, first_seen = self._webhook_anomaly_counts.get(remote_ip) or (0, "", now)
-        if count and now - first_seen >= _FEISHU_WEBHOOK_ANOMALY_TTL_SECONDS:
-            count, first_seen = 0, now  # TTL expired — start fresh
-        count += 1
-        if count % _FEISHU_WEBHOOK_ANOMALY_THRESHOLD == 0:
-            logger.warning(
-                "[Feishu] Webhook anomaly: %d consecutive error responses (%s) from %s over the last %.0fs",
-                count, status, remote_ip, now - first_seen,
-            )
-        self._webhook_anomaly_counts[remote_ip] = (count, status, first_seen)
-
-    def _clear_webhook_anomaly(self, remote_ip: str) -> None:
-        """Reset the anomaly counter for remote_ip after a successful request."""
-        self._webhook_anomaly_counts.pop(remote_ip, None)
-
     # --- Inbound processing pipeline ---
     def _resolve_channel_prompt(self, chat_id: str, parent_id: str | None = None) -> str | None:
         """Honour ``channel_prompts: {<chat_id>: "<prompt>"}`` in PlatformConfig.extra (as Discord/Slack do)."""
@@ -2837,11 +2813,6 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
     async def _handle_webhook_request(self, request: Any) -> Any:
         remote_ip = (getattr(request, "remote", None) or "unknown")
 
-        # Rate-limit key is app_id:path:remote_ip (matches openclaw key structure).
-        if not self._check_webhook_rate_limit(f"{self._app_id}:{self._webhook_path}:{remote_ip}"):
-            logger.warning("[Feishu] Webhook rate limit exceeded for %s", remote_ip)
-            return self._webhook_reject(remote_ip, "429", 429, "Too Many Requests")
-
         headers = getattr(request, "headers", {}) or {}
         content_type = str(headers.get("Content-Type", "") or "").split(";")[0].strip().lower()
         if content_type and content_type != "application/json":  # Feishu always sends JSON
@@ -2867,30 +2838,47 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         except Exception:
             return self._webhook_reject(remote_ip, "400", 400, json_msg="failed to read body")
 
+        if not self._check_webhook_preauth_limit(remote_ip):
+            logger.warning("[Feishu] Webhook pre-auth rate limit exceeded for %s", remote_ip)
+            return self._webhook_reject(remote_ip, "429-preauth", 429, "Too Many Requests")
+
+        signature_valid = False
+        if self._encrypt_key and headers.get("x-lark-signature"):
+            signature_valid = self._is_webhook_signature_valid(headers, body_bytes)
+            if not signature_valid:
+                logger.warning("[Feishu] Webhook rejected: invalid signature from %s", remote_ip)
+                return self._webhook_reject(remote_ip, "401-sig", 401, "Invalid signature")
+
         try:
-            payload = json.loads(body_bytes.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
+            payload, header = self._parse_webhook_envelope(body_bytes)
+        except ValueError:
             return self._webhook_reject(remote_ip, "400", 400, json_msg="invalid json")
 
-        # Verification token: second defence layer beyond the signature (matches openclaw).
+        is_url_verification = payload.get("type") == "url_verification"
+        if is_url_verification and not self._verification_token:
+            return self._webhook_reject(remote_ip, "401-token", 401, "Invalid verification token")
+
+        # URL verification is unsigned by Feishu; the embedded token is its proof.
         if self._verification_token:
-            header = payload.get("header") or {}
             incoming_token = str(header.get("token") or payload.get("token") or "")
-            # compare_digest as bytes — it raises TypeError on non-ASCII str, and the token is remote input.
-            if not incoming_token or not hmac.compare_digest(
-                incoming_token.encode(), self._verification_token.encode()
+            if not self._verification_token_matches(
+                incoming_token, self._verification_token
             ):
                 logger.warning("[Feishu] Webhook rejected: invalid verification token from %s", remote_ip)
                 return self._webhook_reject(remote_ip, "401-token", 401, "Invalid verification token")
 
-        # Token is validated above BEFORE reflecting the challenge, so an unauthenticated
-        # remote can't prove endpoint control by getting its own challenge echoed back.
-        if payload.get("type") == "url_verification":
-            return web.json_response({"challenge": payload.get("challenge", "")})
-
-        if self._encrypt_key and not self._is_webhook_signature_valid(request.headers, body_bytes):
-            logger.warning("[Feishu] Webhook rejected: invalid signature from %s", remote_ip)
+        if self._encrypt_key and not is_url_verification and not signature_valid:
             return self._webhook_reject(remote_ip, "401-sig", 401, "Invalid signature")
+
+        # Only authenticated traffic consumes the delivery quota; pre-auth failures
+        # have their own bounded limiter above.
+        rate_key = f"{self._app_id}:{self._webhook_path}:{remote_ip}"
+        if not self._check_webhook_rate_limit(rate_key):
+            logger.warning("[Feishu] Webhook rate limit exceeded for %s", remote_ip)
+            return self._webhook_reject(remote_ip, "429", 429, "Too Many Requests")
+
+        if is_url_verification:
+            return web.json_response({"challenge": payload.get("challenge", "")})
 
         if payload.get("encrypt"):
             logger.error("[Feishu] Encrypted webhook payloads are not supported by Hermes webhook mode")
@@ -2940,32 +2928,6 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         except Exception:
             logger.debug("[Feishu] Signature verification raised an exception", exc_info=True)
             return False
-
-    def _check_webhook_rate_limit(self, rate_key: str) -> bool:
-        """Sliding-window limiter keyed by "{app_id}:{path}:{remote_ip}" (openclaw); table capped, fail-closed."""
-        now = time.time()
-        entry = self._webhook_rate_counts.get(rate_key)
-        if entry is not None:
-            count, window_start = entry
-            if now - window_start < _FEISHU_WEBHOOK_RATE_WINDOW_SECONDS:
-                if count >= _FEISHU_WEBHOOK_RATE_LIMIT_MAX:
-                    return False
-                self._webhook_rate_counts[rate_key] = (count + 1, window_start)
-                return True
-        # New window or new key — prune stale entries when at capacity.
-        if len(self._webhook_rate_counts) >= _FEISHU_WEBHOOK_RATE_MAX_KEYS:
-            for k in [k for k, (_, ws) in self._webhook_rate_counts.items() if now - ws >= _FEISHU_WEBHOOK_RATE_WINDOW_SECONDS]:
-                del self._webhook_rate_counts[k]
-            # Still full → deny untracked keys (fail closed): the table only fills this far under
-            # abuse, and letting untracked requests through would bypass the limiter entirely.
-            if rate_key not in self._webhook_rate_counts and len(self._webhook_rate_counts) >= _FEISHU_WEBHOOK_RATE_MAX_KEYS:
-                logger.warning(
-                    "[Feishu] Webhook rate-limit table at capacity (%d keys) — denying untracked key",
-                    _FEISHU_WEBHOOK_RATE_MAX_KEYS,
-                )
-                return False
-        self._webhook_rate_counts[rate_key] = (1, now)
-        return True
 
     # --- Text batching ---
     @staticmethod
