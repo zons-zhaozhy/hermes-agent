@@ -486,6 +486,18 @@ display:
 
 `"steer"` has two automatic fallbacks: if the agent hasn't started yet, or if images are attached, the message falls back to `"queue"` behavior so nothing is lost.
 
+In `"interrupt"` mode two protections still defer your message to the queue instead. The running agent's `delegate_task` children and an in-flight context compression both keep the turn alive, because interrupting either aborts delegated work or forks orphaned sessions. The subagent protection is a cost trade, so it can be turned off:
+
+```yaml
+# ~/.hermes/config.yaml
+display:
+  busy_interrupt_overrides_subagents: true   # default false
+```
+
+With it on, your Enter interrupts even while the agent drives subagents; the interrupted turn's delegated work is redone on the next turn. The compression protection is not configurable.
+
+Typed input also outranks Hermes's own pending turns. Goal continuations, `/loop` wakeups and background-process notices wait in the same pending queue, and the live work dock's `Queue · N queued` count shows only your own prompts — automated ones are not counted and never run ahead of a message you typed.
+
 Whatever the mode, `/queue <prompt>` queues a follow-up turn explicitly, and `/queue list`, `/queue rm N`, `/queue edit N …` and `/queue move A B` act on the pending queue immediately, even mid-run. The live work dock lists what is waiting.
 
 When the CLI runs on the gateway's session (the default local setup), a prompt queued while a turn runs, by `/queue` or by queue-mode Enter, goes into the gateway's own queue for the session. It survives a gateway restart and runs once, in the order you entered it. Image follow-ups still wait in the CLI. That queue is shared: `/queue list`, `rm`, `edit` and `clear` show and change every prompt queued on the session, including ones another window or an automation queued. The gateway runs its queue in order and cannot reorder it, so `/queue move` refuses to move a prompt the gateway holds. A slash command typed while busy after your own `/queue` prompt runs after that prompt's turn starts; it waits at most a couple of seconds, so a paused queue never blocks typing.
