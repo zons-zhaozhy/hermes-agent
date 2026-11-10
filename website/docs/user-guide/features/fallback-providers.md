@@ -50,6 +50,11 @@ fallback:
 |-----|---------|--------|
 | `fallback.min_switch_reset_seconds` | `0` (off) | A rate-limited primary whose declared reset is sooner than this many seconds is not swapped for a fallback; the retry backoff waits out the window instead. |
 
+On the Z.AI Coding GLM endpoint, a transient 429 spends the configured primary-model retry
+budget first and only then walks the fallback chain. The 5-hour plan-window 429
+(``已达到 5 小时的使用上限``) is different: Hermes parses its reset time, reports the plan
+window, and does not automatically switch models across that wall.
+
 Gemini fallback entries accept `gemini`, `google`, `google-gemini`, and
 `google-ai-studio`. On Google's native API endpoint, all use the native Gemini
 client, including its `generationConfig.thinkingConfig` translation. A custom

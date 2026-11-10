@@ -13,6 +13,7 @@ import logging
 import locale
 import math
 import re
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -20,7 +21,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE
 from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
-from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
+from agent.retry_utils import (
+    is_zai_coding_overload_error, is_zai_coding_route, zai_coding_overload_retry_ceiling,
+)
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _messages_carry_images,
@@ -56,10 +59,10 @@ def _vlines(agent: Any, *lines: str) -> None:
 
 
 def _plines(agent: Any, *lines: str) -> None:
-    """``print`` each line prefixed with ``agent.log_prefix``."""
+    """Write each line to stdout, prefixed with ``agent.log_prefix``."""
     from gateway.warning_notifications import render_notification
     render_notification(
-        lambda: [print(f"{agent.log_prefix}{line}") for line in lines],
+        lambda: [sys.stdout.write(f"{agent.log_prefix}{line}\n") for line in lines],
         platform=getattr(agent, "_notification_platform", getattr(agent, "platform", "cli")),
         user_config=getattr(agent, "_notification_config", None))
 
@@ -1915,10 +1918,19 @@ def route_classified_error(
     _is_zai_coding_overload = is_zai_coding_overload_error(base_url=str(base_url), model=model, error=api_error)
     if _is_zai_coding_overload:
         max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
+    # A subscription-backed GLM transient throttle can reopen inside the normal retry
+    # budget. Exhaust that budget on the paid plan first; only then walk the fallback chain.
+    _zai_glm_retry_pending = (
+        classified.reason == FailoverReason.rate_limit
+        and retry_count < max_retries
+        and is_zai_coding_route(base_url=str(base_url), model=model)
+    )
     _should_fallback = (
         (is_rate_limited and _wrapped_output_cap_budget is None)
         or (_is_transport_failure and retry_count >= 2)
-    ) and not (getattr(classified, "error_context", None) or {}).get("usage_window")  # never switch models on a plan limit
+    ) and not _zai_glm_retry_pending and not (
+        (getattr(classified, "error_context", None) or {}).get("usage_window")  # never switch models on a plan limit
+    )
     if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
         # No eager fallback while credential pool rotation may recover. Exception: an
         # upstream-aggregator 429 — the pool can't help, always fall back.

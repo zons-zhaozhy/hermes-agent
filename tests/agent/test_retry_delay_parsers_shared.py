@@ -72,3 +72,14 @@ class TestResetDelayOneTable:
 
         assert reset_delay_from_message("resets in the future, maybe") is None
         assert "reset_at" not in _normalize_error_context({"message": "resets in the future, maybe"})
+
+    def test_chinese_absolute_reset_time_is_shared(self):
+        """Z.AI's 429 body names a Shanghai wall-clock reset; the classifier, retry loop, and
+        credential cooldown must all receive the same delay instead of falling back blind."""
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+
+        reset = datetime.now(ZoneInfo("Asia/Shanghai")) + timedelta(minutes=10)
+        message = f"已达到 5 小时的使用上限。您的限额将在 {reset:%Y-%m-%d %H:%M:%S} 重置。"
+
+        assert 540 <= reset_delay_from_message(message) <= 600

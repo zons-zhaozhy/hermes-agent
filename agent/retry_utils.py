@@ -11,6 +11,7 @@ import time
 from datetime import datetime, timezone, UTC
 from email.utils import parsedate_to_datetime
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 # Monotonic counter for jitter-seed uniqueness within a process; locked
 # because concurrent gateway sessions retry simultaneously.
@@ -77,6 +78,8 @@ _RESETS_IN_RE = re.compile(
 _RETRY_AFTER_SECONDS_RE = re.compile(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", re.IGNORECASE)
 # The plan usage-limit body field as it appears once stringified: ``'resets_in_seconds': 30995``.
 _RESETS_IN_SECONDS_FIELD_RE = re.compile(r"resets_in_seconds\W{1,4}(\d+(?:\.\d+)?)", re.IGNORECASE)
+_CHINESE_RESET_PREFIX = "限额将在"
+_CHINESE_RESET_SUFFIX = "重置"
 
 
 def _quota_reset_seconds(m: re.Match[str]) -> float:
@@ -88,6 +91,28 @@ def _resets_in_seconds(m: re.Match[str]) -> Optional[float]:
     if not any(m.groups()):  # "resets in" with no unit-bearing number: not this grammar
         return None
     return float(m.group(1) or 0) * 3600 + float(m.group(2) or 0) * 60 + float(m.group(3) or 0)
+
+
+def _chinese_reset_at_seconds(message: str) -> Optional[float]:
+    """Parse Z.AI's naive Beijing reset prose: 「限额将在 2026-11-11 00:41:05 重置」.
+
+    Contract:
+      Preconditions: ``message`` is the provider error text; malformed prose is allowed.
+      Postconditions: returns ``None`` for malformed prose, otherwise a non-negative delay.
+    """
+    start = message.find(_CHINESE_RESET_PREFIX)
+    if start < 0:
+        return None
+    start += len(_CHINESE_RESET_PREFIX)
+    end = message.find(_CHINESE_RESET_SUFFIX, start)
+    if end < 0:
+        return None
+    try:
+        when = datetime.strptime(message[start:end].strip(), "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=ZoneInfo("Asia/Shanghai"))
+    except ValueError:
+        return None
+    return max(0.0, (when - datetime.now(ZoneInfo("Asia/Shanghai"))).total_seconds())
 
 
 # An explicit "retry after N s" wins over "resets in ..." (the credential pool's precedence):
@@ -115,7 +140,7 @@ def reset_delay_from_message(message: str) -> Optional[float]:
         m = pattern.search(message)
         if m and (seconds := to_seconds(m)) is not None:
             return seconds
-    return None
+    return _chinese_reset_at_seconds(message)
 
 
 def jittered_backoff(attempt: int, *, base_delay: float = 5.0, max_delay: float = 120.0, jitter_ratio: float = 0.5) -> float:
@@ -140,14 +165,18 @@ def _error_text(error: Any) -> str:
     return " ".join(str(part) for part in parts if part is not None).lower()
 
 
+def is_zai_coding_route(*, base_url: str | None, model: str | None) -> bool:
+    """Whether a request targets the subscription-backed Z.AI Coding GLM endpoint."""
+    return "/api/coding/paas/v4" in (base_url or "").lower() and (model or "").lower().startswith("glm-")
+
+
 def is_zai_coding_overload_error(*, base_url: str | None, model: str | None, error: Any) -> bool:
     """True only for the narrow Z.AI Coding Plan overload shape (429 + code
     1305 / "temporarily overloaded"), so ordinary quota 429s still fail fast."""
     text = _error_text(error)
     return (
         getattr(error, "status_code", None) == 429
-        and "/api/coding/paas/v4" in (base_url or "").lower()
-        and (model or "").lower().startswith("glm-5")
+        and is_zai_coding_route(base_url=base_url, model=model)
         and ("1305" in text or "temporarily overloaded" in text)
     )
 

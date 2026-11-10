@@ -102,10 +102,26 @@ def test_chinese_quota_exhaustion_429_is_billing_not_a_transient_rate_limit():
         429,
     )
     assert classify_api_error(exc).reason is FailoverReason.billing
-    assert ac._is_payment_error(exc)
+    assert aux_errors.fallback_label(aux_errors.Failure(exc, classify_api_error(exc))) == aux_errors.PAYMENT_ERROR
     # 契约：配额耗尽归 payment label，其隔离时长是长 TTL（None），不是 60 秒。
     assert fallback_candidate_quarantine_ttl("payment error") is None
     assert fallback_candidate_quarantine_ttl("rate limit") == 60.0
+
+
+def test_zai_quota_window_429_carries_reset_and_never_switches_model():
+    """A Z.AI 5-hour plan window is a no-fallback wall: preserve the billing verdict, but carry
+    the reset and mark it ``usage_window`` so both fallback paths refuse an automatic switch."""
+    exc = _Err(
+        "Error code: 429 - {'error': {'code': '1308', 'message': "
+        "'已达到 5 小时的使用上限。您的限额将在 2999-01-01 00:00:00 重置。'}}",
+        429,
+    )
+    classified = classify_api_error(exc)
+
+    assert classified.reason is FailoverReason.billing
+    assert classified.error_context["usage_window"] is True
+    assert classified.should_fallback is False
+    assert classified.error_context["reset_at"] > 0
 
 
 def test_chinese_transient_rate_limit_is_not_mistaken_for_quota_exhaustion():
@@ -115,4 +131,4 @@ def test_chinese_transient_rate_limit_is_not_mistaken_for_quota_exhaustion():
         429,
     )
     assert classify_api_error(exc).reason is FailoverReason.rate_limit
-    assert not ac._is_payment_error(exc)
+    assert aux_errors.fallback_label(aux_errors.Failure(exc, classify_api_error(exc))) == "rate limit"

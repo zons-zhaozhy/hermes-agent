@@ -8,7 +8,7 @@ Scenario:
   1. ``_try_recover_primary_transport()`` succeeds after 3 timeouts and
      resets ``retry_count = 0`` so the rebuilt primary client gets one
      more attempt.
-  2. The next attempt hits HTTP 429.
+  2. The next attempts hit HTTP 429.
   3. Before this fix, an eager-fallback attempt that lost its race with
      a concurrent session mutating the on-disk credential pool could
      leave ``_fallback_index`` advanced past the chain length without
@@ -18,7 +18,7 @@ Scenario:
      model with no fallback ever attempted.
   4. The fix resets ``_fallback_index`` / ``_fallback_activated`` /
      ``TurnRetryState.has_retried_429`` after transport recovery so the post-recovery
-     429 always gets a fresh fallback-chain attempt.
+     429 budget still gets a fresh fallback-chain attempt.
 """
 
 from __future__ import annotations
@@ -90,9 +90,10 @@ class TestFallbackChainResetOnTransportRecovery:
         Start the turn with the fallback chain already burned, matching
         the stale state reported in the issue. Two transient timeouts
         exhaust the retry loop and trigger primary transport recovery.
-        The next primary attempt returns 429. The conversation loop must
-        reset the stale fallback-chain state during recovery so that the
-        post-recovery 429 activates the configured fallback provider.
+        The next primary attempts return 429. The Z.AI Coding route spends its
+        fresh primary retry budget first; the conversation loop must then reset
+        the stale fallback-chain state during recovery so the final 429 activates
+        the configured fallback provider.
         """
         fb_chain = [
             {
@@ -114,7 +115,7 @@ class TestFallbackChainResetOnTransportRecovery:
                 agent._fallback_activated = False
             if attempt <= 2:
                 raise ReadTimeout("read timed out")
-            if attempt == 3:
+            if attempt <= 4:
                 raise RateLimitError()
             return _mock_response("Recovered via fallback")
 
@@ -146,6 +147,7 @@ class TestFallbackChainResetOnTransportRecovery:
         assert result["completed"] is True
         assert result["final_response"] == "Recovered via fallback"
         assert calls == [
+            ("zai", "glm-5.1"),
             ("zai", "glm-5.1"),
             ("zai", "glm-5.1"),
             ("zai", "glm-5.1"),

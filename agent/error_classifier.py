@@ -1270,6 +1270,16 @@ def _status_429(c: _Ctx) -> Verdict:
         upstream = _extract_upstream_provider_name(c.body)
         ctx = {"upstream_provider": upstream} if upstream else {}
         return _v(_R.upstream_rate_limit, should_fallback=True, error_context=ctx)
+    # Z.AI's 5-hour Coding Plan wall names its own future reset. Keep the billing verdict
+    # (auxiliary quarantine needs its long TTL), but mark it as a usage window: switching to
+    # another model is a paid-plan policy choice, never an automatic fallback.
+    if "使用上限" in c.msg and "限额将在" in c.msg:
+        reset = _rate_limit_reset_seconds(c.msg, c.body, c.headers)
+        if reset is not None:
+            return _v(
+                _R.billing, retryable=False, should_rotate_credential=True, should_fallback=False,
+                error_context={"usage_window": True, "reset_at": time.time() + reset},
+            )
     transient = _has_usage_limit_transient_signal(c.msg, c.body, c.headers)
     if not transient and any(p in c.msg for p in _LONG_QUOTA_WINDOW_PATTERNS):
         return _V_BILLING
