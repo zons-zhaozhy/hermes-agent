@@ -54,12 +54,19 @@ _BLOCK_MESSAGE = (
 
 
 def _matches_pushback(text: str) -> bool:
-    """Return True if text contains a pushback pattern."""
+    """Return True if text contains a pushback pattern as an assertion.
+
+    Negated or quoted occurrences («我不会说「要不要我继续？」») are boundary
+    statements, not pushback; see _text_context.
+    """
     if not text:
         return False
+    from plugins.discipline._text_context import is_negated_or_quoted
+
     for pat in _PATTERNS:
-        if pat.search(text):
-            return True
+        for match in pat.finditer(text):
+            if not is_negated_or_quoted(text, match):
+                return True
     return False
 
 

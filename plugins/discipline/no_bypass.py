@@ -62,6 +62,20 @@ _CORRECTION = (
     "绕路成本远高于修根因，绕路是偷懒不是务实。"
 )
 
+
+def _first_bypass_hit(text: str) -> tuple[str, str] | None:
+    """Contract: Preconditions: text 为 str；Postconditions: 返回首个**非否定/
+    引用语境**的绕过命中 (短语, 理由)，无命中返回 None。"""
+    from plugins.discipline._text_context import is_negated_or_quoted
+
+    for pattern, reason in _BYPASS_PATTERNS:
+        for match in pattern.finditer(text):
+            if is_negated_or_quoted(text, match):
+                continue  # 「没有绕过这个问题」是边界陈述,不是绕过
+            return match.group()[:80], reason
+    return None
+
+
 # ── Layer 1: transform_llm_output ──────────────────────────────────────
 
 
@@ -69,14 +83,11 @@ def _on_transform_llm_output(**kwargs) -> str:
     text = kwargs.get("response_text", "")
     if not text:
         return ""
-    for pattern, reason in _BYPASS_PATTERNS:
-        match = pattern.search(text)
-        if match:
-            logger.info(
-                "no-bypass: bypass pattern detected (%s): %s",
-                reason, match.group()[:80],
-            )
-            return text + _CORRECTION
+    hit = _first_bypass_hit(text)
+    if hit:
+        phrase, reason = hit
+        logger.info("no-bypass: bypass pattern detected (%s): %s", reason, phrase)
+        return text + _CORRECTION
     return ""
 
 
@@ -102,20 +113,19 @@ def _on_pre_tool_call(**kwargs) -> dict:
         text = args.get("message", "")
     if not text:
         return {}
-    for pattern, reason in _BYPASS_PATTERNS:
-        if pattern.search(text):
-            logger.info(
-                "no-bypass: blocking %s — bypass detected (%s)",
-                tool_name, reason,
-            )
-            return {
-                "action": "block",
-                "message": (
-                    f"[NO-BYPASS BLOCK] {tool_name} 调用被拦截：内容包含绕过模式（{reason}）。"
-                    "你发现了 bug 就必须修复根因，不允许绕过或描述替代路径。"
-                    "去掉绕过建议，回到问题本身，修复它。"
-                ),
-            }
+    hit = _first_bypass_hit(text)
+    if hit:
+        _phrase, reason = hit
+        logger.info(
+            "no-bypass: blocking %s — bypass detected (%s)", tool_name, reason)
+        return {
+            "action": "block",
+            "message": (
+                f"[NO-BYPASS BLOCK] {tool_name} 调用被拦截：内容包含绕过模式（{reason}）。"
+                "你发现了 bug 就必须修复根因，不允许绕过或描述替代路径。"
+                "去掉绕过建议，回到问题本身，修复它。"
+            ),
+        }
     return {}
 
 
