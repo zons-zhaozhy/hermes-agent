@@ -40,7 +40,7 @@ WORKERS = 4
 
 def _load_corpus() -> list[dict]:
     rows = []
-    for line in CORPUS.read_text(encoding="utf-8").splitlines():
+    for line in CORPUS.read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
         if line:
             rows.append(json.loads(line))
