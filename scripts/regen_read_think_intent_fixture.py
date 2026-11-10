@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -67,19 +68,50 @@ def _record(row: dict) -> dict:
     }
 
 
+RETRY_PAUSE_SECONDS = 120
+
+
+def _unanswered(recorded: list[dict]) -> list[dict]:
+    return [row for row in recorded if row["read_only"] is None and row["modify"] is None]
+
+
+def _refused(recorded: list[dict]) -> list[dict]:
+    """Rows the endpoint never answered (as opposed to a neutral "both false")."""
+    return _unanswered(recorded)
+
+
 def main() -> int:
     rows = _load_corpus()
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
         recorded = list(pool.map(_record, rows))
-    RECORDED.write_text(
-        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in recorded),
-        encoding="utf-8",
-    )
-    unanswered = [row["id"] for row in recorded if row["read_only"] is None and row["modify"] is None]
-    print(f"recorded {len(recorded)} rows -> {RECORDED.relative_to(ROOT)}")
+
+    # A judge outage answers nothing for a whole batch. Retry once after the
+    # endpoint circuit breaker has had time to close, rather than recording a
+    # hole: a half-recorded fixture would silently measure the missing rows as
+    # "no verdict" and quietly deflate every metric.
+    for attempt in (1, 2):
+        missing = _refused(recorded)
+        if not missing:
+            break
+        print(f"attempt {attempt}: {len(missing)} rows unanswered; retrying in {RETRY_PAUSE_SECONDS}s")
+        time.sleep(RETRY_PAUSE_SECONDS)
+        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+            retried = {row["id"]: row for row in pool.map(_record, missing)}
+        recorded = [retried.get(row["id"], row) for row in recorded]
+
+    body = "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in recorded)
+    unanswered = [row["id"] for row in _refused(recorded)]
     if unanswered:
-        print(f"WARNING: judge answered neither key for {len(unanswered)} rows: {', '.join(unanswered)}")
+        # Never clobber a good recording with a hole: keep the served rows for
+        # inspection under .partial, leave the committed fixture untouched.
+        partial = RECORDED.with_suffix(".partial.jsonl")
+        partial.write_text(body, encoding="utf-8")
+        print(f"FAILED: judge answered neither key for {len(unanswered)} rows "
+              f"({', '.join(unanswered[:10])}{'…' if len(unanswered) > 10 else ''}); "
+              f"wrote {partial.relative_to(ROOT)} and left {RECORDED.name} untouched")
         return 1
+    RECORDED.write_text(body, encoding="utf-8")
+    print(f"recorded {len(recorded)} rows -> {RECORDED.relative_to(ROOT)}")
     return 0
 
 

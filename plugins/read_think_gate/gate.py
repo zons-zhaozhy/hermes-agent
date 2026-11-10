@@ -587,12 +587,22 @@ def _build_intent_context(
     return "\n".join(lines)[-4000:]
 
 
-def _intent_from_labels(read_only: bool | None, modify: bool | None) -> str | None:
-    """Map the classifier's two labels onto one intent.
+def _intent_from_labels(
+    read_only: bool | None, modify: bool | None, confident: bool | None = None,
+) -> str | None:
+    """Map the classifier's labels onto one intent.
 
     Both false means the classifier declined to decide, which is the ambiguous
     class; both true is a contradiction the prompt forbids, so it is treated as
     "no usable answer" rather than silently picking a side.
+
+    ``confident`` is accepted but deliberately not consulted: asking the model
+    to self-report its certainty on the read-only verdict measured *zero*
+    effect on the corpus (the same 2 refusals were wrong either way, and it
+    cost four proposal confirmations) — self-reported confidence is not
+    calibrated. A real tier needs the logprobs channel, which this auxiliary
+    endpoint does not serve. The parameter stays so a calibrated signal can be
+    threaded through here without moving the mapping.
 
     Contract:
         Preconditions: each argument is True, False or None.
@@ -636,7 +646,9 @@ def _classify_intent_via_llm(
         logger.warning("read-think gate: intent classifier failed", exc_info=True)
         return None
 
-    result = _intent_from_labels(verdict.get("read_only"), verdict.get("modify"))
+    result = _intent_from_labels(
+        verdict.get("read_only"), verdict.get("modify"), verdict.get("confident"),
+    )
     if result is None:
         logger.info(
             "read-think gate: intent=unusable channel=llm labels=(%r,%r)",
