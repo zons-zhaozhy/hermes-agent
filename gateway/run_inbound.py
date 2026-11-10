@@ -870,11 +870,21 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # in-flight delegate_task work (/stop reached its handler above — still an escape hatch).
         # Compression protection: an interrupt would start a new turn on the pre-rotation parent
         # while compression rotates the id away, forking orphaned siblings.
-        if self._agent_has_active_subagents(running_agent):
-            _demote = "because the running agent has active subagents (#30170)"
-        elif await self._session_has_compression_in_flight(_quick_key):
-            _demote = "because context compression is in flight (#56391)"
-        else:
+        # ``display.busy_interrupt_overrides_subagents`` opts out of the subagent demotion only.
+        from gateway.run_busy_interrupt_policy import (
+            compression_demotion_reason,
+            subagent_demotion_reason,
+        )
+        _demote = subagent_demotion_reason(
+            self,
+            has_active_subagents=self._agent_has_active_subagents(running_agent),
+            source=source,
+        )
+        if not _demote:
+            _demote = compression_demotion_reason(
+                compression_in_flight=await self._session_has_compression_in_flight(_quick_key),
+            )
+        if not _demote:
             await self._hm_busy_interrupt(event, source, running_agent, _quick_key)
             return None
         logger.info("PRIORITY interrupt demoted to queue for session %s %s", _quick_key, _demote)

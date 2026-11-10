@@ -715,19 +715,32 @@ class GatewayBusySessionMixin:
     ) -> GatewayRunner._BusySteerOutcome:
         """Apply interrupt->queue demotions, then attempt steer (steer mode) or redirect (interrupt mode)."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run_busy_interrupt_policy import (
+            compression_demotion_reason,
+            subagent_demotion_reason,
+        )
         # Steer injects mid-run via running_agent.steer(), falling back to queue (nothing lost) when
         # the agent isn't running yet, lacks steer(), or the payload is empty. Interrupt is demoted
         # to queue while subagents run (interrupt() would abort them); /stop and /new still cancel all.
-        demoted_for_subagents = (
-            effective_mode == "interrupt" and self._agent_has_active_subagents(running_agent)
+        # ``display.busy_interrupt_overrides_subagents`` opts out of the subagent demotion only.
+        subagent_reason = subagent_demotion_reason(
+            self,
+            has_active_subagents=(
+                effective_mode == "interrupt"
+                and self._agent_has_active_subagents(running_agent)
+            ),
+            source=event.source,
         )
-        if demoted_for_subagents:
-            effective_mode = self._demote_interrupt(session_key, "the running agent has active subagents (#30170)")
-        demoted_for_compression = (
-            effective_mode == "interrupt" and await self._session_has_compression_in_flight(session_key)
+        if subagent_reason:
+            effective_mode = self._demote_interrupt(session_key, subagent_reason)
+        compression_reason = compression_demotion_reason(
+            compression_in_flight=(
+                effective_mode == "interrupt"
+                and await self._session_has_compression_in_flight(session_key)
+            ),
         )
-        if demoted_for_compression:
-            effective_mode = self._demote_interrupt(session_key, "context compression is in flight (#56391)")
+        if compression_reason:
+            effective_mode = self._demote_interrupt(session_key, compression_reason)
         steered = redirected = False
         agent_live = running_agent is not None and running_agent is not _AGENT_PENDING_SENTINEL
         plain_text = (
@@ -760,8 +773,8 @@ class GatewayBusySessionMixin:
                 running_agent, (event.text or "").strip(), session_key, event
             )
         return self._BusySteerOutcome(
-            effective_mode=effective_mode, demoted_for_subagents=demoted_for_subagents,
-            demoted_for_compression=demoted_for_compression, steered=steered, redirected=redirected,
+            effective_mode=effective_mode, demoted_for_subagents=bool(subagent_reason),
+            demoted_for_compression=bool(compression_reason), steered=steered, redirected=redirected,
         )
 
     @staticmethod

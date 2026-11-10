@@ -1381,10 +1381,17 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
         ``Exception`` because the drain must never break the main loop. (#20271)
         """
         try:
+            moved = False
             while not self._interrupt_queue.empty():
                 stray = self._interrupt_queue.get_nowait()
                 if stray:
                     self._pending_input.put(stray)
+                    moved = True
+            if moved:
+                # A typed message stranded by a turn that finished on its own still outranks
+                # goal/loop continuations already waiting.
+                from hermes_cli.cli_queue_priority import promote_user_input_over_automation
+                promote_user_input_over_automation(self._pending_input)
         except Exception:
             pass
 

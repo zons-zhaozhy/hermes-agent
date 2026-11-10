@@ -652,6 +652,10 @@ class CLIChatTurnMixin:
             else:
                 _cprint(f"\n{t('cli.chat.sending_after_interrupt', preview=preview)}")
             self._pending_input.put(payload)
+            # The interrupt handover must run next, not behind goal/loop continuations and
+            # background notices earlier post-turn hooks already queued.
+            from hermes_cli.cli_queue_priority import promote_user_input_over_automation
+            promote_user_input_over_automation(self._pending_input)
 
         # A /steer the agent finished before absorbing becomes the next user turn.
         _leftover_steer = turn.result.get("pending_steer") if turn.result else None

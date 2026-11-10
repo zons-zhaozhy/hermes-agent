@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from gateway.config import Platform
+from gateway.run_busy_interrupt_policy import parse_busy_interrupt_overrides_subagents
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -326,6 +327,26 @@ class GatewayConfigLoadersMixin:
             return legacy
         return "queue" if GatewayRunner._load_busy_input_mode() == "queue" else "interrupt"
 
+    @classmethod
+    def _load_busy_interrupt_overrides_subagents(cls) -> bool:
+        """``display.busy_interrupt_overrides_subagents`` (default off).
+
+        Off keeps #30170's protection: a typed follow-up interrupts nothing while the agent
+        drives delegate_task children. On, the interrupt fires and the delegated work restarts
+        on the next turn — a deliberate cost trade the user opts into.
+
+        Contract:
+          Preconditions: the display section comes from this profile's config snapshot.
+          Postconditions: a bool; absent or unrecognized values read as False (off).
+        """
+        from gateway.run_busy_interrupt_policy import parse_busy_interrupt_overrides_subagents
+        raw = cls._env_or_cfg_str(
+            "HERMES_GATEWAY_BUSY_INTERRUPT_OVERRIDES_SUBAGENTS",
+            "display",
+            "busy_interrupt_overrides_subagents",
+        )
+        return parse_busy_interrupt_overrides_subagents(raw)
+
     @staticmethod
     def _busy_modes_from_config(config: dict, *, fallback_input: str, fallback_text: str) -> tuple[str, str]:
         """Resolve one profile's busy modes without consulting process env."""
@@ -404,6 +425,9 @@ class GatewayConfigLoadersMixin:
         self.__dict__.setdefault("_busy_text_modes_by_profile", {})[profile_name] = text_mode
         self.__dict__.setdefault("_busy_text_timing_by_profile", {})[profile_name] = (
             self._busy_text_timing_from_config(config))
+        self.__dict__.setdefault("_busy_interrupt_overrides_by_profile", {})[profile_name] = (
+            parse_busy_interrupt_overrides_subagents(
+                cfg_get(config, "display", "busy_interrupt_overrides_subagents", default=None)))
         self.__dict__.setdefault("_human_delay_by_profile", {})[profile_name] = (
             self._human_delay_from_config(config))
 
@@ -431,6 +455,23 @@ class GatewayConfigLoadersMixin:
     def _effective_busy_input_mode(self, source: SessionSource) -> str:
         """Resolve busy input mode from the routed profile startup snapshot."""
         return self._effective_busy_mode(source, "_busy_input_mode")
+
+    def _effective_busy_interrupt_overrides_subagents(self, source: SessionSource | None = None) -> bool:
+        """``display.busy_interrupt_overrides_subagents`` from the routed profile snapshot.
+
+        Contract:
+          Preconditions: ``source`` is the message's route, or None for the launch profile.
+          Postconditions: a bool; a routed profile's own snapshot wins over the launch value.
+        """
+        if source is None:
+            return bool(getattr(self, "_busy_interrupt_overrides_subagents", False))
+        profile_name = self._busy_profile_name_for_source(source)
+        if not profile_name:
+            return bool(getattr(self, "_busy_interrupt_overrides_subagents", False))
+        per_profile = getattr(self, "_busy_interrupt_overrides_by_profile", None)
+        if isinstance(per_profile, dict) and profile_name in per_profile:
+            return bool(per_profile[profile_name])
+        return bool(getattr(self, "_busy_interrupt_overrides_subagents", False))
 
     def _effective_busy_text_mode(self, source: SessionSource) -> str:
         """Resolve legacy busy text mode from the routed profile snapshot."""

@@ -85,7 +85,13 @@ def _prompt_text(item) -> str:
 
 
 def queued_prompts(cli) -> list[str]:
-    """One-line previews of the turns waiting in ``_pending_input``, oldest first."""
+    """One-line previews of the turns waiting in ``_pending_input``, oldest first.
+
+    Automation payloads (goal continuations, /loop wakeups, background-process notices) are
+    excluded: they are Hermes's own work, and counting them made a single typed message look
+    like the tail of a ten-deep queue.
+    """
+    from hermes_cli.cli_queue_priority import is_automation_prompt
     from hermes_cli.gateway_tools_notify import gateway_store
     owned: list = []
     store = gateway_store(cli) if getattr(cli, "session_id", None) else None
@@ -95,7 +101,8 @@ def queued_prompts(cli) -> list[str]:
         owned = published_queue(cli, store)
     pending = getattr(cli, "_pending_input", None)
     if pending is None:
-        return [text for text in map(_prompt_text, owned) if text]
-    with pending.mutex:
-        items = list(pending.queue)
-    return [text for text in map(_prompt_text, owned + items) if text]
+        rows = owned
+    else:
+        with pending.mutex:
+            rows = owned + list(pending.queue)
+    return [text for text in map(_prompt_text, rows) if text and not is_automation_prompt(text)]

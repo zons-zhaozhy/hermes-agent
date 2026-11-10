@@ -5,6 +5,7 @@ docs of config.yaml.
 """
 
 from hermes_cli.config_defaults_auxiliary import _aux
+from hermes_cli.config_defaults_busy import _busy_input_defaults
 from hermes_cli.config_defaults_tool_budget import _tool_output_budgets
 
 #: Image every container terminal backend (docker/modal/daytona, the singularity plugin) uses unless the
@@ -811,10 +812,9 @@ DEFAULT_CONFIG = {
         # Skip tool-call-only assistant entries in the recap so it isn't dominated by `[2 tool
         # calls: ...]` lines; False shows them inline.
         "resume_skip_tool_only": True,
-        "busy_input_mode": "interrupt",  # interrupt | queue | steer
-        # steer mode: false hides only the "Steered into current run" bubble; steering itself still
-        # happens.
-        "busy_steer_ack_enabled": True,
+        # Busy-input policy (busy_input_mode, its subagent-override opt-in, steer ack) lives in
+        # config_defaults_busy.py — same dict, room for the full comments.
+        **_busy_input_defaults(),
         # Classic CLI multiline beyond Alt+Enter: Ctrl+J newline, trailing backslash+Enter
         # continues, Shift+Enter reported distinctly. False restores the c-j submit fallback for
         # POSIX PTYs whose plain Enter arrives as LF.
