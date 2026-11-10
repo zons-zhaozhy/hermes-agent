@@ -98,9 +98,20 @@ def recorded() -> dict[str, dict]:
     return {row["id"]: row for row in _read_jsonl(RECORDED)}
 
 
-def _verdict(recorded: dict[str, dict], row_id: str) -> str | None:
+def _verdict(recorded: dict[str, dict], row_id: str, text: str,
+             context: list[dict] | None = None) -> str:
+    """The intent production would resolve for this message.
+
+    A semantic verdict that is unusable (no answer, or the contradictory
+    both-true the prompt forbids) is not an outcome of its own: the gate falls
+    back to the deterministic layer, so the corpus scores that layer instead of
+    pretending the row was never classified.
+    """
     row = recorded[row_id]
-    return _intent_from_labels(row["read_only"], row["modify"])
+    semantic = _intent_from_labels(row["read_only"], row["modify"])
+    if semantic is not None:
+        return semantic
+    return _fallback_detect_intent(text, context or [])
 
 
 def _counts(pairs: list[tuple[str, str]]) -> dict[tuple[str, str], int]:
@@ -151,7 +162,7 @@ def test_no_message_that_asked_for_work_is_refused(corpus, recorded) -> None:
         (row["id"], row["text"])
         for row in corpus
         if row["label"] != INTENT_READ_ONLY
-        and _verdict(recorded, row["id"]) == INTENT_READ_ONLY
+        and _verdict(recorded, row["id"], row["text"], row.get("context") or []) == INTENT_READ_ONLY
     ]
     assert false_blocks == []
 
@@ -161,14 +172,14 @@ def test_every_speech_only_message_is_refused(corpus, recorded) -> None:
     missed = [
         (row["id"], row["text"])
         for row in corpus
-        if row["label"] == INTENT_READ_ONLY and _verdict(recorded, row["id"]) != INTENT_READ_ONLY
+        if row["label"] == INTENT_READ_ONLY and _verdict(recorded, row["id"], row["text"], row.get("context") or []) != INTENT_READ_ONLY
     ]
     assert missed == []
 
 
 def test_three_way_accuracy_floor(corpus, recorded) -> None:
     """Secondary guard against label drift; behaviour is the binary decision."""
-    pairs = [(row["label"], _verdict(recorded, row["id"])) for row in corpus]
+    pairs = [(row["label"], _verdict(recorded, row["id"], row["text"], row.get("context") or [])) for row in corpus]
     assert all(predicted is not None for _, predicted in pairs)
     counts = _counts(pairs)  # type: ignore[arg-type]
     correct = sum(counts.get((label, label), 0) for label in LABELS)
@@ -177,7 +188,7 @@ def test_three_way_accuracy_floor(corpus, recorded) -> None:
 
 def test_each_class_stays_usable(corpus, recorded) -> None:
     """Per-class recall/precision, because the aggregate hides a dead class."""
-    pairs = [(row["label"], _verdict(recorded, row["id"])) for row in corpus]
+    pairs = [(row["label"], _verdict(recorded, row["id"], row["text"], row.get("context") or [])) for row in corpus]
     counts = _counts(pairs)  # type: ignore[arg-type]
     assert _recall(counts, INTENT_READ_ONLY) >= 0.98, counts
     assert _precision(counts, INTENT_READ_ONLY) >= 0.98, counts

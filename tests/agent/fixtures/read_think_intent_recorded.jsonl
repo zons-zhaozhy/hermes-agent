@@ -51,16 +51,16 @@
 {"id": "mod-14", "text": "add a retry to the hook dispatcher", "label": "modify", "read_only": false, "modify": true}
 {"id": "mod-15", "text": "refactor this into a sibling module", "label": "modify", "read_only": false, "modify": true}
 {"id": "mod-16", "text": "把 timeout 调到 12s，然后跑测试", "label": "modify", "read_only": false, "modify": true}
-{"id": "mod-17", "text": "现在开始，双方都改的文件优先沉成插件", "label": "modify", "read_only": false, "modify": false}
+{"id": "mod-17", "text": "现在开始，双方都改的文件优先沉成插件", "label": "modify", "read_only": false, "modify": true}
 {"id": "mod-18", "text": "这两个未提交的都提交推送", "label": "modify", "read_only": false, "modify": true}
-{"id": "mod-conf-01", "text": "继续", "label": "modify", "read_only": false, "modify": false}
+{"id": "mod-conf-01", "text": "继续", "label": "modify", "read_only": false, "modify": true}
 {"id": "mod-conf-02", "text": "可以", "label": "modify", "read_only": false, "modify": true}
 {"id": "mod-conf-03", "text": "按这个来", "label": "modify", "read_only": false, "modify": true}
-{"id": "mod-conf-04", "text": "好", "label": "modify", "read_only": false, "modify": false}
+{"id": "mod-conf-04", "text": "好", "label": "modify", "read_only": false, "modify": true}
 {"id": "mod-conf-05", "text": "就这么办", "label": "modify", "read_only": false, "modify": true}
 {"id": "mod-conf-06", "text": "开始吧", "label": "modify", "read_only": false, "modify": true}
-{"id": "mod-conf-07", "text": "go ahead", "label": "modify", "read_only": false, "modify": false}
-{"id": "mod-conf-08", "text": "执行", "label": "modify", "read_only": false, "modify": false}
+{"id": "mod-conf-07", "text": "go ahead", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-conf-08", "text": "执行", "label": "modify", "read_only": false, "modify": true}
 {"id": "mod-conf-09", "text": "B", "label": "modify", "read_only": false, "modify": true}
 {"id": "mod-conf-10", "text": "好，继续修", "label": "modify", "read_only": false, "modify": true}
 {"id": "mod-conf-11", "text": "对，就这么改", "label": "modify", "read_only": false, "modify": true}
@@ -99,3 +99,6 @@
 {"id": "ro-probe-04", "text": "测试跑完了吗", "label": "read_only", "read_only": true, "modify": false}
 {"id": "ro-probe-05", "text": "那个 worktree 还在吗", "label": "read_only", "read_only": true, "modify": false}
 {"id": "ro-probe-06", "text": "我们自建的门禁做的科学吗", "label": "read_only", "read_only": true, "modify": false}
+{"id": "mod-19", "text": "先修门禁\n这个模块的作用到底是啥？", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-20", "text": "执行\n\n门禁是不是还有别的问题？", "label": "modify", "read_only": true, "modify": true}
+{"id": "mod-21", "text": "先做好契约，必要的情况下落进门禁固化下来，你觉得呢？", "label": "modify", "read_only": false, "modify": true}

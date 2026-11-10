@@ -99,3 +99,6 @@
 {"id": "ro-probe-04", "tag": "question", "text": "测试跑完了吗", "label": "read_only", "why": "核查进度，不是要求重跑", "rule": "R3"}
 {"id": "ro-probe-05", "tag": "question", "text": "那个 worktree 还在吗", "label": "read_only", "why": "核查存在性，不是要求删除", "rule": "R3"}
 {"id": "ro-probe-06", "tag": "question", "text": "我们自建的门禁做的科学吗", "label": "read_only", "why": "要求评价，未授权改动", "rule": "R3"}
+{"id": "mod-19", "tag": "explicit_modify", "text": "先修门禁\n这个模块的作用到底是啥？", "label": "modify", "rule": "R2", "why": "祈使句在前、问句在后；指令说了要修什么，后面的提问不改变它"}
+{"id": "mod-20", "tag": "explicit_modify", "text": "执行\n\n门禁是不是还有别的问题？", "label": "modify", "rule": "R2", "why": "授权词单独成句，后面跟的是追问不是否定"}
+{"id": "mod-21", "tag": "explicit_modify", "text": "先做好契约，必要的情况下落进门禁固化下来，你觉得呢？", "label": "modify", "rule": "R2", "why": "祈使句指名了动作，结尾的'你觉得呢'只是征询，不撤销指令"}
