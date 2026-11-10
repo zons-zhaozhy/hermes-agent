@@ -1,4 +1,8 @@
-"""persistence-enforcer 四层拦截直接行为契约。"""
+"""persistence_enforcer 四层拦截直接行为契约。
+
+2026-11-10 由独立插件 plugins/persistence-enforcer 迁入 discipline 套件；
+状态键同时改为 (profile, session)，这里通过 _session_key 取同一把钥匙。
+"""
 
 from __future__ import annotations
 
@@ -12,7 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-persistence = importlib.import_module("plugins.persistence-enforcer")
+persistence = importlib.import_module("plugins.discipline.persistence_enforcer")
 
 
 class _Context:
@@ -55,7 +59,7 @@ def test_invalid_thresholds_fall_back_with_warning(
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr(persistence, "WARN_THRESHOLD", 1)
         monkeypatch.setattr(persistence, "BLOCK_THRESHOLD", 1)
-        with caplog.at_level(logging.WARNING, logger="plugins.persistence-enforcer"):
+        with caplog.at_level(logging.WARNING, logger="plugins.discipline.persistence_enforcer"):
             persistence.register(
                 _Context({"warn_threshold": "bad", "block_threshold": 0})
             )
@@ -125,7 +129,7 @@ def test_blocked_write_is_not_persistence_evidence() -> None:
         session_id=session_id, tool_name="write_file", args={}
     )
     assert blocked["action"] == "block"
-    assert persistence._states[session_id].persist_called is False
+    assert persistence._states[persistence._session_key({"session_id": session_id})].persist_called is False
 
 
 def test_deadlock_breaker_passes_third_write_and_warns_next_llm_call(
@@ -142,7 +146,7 @@ def test_deadlock_breaker_passes_third_write_and_warns_next_llm_call(
         session_id=session_id, tool_name="write_file", args=args
     )["action"] == "block"
 
-    with caplog.at_level(logging.WARNING, logger="plugins.persistence-enforcer"):
+    with caplog.at_level(logging.WARNING, logger="plugins.discipline.persistence_enforcer"):
         assert persistence._on_pre_tool_call(
             session_id=session_id, tool_name="write_file", args=args
         ) == {}
@@ -169,11 +173,11 @@ def test_unpersisted_structured_analysis_gets_diagnostic(
         "[推断] 阈值行为稳定。\n" + "详细说明。\n" * 60
     )
 
-    with caplog.at_level(logging.INFO, logger="plugins.persistence-enforcer"):
+    with caplog.at_level(logging.INFO, logger="plugins.discipline.persistence_enforcer"):
         result = persistence._on_transform_llm_output(
             session_id=session_id, response_text=response
         )
     assert result is None
-    assert persistence._states[session_id].output_reminded is True
+    assert persistence._states[persistence._session_key({"session_id": session_id})].output_reminded is True
     assert "unpersisted analysis diagnostic" in caplog.text
     assert "`skill_manage` 或 `write_file`" in caplog.text

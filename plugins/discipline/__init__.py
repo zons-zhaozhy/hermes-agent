@@ -18,6 +18,7 @@ curl-safety / log-first-diagnosis / tool-safety / no-bypass / no-pushback)
   declare_act_guard 宣告-动手配对守卫(LLM 语义判定;post_llm_call 预热缓存)
   negative_conclusion_guard 否定性结论前强制权威入口(禁单目录探测断言不存在)
   jspace_guard      J-Space 三不变量(覆盖/目标回读/三态标注)只读诊断
+  persistence_enforcer 复杂任务强制 TODO+落盘(5 次提醒/10 次硬拦/死锁降级)
   rule_reinjection 规则常驻重注入(.hermes-rules.md 每轮权威版注入,防纪律衰减)
   test_discipline  禁裸 pytest——一律 scripts/run_tests.sh(CI 环境同步)
   section_reinjection 守卫段重注入(段库版本指纹变更即注入 + 每 10 轮补注, 让段
@@ -54,6 +55,7 @@ _SUB_GUARD_NAMES = (
     "declare_act_guard",
     "negative_conclusion_guard",
     "jspace_guard",
+    "persistence_enforcer",
     "rule_reinjection",
     "test_discipline",
     "section_reinjection",

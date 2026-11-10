@@ -1,6 +1,6 @@
 name: discipline
-version: "1.6.0"
-description: L3执行纪律护栏套件(17子模块)——瞎猜拦截/DB schema强制/错误诊断纪律/curl签名确认/日志先行/工具滥用/禁绕过/禁推责/生成前推责免责理想化自检/动手前失败预演/宣告-动手配对/否定性结论权威入口/J-Space三不变量只读诊断/规则常驻重注入/禁裸pytest/段库重注入/工程工作流路由。分层见docs/guard-system-architecture.md。
+version: "1.7.0"
+description: L3执行纪律护栏套件(18子模块)——瞎猜拦截/DB schema强制/错误诊断纪律/curl签名确认/日志先行/工具滥用/禁绕过/禁推责/生成前推责免责理想化自检/动手前失败预演/宣告-动手配对/否定性结论权威入口/J-Space三不变量只读诊断/复杂任务TODO落盘强制/规则常驻重注入/禁裸pytest/段库重注入/工程工作流路由。分层见docs/guard-system-architecture.md。
 author: stan
 hooks:
   - pre_tool_call

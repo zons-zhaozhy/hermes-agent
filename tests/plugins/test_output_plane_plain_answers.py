@@ -18,7 +18,7 @@ from plugins.finish_guard import completion_boundary_audit as completion
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 jspace = importlib.import_module("plugins.discipline.jspace_guard")
-persistence = importlib.import_module("plugins.persistence-enforcer")
+persistence = importlib.import_module("plugins.discipline.persistence_enforcer")
 
 
 _PLAIN_STATUS_ANSWER = """

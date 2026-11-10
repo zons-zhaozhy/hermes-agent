@@ -1,5 +1,9 @@
-"""
-persistence-enforcer plugin v2.1 — 强制复杂任务创建 TODO + 结构化持久化。
+"""persistence_enforcer —— 强制复杂任务创建 TODO + 结构化持久化。
+
+2026-11-10 由独立插件 plugins/persistence-enforcer 迁入 discipline 套件：
+同层同性质（都是执行纪律：怎么干活、什么时候必须落盘），四层拦截原语义
+不变。配置项随 owner 迁移：plugins.entries.discipline.settings.{warn,block}_threshold
+（旧键 plugins.entries.persistence-enforcer.settings 已同步搬迁，不再读取）。
 
 四层拦截——从劝导到强制：
 
@@ -108,28 +112,35 @@ class _SessionState:
 
 # session_id -> state。并发会话/子代理各自独立计数：全局单例会让
 # A 会话的只读探查给 B 会话的首次写入触发拦截门（互相污染）。
-_states: dict[str, _SessionState] = {}
+_states: dict[tuple[str, str], _SessionState] = {}
 _STATES_CAP = 256  # 防膨胀；正常会话数远低于此
 
 
-def _state_for(session_id: str) -> _SessionState:
-    """Contract: Postconditions: 返回该 session 的状态对象（惰性建），
+def _state_for(key: tuple[str, str]) -> _SessionState:
+    """Contract: Postconditions: 返回该 (profile, session) 的状态对象（惰性建），
     超上限时清空重建（最坏退化为计数重置，不是拦截失效）。"""
-    st = _states.get(session_id)
+    st = _states.get(key)
     if st is None:
         if len(_states) >= _STATES_CAP:
             _states.clear()
         st = _SessionState()
-        _states[session_id] = st
+        _states[key] = st
     return st
 
 
-def _hook_session_id(kwargs: dict) -> str:
-    """Contract: Postconditions: 非 dict kwargs 返回 'default'；优先
-    session_id，缺省回退 task_id，再回退 'default'（与拦截门同源）。"""
+def _session_key(kwargs: dict) -> tuple[str, str]:
+    """Contract: Postconditions: 非 dict kwargs 返回 ('', 'default')；优先
+    session_id，缺省回退 task_id，再回退 'default'（与拦截门同源）。
+
+    键必须带 profile：一个 gateway 服务多个 profile，只按 session_id 记账会让
+    A profile 的只读探查给 B profile 的首次写入触发拦截门。
+    """
+    from hermes_constants import hermes_home_key
+
     if not isinstance(kwargs, dict):
-        return "default"
-    return str(kwargs.get("session_id") or kwargs.get("task_id") or "default")
+        return "", "default"
+    sid = str(kwargs.get("session_id") or kwargs.get("task_id") or "default")
+    return hermes_home_key(), sid
 
 
 def _is_complex_task(conversation_messages: list[dict]) -> bool:
@@ -159,8 +170,7 @@ def _is_analysis_output(text: str) -> bool:
 # ── Layer 1: post_tool_call ────────────────────────────────────
 
 def _on_post_tool_call(**kwargs) -> None:
-    sid = _hook_session_id(kwargs)
-    st = _state_for(sid)
+    st = _state_for(_session_key(kwargs))
     tool_name = kwargs.get("tool_name", "")
     if not tool_name:
         return
@@ -182,7 +192,7 @@ def _on_post_tool_call(**kwargs) -> None:
 # ── Layer 2: pre_llm_call (提醒) ───────────────────────────────
 
 def _on_pre_llm_call(**kwargs) -> dict:
-    st = _state_for(_hook_session_id(kwargs))
+    st = _state_for(_session_key(kwargs))
     conversation_history = kwargs.get("conversation_history", [])
     if not conversation_history:
         return {}
@@ -218,7 +228,7 @@ def _on_pre_tool_call(**kwargs) -> dict:
     tool_name = kwargs.get("tool_name", "")
     if not tool_name:
         return {}
-    st = _state_for(_hook_session_id(kwargs))
+    st = _state_for(_session_key(kwargs))
 
     # 不满足拦截条件：通过
     if st.tool_call_count < BLOCK_THRESHOLD:
@@ -266,7 +276,7 @@ def _on_pre_tool_call(**kwargs) -> dict:
 # ── Layer 4: transform_llm_output (分析提醒) ───────────────────
 
 def _on_transform_llm_output(**kwargs) -> str | None:
-    st = _state_for(_hook_session_id(kwargs))
+    st = _state_for(_session_key(kwargs))
     if st.persist_called:
         return None
     if st.tool_call_count < WARN_THRESHOLD:
@@ -296,7 +306,7 @@ def _on_transform_llm_output(**kwargs) -> str | None:
 # ── 注册 ──────────────────────────────────────────────────────
 
 def register(ctx: Any) -> None:
-    # 阈值可配置化：plugins.entries.persistence-enforcer.settings.{warn,block}_threshold
+    # 阈值可配置化：plugins.entries.discipline.settings.{warn,block}_threshold
     global WARN_THRESHOLD, BLOCK_THRESHOLD
     BLOCK_THRESHOLD = _coerce_threshold(
         ctx.get_config("block_threshold"), BLOCK_THRESHOLD, "block_threshold")
@@ -307,6 +317,6 @@ def register(ctx: Any) -> None:
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("transform_llm_output", _on_transform_llm_output)
     logger.info(
-        "persistence-enforcer v2.0 registered (warn=%d, block=%d)",
+        "discipline.persistence_enforcer 已注册 (warn=%d, block=%d)",
         WARN_THRESHOLD, BLOCK_THRESHOLD,
     )
