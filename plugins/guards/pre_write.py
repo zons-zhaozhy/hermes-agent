@@ -41,6 +41,36 @@ def _get_read_files(sid: str) -> set[str]:
 
 
 _PW_PROBE_TTL = 86400  # 24h：marker 过期即失效，防残留导致永久免检
+# 每个 session 一个 marker 文件；过期后既失效又没人删，长期运行的 home 会攒出几千个
+# 死文件（实测 2233 个），拖慢目录扫描。写入时顺带清扫，按进程节流到每小时一次。
+_PW_PRUNE_INTERVAL = 3600
+_pw_last_prune = 0.0
+
+
+def _prune_stale_markers(marker: Path) -> None:
+    """删掉缓存目录里已过 TTL 的 marker——与 ``_disk_read_paths`` 的失效判定同一条线。
+
+    Contract:
+      Preconditions: marker 的父目录存在。
+      Postconditions: mtime 早于 ``now - _PW_PROBE_TTL`` 的 ``pw_read_probe_*.json``
+        被删除；仍有效的 marker（含本次刚写的）保留；任何 OSError 都只下调为
+        debug 日志，绝不影响钩子主路径。
+    """
+    global _pw_last_prune
+    now = time.time()
+    if now - _pw_last_prune < _PW_PRUNE_INTERVAL:
+        return
+    _pw_last_prune = now
+    cutoff = now - _PW_PROBE_TTL
+    try:
+        for stale in marker.parent.glob("pw_read_probe_*.json"):
+            try:
+                if stale.stat().st_mtime < cutoff:
+                    stale.unlink()
+            except OSError:
+                logger.debug("pre_write: stale marker not removable: %s", stale, exc_info=True)
+    except OSError:
+        logger.debug("pre_write: marker prune scan failed", exc_info=True)
 
 
 def _read_marker(sid: str) -> Path:
@@ -60,7 +90,7 @@ def _write_read_marker(sid: str, paths: set[str]) -> None:
 
     Contract:
       Postconditions: marker 内容为 {"sid":…,"ts":…,"paths":[…]}；OSError 时日志
-        告警且不改既有 marker。
+        告警且不改既有 marker；写成功后按节流顺手清掉过期 marker。
     """
     try:
         marker = _read_marker(sid)
@@ -69,6 +99,7 @@ def _write_read_marker(sid: str, paths: set[str]) -> None:
         payload = json.dumps({"sid": sid, "ts": time.time(), "paths": sorted(paths)})
         tmp.write_text(payload, encoding="utf-8")
         tmp.replace(marker)
+        _prune_stale_markers(marker)
     except OSError:
         logger.warning("pre_write: read marker write failed", exc_info=True)
 

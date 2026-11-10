@@ -128,6 +128,35 @@ def test_state_db_guard_passes_valid_db(tmp_path, monkeypatch):
     assert step_state_db_guard() == {"ok": True}
 
 
+def test_state_db_guard_is_bounded_above_the_ceiling(tmp_path, monkeypatch):
+    """启动期的库校验必须有界：超过上限只做 header+schema 探针，绝不整库走页。
+
+    规则来源（独立期望）：这一步跑在 startup watchdog 的窗口里，整库
+    ``PRAGMA integrity_check`` 在几百 MB 的 state.db 上要几分钟、在被占满的机器上
+    根本跑不完——watchdog 杀掉它会让网关陷入重启循环（实测 exit 75，连续五轮）。
+    所以超过 ``BOOT_INTEGRITY_CHECK_MAX_BYTES`` 时必须退化成 O(1) 探针：一个数据页
+    已经损坏、header 与 sqlite_master 完好的库，在探针下仍然判 ok。
+    """
+    import sqlite3
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = tmp_path / "state.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE t (x)")
+    conn.executemany("INSERT INTO t VALUES (?)", [(b"x" * 200,) for _ in range(60)])
+    conn.commit()
+    last_page = conn.execute("PRAGMA page_count").fetchone()[0]
+    page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+    conn.close()
+    assert last_page > 2, "需要多于一页才谈得上页级损坏"
+    with open(db, "r+b") as fh:  # 把最后一页写坏：全库走页会报错，探针不会读它
+        fh.seek((last_page - 1) * page_size)
+        fh.write(b"\xff" * page_size)
+
+    monkeypatch.setattr(post_update, "BOOT_INTEGRITY_CHECK_MAX_BYTES", 1)
+    assert step_state_db_guard() == {"ok": True}  # 期望: 超过上限 → 探针放行
+
+
 # ── step_drop_live_plugin_catalog ────────────────────────────────────
 
 

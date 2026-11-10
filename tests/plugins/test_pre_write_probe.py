@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -66,3 +67,27 @@ def test_no_evidence_blocks(tmp_path: Path) -> None:
     pre_write._get_read_files(SID).clear()
     result = _pre_patch(str(target))
     assert result is not None and result["action"] == "block"  # 期望: 零证据仍拦
+
+
+def test_stale_markers_are_pruned_on_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """过期 marker 会被清掉——一个 home 不能无限攒死文件。
+
+    规则来源：marker 超 TTL 即失效，失效文件没有读取价值，留着只拖慢目录扫描
+    （实测 ~/.hermes/cache 攒到 2233 个）。清扫只在写路径上发生，且必须留活口：
+    本次刚写的 marker、以及仍在 TTL 内的其它 session 的 marker 都不能被误删。
+    """
+    cache = tmp_path / "probe_cache"
+    cache.mkdir()
+    old = cache / "pw_read_probe_00000000deadbeef.json"
+    old.write_text(json.dumps({"sid": "gone", "ts": 0, "paths": []}), encoding="utf-8")
+    stale_mtime = time.time() - (pre_write._PW_PROBE_TTL + 3600)
+    os.utime(old, (stale_mtime, stale_mtime))
+    fresh = cache / "pw_read_probe_11111111feedface.json"
+    fresh.write_text(json.dumps({"sid": "live", "ts": time.time(), "paths": []}), encoding="utf-8")
+    monkeypatch.setattr(pre_write, "_pw_last_prune", 0.0)  # 绕过进程内节流
+
+    _post_read(str(tmp_path / "app.py"))
+
+    assert not old.exists(), "超过 TTL 的 marker 应被删除"
+    assert fresh.exists(), "仍有效的 marker 必须保留"
+    assert pre_write._read_marker(SID).exists(), "本次写入的 marker 必须保留"

@@ -134,13 +134,25 @@ def step_sync_skills() -> dict:
 # state.db integrity guard (#68474 — check-only variant)
 # ---------------------------------------------------------------------------
 
+# Boot runs inside the startup watchdog's window, so the verification here has to be bounded.
+# A full ``PRAGMA integrity_check`` walks every b-tree page — minutes of pegged I/O on a
+# multi-hundred-MB state.db, and on a loaded host it does not finish inside the watchdog at all,
+# whose kill turns into a boot/restart loop that leaves the gateway down for good (observed:
+# 900 MB home, watchdog exit 75, five boots in a row). Above this ceiling the O(1) header +
+# schema probe is the run a boot can afford; the deep walk stays on the ``hermes update`` path,
+# which has a pre-update snapshot to restore from. See ``DEFAULT_INTEGRITY_CHECK_MAX_BYTES``.
+BOOT_INTEGRITY_CHECK_MAX_BYTES = 256 << 20  # 256 MiB
+
+
 def step_state_db_guard() -> dict:
     """Verify the active home's state.db is intact.
 
     Boot bootstrap has no pre-update snapshot to restore from (that pairing
     lives in ``hermes update``), so this is detection: a corrupt db is
     surfaced loudly in the log instead of the user silently losing session
-    search. Read-only, idempotent.
+    search. Read-only, idempotent, and bounded: the page walk is capped by
+    ``BOOT_INTEGRITY_CHECK_MAX_BYTES`` so this step can never outlive the
+    startup watchdog and strand the gateway.
     """
     from hermes_constants import get_hermes_home
     from hermes_cli.backup import verify_sqlite_integrity
@@ -148,7 +160,10 @@ def step_state_db_guard() -> dict:
     state_path = get_hermes_home() / "state.db"
     if not state_path.exists():
         return {"ok": True, "skipped": "no-state-db"}
-    result = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
+    result = verify_sqlite_integrity(
+        state_path, check_header=True, run_pragma=True,
+        max_bytes=BOOT_INTEGRITY_CHECK_MAX_BYTES,
+    )
     if result.get("valid"):
         return {"ok": True}
     message = result.get("message", "unknown error")
