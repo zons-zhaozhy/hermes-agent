@@ -236,7 +236,7 @@ git rev-list --count main..upstream/main   # 应为 0
 
 ```yaml
 version: 1
-baseline: 8202da899b84b6f5783dbf098ddd060b5404a8d6
+baseline: b3746e35ddd32079697728e2df57a9d78f1e9e32
 official_paths:
 - .github/workflows/lint.yml
 - .gitignore
@@ -248,6 +248,7 @@ official_paths:
 - agent/auxiliary_reasoning_floor.py
 - agent/codex_runtime.py
 - agent/coding_context.py
+- agent/context_compressor.py
 - agent/context_compressor_telemetry.py
 - agent/conversation_compression.py
 - agent/curator.py
@@ -281,10 +282,13 @@ official_paths:
 - apps/desktop/scripts/gen-share-codes.ts
 - apps/desktop/src/plugins/hermes-bots/cron-detail.test.tsx
 - apps/desktop/src/store/voice-prefs.test.ts
+- cron/cancellation.py
 - cron/scheduler.py
 - cron/scheduler_authority.py
 - cron/scheduler_delivery.py
+- cron/scheduler_delivery_room.py
 - cron/scheduler_liveness.py
+- cron/scheduler_ownership.py
 - cron/scheduler_provider.py
 - cron/scheduler_script.py
 - cron/scheduler_tick.py
@@ -292,7 +296,10 @@ official_paths:
 - evals/postmortem/review_probes/goal_scope_probe.py
 - gateway/config.py
 - gateway/config_loader.py
+- gateway/control_socket.py
+- gateway/host_attach.py
 - gateway/hosted_rooms_gateway_import.py
+- gateway/platforms/api_server.py
 - gateway/platforms/webhook_ingress.py
 - gateway/relay/media.py
 - gateway/run.py
@@ -304,10 +311,13 @@ official_paths:
 - gateway/run_inbound.py
 - gateway/run_notifications.py
 - gateway/run_notifications_update.py
+- gateway/run_profile_reconcile.py
 - gateway/run_runtime.py
 - gateway/run_runtime_init.py
 - gateway/run_startup.py
+- gateway/run_turn.py
 - gateway/run_turn_hygiene.py
+- gateway/run_turn_prepare.py
 - gateway/run_turn_runner.py
 - gateway/run_turn_runner_approval_settle.py
 - gateway/session_a2a.py
@@ -315,6 +325,7 @@ official_paths:
 - gateway/session_api_turn.py
 - gateway/session_authority.py
 - gateway/session_bot.py
+- gateway/session_busy_controls.py
 - gateway/session_controls.py
 - gateway/session_cron.py
 - gateway/session_detached.py
@@ -333,6 +344,7 @@ official_paths:
 - gateway/slash_commands.py
 - gateway/slash_commands_goals.py
 - gateway/slash_commands_model.py
+- gateway/status.py
 - hermes_cli/_parser.py
 - hermes_cli/_startup_fast.py
 - hermes_cli/banner.py
@@ -348,9 +360,12 @@ official_paths:
 - hermes_cli/desktop_update_verify.py
 - hermes_cli/doctor_state.py
 - hermes_cli/doctor_tools.py
+- hermes_cli/gateway.py
 - hermes_cli/gateway_client.py
 - hermes_cli/gateway_connection.py
 - hermes_cli/gateway_launchd.py
+- hermes_cli/gateway_migrate.py
+- hermes_cli/gateway_profile_lifecycle.py
 - hermes_cli/goal_command.py
 - hermes_cli/goals.py
 - hermes_cli/hooks.py
@@ -363,12 +378,17 @@ official_paths:
 - hermes_cli/plugins_cmd_listing.py
 - hermes_cli/plugins_context.py
 - hermes_cli/plugins_dispatch.py
+- hermes_cli/plugins_ledger.py
 - hermes_cli/plugins_manifest.py
+- hermes_cli/post_update.py
 - hermes_cli/stderr_timestamp.py
 - hermes_cli/subcommands/plugins.py
+- hermes_cli/update_cmd_windows.py
+- hermes_cli/update_pause_record.py
 - hermes_cli/version_info.py
 - hermes_cli/worktree_sweep.py
 - hermes_state.py
+- hermes_state_dbfile.py
 - hermes_state_local.py
 - hermes_state_local_lineage.py
 - hermes_state_maintenance.py
@@ -376,7 +396,6 @@ official_paths:
 - hermes_state_mutation_prepared.py
 - hermes_state_mutation_reset.py
 - hermes_state_readpool.py
-- lefthook.yml
 - locales/af.yaml
 - locales/ar.yaml
 - locales/de.yaml
@@ -399,6 +418,7 @@ official_paths:
 - plugins/platforms/dingtalk/adapter.py
 - plugins/platforms/dingtalk/gateway_env.py
 - plugins/platforms/dingtalk/plugin.yaml
+- plugins/platforms/feishu/adapter.py
 - plugins/platforms/photon/adapter.py
 - plugins/platforms/weixin/adapter.py
 - plugins/security-guidance/patterns.py
@@ -425,6 +445,7 @@ official_paths:
 - tests/agent/test_pre_llm_block_hook.py
 - tests/agent/test_prepared_compaction.py
 - tests/agent/test_skill_utils.py
+- tests/agent/test_subagent_lifecycle.py
 - tests/ci/workflow_steps.py
 - tests/cron/test_cron_inactivity_timeout.py
 - tests/cron/test_cron_recover_pause.py
@@ -456,12 +477,14 @@ official_paths:
 - tests/gateway/test_dingtalk.py
 - tests/gateway/test_dingtalk_reconnect_circuit_breaker.py
 - tests/gateway/test_feishu_card_action_gateway_authz.py
+- tests/gateway/test_feishu_profile_scope_hops.py
 - tests/gateway/test_gateway_trust_env.py
 - tests/gateway/test_goal_continuation_drain.py
 - tests/gateway/test_hosted_mux_runtime.py
 - tests/gateway/test_hosted_rooms_gateway_import.py
 - tests/gateway/test_local_session_orphan_end.py
 - tests/gateway/test_loop_liveness_watchdog.py
+- tests/gateway/test_multiplex_hot_serve.py
 - tests/gateway/test_multiplex_residue_parity.py
 - tests/gateway/test_native_http_auth.py
 - tests/gateway/test_readiness.py
@@ -501,9 +524,11 @@ official_paths:
 - tests/hermes_cli/test_model_options_account_usage.py
 - tests/hermes_cli/test_plugin_config_state_bridge.py
 - tests/hermes_cli/test_plugin_manifest_v2.py
+- tests/hermes_cli/test_plugin_prompt_sections.py
 - tests/hermes_cli/test_plugin_validate.py
 - tests/hermes_cli/test_plugins.py
 - tests/hermes_cli/test_plugins_cmd_activation_keys.py
+- tests/hermes_cli/test_post_update.py
 - tests/hermes_cli/test_real_home_tripwire.py
 - tests/hermes_cli/test_relay_shared_metrics_runtime.py
 - tests/hermes_cli/test_session_recovery_lost_and_found.py
@@ -526,6 +551,7 @@ official_paths:
 - tests/hermes_cli/test_version_info.py
 - tests/hermes_cli/test_worktree_snapshot_prune.py
 - tests/hermes_state/test_cross_vm_fs_wal_refusal.py
+- tests/hermes_state/test_deleted_wal_generation_guard.py
 - tests/hermes_state/test_guest_durability_barriers.py
 - tests/home_io_guard.py
 - tests/plugins/test_a2a_plugin.py
@@ -538,6 +564,7 @@ official_paths:
 - tests/scripts/test_run_tests_parallel_timeout_scaling.py
 - tests/scripts/test_source_driver.py
 - tests/skills/test_document_env_blocks.py
+- tests/tools/conftest.py
 - tests/tools/test_bot_desktop_resources.py
 - tests/tools/test_browser_launcher.py
 - tests/tools/test_browser_use_cli.py
@@ -586,6 +613,7 @@ official_paths:
 - tools/tool_search_validation.py
 - tools/transcription_local.py
 - tui_gateway/hosted_room_driver.py
+- tui_gateway/launch_profile_policy.py
 - tui_gateway/prompt_turn.py
 - tui_gateway/session_compression.py
 - tui_gateway/ws.py
