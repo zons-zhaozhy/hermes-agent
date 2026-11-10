@@ -17,7 +17,7 @@ from plugins.finish_guard import completion_boundary_audit as completion
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-jspace = importlib.import_module("plugins.jspace-guard")
+jspace = importlib.import_module("plugins.discipline.jspace_guard")
 persistence = importlib.import_module("plugins.persistence-enforcer")
 
 
@@ -80,8 +80,10 @@ def test_guard_sentinel_diagnostic_never_rewrites_answer():
 
 
 def test_jspace_warnings_never_rewrite_answer():
-    jspace._state.tool_call_count = jspace.ACTIVATION_THRESHOLD
-    jspace._state.current_turn_tools = set()
+    kwargs = {"session_id": "jspace-diagnostic"}
+    state = jspace._state_for(kwargs)
+    state.tool_call_count = jspace.ACTIVATION_THRESHOLD
+    state.current_turn_tools = set()
 
     assert jspace._on_transform_llm_output(
         session_id="jspace-diagnostic",

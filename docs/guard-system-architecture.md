@@ -10,7 +10,7 @@
 |---|---|---|---|
 | L0 | `guards.tool_blacklist` | 必败调用机械黑名单——拦的不是「错」，而是「注定失败」 | — |
 | L2 | `guards` | 写入质量护栏：写前功课 + 写动作合规 | pre_write / four_axis / duplicate_check / source_write / coding_standards / diff_debt / casebook_gate / batch_write / scope_gate / groundbreaking_gate / slow_search / db_target_audit / plain_vocab / experience_gate（2026-10-26 实测共 17 子模块） |
-| L3 | `discipline` | 执行纪律护栏：怎么跑命令、怎么面对错误 | no_guessing / db_safety / error_discipline / curl_safety / log_first / tool_safety / no_bypass / no_pushback / blame_shield / failure_preflight / declare_act_guard / negative_conclusion_guard / test_discipline + 注入通道 rule_reinjection / section_reinjection / workflow_router（2026-11-10 实测共 16 子模块） |
+| L3 | `discipline` | 执行纪律护栏：怎么跑命令、怎么面对错误 | no_guessing / db_safety / error_discipline / curl_safety / log_first / tool_safety / no_bypass / no_pushback / blame_shield / failure_preflight / declare_act_guard / negative_conclusion_guard / jspace_guard / test_discipline + 注入通道 rule_reinjection / section_reinjection / workflow_router（2026-11-10 实测共 17 子模块） |
 | 独立 | scientific-programming-guard；terminology-guard；enterprise-quality-gate；requirement-interview | 专项规范（写码预算、用词一致、企业级对表、需求歧义） | — |
 
 裁定原则：同一层同性质才收拢进同一套件；跨层不合并。子模块 register 逐个调用，
@@ -296,3 +296,7 @@ block_escalation 实现）。
   `negative-conclusion-guard`→`discipline` 已完成（行为迁入
   `discipline.negative_conclusion_guard`，独立 manifest/hook surface 删除，
   owner 注册契约在位，旧目录内写死 home 路径的自测脚本一并移除）。
+  `jspace-guard`→`discipline` 已完成（行为迁入 `discipline.jspace_guard`，
+  独立 manifest/hook surface 删除，owner 注册契约在位；顺带修掉原实现的
+  模块级单例——一个 gateway 服务多 profile 时会串态，改为按
+  `(hermes_home, session_id)` 分桶，并在 `on_session_reset` 清理）。
