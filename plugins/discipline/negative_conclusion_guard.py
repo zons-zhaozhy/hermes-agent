@@ -1,4 +1,4 @@
-"""negative-conclusion-guard plugin — block "not found / doesn't exist" claims based on a single directory probe.
+"""discipline.negative_conclusion_guard — block "not found / doesn't exist" claims based on a single directory probe.
 
 Enforces the rule: before concluding "X 不存在/不在线/未找到", the agent must
 have consulted an authoritative entry point (hermes plugins list / gitnexus /
@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any, Dict, Optional, Set
+from typing import Any, Optional
 
 from plugins._shared_state import get_session_state
 
@@ -149,7 +149,7 @@ def on_pre_llm_call(**kwargs) -> Optional[dict[str, Any]]:
 
 # ── Registration ──────────────────────────────────────────────────────
 
-def register(ctx) -> None:
+def register(ctx: Any) -> None:
     ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
-    logger.info("negative-conclusion-guard registered")
+    logger.info("discipline.negative_conclusion_guard registered")
