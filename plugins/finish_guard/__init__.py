@@ -145,6 +145,31 @@ _ROOT_CAUSE_EVIDENCE_RE = re.compile(
     r"|定位到|位于[^。\n]{0,30}行|第\s?\d+\s?行)"
 )  # re-ok: 中文句式+路径:行号混合形态无 str 等价
 
+# 宣称词的否定/引用形态（2026-11-10 实测 CLI 事故）：回复「本轮没有代码修复,
+# 不存在『已根治』主张」被判为根因宣称并强制补述, 模型被迫每轮先自辩「本轮
+# 没有宣称新的根治」——用户看到的正是「不说人话」。子串命中不等于断言：
+# 否定词（未/没有/尚未/不存在）或引用标记（宣称/主张）紧邻的宣称词是边界
+# 陈述, 不是宣称。与 _NEG_DEFER_RE / _NEG_DECLARE_RE 同族。
+_CLAIM_NEGATION_RE = re.compile(
+    r"(未|没|没有|尚未|并未|不曾|未曾|不存在|不是|不算)"
+)  # re-ok: 中文否定词无 str 等价判定
+_CLAIM_MENTION_RE = re.compile(r"(宣称|主张|声称|号称|自称)")  # re-ok: 中文引用动词无 str 等价
+_CLAIM_CONTEXT_WINDOW = 6  # 前后各 6 字足以覆盖「不存在「已根治」主张」形态
+
+
+def _has_asserted_claim(text: str) -> bool:
+    """Contract: Preconditions: text 为 str（可空）；Postconditions: 存在未被
+    否定词或引用短语包裹的根因宣称词时返回 True，否则 False。"""
+    for match in _ROOT_CAUSE_CLAIM_RE.finditer(text):
+        prefix = text[max(0, match.start() - _CLAIM_CONTEXT_WINDOW):match.start()]
+        suffix = text[match.end():match.end() + _CLAIM_CONTEXT_WINDOW]
+        if _CLAIM_NEGATION_RE.search(prefix):
+            continue  # 「尚未根治」「不存在已根治」
+        if _CLAIM_MENTION_RE.search(prefix) or _CLAIM_MENTION_RE.search(suffix):
+            continue  # 「宣称已根治」「已根治」主张——引用而非断言
+        return True
+    return False
+
 
 def _is_rootcause_hidden(text: str) -> bool:
     """Contract: Preconditions: text 为 str（可空）；Postconditions: 命中
@@ -152,7 +177,7 @@ def _is_rootcause_hidden(text: str) -> bool:
     True，否则 False。宣称与证据并存的正常收尾不拦。"""
     if not text:
         return False
-    return bool(_ROOT_CAUSE_CLAIM_RE.search(text)
+    return bool(_has_asserted_claim(text)
                 and not _ROOT_CAUSE_EVIDENCE_RE.search(text))
 
 

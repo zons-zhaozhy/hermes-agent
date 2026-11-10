@@ -91,3 +91,37 @@ def test_old_four_classes_still_work():
     assert fg._is_false_continue("继续下一批。") is True  # 期望: 假继续仍拦
     assert fg._is_defer_pushout("留待后续处理") is True  # 期望: 推迟式仍拦
     assert fg._is_rootcause_hidden("要不要继续？") is False  # 期望: 根因判定不吃请示句
+
+
+# 否定/降档/引用形态（2026-11-10 实测 CLI 事故）：模型回答「都处理好了吗」时
+# 写「本轮没有代码修复，不存在『已根治』主张」，被判为根因宣称并强制续跑，
+# 于是每轮被迫先写一段「本轮没有宣称新的根治」的自我辩解——用户看到的就是
+# 「不说人话」。根因：_ROOT_CAUSE_CLAIM_RE 只做子串匹配，不看否定语境。
+_NEGATED_CLAIM_TEXTS = (
+    "本轮没有代码修复，不存在「已根治」主张。",
+    "本轮没有宣称新的根治，但有两处结论需要说清楚。",
+    "这两个问题尚未根治。",
+    "P0-4 未动，暂未根治。",
+    "该缺陷并未根治，只是绕开了触发路径。",
+    "我没有找到根因，先把现象记下来。",
+)
+
+
+def test_negated_rootcause_claim_not_flagged():
+    """R5：否定/降档/引用形态的「根治」不是宣称，不得触发强制补述。"""
+    for text in _NEGATED_CLAIM_TEXTS:
+        assert fg._is_rootcause_hidden(text) is False, text  # 期望: 否定形态放行
+        # changed_paths 留空：本条只隔离根因门禁，不受「改动未提交」门禁干扰
+        out = fg._on_pre_verify(attempt=0, final_response=text, changed_paths=[])
+        assert out == {}, text  # 期望: 不再因根因门禁强制续跑
+
+
+def test_affirmative_claim_still_flagged_after_negation_guard():
+    """R5 正例面：真宣称仍拦，否定豁免不能把判定整条放过。"""
+    for text in (
+        "已根治，本轮收尾。",
+        "问题已全部根治。",
+        "没有遗留问题，已根治。",
+        "找到根因了，本轮结束。",
+    ):
+        assert fg._is_rootcause_hidden(text) is True, text  # 期望: 真宣称仍拦
