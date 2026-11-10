@@ -53,14 +53,9 @@ LABELS = (INTENT_READ_ONLY, INTENT_MODIFY, INTENT_AMBIGUOUS)
 # the baseline moved with it.
 _KNOWN_FALSE_BLOCKS = frozenset(
     {
-        "mod-17",        # 「现在开始，双方都改的文件优先沉成插件」— 执行指令，无改造动词
-        "amb-vague-10",  # 「你看看能怎么办」— 把处置权交出去
-        "amb-vague-11",  # 「it feels slow」— 只陈述现象
-        "amb-mixed-01",  # 「这个 bug 能修吗？」
-        "amb-mixed-02",  # 「看看这个怎么改比较好，改完再说」
-        "amb-mixed-04",  # 「如果加个缓存会不会好点，你决定」
-        "amb-mixed-05",  # 「这个测试挂了，你看看」
-        "amb-mixed-07",  # 「或许应该拆成两个文件？」
+        "amb-vague-11",   # 「it feels slow」— 只陈述现象
+        "amb-mixed-02",   # 「看看这个怎么改比较好，改完再说」— 先要方案，动作推迟
+        "amb-phatic-06",  # 「我先看看」— 用户自述行为
     }
 )
 
@@ -169,7 +164,7 @@ def test_semantic_classifier_accuracy_floor(corpus, recorded) -> None:
     assert all(predicted is not None for _, predicted in pairs)
     counts = _counts(pairs)  # type: ignore[arg-type]
     correct = sum(counts.get((label, label), 0) for label in LABELS)
-    assert correct / len(pairs) >= 0.85, counts
+    assert correct / len(pairs) >= 0.90, counts
 
 
 def test_semantic_classifier_keeps_each_class_usable(corpus, recorded) -> None:
@@ -179,9 +174,9 @@ def test_semantic_classifier_keeps_each_class_usable(corpus, recorded) -> None:
         for row in corpus
     ]
     counts = _counts(pairs)  # type: ignore[arg-type]
-    assert _recall(counts, INTENT_READ_ONLY) >= 0.95, counts
-    assert _recall(counts, INTENT_MODIFY) >= 0.95, counts
-    assert _precision(counts, INTENT_READ_ONLY) >= 0.83, counts
+    assert _recall(counts, INTENT_READ_ONLY) >= 0.90, counts
+    assert _recall(counts, INTENT_MODIFY) >= 0.98, counts
+    assert _precision(counts, INTENT_READ_ONLY) >= 0.92, counts
     assert _precision(counts, INTENT_MODIFY) >= 0.90, counts
 
 

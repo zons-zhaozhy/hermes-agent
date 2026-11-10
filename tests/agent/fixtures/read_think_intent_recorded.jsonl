@@ -51,7 +51,7 @@
 {"id": "mod-14", "text": "add a retry to the hook dispatcher", "label": "modify", "read_only": false, "modify": true}
 {"id": "mod-15", "text": "refactor this into a sibling module", "label": "modify", "read_only": false, "modify": true}
 {"id": "mod-16", "text": "把 timeout 调到 12s，然后跑测试", "label": "modify", "read_only": false, "modify": true}
-{"id": "mod-17", "text": "现在开始，双方都改的文件优先沉成插件", "label": "modify", "read_only": true, "modify": false}
+{"id": "mod-17", "text": "现在开始，双方都改的文件优先沉成插件", "label": "modify", "read_only": false, "modify": true}
 {"id": "mod-18", "text": "这两个未提交的都提交推送", "label": "modify", "read_only": false, "modify": true}
 {"id": "mod-conf-01", "text": "继续", "label": "modify", "read_only": false, "modify": true}
 {"id": "mod-conf-02", "text": "可以", "label": "modify", "read_only": false, "modify": true}
@@ -70,7 +70,7 @@
 {"id": "amb-phatic-03", "text": "嗯", "label": "ambiguous", "read_only": false, "modify": false}
 {"id": "amb-phatic-04", "text": "辛苦了", "label": "ambiguous", "read_only": false, "modify": false}
 {"id": "amb-phatic-05", "text": "好的知道了", "label": "ambiguous", "read_only": false, "modify": false}
-{"id": "amb-phatic-06", "text": "我先看看", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-phatic-06", "text": "我先看看", "label": "ambiguous", "read_only": true, "modify": false}
 {"id": "amb-phatic-07", "text": "thanks", "label": "ambiguous", "read_only": false, "modify": false}
 {"id": "amb-phatic-08", "text": "666", "label": "ambiguous", "read_only": false, "modify": false}
 {"id": "amb-vague-01", "text": "帮我处理一下这个", "label": "ambiguous", "read_only": false, "modify": false}
@@ -79,23 +79,23 @@
 {"id": "amb-vague-04", "text": "网关又抽风了", "label": "ambiguous", "read_only": false, "modify": false}
 {"id": "amb-vague-05", "text": "你觉得呢？", "label": "ambiguous", "read_only": false, "modify": false}
 {"id": "amb-vague-06", "text": "随便你", "label": "ambiguous", "read_only": false, "modify": false}
-{"id": "amb-vague-07", "text": "改", "label": "ambiguous", "read_only": false, "modify": false}
-{"id": "amb-vague-08", "text": "修", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-vague-07", "text": "改", "label": "ambiguous", "read_only": false, "modify": true}
+{"id": "amb-vague-08", "text": "修", "label": "ambiguous", "read_only": false, "modify": true}
 {"id": "amb-vague-09", "text": "这个性能不太行", "label": "ambiguous", "read_only": false, "modify": false}
-{"id": "amb-vague-10", "text": "你看看能怎么办", "label": "ambiguous", "read_only": true, "modify": false}
+{"id": "amb-vague-10", "text": "你看看能怎么办", "label": "ambiguous", "read_only": false, "modify": false}
 {"id": "amb-vague-11", "text": "it feels slow", "label": "ambiguous", "read_only": true, "modify": false}
 {"id": "amb-vague-12", "text": "not sure about this part", "label": "ambiguous", "read_only": false, "modify": false}
-{"id": "amb-mixed-01", "text": "这个 bug 能修吗？", "label": "ambiguous", "read_only": true, "modify": false}
+{"id": "amb-mixed-01", "text": "这个 bug 能修吗？", "label": "ambiguous", "read_only": false, "modify": false}
 {"id": "amb-mixed-02", "text": "看看这个怎么改比较好，改完再说", "label": "ambiguous", "read_only": true, "modify": false}
 {"id": "amb-mixed-03", "text": "为什么这么慢？顺便优化一下", "label": "ambiguous", "read_only": false, "modify": true}
-{"id": "amb-mixed-04", "text": "如果加个缓存会不会好点，你决定", "label": "ambiguous", "read_only": true, "modify": false}
-{"id": "amb-mixed-05", "text": "这个测试挂了，你看看", "label": "ambiguous", "read_only": true, "modify": false}
-{"id": "amb-mixed-06", "text": "能改成异步吗", "label": "ambiguous", "read_only": false, "modify": true}
-{"id": "amb-mixed-07", "text": "或许应该拆成两个文件？", "label": "ambiguous", "read_only": true, "modify": false}
-{"id": "amb-mixed-08", "text": "could we make this async somehow", "label": "ambiguous", "read_only": false, "modify": true}
+{"id": "amb-mixed-04", "text": "如果加个缓存会不会好点，你决定", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-mixed-05", "text": "这个测试挂了，你看看", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-mixed-06", "text": "能改成异步吗", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-mixed-07", "text": "或许应该拆成两个文件？", "label": "ambiguous", "read_only": false, "modify": false}
+{"id": "amb-mixed-08", "text": "could we make this async somehow", "label": "ambiguous", "read_only": false, "modify": false}
 {"id": "ro-probe-01", "text": "提交推送了吗", "label": "read_only", "read_only": false, "modify": false}
 {"id": "ro-probe-02", "text": "是不是有没提交推送的？", "label": "read_only", "read_only": true, "modify": false}
 {"id": "ro-probe-03", "text": "重启了吗", "label": "read_only", "read_only": false, "modify": false}
-{"id": "ro-probe-04", "text": "测试跑完了吗", "label": "read_only", "read_only": true, "modify": false}
-{"id": "ro-probe-05", "text": "那个 worktree 还在吗", "label": "read_only", "read_only": true, "modify": false}
+{"id": "ro-probe-04", "text": "测试跑完了吗", "label": "read_only", "read_only": false, "modify": false}
+{"id": "ro-probe-05", "text": "那个 worktree 还在吗", "label": "read_only", "read_only": false, "modify": false}
 {"id": "ro-probe-06", "text": "我们自建的门禁做的科学吗", "label": "read_only", "read_only": true, "modify": false}
