@@ -25,12 +25,15 @@ def _make_db(path: Path, rows: list[tuple[str, int]]) -> None:
         "CREATE TABLE tool_outcomes (session_id TEXT NOT NULL, tool_name TEXT NOT NULL,"
         " status TEXT NOT NULL, error_type TEXT, error_message TEXT, timestamp TEXT NOT NULL)"
     )
+    # 时间戳必须相对 now：聚合查询只认「近 7 天」窗口，写死日期会在到期那天起
+    # 永久变红（2026-11-10 实测：夹具写死 11-03，当天窗口一滑过去这两个测试就必挂，
+    # 与产品无关）。
+    recent = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 86400)) + "+00:00"
     for msg, n in rows:
         for _ in range(n):
             conn.execute(
-                "INSERT INTO tool_outcomes VALUES ('s','terminal','blocked',NULL,?,"
-                "'2026-11-03T00:00:00+00:00')",
-                (msg,),
+                "INSERT INTO tool_outcomes VALUES ('s','terminal','blocked',NULL,?,?)",
+                (msg, recent),
             )
     conn.commit()
     conn.close()
