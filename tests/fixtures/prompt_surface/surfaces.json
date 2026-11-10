@@ -267,7 +267,7 @@
   "telegram.claude": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1436,
+      "stable": 1490,
       "volatile": 1458
     },
     "tool_tokens": 11373,

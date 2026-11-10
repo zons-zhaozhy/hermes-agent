@@ -32,7 +32,7 @@ from gateway.platforms.helpers import MessageDeduplicator, cancel_task, greedy_p
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from agent.i18n import t
 from gateway.platforms.base import (
-    _IMAGE_EXTS, _VIDEO_EXTS, gateway_trust_env, BasePlatformAdapter, SendResult,
+    _IMAGE_EXTS, _VIDEO_EXTS, gateway_trust_env, BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
@@ -1234,7 +1234,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     attempt += 1
                     wait = self._send_chunk_retry_delay_seconds * attempt
                     logger.warning("[%s] send chunk failed to=%s attempt=%d/%d, retrying in %.2fs: %s",
-                                   self.name, _safe_id(chat_id), attempt, self._send_chunk_retries + 1, wait, exc)
+                                   self.name, _safe_id(chat_id), attempt, self._send_chunk_retries + 1, wait, describe_proxy_error(exc, env_proxy_for_redaction(self._base_url, self._cdn_base_url, trust_env=gateway_trust_env())) or exc)
                     if wait > 0:
                         await asyncio.sleep(wait)
             assert last_error is not None
@@ -1272,16 +1272,20 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     await asyncio.sleep(self._send_chunk_delay_seconds)
             return SendResult(success=True, message_id=last_message_id)
         except Exception as exc:
-            logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
+            # 上游：错误文本可能回显代理 URL，先脱敏——SendResult.error 会进日志与用户可见面。
+            shown = describe_proxy_error(
+                exc,
+                env_proxy_for_redaction(self._base_url, self._cdn_base_url, trust_env=gateway_trust_env()),
+            ) or str(exc)
+            logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), shown)
+            # 本 fork：确定性协议拒绝（对端会话过期，iLink 拒绝 bot 主动发）→ 暂存文本，等对方下一条
+            # 入站消息冲刷。flush 路径自身传 park_on_not_ready=False，它靠 requeue_failed 负责重排，
+            # 这里再 park 会让同一段文本入队两次。
             if park_on_not_ready and str(exc).startswith("iLink sendmessage session not ready") and final_content.strip():
-                # Deterministic protocol rejection (the peer's session expired and iLink refuses
-                # bot-initiated sends): park the text; the peer's next inbound message flushes it.
-                # The flush path itself passes park_on_not_ready=False — it owns requeueing via
-                # ``requeue_failed``, so a park here would double-enqueue the same text.
                 parked = await self._pending_store.enqueue(self._account_id, chat_id, final_content.strip())
                 logger.warning("[%s] session not ready; parked text for %s for inbound flush (queue_ok=%s)",
                                self.name, _safe_id(chat_id), parked)
-            return SendResult(success=False, error=str(exc))
+            return SendResult(success=False, error=shown)  # the text may echo the proxy URL
 
     async def _flush_pending(self, user_id: str) -> None:
         """Deliver this peer's parked texts now that their fresh context_token has landed.
@@ -1371,8 +1375,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         try:
             return SendResult(success=True, message_id=await self._send_file(chat_id, path, caption, **kwargs))
         except Exception as exc:
-            logger.error("[%s] %s failed to=%s: %s", self.name, label, _safe_id(chat_id), exc)
-            return SendResult(success=False, error=str(exc))
+            logger.error("[%s] %s failed to=%s: %s", self.name, label, _safe_id(chat_id), shown := describe_proxy_error(exc, env_proxy_for_redaction(self._base_url, self._cdn_base_url, trust_env=gateway_trust_env())) or str(exc))
+            return SendResult(success=False, error=shown)
 
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None, reply_to: Optional[str] = None,
@@ -1545,11 +1549,11 @@ async def _standalone_send(pconfig: Any, chat_id: str, message: str, *, thread_i
     if not check_weixin_requirements():
         return send_error("Weixin requirements not met. Need aiohttp + cryptography.")
     try:
-        return await send_weixin_direct(extra=getattr(pconfig, "extra", None) or {}, token=getattr(pconfig, "token", None),
-                                        chat_id=chat_id, message=message, media_files=media_files)
+        return await send_weixin_direct(extra=(extra := getattr(pconfig, "extra", None) or {}), token=getattr(pconfig, "token", None), chat_id=chat_id, message=message, media_files=media_files)
     except Exception as e:
-        logger.debug("Weixin standalone send failed", exc_info=True)
-        return send_error(f"Weixin send failed: {e}")
+        hosts = (_extra_or_secret(extra, "base_url", ILINK_BASE_URL), _extra_or_secret(extra, "cdn_base_url", WEIXIN_CDN_BASE_URL))
+        logger.debug("Weixin standalone send failed", exc_info=not (shown := describe_proxy_error(e, env_proxy_for_redaction(*hosts, trust_env=gateway_trust_env()))))
+        return send_error(f"Weixin send failed: {shown or e}")
 
 
 # Weixin DM policy by menu index (index 2 = allowlist is prompted separately).
