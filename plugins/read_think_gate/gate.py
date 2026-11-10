@@ -312,6 +312,11 @@ _MODIFY_TERMS = (
     "实现", "增加", "新增", "删除", "移除", "重构", "创建", "新建",
     "补上", "补测试", "更新", "替换", "重写", "生成", "保存到", "导出",
     "写到", "写入", "输出到", "整理成",
+    # 口语祈使动词（语料零命中，已验证零翻转；「处理」不收——语料有
+    # ambiguous 行「帮我处理一下这个」）：用户明确祈使「先解决…问题！」
+    # 实测落 ambiguous 被拦到下一轮（2026-11-11）。_is_interrogative 仍把
+    # 「怎么解决？」挡在授予路径外。
+    "解决", "搞定", "解开", "解锁",
     # 「按 X 持续自主推进」「应该自主决策」are imperatives; without these the
     # fallback saw an interjection and the turn stopped to ask for permission.
     # ``_is_interrogative`` still keeps 「怎么推进？」 out of the grant path.
@@ -549,6 +554,16 @@ def _fallback_detect_intent(
     if any(term in text for term in _STRONG_MODIFY_TERMS):
         return INTENT_MODIFY
     if _pending_request_authorizes_reply(pending_auth_request, user_message):
+        return INTENT_MODIFY
+    # 授权词表接线：clarify 表单的授权选项（「授权落地 B1…改完部署验证」）不含任何
+    # modify 动词，LLM 分类器不可用（429/超时）时被整轮丢弃——用户明确勾选的授权
+    # 无效（2026-11-11 agent.log 三例 does-not-authorize）。授权词是比动词更强的
+    # 授予信号；疑问形态与否认词（「先说说你会怎么改，别动手」）把它挡回去。
+    if (
+        not _is_interrogative(text)
+        and not any(term in text for term in _DENIAL_HINT_TERMS)
+        and any(term in text for term in _APPROVAL_HINT_TERMS)
+    ):
         return INTENT_MODIFY
     if not _is_interrogative(text) and any(term in text for term in _MODIFY_TERMS):
         return INTENT_MODIFY

@@ -100,5 +100,7 @@
 {"id": "ro-probe-05", "text": "那个 worktree 还在吗", "label": "read_only", "read_only": true, "modify": false}
 {"id": "ro-probe-06", "text": "我们自建的门禁做的科学吗", "label": "read_only", "read_only": true, "modify": false}
 {"id": "mod-19", "text": "先修门禁\n这个模块的作用到底是啥？", "label": "modify", "read_only": false, "modify": true}
-{"id": "mod-20", "text": "执行\n\n门禁是不是还有别的问题？", "label": "modify", "read_only": true, "modify": true}
+{"id": "mod-20", "text": "执行\n\n门禁是不是还有别的问题？", "label": "modify", "read_only": false, "modify": true}
 {"id": "mod-21", "text": "先做好契约，必要的情况下落进门禁固化下来，你觉得呢？", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-auth-01", "text": "授权落地四项整改（B1 判定键按服务收窄 + B2 受限并发 + B3 按影响重建容器 + B4 停用夜间清缓存），改完部署验证", "label": "modify", "read_only": false, "modify": true}
+{"id": "mod-auth-02", "text": "先解决 hermes 自己门禁拦截问题！", "label": "modify", "read_only": false, "modify": true}

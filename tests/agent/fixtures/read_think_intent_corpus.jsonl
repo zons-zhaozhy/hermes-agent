@@ -102,3 +102,6 @@
 {"id": "mod-19", "tag": "explicit_modify", "text": "先修门禁\n这个模块的作用到底是啥？", "label": "modify", "rule": "R2", "why": "祈使句在前、问句在后；指令说了要修什么，后面的提问不改变它"}
 {"id": "mod-20", "tag": "explicit_modify", "text": "执行\n\n门禁是不是还有别的问题？", "label": "modify", "rule": "R2", "why": "授权词单独成句，后面跟的是追问不是否定"}
 {"id": "mod-21", "tag": "explicit_modify", "text": "先做好契约，必要的情况下落进门禁固化下来，你觉得呢？", "label": "modify", "rule": "R2", "why": "祈使句指名了动作，结尾的'你觉得呢'只是征询，不撤销指令"}
+{"id": "mod-auth-01", "tag": "authorization_word", "text": "授权落地四项整改（B1 判定键按服务收窄 + B2 受限并发 + B3 按影响重建容器 + B4 停用夜间清缓存），改完部署验证", "label": "modify", "rule": "R2", "why": "clarify 表单勾选的授权选项，含授权词且无否认词——2026-11-11 实测被 fallback 判 ambiguous 致整轮部署整改被拦"}
+{"id": "mod-auth-02", "tag": "authorization_word", "text": "先解决 hermes 自己门禁拦截问题！", "label": "modify", "rule": "R2", "why": "口语祈使动词+感叹号，无疑问形态——2026-11-11 实测被 fallback 判 ambiguous"}
+
