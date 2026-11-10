@@ -15,8 +15,8 @@ v2 改用真实有效通道，三层：
   L2 pre_verify: 本回合改过文件且最终回复尾部为请示式收尾时返回
      {"action":"continue"}——核心注入 synthetic nudge 强制续跑
      （conversation_loop.py pre_verify 段，get_pre_verify_continue_message 消费）。
-  L3 transform_llm_output(response_text=...): 给用户可见回复打标记（前两层
-     未覆盖场景的留痕），签名与核心 payload 键对齐。
+  L3 transform_llm_output(response_text=...): 前两层未覆盖场景只记录 WARNING
+     诊断；恒返回 None，不把守卫指令追加到用户答案（签名与核心 payload 键对齐）。
 
 合法豁免（不拦）：拍板/授权/凭据/付费/不可逆删除清空覆盖/生产环境/
 方向性选型/需求歧义澄清（requirement_interview 的「必须先确认：」前缀在此豁免）。
@@ -382,6 +382,10 @@ def _on_pre_verify(**kwargs) -> dict:
                     "引用用户原话说明后可保持停止。"
                 ),
             }
+        # A zero-edit turn is a question/status/explanation answer.  Prose gates such
+        # as “needs a decision” or “mentions root fix” must not hide and rewrite it;
+        # execution debt is the only zero-edit continuation owned here.
+        return {}
     from . import ui_evidence
     l4 = ui_evidence.check(changed_paths, attempt, _MAX_PRE_VERIFY_NUDGES)
     if l4:
@@ -459,48 +463,26 @@ def _on_pre_verify(**kwargs) -> dict:
     return {}
 
 
-# ------------------------------------------------- L3: 用户可见标记（签名对齐核心）
+# ------------------------------------------------- L3: output diagnostics（签名对齐核心）
 
 def _transform_llm_output(response_text: str = "", **kwargs) -> "str | None":
     """Contract: Preconditions: response_text 为本回合 LLM 输出（核心键名）；
     Postconditions: L1/L2 未兜住且尾部命中请示式、或全文根因宣称无证据、
-    或拍板请求不自包含时返回打标文本（用户可见留痕），否则返回 None。
-    transform 链会继续执行后续插件；不改写时必须返回 None，不能伪报成功。"""
+    或拍板请求不自包含时记录 WARNING 诊断；恒返回 None，不把插件指令追加到
+    用户答案。transform 链会继续执行后续插件。"""
     output = response_text or ""
     if not output.strip():
         return None
     tail = _tail_text(output)
     if _is_rootcause_hidden(output):
-        logger.warning("finish_guard: 根因宣称无根因陈述漏网（L1/L2 未覆盖），打用户可见标记")
-        return (
-            output
-            + "\n\n[finish_guard] 上面宣称已定位/根治问题，但未在回复中展示根因内容"
-            "（根因是什么、证据是什么、症状与根因的位置关系）。根因必答：补述根因后，"
-            "该结论才算交付。"
-        )
-    if _is_bare_decision_ask(output):
-        logger.warning("finish_guard: 拍板请求不自包含漏网（L1/L2 未覆盖），打用户可见标记")
-        return (
-            output
-            + "\n\n[finish_guard] 上面的拍板请求引用了选项标签（方案A/B、两方案、A还是B），"
-            "但未在同一条消息内复述选项内容——只看本条无从拍板。可回复「补选项内容」"
-            "要求重述每个选项的具体做法、建议与默认动作后再拍板。"
-        )
-    if not (_is_pushback(tail) or _is_false_continue(tail) or _is_defer_pushout(tail)):
+        logger.warning("finish_guard: 根因宣称无根因陈述漏网（L1/L2 未覆盖），仅记录诊断")
+    elif _is_bare_decision_ask(output):
+        logger.warning("finish_guard: 拍板请求不自包含漏网（L1/L2 未覆盖），仅记录诊断")
+    elif _is_pushback(tail) or _is_false_continue(tail) or _is_defer_pushout(tail):
+        logger.warning("finish_guard: 请示式/宣言式/推迟式收尾漏网（L1/L2 未覆盖），仅记录诊断")
+    else:
         return None
-    logger.warning("finish_guard: 请示式/宣言式/推迟式收尾漏网（L1/L2 未覆盖），打用户可见标记")
-    return (
-        output
-        + "\n\n[finish_guard] 上面以请示式提问、宣言式假继续、或推迟式外推收尾。按既定纪律："
-        "当轮授权范围内的可逆决策标注假设直接继续，不必等待确认；"
-        "顺带发现的缺陷属于当轮任务的一部分，可控可回滚就直接修完，禁止以"
-        "「单独立项/不列入本轮/留待后续」外推——修复所需伴生文件（既有目录树内新增"
-        "测试/配置/脚本）属当轮任务一部分，直接写。"
-        "但宣布过的「下一步」若超出当轮授权范围（新增能力面：新应用/新依赖/新开目录树，"
-        "或方向级动作、不可逆操作、凭据、付费），不得自行开工，须撤回该宣布并列为"
-        "「必须先确认：」项呈报。当轮授权范围 = 用户当轮原话里明确要求产出的东西"
-        "（含其伴生产物）；分析、设计、评审、调研类请求不等于建造授权。"
-    )
+    return None
 
 
 # 声明式 opt-in：零写入回合也咨询本回调（核心默认契约=零写入不咨询 pre_verify；
@@ -520,4 +502,4 @@ def register(ctx: Any) -> None:
     ctx.register_hook("pre_llm_call", lazy_blocker._on_pre_llm_call)
     from . import completion_boundary_audit
     completion_boundary_audit.register(ctx)
-    logger.info("finish_guard v2 已注册——clarify 拦截 + pre_verify 续跑 + 可见标记 + 跨会话任务债务闭环 + 卡点替代通道 + 完成边界消项审计")
+    logger.info("finish_guard v2 已注册——clarify 拦截 + pre_verify 续跑 + 输出诊断 + 跨会话任务债务闭环 + 卡点替代通道 + 完成边界消项审计")

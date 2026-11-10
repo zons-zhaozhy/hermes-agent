@@ -10,6 +10,10 @@
 """
 from __future__ import annotations
 
+import logging
+
+import pytest
+
 from plugins import finish_guard as fg
 
 _DECLARED = "进度正常，下一步：建 MV0 骨架。"
@@ -40,11 +44,14 @@ def test_l1_message_carries_scope_gate():
     assert "不等于建造授权" in out.get("message", "")  # 期望: 拦截消息先划范围
 
 
-def test_l3_marker_carries_scope_gate():
-    """用户可见标记携带授权范围闸门。"""
-    out = fg._transform_llm_output(response_text=_DECLARED)
-    assert "[finish_guard]" in out  # 期望: 漏网收尾被打标
-    assert "不等于建造授权" in out  # 期望: 标记含范围定义
+def test_l3_diagnostic_never_rewrites_scope_gate_answer(
+    caplog: pytest.LogCaptureFixture,
+):
+    """L3 漏网收尾只记诊断；授权范围口径由 L1/L2 续跑消息下发。"""
+    with caplog.at_level(logging.WARNING, logger="plugins.finish_guard"):
+        out = fg._transform_llm_output(response_text=_DECLARED)
+    assert out is None
+    assert "宣言式" in caplog.text
 
 
 def test_messages_carry_companion_file_carveout():
@@ -58,8 +65,7 @@ def test_messages_carry_companion_file_carveout():
     l2 = fg._on_pre_verify(
         attempt=0, final_response=_DECLARED, changed_paths=["a.py"]
     ).get("message", "")
-    l3 = fg._transform_llm_output(response_text=_DECLARED) or ""
-    for name, msg in (("L1", l1), ("L2", l2), ("L3", l3)):
+    for name, msg in (("L1", l1), ("L2", l2)):
         assert "新开目录树" in msg, name  # 期望: 越权线=新能力面（机械闸门口径）
         assert "伴生" in msg, name  # 期望: 既有树内伴生文件豁免随消息下发
 

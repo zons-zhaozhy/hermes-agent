@@ -61,20 +61,6 @@ _MAX_JUDGE_CALLS = 30
 _JUDGE_RETRY_SECONDS = 300.0
 _JUDGE_RETRY_MAX_SECONDS = 3600.0
 
-_AUDIT_UNAVAILABLE_MARKER = (
-    "\n\n"
-    "[审计不可用 / UNKNOWN] completion-boundary-audit 无法完成语义判定"
-    "（辅助模型超时、限流、认证/余额或依赖不可用）。"
-    "本次交付声明未经审计，不能视为通过；系统已熔断重复调用。"
-)
-
-_INJECT_UNAVAILABLE = (
-    "【审计不可用 / UNKNOWN】上一轮 completion-boundary-audit 的语义判定通道"
-    "不可用（超时、限流、认证/余额或依赖缺失），因此上一轮的交付声明未经审计，"
-    "不能当作已通过。后续回复必须明确证据来源与未验证边界；不要重复调用同一个"
-    "已熔断的判定通道。"
-)
-
 _JUDGE_SYSTEM = (
     "你是交付审查哨兵。判断下面这条 AI 最终回复是否同时满足："
     "1) 包含交付完成声明（声称任务/修复/测试/部署已完成、全部通过、已交付）；"
@@ -199,7 +185,7 @@ def _resolve_verdict(text: str) -> dict[str, Optional[bool]]:
     Contract:
       Preconditions: text 为 str（可为空）
       Postconditions: 空/短文本 → {False, False}；任一通道无法给出两键 →
-                     {None, None}，调用方必须向用户显示 UNKNOWN
+                     {None, None}，调用方记录审计不可用并熔断
     """
     if not text or len(text) < _MIN_LENGTH:
         return {"done_claim": False, "has_boundary": False}
@@ -237,12 +223,12 @@ def register(ctx) -> None:
     """注册 transform_llm_output（检测+记状态）与 pre_llm_call（注入）。
 
     Contract:
-      Postconditions: 两个钩子均已注册；异常不外泄，审计失败显示为 UNKNOWN
+      Postconditions: 两个钩子均已注册；审计失败记录 UNKNOWN 日志，不外泄到用户回复
     """
 
     def audit_boundary(response_text, session_id=None, model=None,
                        platform=None, **kwargs) -> Optional[str]:
-        """judge 判定 → 状态机转移；判定不可用时向用户显示 UNKNOWN。
+        """judge 判定 → 状态机转移；判定不可用时记录 UNKNOWN 日志。
 
         状态机（消项闭环）：
         - 完成声明 + 无披露 → 记 pending（下轮补披露红牌，旧路径）
@@ -252,8 +238,8 @@ def register(ctx) -> None:
         - 无完成声明（进行中汇报）→ 不打扰（但 pending 保留，不重置）
 
         Contract:
-          Postconditions: 判定成功时不改回复；judge 失败、缺键或内部异常时
-                          追加用户可见 UNKNOWN，并打开会话熔断
+          Postconditions: 恒不改回复；judge 失败、缺键或内部异常时记录诊断
+                          UNKNOWN，并打开会话熔断
         """
         if _plugin_disabled():
             return None
@@ -265,7 +251,8 @@ def register(ctx) -> None:
             sid = session_id or ""
             st = _state(sid)
             if _judge_breaker_active(st):
-                return text + _AUDIT_UNAVAILABLE_MARKER
+                logger.warning("completion-boundary-audit: breaker active; diagnostic UNKNOWN only")
+                return None
             if int(st.get("count", 0)) >= _MAX_REMINDERS:
                 return None
             if int(st.get("judge_calls", 0)) >= _MAX_JUDGE_CALLS:
@@ -284,9 +271,9 @@ def register(ctx) -> None:
             if done is None or boundary is None:
                 _mark_judge_unavailable(st)
                 logger.warning(
-                    "completion-boundary-audit: audit unavailable; surfaced to user"
+                    "completion-boundary-audit: audit unavailable; recorded diagnostic UNKNOWN"
                 )
-                return text + _AUDIT_UNAVAILABLE_MARKER
+                return None
             _mark_judge_available(st)
             seen.add(h)
             if not done:
@@ -324,14 +311,15 @@ def register(ctx) -> None:
             )
             if st is not None:
                 _mark_judge_unavailable(st)
-            return text + _AUDIT_UNAVAILABLE_MARKER
+            return None
 
     def inject_reminder(**kwargs) -> Optional[dict[str, Any]]:
         """上一轮被标记 → 注入红牌给 agent。
 
         红牌分三档：旧路径（未披露→补披露）；消项（披露未消→逐项消）；
         升级（streak≥2 连续未消→点名撂挑子）。注入一次即消费 pending 标记
-        （streak 保留，由消项成功时清零）。
+        （streak 保留，由消项成功时清零）。审计通道不可用只记日志，不注入
+        内部 UNKNOWN 给用户。
 
         Contract:
           Postconditions: 返回 None 或 {"context": str}；注入一次即消费标记
@@ -342,7 +330,8 @@ def register(ctx) -> None:
             sid = kwargs.get("session_id") or ""
             st = _state(sid)
             if st.get("audit_unavailable"):
-                return {"context": _INJECT_UNAVAILABLE}
+                logger.warning("completion-boundary-audit: reminder skipped; audit channel unavailable")
+                return None
             if not st.get("pending_reminder"):
                 return None
             del st["pending_reminder"]

@@ -1,27 +1,27 @@
 """
-jspace-guard plugin v1.1 — J-Space 不变量硬化。
+jspace-guard plugin v1.2 — J-Space 不变量硬化。
 
 把结构化思考的关键不变量从软提醒提升到代码拦截：
 
 不变量 6 (coverage-gate):
   声称"验证/完成/通过/已确认"但不说覆盖了什么（范围/用例/cases/bounds）
-  → 注入警告：验证必须带覆盖范围说明。
+  → 记录日志警告：验证必须带覆盖范围说明。
   依据：J-Space COVERAGE 原则——"不能改变动作的监控只是评论"，
   声称验证却不描述覆盖范围 = 空声明。
 
 不变量 8 (goal-rebase-gate):
   声称"任务完成/搞定/结束"但本轮未回读 Goal/TODO/任务列表
-  → 注入警告：完成前必须回读目标确认未遗漏。
+  → 记录日志警告：完成前必须回读目标确认未遗漏。
   依据：J-Space Loop Ledger —— 完成 = 回读 Goal + Verified + 覆盖说明，
   不是"我觉得做完了"。
 
 不变量 9 (tri-state-gate):
   回复包含事实性断言但不标注结论来源
-  → 注入提醒：结论应带 [实测]/[文档]/[推断]/[未查证] 三态标注。
+  → 记录日志提醒：结论应带 [实测]/[文档]/[推断]/[未查证] 三态标注。
   依据：实事求是原则——每个事实性结论标注来源，不编造。
 
 设计原则：
-  - transform_llm_output 只追加不替换，不修改模型原始回复
+  - transform_llm_output 只观测并记录日志，不修改模型原始回复
   - 只在 ≥ ACTIVATION_THRESHOLD 次工具调用后激活（短任务不需要此层门控）
   - 纯字符串检测，不用正则
   - 不变量 6: 检测"验证类断言词" + "覆盖范围词"同时/缺失
@@ -243,20 +243,20 @@ def _on_post_tool_call(**kwargs):
         _state.current_turn_tools.add(tool_name)
 
 
-def _on_transform_llm_output(**kwargs):
-    """Scan response for invariant violations; append warnings if found."""
+def _on_transform_llm_output(**kwargs) -> "str | None":
+    """Scan response for invariant violations; record diagnostics without rewriting it."""
     # cron 会话豁免：无人值守推送直接投给用户，内部审计噪音禁止混入。
     # 两条路径全覆盖：定时调度 platform="cron"；手动 run 的 delegation 会话
     # session_id 形如 "cron_<job_id>_..."。
     if kwargs.get("platform") == "cron" or str(kwargs.get("session_id", "")).startswith("cron_"):
-        return ""
+        return None
     # 未达激活阈值——短任务不需要此门控
     if _state.tool_call_count < ACTIVATION_THRESHOLD:
-        return ""
+        return None
 
     response_text = kwargs.get("response_text", "")
     if not response_text:
-        return ""
+        return None
 
     warnings: list = []
 
@@ -277,12 +277,10 @@ def _on_transform_llm_output(**kwargs):
 
     if warnings:
         logger.info(
-            "jspace-guard: %d invariant(s) violated (calls=%d)",
-            len(warnings), _state.tool_call_count,
+            "jspace-guard: %d invariant(s) violated (calls=%d): %s",
+            len(warnings), _state.tool_call_count, " ".join(warnings),
         )
-        return response_text + "".join(warnings)
-
-    return ""
+    return None
 
 
 # ── 注册 ──────────────────────────────────────────────────────

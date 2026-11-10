@@ -1,5 +1,5 @@
 """
-persistence-enforcer plugin v2.0 — 强制复杂任务创建 TODO + 结构化持久化。
+persistence-enforcer plugin v2.1 — 强制复杂任务创建 TODO + 结构化持久化。
 
 四层拦截——从劝导到强制：
 
@@ -8,8 +8,8 @@ Layer 2 (pre_llm_call): ≥5 次调用 + 复杂关键词 + 无 TODO → LLM 调�
 Layer 3 (pre_tool_call): ≥10 次调用 + 无 TODO + 无持久化 → 硬拦截 write_file/patch。
   → 只放行：只读工具 + todo + 持久化工具。
   → 一旦创建 TODO → 解除拦截。
-Layer 4 (transform_llm_output): LLM 输出含结构化分析 + 未持久化 → 追加提醒。
-  原始回复完整保留，只追加。
+Layer 4 (transform_llm_output): LLM 输出含结构化分析 + 未持久化 → 记录提醒日志。
+  原始回复完整保留，不改写。
 
 设计原则：
   - 提醒先于拦截（5 次提醒 → 10 次拦截）
@@ -265,32 +265,32 @@ def _on_pre_tool_call(**kwargs) -> dict:
 
 # ── Layer 4: transform_llm_output (分析提醒) ───────────────────
 
-def _on_transform_llm_output(**kwargs) -> str:
+def _on_transform_llm_output(**kwargs) -> str | None:
     st = _state_for(_hook_session_id(kwargs))
     if st.persist_called:
-        return ""
+        return None
     if st.tool_call_count < WARN_THRESHOLD:
-        return ""
+        return None
     if st.output_reminded:
-        return ""
+        return None
 
     response_text = kwargs.get("response_text", "")
     if not response_text:
-        return ""
+        return None
     if not _is_analysis_output(response_text):
-        return ""
+        return None
     if response_text == st._last_response_reminded:
-        return ""
+        return None
 
     st.output_reminded = True
     st._last_response_reminded = response_text
 
     reminder = _ANALYSIS_PERSIST_REMINDER.format(count=st.tool_call_count)
     logger.info(
-        "persistence-enforcer: transform_llm_output — persist reminder (calls=%d)",
-        st.tool_call_count,
+        "persistence-enforcer: unpersisted analysis diagnostic (calls=%d): %s",
+        st.tool_call_count, reminder.strip(),
     )
-    return response_text + reminder
+    return None
 
 
 # ── 注册 ──────────────────────────────────────────────────────

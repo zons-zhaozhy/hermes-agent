@@ -11,32 +11,45 @@
 执行汇报（无拍板信号）不触发；含定义形态的自包含拍板不触发。
 """
 
+import logging
+
+import pytest
+
 from plugins import finish_guard as fg
 
 
-def test_bare_label_ask_flagged() -> None:
-    """引用「方案A/B」标签且全文无定义 → 打标（db71411a 19:28 实例形态）。"""
-    out = fg._transform_llm_output(
-        response_text="反方审查完成（推荐方案 A，零代码改动）。请拍板后实施。"
-    )
-    assert "[finish_guard]" in out  # 期望: 空洞引用被打标
+def _assert_diagnosed_without_rewrite(
+    response_text: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="plugins.finish_guard"):
+        out = fg._transform_llm_output(response_text=response_text)
+    assert out is None
+    assert "拍板请求不自包含" in caplog.text
 
 
-def test_bare_count_ask_flagged() -> None:
-    """引用「两方案」计数且全文无定义 → 打标（db71411a 19:23 实例形态）。"""
-    out = fg._transform_llm_output(
-        response_text="反方审查子代理已派出，只读审查按群路由不同项目空间两方案。"
+def test_bare_label_ask_flagged(caplog: pytest.LogCaptureFixture) -> None:
+    """引用「方案A/B」标签且全文无定义 → 诊断进日志（db71411a 实例形态）。"""
+    response = "反方审查完成（推荐方案 A，零代码改动）。请拍板后实施。"
+    assert fg._is_bare_decision_ask(response) is True
+    _assert_diagnosed_without_rewrite(response, caplog)
+
+
+def test_bare_count_ask_flagged(caplog: pytest.LogCaptureFixture) -> None:
+    """引用「两方案」计数且全文无定义 → 诊断进日志（db71411a 实例形态）。"""
+    response = (
+        "反方审查子代理已派出，只读审查按群路由不同项目空间两方案。"
         "审查结果回来后我给方案对比与推荐，你拍板后实施。"
     )
-    assert "[finish_guard]" in out  # 期望: 计数式空洞引用被打标
+    assert fg._is_bare_decision_ask(response) is True
+    _assert_diagnosed_without_rewrite(response, caplog)
 
 
-def test_bare_ab_ask_flagged() -> None:
-    """「A 还是 B」裸字母形态且无定义 → 打标。"""
-    out = fg._transform_llm_output(
-        response_text="两种做法 A 还是 B，请你拍板一下，我按你选的执行。"
-    )
-    assert "[finish_guard]" in out  # 期望: 裸字母空洞引用被打标
+def test_bare_ab_ask_flagged(caplog: pytest.LogCaptureFixture) -> None:
+    """「A 还是 B」裸字母形态且无定义 → 诊断进日志。"""
+    response = "两种做法 A 还是 B，请你拍板一下，我按你选的执行。"
+    assert fg._is_bare_decision_ask(response) is True
+    _assert_diagnosed_without_rewrite(response, caplog)
 
 
 def test_selfcontained_ask_not_flagged() -> None:
@@ -87,12 +100,13 @@ def test_pre_verify_attempt_cap_holds() -> None:
     assert r == {}  # 期望: {}（attempt 达上限放行）
 
 
-def test_short_content_after_label_still_bare() -> None:
-    """标签后短属性词（<6 实义字符，如「零代码改动」5字）不算定义 → 打标。"""
-    out = fg._transform_llm_output(
-        response_text="两方案审查完毕，方案 A 零改动。请拍板。"
-    )
-    assert "[finish_guard]" in out  # 期望: 短属性词不构成定义，仍打标
+def test_short_content_after_label_still_bare(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """标签后短属性词（<6 实义字符）不算定义 → 仍只记诊断。"""
+    response = "两方案审查完毕，方案 A 零改动。请拍板。"
+    assert fg._is_bare_decision_ask(response) is True
+    _assert_diagnosed_without_rewrite(response, caplog)
 
 
 def test_pre_verify_zero_edit_with_own_pending_todos(tmp_path, monkeypatch) -> None:

@@ -13,6 +13,10 @@ _LEGIT_ASK_RE（不可逆/凭据/付费/拍板/必须先确认）。
 """
 from __future__ import annotations
 
+import logging
+
+import pytest
+
 from plugins import finish_guard as fg
 
 _DEFER_CLOSE = "诊断已完成。认证链三处矛盾属独立战线，单独立项处理，本轮先收尾。"
@@ -75,11 +79,12 @@ def test_done_close_not_deferred():
     assert out is None  # 期望: 完成态不打标（契约：不改写返回 None）
 
 
-def test_l3_marker_covers_defer():
-    """D3：L3 用户可见标记覆盖推迟式漏网。"""
-    out = fg._transform_llm_output(response_text=_DEFER_CLOSE)
-    assert "[finish_guard]" in out  # 期望: 推迟式收尾被打标
-    assert "外推" in out  # 期望: 标记含禁止外推语义
+def test_l3_diagnoses_defer_without_rewrite(caplog: pytest.LogCaptureFixture):
+    """D3：L3 漏网诊断进日志，不把外推纪律追加给用户。"""
+    with caplog.at_level(logging.WARNING, logger="plugins.finish_guard"):
+        out = fg._transform_llm_output(response_text=_DEFER_CLOSE)
+    assert out is None
+    assert "推迟式" in caplog.text
 
 
 def test_old_two_classes_still_work():

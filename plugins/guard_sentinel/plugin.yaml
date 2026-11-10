@@ -1,6 +1,6 @@
 name: guard-sentinel
-version: 1.0.0
-description: 守卫面完整性哨兵——守卫插件缺席时 WARNING 留痕并在回复中显示一次，防线不再静默消失
+version: 1.1.0
+description: 守卫面完整性哨兵——守卫插件缺席时 WARNING 留痕，并在下一条最终回复时再记录一次诊断；不进入用户答案正文，防线不再静默消失
 hooks:
   - on_session_start
   - on_session_reset

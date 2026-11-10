@@ -6,7 +6,7 @@
 本插件在 on_session_start / on_session_reset 时扫描全部插件清单。
 守卫由 ``tags: [guard]`` 显式标识；Gate Plane 报告中的 missing 队列
 （required 缺席或已启用 guard 破损）以 WARNING 留痕，并在本会话第一条
-最终回复里追加一次用户可见的「门禁缺席」标记。
+最终回复时再记录一次「门禁缺席」诊断；它不进入用户答案正文。
 
 看护名单零登记：新守卫打 tags: [guard] 即被自动看护。泛用 pre_tool_call /
 pre_llm_call 的观察型插件不会被误当成守卫。
@@ -24,7 +24,7 @@ from typing import Any
 logger = logging.getLogger("plugins.guard-sentinel")
 
 # 守卫身份和门禁注册健康都来自 PluginManager 的共享 Gate Plane 报告；
-# 这里只负责把 unknown 状态转成日志与用户可见告警。
+# 这里只负责把 unknown 状态转成日志诊断。
 GUARD_TAG = "guard"
 
 _reported: set[str] = set()
@@ -108,11 +108,12 @@ def on_session_end(session_id: str = "", **_kwargs: Any) -> None:
 def transform_llm_output(
     response_text: str = "", session_id: str = "", **_kwargs: Any,
 ) -> str | None:
-    """Surface an absent-guard notice once, in the reply the user actually sees."""
+    """Record an absent-guard notice once without rewriting the user's answer."""
     notice = _pending.pop(session_id or "_global", None)
     if not notice:
         return None
-    return f"{response_text}{notice}"
+    logger.warning("guard-sentinel: %s", notice.strip())
+    return None
 
 
 def register(ctx: Any) -> None:
@@ -121,6 +122,6 @@ def register(ctx: Any) -> None:
     ctx.register_hook("on_session_end", on_session_end)
     ctx.register_hook("transform_llm_output", transform_llm_output)
     logger.info(
-        "guard-sentinel registered (4 hooks, discovering guards via the explicit %r tag)",
+        "guard-sentinel registered (diagnostics only, discovering guards via the explicit %r tag)",
         GUARD_TAG,
     )

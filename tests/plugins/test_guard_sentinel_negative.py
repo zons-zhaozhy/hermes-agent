@@ -2,7 +2,8 @@
 
 Contract:
     Preconditions: plugins/guard_sentinel/__init__.py 存在
-    Postconditions: 自声明 guard 标签但未启用的插件触发 GUARD ABSENT 告警
+    Postconditions: 自声明 guard 标签但未启用的插件触发 GUARD ABSENT 日志；
+                    transform_llm_output 不改写用户答案
 """
 import importlib.util
 import logging
@@ -125,7 +126,9 @@ def test_enabled_guard_that_did_not_register_its_hook_is_reported(monkeypatch, c
     assert any("hollow-guard" in r.message and "not registered" in r.message for r in caplog.records)
 
 
-def test_absent_guard_is_visible_in_answer_not_only_log(monkeypatch):
+def test_absent_guard_diagnostic_is_logged_without_rewriting_answer(
+    monkeypatch, caplog,
+):
     guard = _load_guard()
     guard._reported.clear()
     guard._pending.clear()
@@ -138,18 +141,19 @@ def test_absent_guard_is_visible_in_answer_not_only_log(monkeypatch):
     import hermes_cli.plugins as hp
 
     monkeypatch.setattr(hp, "get_plugin_manager", lambda: fake)
-    guard.on_session_start(session_id="sentinel-visible")
-    answer = guard.transform_llm_output(
-        "normal answer", session_id="sentinel-visible",
-    )
-    assert answer is not None
-    assert "门禁缺席" in answer and "dead-hook-guard" in answer
+    with caplog.at_level(logging.WARNING, logger=guard.logger.name):
+        guard.on_session_start(session_id="sentinel-visible")
+        answer = guard.transform_llm_output(
+            "normal answer", session_id="sentinel-visible",
+        )
+    assert answer is None
+    assert "门禁缺席" in caplog.text and "dead-hook-guard" in caplog.text
     assert guard.transform_llm_output(
         "next answer", session_id="sentinel-visible",
     ) is None
 
 
-def test_sentinel_consumes_the_shared_gate_plane_report(monkeypatch):
+def test_sentinel_consumes_the_shared_gate_plane_report(monkeypatch, caplog):
     """The one-shot warning has the same authority as `hermes plugins gates`."""
     guard = _load_guard()
     guard._reported.clear()
@@ -171,16 +175,19 @@ def test_sentinel_consumes_the_shared_gate_plane_report(monkeypatch):
     import hermes_cli.plugins as hp
 
     monkeypatch.setattr(hp, "get_plugin_manager", lambda: fake)
-    guard.on_session_start(session_id="shared-report")
-    answer = guard.transform_llm_output(
-        "normal answer", session_id="shared-report",
-    )
+    with caplog.at_level(logging.WARNING, logger=guard.logger.name):
+        guard.on_session_start(session_id="shared-report")
+        answer = guard.transform_llm_output(
+            "normal answer", session_id="shared-report",
+        )
 
-    assert answer is not None
-    assert "门禁缺席" in answer and "shared-dead-guard" in answer
+    assert answer is None
+    assert "门禁缺席" in caplog.text and "shared-dead-guard" in caplog.text
 
 
-def test_required_manual_guard_without_evidence_is_visible(monkeypatch):
+def test_required_manual_guard_without_evidence_is_logged(
+    monkeypatch, caplog,
+):
     guard = _load_guard()
     guard._reported.clear()
     guard._pending.clear()
@@ -198,17 +205,18 @@ def test_required_manual_guard_without_evidence_is_visible(monkeypatch):
     import hermes_cli.plugins as hp
 
     monkeypatch.setattr(hp, "get_plugin_manager", lambda: fake)
-    guard.on_session_start(session_id="manual-required")
-    answer = guard.transform_llm_output(
-        "normal answer", session_id="manual-required",
-    )
+    with caplog.at_level(logging.WARNING, logger=guard.logger.name):
+        guard.on_session_start(session_id="manual-required")
+        answer = guard.transform_llm_output(
+            "normal answer", session_id="manual-required",
+        )
 
-    assert answer is not None
-    assert "门禁缺席" in answer and "fork-guard" in answer
-    assert "no fresh audit evidence" in answer
+    assert answer is None
+    assert "门禁缺席" in caplog.text and "fork-guard" in caplog.text
+    assert "no fresh audit evidence" in caplog.text
 
 
-def test_required_manual_guard_failed_audit_is_visible(monkeypatch):
+def test_required_manual_guard_failed_audit_is_logged(monkeypatch, caplog):
     guard = _load_guard()
     guard._reported.clear()
     guard._pending.clear()
@@ -226,14 +234,15 @@ def test_required_manual_guard_failed_audit_is_visible(monkeypatch):
     import hermes_cli.plugins as hp
 
     monkeypatch.setattr(hp, "get_plugin_manager", lambda: fake)
-    guard.on_session_start(session_id="manual-failed")
-    answer = guard.transform_llm_output(
-        "normal answer", session_id="manual-failed",
-    )
+    with caplog.at_level(logging.WARNING, logger=guard.logger.name):
+        guard.on_session_start(session_id="manual-failed")
+        answer = guard.transform_llm_output(
+            "normal answer", session_id="manual-failed",
+        )
 
-    assert answer is not None
-    assert "门禁缺席" in answer and "fork-guard" in answer
-    assert "latest audit failed" in answer
+    assert answer is None
+    assert "门禁缺席" in caplog.text and "fork-guard" in caplog.text
+    assert "latest audit failed" in caplog.text
 
 
 def test_disabled_advisory_guard_is_not_reported_as_absent(monkeypatch, caplog):
@@ -336,7 +345,7 @@ def test_guard_identity_comes_from_real_manifest(tmp_path, monkeypatch, caplog):
     assert any("manifest-guard" in r.message for r in caplog.records)
 
 
-def test_sentinel_check_failure_is_visible_unknown(monkeypatch):
+def test_sentinel_check_failure_is_logged_unknown(monkeypatch, caplog):
     guard = _load_guard()
     guard._reported.clear()
     guard._pending.clear()
@@ -347,10 +356,11 @@ def test_sentinel_check_failure_is_visible_unknown(monkeypatch):
         raise RuntimeError("plugin registry unavailable")
 
     monkeypatch.setattr(hp, "get_plugin_manager", _broken_manager)
-    guard.on_session_start(session_id="sentinel-check-broken")
-    answer = guard.transform_llm_output(
-        "normal answer", session_id="sentinel-check-broken",
-    )
+    with caplog.at_level(logging.WARNING, logger=guard.logger.name):
+        guard.on_session_start(session_id="sentinel-check-broken")
+        answer = guard.transform_llm_output(
+            "normal answer", session_id="sentinel-check-broken",
+        )
 
-    assert answer is not None
-    assert "门禁状态不可用 / UNKNOWN" in answer
+    assert answer is None
+    assert "门禁状态不可用 / UNKNOWN" in caplog.text

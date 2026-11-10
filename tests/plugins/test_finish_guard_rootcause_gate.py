@@ -6,12 +6,16 @@
 （请示/假继续/推迟/无commit证据）全部不覆盖：它有完成宣言，缺的是陈述本身。
 
 修法：_is_rootcause_hidden 第五类判定（全文判定面）+ L2 pre_verify 强制补述
-+ L3 transform_llm_output 用户可见标记，落地 .hermes-rules.md B6。
++ L3 transform_llm_output 仅记录诊断，不改写用户答案。
 
 本文件锁四件事：R1 宣称无证据拦、R2 宣称+证据并存放行、R3 正常收尾不误伤、
 R4 旧四类判定不越界。
 """
 from __future__ import annotations
+
+import logging
+
+import pytest
 
 from plugins import finish_guard as fg
 
@@ -71,11 +75,14 @@ def test_plain_close_not_flagged():
     assert out is None  # 期望: 不打标（契约：不改写返回 None）
 
 
-def test_l3_marker_covers_hidden_rootcause():
-    """R3：L3 用户可见标记覆盖根因隐匿漏网。"""
-    out = fg._transform_llm_output(response_text=_HIDDEN_CLOSE)
-    assert "[finish_guard]" in out  # 期望: 根因隐匿收尾被打标
-    assert "根因必答" in out  # 期望: 标记含根因必答语义
+def test_l3_diagnoses_hidden_rootcause_without_rewrite(
+    caplog: pytest.LogCaptureFixture,
+):
+    """R3：L3 漏网诊断进日志，不把根因指令追加给用户。"""
+    with caplog.at_level(logging.WARNING, logger="plugins.finish_guard"):
+        out = fg._transform_llm_output(response_text=_HIDDEN_CLOSE)
+    assert out is None
+    assert "根因" in caplog.text
 
 
 def test_old_four_classes_still_work():

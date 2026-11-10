@@ -159,7 +159,9 @@ def test_deadlock_breaker_passes_third_write_and_warns_next_llm_call(
     ) == {}
 
 
-def test_unpersisted_structured_analysis_gets_reminder() -> None:
+def test_unpersisted_structured_analysis_gets_diagnostic(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     session_id = _session_id()
     _record_calls(session_id, 5)
     response = (
@@ -167,9 +169,11 @@ def test_unpersisted_structured_analysis_gets_reminder() -> None:
         "[推断] 阈值行为稳定。\n" + "详细说明。\n" * 60
     )
 
-    result = persistence._on_transform_llm_output(
-        session_id=session_id, response_text=response
-    )
-    assert result.startswith(response)
-    assert "[PERSISTENCE-ENFORCER]" in result
-    assert "立即调用 `skill_manage` 或 `write_file`" in result
+    with caplog.at_level(logging.INFO, logger="plugins.persistence-enforcer"):
+        result = persistence._on_transform_llm_output(
+            session_id=session_id, response_text=response
+        )
+    assert result is None
+    assert persistence._states[session_id].output_reminded is True
+    assert "unpersisted analysis diagnostic" in caplog.text
+    assert "`skill_manage` 或 `write_file`" in caplog.text

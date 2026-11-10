@@ -17,6 +17,8 @@ Contract:
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from plugins import finish_guard
@@ -132,19 +134,24 @@ def test_undisclosed_path_unchanged():
     assert msg is not None and "披露" in msg["context"]  # 期望: 仍是补披露红牌
 
 
-def test_judge_unavailable_is_visible_unknown():
-    """judge 返回 None → 审计不可用必须可见，不能伪装成正常通过。"""
+def test_judge_unavailable_is_logged_without_user_rewrite(caplog):
+    """judge 返回 None → 状态与日志可见，不能伪装成正常通过或污染答案。"""
     mod = _load_plugin()
     audit, inject, state = _mk(mod, None, "cba-test")
-    out = audit(_LONG_TEXT, session_id="cba-test")
-    assert out is not None and "审计不可用" in out
+    with caplog.at_level(
+        logging.WARNING, logger="plugins.finish_guard.completion_boundary_audit"
+    ):
+        out = audit(_LONG_TEXT, session_id="cba-test")
+        msg = inject(session_id="cba-test")
+    assert out is None
     assert state.get("audit_unavailable") is True
     assert state.get("judge_failure_count") == 1
-    msg = inject(session_id="cba-test")
-    assert msg is not None and "审计不可用" in msg["context"]
+    assert msg is None
+    assert "audit unavailable" in caplog.text
+    assert "reminder skipped" in caplog.text
 
 
-def test_judge_failure_opens_session_breaker():
+def test_judge_failure_opens_session_breaker(caplog):
     """连续失败不得每轮白等同一个坏通道：熔断期内直接复用不可用状态。"""
     mod = _load_plugin()
     calls = []
@@ -154,10 +161,14 @@ def test_judge_failure_opens_session_breaker():
 
     audit, _inject, state = _mk(mod, None, "cba-test")
     mod._judge_reply_side = _failing_judge
-    first = audit(_LONG_TEXT, session_id="cba-test")
-    second = audit(_LONG_TEXT2, session_id="cba-test")
-    assert first is not None and second is not None
-    assert "审计不可用" in first and "审计不可用" in second
+    with caplog.at_level(
+        logging.WARNING, logger="plugins.finish_guard.completion_boundary_audit"
+    ):
+        first = audit(_LONG_TEXT, session_id="cba-test")
+        second = audit(_LONG_TEXT2, session_id="cba-test")
+    assert first is None and second is None
+    assert "audit unavailable" in caplog.text
+    assert "breaker active" in caplog.text
     assert len(calls) == 1  # 第二次命中熔断，不再调用 judge
     assert state.get("judge_failure_count") == 1
 
@@ -193,7 +204,7 @@ def test_partial_shared_judge_falls_back_to_multi_judge():
     assert state.get("pending_reminder") is True
 
 
-def test_audit_internal_error_is_visible_unknown():
+def test_audit_internal_error_is_logged_without_user_rewrite(caplog):
     """An exception inside audit bookkeeping must not restore the old silent fail-open."""
     mod = _load_plugin()
     audit, _inject, state = _mk(mod, None, "cba-test")
@@ -202,9 +213,13 @@ def test_audit_internal_error_is_visible_unknown():
         raise RuntimeError("verdict parser crashed")
 
     mod._resolve_verdict = _boom
-    out = audit(_LONG_TEXT, session_id="cba-test")
-    assert out is not None and "审计不可用" in out
+    with caplog.at_level(
+        logging.WARNING, logger="plugins.finish_guard.completion_boundary_audit"
+    ):
+        out = audit(_LONG_TEXT, session_id="cba-test")
+    assert out is None
     assert state.get("audit_unavailable") is True
+    assert "internal error" in caplog.text
 
 
 def test_reminder_injection_failure_reaches_fail_closed_dispatch():
