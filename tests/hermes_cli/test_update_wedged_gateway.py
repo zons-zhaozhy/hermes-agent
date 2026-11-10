@@ -235,6 +235,12 @@ def _launchd_harness(monkeypatch, tmp_path, pid):
         or True,
     )
     monkeypatch.setattr(
+        gateway_cli, "_wait_for_api_server_port_free", lambda **kwargs: True
+    )
+    monkeypatch.setattr(
+        gateway_cli, "wait_for_launchd_gateway_supervision", lambda **kwargs: True
+    )
+    monkeypatch.setattr(
         gateway_cli.subprocess,
         "run",
         lambda *a, **k: events.append("kickstart")
@@ -434,6 +440,16 @@ class TestLaunchdRestartWedgedIntegration:
             "_wait_for_launchd_service_pid",
             lambda label, old_pid, timeout=10.0, *, domain: events.append("observe")
             or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_api_server_port_free",
+            lambda **kwargs: True,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "wait_for_launchd_gateway_supervision",
+            lambda **kwargs: True,
         )
         monkeypatch.setattr(
             gateway_cli.subprocess,

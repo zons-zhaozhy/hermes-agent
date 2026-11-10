@@ -50,6 +50,16 @@ def launchd_seam(monkeypatch, tmp_path):
         "_launchd_unsupported_marker_exists",
         lambda: False,
     )
+    monkeypatch.setattr(
+        gateway_cli,
+        "_wait_for_api_server_port_free",
+        lambda **kwargs: True,
+    )
+    monkeypatch.setattr(
+        gateway_cli,
+        "wait_for_launchd_gateway_supervision",
+        lambda **kwargs: True,
+    )
 
     def fake_run(cmd, check=False, timeout=None, **kwargs):
         calls.append(cmd)
