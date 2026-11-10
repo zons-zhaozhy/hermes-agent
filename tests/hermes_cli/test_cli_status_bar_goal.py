@@ -25,7 +25,8 @@ def _attach_goal(cli_obj, *, active: bool, turns_used: int = 3, max_turns: int =
     cli_obj._goal_manager = SimpleNamespace(
         session_id="sess-goal-test",
         is_active=lambda: active,
-        state=SimpleNamespace(turns_used=turns_used, max_turns=max_turns),
+        state=SimpleNamespace(turns_used=turns_used, max_turns=max_turns,
+                              waiting_on_session=None, waiting_on_pid=None, waiting_until=0.0),
     )
     return cli_obj
 
@@ -48,6 +49,17 @@ class TestStatusBarGoalSegment:
 
         assert snapshot["goal_active"] is False
         assert cli_obj._status_bar_goal_segment(snapshot) == ""
+
+    def test_goal_segment_shows_waiting_while_parked(self):
+        # A parked goal is still status=active; the bar must swap to the waiting glyph so an
+        # idle session waiting on a watcher is not mistaken for a stuck active loop.
+        cli_obj = _attach_goal(_make_cli(), active=True)
+        cli_obj._goal_manager.state.waiting_on_session = "proc-verify"
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["goal_waiting"] is True
+        assert cli_obj._status_bar_goal_segment(snapshot) == "⏳ goal 3/20"
 
     def test_active_goal_rendered_in_wide_status_bar(self):
         cli_obj = _attach_goal(_make_cli(), active=True, turns_used=5, max_turns=20)

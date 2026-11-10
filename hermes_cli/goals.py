@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
+from hermes_cli.goals_status import active_status_line, status_meta
 from hermes_time import safe_strftime
 
 logger = logging.getLogger(__name__)
@@ -1511,35 +1512,19 @@ class GoalManager:
         s = self._state
         if s is None or s.status == "cleared":
             return "No active goal. Set one with /goal <text>."
-        turns = f"{s.turns_used}/{s.max_turns} turns"
-        sub = (
-            f", {len(s.subgoals)} subgoal{'s' if len(s.subgoals) != 1 else ''}"
-            if s.subgoals
-            else ""
-        )
-        con = ", contract" if self.has_contract() else ""
-        gat = (
-            f", {len(s.gates)} gate{'s' if len(s.gates) != 1 else ''}"
-            if s.gates
-            else ""
-        )
-        meta = f"{turns}{sub}{con}{gat}"
+        meta = status_meta(s)
         if s.status == "active":
-            if s.waiting_on_session and _session_waiting(s.waiting_on_session):
-                return f"⏳ Goal (parked on {s.waiting_reason or f'session {s.waiting_on_session}'}, {meta}): {s.goal}"
-            if s.waiting_on_pid and _pid_alive(s.waiting_on_pid):
-                return f"⏳ Goal (parked on {s.waiting_reason or f'pid {s.waiting_on_pid}'}, {meta}): {s.goal}"
-            if s.waiting_until and time.time() < s.waiting_until:
-                remaining = int(s.waiting_until - time.time())
-                wr = s.waiting_reason or f"{remaining}s"
-                return f"⏳ Goal (parked {remaining}s — {wr}, {meta}): {s.goal}"
-            return f"⊙ Goal (active, {meta}): {s.goal}"
+            return self._active_status_line(s, meta)
         if s.status == "paused":
             extra = f" — {s.paused_reason}" if s.paused_reason else ""
             return f"⏸ Goal (paused, {meta}{extra}): {s.goal}"
         if s.status == "done":
             return f"✓ Goal done ({meta}): {s.goal}"
         return f"Goal ({s.status}, {meta}): {s.goal}"
+
+    def _active_status_line(self, s: GoalState, meta: str) -> str:
+        """Owner-process rendering: a barrier counts only while its liveness probe holds."""
+        return active_status_line(s, meta)
 
     # --- mutation -----------------------------------------------------
 

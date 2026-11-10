@@ -737,6 +737,14 @@ class CLILoopsMixin:
             if not self._pending_input.empty():
                 return
             mgr = self._get_goal_manager()
+            if mgr is not None:
+                # The gateway's judge parks the goal after the turn's frames stop arriving, and
+                # that post-turn control update never reaches this process's event pump: without
+                # this re-read the mirror keeps painting the goal active and this resume hook
+                # (which reads the mirror) never sees the barrier lift.
+                refresh = getattr(mgr, "refresh", None)
+                if refresh is not None:
+                    refresh()
             state = getattr(mgr, "state", None) if mgr is not None else None
             if state is None or state.status != "active":
                 return

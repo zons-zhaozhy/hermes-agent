@@ -232,6 +232,7 @@ class CLIStatusBarMixin:
             "focus_label": "",  # /focus badge: the reduced-output mode is never invisible.
             "git_branch": "",
             "goal_active": False,
+            "goal_waiting": False,
             "goal_turns_used": 0,
             "goal_max_turns": 0}
 
@@ -288,6 +289,10 @@ class CLIStatusBarMixin:
                 snapshot["goal_active"] = True
                 snapshot["goal_turns_used"] = int(getattr(goal_state, "turns_used", 0) or 0)
                 snapshot["goal_max_turns"] = int(getattr(goal_state, "max_turns", 0) or 0)
+                snapshot["goal_waiting"] = bool(
+                    getattr(goal_state, "waiting_on_session", None)
+                    or getattr(goal_state, "waiting_on_pid", None)
+                    or getattr(goal_state, "waiting_until", 0))
         except Exception:
             pass
 
@@ -984,12 +989,15 @@ class CLIStatusBarMixin:
 
     @staticmethod
     def _status_bar_goal_segment(snapshot: dict[str, Any]) -> str:
-        """``⊙ goal 3/20`` while a goal is active, else ``""`` (paused/done goals already
-        print their own glyph lines in the thread)."""
+        """``⊙ goal 3/20`` while a goal is active (``⏳`` while it is parked on a wait
+        barrier), else ``""`` (paused/done goals already print their own glyph lines)."""
         if not snapshot.get("goal_active"):
             return ""
         used = snapshot.get("goal_turns_used") or 0
         max_turns = snapshot.get("goal_max_turns") or 0
+        if snapshot.get("goal_waiting"):
+            return (t("cli.status_bar.goal_turns_waiting", used=used, max=max_turns)
+                    if max_turns else t("cli.status_bar.goal_waiting"))
         return t("cli.status_bar.goal_turns", used=used, max=max_turns) if max_turns else t("cli.status_bar.goal")
 
     def _get_status_bar_field_set(self) -> Optional[frozenset]:

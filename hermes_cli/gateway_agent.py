@@ -833,6 +833,12 @@ class GatewayAgent:
                 return
             params = frame.get("params") if isinstance(frame, dict) else None
             if isinstance(params, dict) and params.get("session_id") == self.session_id:
+                if params.get("type") == "session.control.update":
+                    # The goal judge parks the goal after message.complete, so its control
+                    # update sits here until the next turn starts: mark the automation mirror
+                    # stale instead of dropping the only notification the CLI ever gets.
+                    self._on_control_update(params.get("payload") or {}, None, {})
+                    continue
                 missed_start(self._state(), params)
 
     def _generation_done(self):

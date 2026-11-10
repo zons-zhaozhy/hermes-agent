@@ -96,6 +96,19 @@ class GatewayGoalManager(_Remote):
     next_continuation_prompt = _Local.next_continuation_prompt
     del _Local
 
+    def _active_status_line(self, s, meta):
+        """Mirror rendering: the parked barrier is read from the mirrored fields. This process's
+        process_registry is empty, so the owner's liveness probe would repaint a gateway-parked
+        goal as active (the dock paints ``status_line()`` in exactly that situation).
+
+        Contract:
+            Postconditions: delegates with ``remote_barriers=True``; never probes this
+                process's registry or pid table.
+        """
+        from hermes_cli.goals_status import active_status_line
+
+        return active_status_line(s, meta, remote_barriers=True)
+
     def set(self, goal, *, max_turns=None, contract=None):
         kwargs = {"max_turns": max_turns} if max_turns is not None else {}
         if contract is not None:

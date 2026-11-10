@@ -210,6 +210,22 @@ def test_other_admissions_frames_are_ignored(make_agent):
     assert deltas == ["ours"]
 
 
+def test_drain_stale_dispatches_post_turn_control_updates(make_agent):
+    """``session.control.update`` frames published after ``message.complete`` (the goal judge
+    parks the goal once the turn settles) sit in the queue until the next turn: draining must
+    mark the automation mirror stale, not drop the frame."""
+    stale = []
+    agent, _ = make_agent(
+        [frame("message.complete", {"text": "done", "outcome": "completed"})],
+        )
+    agent.control_update_callback = lambda: stale.append(True)  # set post-construction, like the CLI
+
+    agent.connection.events.put_nowait(frame("session.control.update", {"control": {}}))
+    agent._drain_stale()
+
+    assert stale == [True]
+
+
 def test_agent_print_routes_to_print_fn(make_agent):
     printed = []
     agent, _ = make_agent([frame("agent.print", {"text": "⚡ Interrupted during API call."}),

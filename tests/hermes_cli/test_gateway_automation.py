@@ -51,6 +51,19 @@ def test_goal_manager_is_the_gateways(cli):
     assert cli.cli._get_goal_manager() is mgr  # cached per session id, like main
 
 
+def test_goal_status_line_renders_a_remote_session_barrier_parked(cli):
+    """A session barrier parked by the gateway's judge must render parked in this process too:
+    the dock and ``/goal status`` call ``status_line()`` here, and this process's
+    process_registry is empty, so evaluating the barrier's liveness locally repaints the parked
+    goal as active."""
+    mgr = cli.cli._get_goal_manager()
+    mgr.set('ship it')
+    mgr.wait_on_session('proc-verify', reason='deploy verification')
+
+    assert mgr.state.waiting_on_session == 'proc-verify'
+    assert mgr.status_line() == '⏳ Goal (parked on deploy verification, 0/20 turns): ship it'
+
+
 def test_no_manager_before_the_gateway_session_is_open(cli):
     cli.cli._gateway_session_open = False
     assert cli.cli._get_goal_manager() is None and cli.conn.calls == []
