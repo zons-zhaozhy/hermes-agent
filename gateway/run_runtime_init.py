@@ -198,12 +198,34 @@ class GatewayRuntimeInitMixin:
         _launch_sessions = _launch_sessions_dir(self.config)  # resolved OUTSIDE any profile scope
         _housekeeping_chore(
             "state.db startup maintenance",
-            lambda: _for_each_served_profile(
-                self, lambda _label: _housekeeping_state_db_maintenance(_launch_sessions)))
+            lambda: self._run_per_profile_state_db_maintenance(_launch_sessions))
         # Checkpoint store pruning is a housekeeping chore (``_housekeeping_checkpoint_prune``), not a
         # constructor step: its ``git gc`` repacks the whole store (tens of seconds on a GB store) and
         # here it ran before the control socket, adapters and the code_sha stamp — so the first
         # restart of the day (the ``hermes update`` one) looked hung and failed fleet verification.
+
+    def _run_per_profile_state_db_maintenance(self, launch_sessions) -> None:
+        """One state.db maintenance pass per served profile, sharing a single WAL-generation sweep.
+
+        Every ``SessionDB()`` in the loop below runs ``refuse_deleted_wal_generation``, which on macOS
+        walks EVERY process's descriptors; on a multiplexed gateway that turned a 30-profile warmup
+        into 30 identical full-system walks, each timing out at 5s on a loaded host (30 WARNINGs and
+        30 abandoned threads per boot). ``prescanned_deleted_wal_generations`` enumerates once and
+        judges every path against that one instant, then releases the exemption as soon as the loop
+        ends — so this is a startup-shape optimisation, not a standing bypass.
+        """
+        from gateway.run import _housekeeping_state_db_maintenance, _multiplex_profile_homes
+        from gateway.run_profile_reconcile import _for_each_served_profile
+        from hermes_constants import get_hermes_home
+        from hermes_state_dbfile import prescanned_deleted_wal_generations
+
+        if getattr(self.config, "multiplex_profiles", False):
+            homes = [Path(home) for _name, home in _multiplex_profile_homes(self.config)]
+        else:
+            homes = [Path(get_hermes_home())]
+        with prescanned_deleted_wal_generations(Path(home) / "state.db" for home in homes):
+            _for_each_served_profile(
+                self, lambda _label: _housekeeping_state_db_maintenance(launch_sessions))
 
     def _init_registries_and_clocks(self) -> None:
         """Pairing stores, hook registry, voice modes, background-task set, liveness and idle clocks."""

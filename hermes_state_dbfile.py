@@ -311,26 +311,34 @@ def _iter_darwin_fd_targets():
             yield pid, fd, target, identity
 
 
-def _iter_darwin_sidecar_holders(db_path) -> list[tuple[int, str]]:
-    """The macOS leg of :func:`iter_deleted_sqlite_sidecar_holders`: libproc enumeration matched
-    against the watched sidecar paths, judged by identity.
+def _iter_darwin_sidecar_holders_many(db_paths) -> dict[str, list[tuple[int, str]]]:
+    """One libproc enumeration judged against every path in *db_paths*.
 
-    The watched side is resolved with ``os.path.realpath`` because libproc reports the kernel's
-    path for the vnode, while ``os.path.abspath`` does not resolve symlinks -- a textual compare
-    of the two silently misses every sidecar under a symlinked prefix (on macOS ``/var`` itself)."""
-    base = os.path.realpath(os.path.abspath(os.fspath(db_path)))
-    # APFS/HFS+ are case-insensitive by default and libproc reports the pathname as the opener
-    # spelled it; ``os.path.normcase`` is the identity on darwin, so fold case here.
-    watched = {path.casefold(): path for path in (base + "-wal", base + "-shm")}
-    holders: list[tuple[int, str]] = []
+    A multiplexed gateway warms one store per served profile at startup and each single-path call
+    walks EVERY process's descriptors: 30 profiles meant 30 identical full-system walks, each of
+    which blew the 5s budget on a loaded host (30 WARNINGs plus 30 abandoned threads per boot, and
+    up to four minutes of the boot spent in them). The enumeration is target-independent -- it
+    yields ``(pid, fd, path, identity)`` for all vnode descriptors and only the match differs -- so
+    one walk answers every path.
+
+    Returns an entry for every requested path (empty when nothing holds a retired generation)."""
+    watched: dict[str, tuple[str, str]] = {}
+    for db_path in db_paths:
+        base = os.path.realpath(os.path.abspath(os.fspath(db_path)))
+        # APFS/HFS+ are case-insensitive by default and libproc reports the pathname as the opener
+        # spelled it; ``os.path.normcase`` is the identity on darwin, so fold case here.
+        for suffix in ("-wal", "-shm"):
+            literal = base + suffix
+            watched[literal.casefold()] = (str(db_path), literal)
+    holders: dict[str, list[tuple[int, str]]] = {str(p): [] for p in db_paths}
     errors: list[BaseException] = []
 
     def _scan() -> None:
         try:
             for pid, _fd, target, identity in _iter_darwin_fd_targets():
-                literal = watched.get(target.casefold())
-                if literal is not None and _identity_is_truly_unlinked(identity, literal):
-                    holders.append((pid, target))
+                hit = watched.get(target.casefold())
+                if hit is not None and _identity_is_truly_unlinked(identity, hit[1]):
+                    holders[hit[0]].append((pid, target))
         except BaseException as exc:
             errors.append(exc)
 
@@ -342,14 +350,55 @@ def _iter_darwin_sidecar_holders(db_path) -> list[tuple[int, str]]:
     worker.join(_DARWIN_FD_SCAN_TIMEOUT_SECONDS)
     if worker.is_alive():
         logger.warning(
-            "deleted-WAL holder scan timed out after %.1fs for %s; continuing fail-open",
+            "deleted-WAL holder scan timed out after %.1fs for %d path(s) (%s); continuing fail-open",
             _DARWIN_FD_SCAN_TIMEOUT_SECONDS,
-            db_path,
+            len({db for db, _ in watched.values()}),
+            ", ".join(sorted({db for db, _ in watched.values()})[:3]),
         )
-        return []
+        return {str(p): [] for p in db_paths}
     if errors:
         raise errors[0]
     return holders
+
+
+def _iter_darwin_sidecar_holders(db_path) -> list[tuple[int, str]]:
+    """The macOS leg of :func:`iter_deleted_sqlite_sidecar_holders`: libproc enumeration matched
+    against the watched sidecar paths, judged by identity.
+
+    The watched side is resolved with ``os.path.realpath`` because libproc reports the kernel's
+    path for the vnode, while ``os.path.abspath`` does not resolve symlinks -- a textual compare
+    of the two silently misses every sidecar under a symlinked prefix (on macOS ``/var`` itself)."""
+    return _iter_darwin_sidecar_holders_many([db_path])[str(os.fspath(db_path))]
+
+
+def iter_deleted_sqlite_sidecar_holders_many(db_paths) -> dict[str, list[tuple[int, str]]]:
+    """One enumeration, one verdict per path -- the batched form of
+    :func:`iter_deleted_sqlite_sidecar_holders`.
+
+    Same judgement and the same freshness (one instant shared by every path, which is what a
+    startup warmup wants), at the cost of one descriptor walk instead of one per path. Windows has
+    no retired generation to find -- it cannot unlink a held sidecar -- so every path is clean."""
+    paths = [os.fspath(p) for p in db_paths]
+    if not paths or sys.platform == "win32":
+        return {p: [] for p in paths}
+    if sys.platform == "darwin":
+        return _iter_darwin_sidecar_holders_many(paths)
+    if sys.platform.startswith("linux"):
+        watched = {p: _watched_sqlite_sidecar_paths(p) for p in paths}
+        holders: dict[str, list[tuple[int, str]]] = {p: [] for p in paths}
+        try:
+            for pid, target, fd_path in _iter_proc_fd_targets():
+                if " (deleted)" not in target:
+                    continue  # cheap pre-filter: a retired generation always carries the suffix
+                canonical = canonical_sqlite_path(target)
+                for db_path, watched_paths in watched.items():
+                    literal = watched_paths.get(canonical)
+                    if literal is not None and _fd_is_truly_unlinked(fd_path, literal):
+                        holders[db_path].append((pid, target))
+        except Exception as exc:
+            logger.debug("batched deleted-WAL holder scan failed: %s", exc)
+        return holders
+    return {p: [] for p in paths}
 
 
 def iter_deleted_sqlite_sidecar_holders(db_path) -> list[tuple[int, str]]:
@@ -387,10 +436,48 @@ def refuse_deleted_wal_generation(db_path) -> None:
     *before* ``sqlite3.connect`` so a second opener cannot mint a replacement WAL inode."""
     from hermes_state import DeletedWalGenerationError
     from hermes_state_errors import _DELETED_WAL_GENERATION_MSG
+    path = os.fspath(db_path)
+    if path in _PRESCANNED_PATHS:
+        # A warmup burst already judged this exact path against one enumeration seconds ago
+        # (:func:`prescanned_deleted_wal_generations`); re-walking every process per profile is the
+        # cost that burst exists to avoid.
+        return
     if not iter_deleted_sqlite_sidecar_holders(db_path):
         return
     logger.error(_DELETED_WAL_GENERATION_MSG)
     raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
+
+
+# Paths whose deleted-WAL generation was verified by a batch enumeration the caller is about to
+# open in sequence. Scoped by the context manager below, so it is never a standing bypass: the set
+# is empty outside that block, and every other open (turns, cron, CLI, a second gateway) rescans.
+_PRESCANNED_PATHS: set[str] = set()
+
+
+@contextlib.contextmanager
+def prescanned_deleted_wal_generations(db_paths):
+    """Verify *db_paths* with ONE enumeration and let those opens skip their own scan.
+
+    Built for the multiplexed startup warmup, which opens one store per served profile back to
+    back: the batch is a single instant of truth shared by every path (not a cache over time), the
+    guard still raises for any path that has a holder, and the exemption ends with the block — the
+    next open of the same path scans again."""
+    from hermes_state import DeletedWalGenerationError
+    from hermes_state_errors import _DELETED_WAL_GENERATION_MSG
+    paths = [os.fspath(p) for p in db_paths]
+    if not paths:
+        yield
+        return
+    holders = iter_deleted_sqlite_sidecar_holders_many(paths)
+    if any(holders.values()):
+        logger.error(_DELETED_WAL_GENERATION_MSG)
+        raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
+    added = [p for p in paths if p not in _PRESCANNED_PATHS]
+    _PRESCANNED_PATHS.update(added)
+    try:
+        yield
+    finally:
+        _PRESCANNED_PATHS.difference_update(added)
 
 
 # ── Retired WAL generation capture ──────────────────────────────────────────────────────────────

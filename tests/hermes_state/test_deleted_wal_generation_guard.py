@@ -563,3 +563,88 @@ def test_iter_darwin_judges_by_identity_not_by_pathname(tmp_path):
         assert any(target == os.path.realpath(str(sidecar)) for _pid, target in holders)
     finally:
         held.close()
+
+
+def test_batch_holder_scan_matches_single_path_verdicts(tmp_path, force_wal):
+    """One enumeration must answer every path exactly as the per-path calls do.
+
+    A multiplexed gateway warms one store per served profile, and each single-path scan walks all
+    of the system's descriptors; the batched form exists so 30 profiles cost one walk, not 30. It
+    is only allowed to be faster, never more permissive: the path that lost its WAL generation must
+    still report its holder, and the untouched one must stay clean."""
+    held = tmp_path / "held" / "state.db"
+    held.parent.mkdir()
+    clean = tmp_path / "clean" / "state.db"
+    clean.parent.mkdir()
+    writer = make_db(held, "s-held", "x")
+    require_wal(writer)
+    other = make_db(clean, "s-clean", "y")
+    require_wal(other)
+    try:
+        lose_sidecars(held, rename=False)
+        batch = hermes_state_dbfile.iter_deleted_sqlite_sidecar_holders_many([held, clean])
+        assert batch[str(held)], "被删掉 WAL 的库必须报出持有者"
+        assert not batch[str(clean)], "没被动过的库不能误报"
+        assert set(batch[str(held)]) == set(iter_deleted_sqlite_sidecar_holders(held))
+        assert set(batch[str(clean)]) == set(iter_deleted_sqlite_sidecar_holders(clean))
+    finally:
+        writer.close()
+        other.close()
+
+
+def test_prescan_block_enumerates_once_and_releases_the_exemption(tmp_path, force_wal, monkeypatch):
+    """A warmup burst scans once for N paths, then the exemption is gone.
+
+    Rule source: the guard must stay fail-closed per open — the batch only covers the single
+    instant it measured, for the opens that immediately follow. Inside the block the per-open scan
+    must not run again (that is the cost being removed), outside it must run again (otherwise this
+    is a standing bypass, which the guard exists to prevent)."""
+    first = tmp_path / "a" / "state.db"
+    second = tmp_path / "b" / "state.db"
+    for path in (first, second):
+        path.parent.mkdir()
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE t (x)")
+        conn.commit()
+        conn.close()
+
+    batch_calls: list[list[str]] = []
+    single_calls: list[str] = []
+    real_batch = hermes_state_dbfile.iter_deleted_sqlite_sidecar_holders_many
+    real_single = hermes_state_dbfile.iter_deleted_sqlite_sidecar_holders
+
+    def spy_batch(paths):
+        batch_calls.append([str(p) for p in paths])
+        return real_batch(paths)
+
+    def spy_single(db_path):
+        single_calls.append(str(db_path))
+        return real_single(db_path)
+
+    monkeypatch.setattr(hermes_state_dbfile, "iter_deleted_sqlite_sidecar_holders_many", spy_batch)
+    monkeypatch.setattr(hermes_state_dbfile, "iter_deleted_sqlite_sidecar_holders", spy_single)
+
+    with hermes_state_dbfile.prescanned_deleted_wal_generations([first, second]):
+        hermes_state_dbfile.refuse_deleted_wal_generation(first)
+        hermes_state_dbfile.refuse_deleted_wal_generation(second)
+        assert len(batch_calls) == 1, "一个预热批次只能枚举一次"
+        assert single_calls == [], "块内每个 open 都不能再全系统扫一遍"
+
+    hermes_state_dbfile.refuse_deleted_wal_generation(first)
+    assert single_calls == [str(first)], "块外必须回到逐库扫描（不能变成常驻豁免）"
+    assert not hermes_state_dbfile._PRESCANNED_PATHS
+
+
+def test_prescan_refuses_a_held_path_before_any_open(tmp_path, force_wal):
+    """持有者的库在批量检查里就该拦下，而且不能留下任何豁免。"""
+    writer = make_db(tmp_path / "state.db", "s", "held")
+    path = writer.db_path
+    require_wal(writer)
+    try:
+        lose_sidecars(path, rename=False)
+        with pytest.raises(DeletedWalGenerationError, match="deleted state.db-wal"):
+            with hermes_state_dbfile.prescanned_deleted_wal_generations([path]):
+                pass
+        assert not hermes_state_dbfile._PRESCANNED_PATHS
+    finally:
+        writer.close()
