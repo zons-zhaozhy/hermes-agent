@@ -105,7 +105,7 @@ def test_reply_side_single_call_carries_seven_keys(monkeypatch):
 
 def test_declare_act_reads_shared_violation(monkeypatch):
     """declare-act 的「宣告未动手」判定来自共享回复侧判定的 violation 键。"""
-    mod = _load("declare_act_guard", "plugins/declare_act_guard/__init__.py")
+    mod = _load("declare_act_guard", "plugins/discipline/declare_act_guard.py")
     _stub_shared("reply_certainty_checker", violation=True)
     monkeypatch.setattr("plugins._llm_judge.llm_judge_bool", _no_judge)
 

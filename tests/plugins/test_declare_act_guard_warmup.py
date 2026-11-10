@@ -57,7 +57,7 @@ def guard(monkeypatch):
                      '"jargon_coined": []}')
 
     monkeypatch.setattr("agent.auxiliary_client.call_llm", counting)
-    module = _load("declare_act_guard_under_test", "plugins/declare_act_guard/__init__.py")
+    module = _load("declare_act_guard_under_test", "plugins/discipline/declare_act_guard.py")
     return module, calls, judge
 
 

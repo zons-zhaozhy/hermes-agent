@@ -1,4 +1,4 @@
-"""declare_act_guard — 宣告-动手配对守卫。
+"""discipline.declare_act_guard — 宣告-动手配对守卫。
 
 上一条 assistant 回复宣告了行动意图（「我建议实施/我准备改/接下来就做/
 等我确认后动手」类），且该回复本身没有伴随任何 tool 调用、也不含合法
@@ -27,7 +27,7 @@ import sys
 from importlib import import_module as _import_module
 from typing import Any, Dict, Optional
 
-logger = logging.getLogger("hermes.plugins.declare_act_guard")
+logger = logging.getLogger("hermes.plugins.discipline.declare_act_guard")
 
 _NAMESPACE = "declare_act_guard"
 _MAX_INJECTS = 5          # 每会话注入封顶（防死循环噪音）
@@ -221,5 +221,5 @@ def register(ctx: Any) -> None:
     ctx.register_hook("pre_llm_call", _on_pre_llm_call)
     ctx.register_hook("post_llm_call", _on_post_llm_call)
     logger.info(
-        "declare_act_guard 已注册——宣告-动手配对语义守卫(pre_llm_call + post_llm_call 判定预热)"
+        "discipline.declare_act_guard 已注册——宣告-动手配对语义守卫"
     )
