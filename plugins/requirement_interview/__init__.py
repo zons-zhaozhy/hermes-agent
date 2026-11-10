@@ -38,7 +38,7 @@
 
 子代理/批处理不注入：它们没有 clarify 通道，规则反而诱导空转提问。
 
-与 failure_preflight 互补：那个管风险预演，这个管需求歧义。
+与 discipline.failure_preflight 互补：那个管风险预演，这个管需求歧义。
 """
 
 import logging

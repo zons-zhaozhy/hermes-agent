@@ -1,6 +1,6 @@
 """
-失败预演护栏插件（failure_preflight）
-====================================
+discipline.failure_preflight —— L3 动手前失败预演纪律
+====================================================
 
 思想源：查理·芒格逆向思维法——先写「怎样一定会失败」，再避开最危险的几步。
 出处：docs/research/2026-08-30-thinking-systems-hermes-insights.md A-1 条。
@@ -17,6 +17,7 @@
 
 import logging
 import re
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +54,9 @@ def _is_action_task(user_message: str) -> bool:
     return bool(_ACTION_RE.match(msg))
 
 
-def _on_pre_llm_call(**kwargs) -> dict:
+def _on_pre_llm_call(**kwargs: object) -> dict[str, str]:
     """pre_llm_call 回调：动手类任务注入失败说明书要求。"""
-    user_message = kwargs.get("user_message", "")
+    user_message = str(kwargs.get("user_message", "") or "")
     if not _is_action_task(user_message):
         return {}
     logger.debug(
@@ -65,7 +66,7 @@ def _on_pre_llm_call(**kwargs) -> dict:
     return {"context": _PREFLIGHT_RULE}
 
 
-def register(ctx):
-    """插件入口。"""
+def register(ctx: Any) -> None:
+    """注册失败预演 pre-LLM hook。"""
     ctx.register_hook("pre_llm_call", _on_pre_llm_call)
-    logger.info("failure_preflight 插件已注册——失败预演护栏就绪")
+    logger.info("discipline.failure_preflight registered——失败预演护栏就绪")

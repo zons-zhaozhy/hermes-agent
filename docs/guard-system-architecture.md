@@ -10,7 +10,7 @@
 |---|---|---|---|
 | L0 | `guards.tool_blacklist` | 必败调用机械黑名单——拦的不是「错」，而是「注定失败」 | — |
 | L2 | `guards` | 写入质量护栏：写前功课 + 写动作合规 | pre_write / four_axis / duplicate_check / source_write / coding_standards / diff_debt / casebook_gate / batch_write / scope_gate / groundbreaking_gate / slow_search / db_target_audit / plain_vocab / experience_gate（2026-10-26 实测共 17 子模块） |
-| L3 | `discipline` | 执行纪律护栏：怎么跑命令、怎么面对错误 | no_guessing / db_safety / error_discipline / curl_safety / log_first / tool_safety / no_bypass / no_pushback / blame_shield / test_discipline + 注入通道 rule_reinjection / section_reinjection / workflow_router（2026-11-06 实测共 13 子模块） |
+| L3 | `discipline` | 执行纪律护栏：怎么跑命令、怎么面对错误 | no_guessing / db_safety / error_discipline / curl_safety / log_first / tool_safety / no_bypass / no_pushback / blame_shield / failure_preflight / test_discipline + 注入通道 rule_reinjection / section_reinjection / workflow_router（2026-11-10 实测共 14 子模块） |
 | 独立 | scientific-programming-guard；terminology-guard；enterprise-quality-gate；requirement-interview | 专项规范（写码预算、用词一致、企业级对表、需求歧义） | — |
 
 裁定原则：同一层同性质才收拢进同一套件；跨层不合并。子模块 register 逐个调用，
@@ -53,6 +53,21 @@ Gate Plane 证据面覆盖 enforcement 与 observer hooks。observer 回调失�
    - `rule_reinjection`：`.hermes-rules.md` 摘要，首注 + 内容变更即注 + 每 10 轮补注。
    - `section_reinjection`：段库版本指纹变更即注 + 每 10 轮补注 + **首轮不注入**
      （起点已由 system prompt 段承载同一内容，首轮再注入=纯重复）。
+
+## 二之一、输出面纪律（2026-11-10）
+
+事故实录：状态问答的第一版正常人话答案被 `finish_guard` 以「请示式/根治/待拍板」
+命中而隐藏续跑；审计与哨兵再把 UNKNOWN / 门禁缺席追加到最终回复，形成第二层
+官话污染。裁定：用户答案正文属于交付内容，不是插件公告板。
+
+- `transform_llm_output` 只允许语义改写（脱敏、过滤、明确要求的格式转换），不允许
+  追加守卫纪律、健康状态或审查提示；策略诊断写日志。
+- 影响下一轮 agent 行为的提醒走 request-scoped `pre_llm_call`；不能执行时走
+  `pre_tool_call(block)` / `pre_verify(continue)`，不得伪造用户可见文本。
+- `pre_verify` 续跑必须挂在执行欠账上：有改动/有本会话 active TODO 才触发；
+  零编辑、无 TODO 的状态问答与解释直接放行。
+- 审计 judge 不可用是插件健康诊断：记录 WARNING、进入会话熔断，不改写答案，
+  也不向下一轮注入内部 UNKNOWN。
 
 ## 三、段预算纪律（用户裁定：只给「高频 × 可预判」的加段）
 
@@ -273,4 +288,6 @@ block_escalation 实现）。
   `finish_guard.lazy_blocker`，独立 manifest/hook surface 删除，owner 注册契约
   在位）；`completion-boundary-audit`→`finish_guard` 已完成（行为迁入
   `finish_guard.completion_boundary_audit`，独立 manifest/hook surface 删除，
-  owner 注册契约在位）。
+  owner 注册契约在位）；`failure_preflight`→`discipline` 已完成（行为迁入
+  `discipline.failure_preflight`，独立 manifest/hook surface 删除，owner
+  注册契约在位）。

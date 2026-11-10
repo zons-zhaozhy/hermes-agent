@@ -14,6 +14,7 @@ curl-safety / log-first-diagnosis / tool-safety / no-bypass / no-pushback)
   no_bypass        被护栏拦截后禁换通道绕过
   no_pushback      输出推责话术拦截
   blame_shield     生成前自检注入(推责/免责/偷懒/理想化,默认注入,封闭闲聊豁免)
+  failure_preflight 动手前失败预演注入(失败说明书/断电开关/翻转护栏)
   rule_reinjection 规则常驻重注入(.hermes-rules.md 每轮权威版注入,防纪律衰减)
   test_discipline  禁裸 pytest——一律 scripts/run_tests.sh(CI 环境同步)
   section_reinjection 守卫段重注入(段库版本指纹变更即注入 + 每 10 轮补注, 让段
@@ -46,6 +47,7 @@ _SUB_GUARD_NAMES = (
     "no_bypass",
     "no_pushback",
     "blame_shield",
+    "failure_preflight",
     "rule_reinjection",
     "test_discipline",
     "section_reinjection",
