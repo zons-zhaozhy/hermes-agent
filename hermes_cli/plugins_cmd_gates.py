@@ -37,18 +37,18 @@ def cmd_gates(session_id: str | None = None, *, json_output: bool = False) -> No
         for suite in suites
         for guard in suite.get("inactive_advisory", ())
     ]
-    via_config = sorted(
+    via_config = sorted({
         guard.get("name", "unknown")
         for guard in inactive
         if "disabled via config" in guard.get("reason", "")
-    )
-    not_enabled = sorted(
+    })
+    not_enabled = sorted({
         guard.get("name", "unknown")
         for guard in inactive
         if guard.get("name", "unknown") not in via_config
-    )
+    })
     console.print(
-        f"Guards inactive: {len(inactive)} "
+        f"Guards inactive: {len(inactive)} rows "
         f"({len(via_config)} via config, {len(not_enabled)} not enabled)"
     )
     console.print(f"  via config: {', '.join(via_config) or 'none'}")
