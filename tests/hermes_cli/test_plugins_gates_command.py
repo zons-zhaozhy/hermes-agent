@@ -34,6 +34,11 @@ REPORT = {
                 "reason": "not enabled",
                 "hooks": ["pre_llm_call"],
                 "policy": "advisory",
+            }, {
+                "name": "reply-certainty-checker",
+                "reason": "disabled via config",
+                "hooks": ["pre_llm_call"],
+                "policy": "advisory",
             }],
             "runtime_unknown": 1,
         },
@@ -81,6 +86,9 @@ def test_gates_text_report_names_missing_guards_and_unknown_events(monkeypatch, 
 
     assert calls == ["session-1"]
     assert "Gate suites: 0/5 healthy" in output
+    assert "Guards inactive: 2 (1 via config, 1 not enabled)" in output
+    assert "via config: reply-certainty-checker" in output
+    assert "not enabled: style-guard" in output
     assert "dead-guard" in output and "not enabled" in output
     assert "advisory disabled style-guard: not enabled" in output
     assert "manual unknown fork-guard: required; no fresh audit evidence" in output
