@@ -78,6 +78,72 @@ def test_plugin_maps_internal_display_kind_to_gate_input(tmp_path: Path) -> None
     assert gate.user_intent == "modify"
 
 
+def test_goal_continuation_prompt_preserves_authorization(tmp_path: Path) -> None:
+    """A goal continuation is machinery input, not a human read-only turn.
+
+    The classic CLI injects ``[Continuing toward your standing goal]`` as a raw
+    user message (no display kind), so without the machine marker it re-ran the
+    intent classifier, read the synthetic text as ambiguous, and revoked the
+    authorization granted by the user's original goal message.
+    """
+    import plugins.read_think_gate as plugin
+
+    gate = _strict_gate(tmp_path, "goal-continuation")
+    gate.reset_for_turn("请修复解析器并运行测试")
+    sid = gate._session_id
+    plugin._GATES[sid] = gate
+    try:
+        plugin.pre_llm_call(
+            user_message=(
+                "[Continuing toward your standing goal]\n"
+                "Goal: 按 /tmp/goal.md 持续自主推进。\n\n"
+                "Continue working toward this goal. Take the next concrete step."
+            ),
+            session_id=sid,
+            platform="cli",
+        )
+    finally:
+        plugin._GATES.pop(sid, None)
+
+    assert gate.user_intent == "modify"
+    assert gate._modification_authorized is True
+
+
+def test_loop_wakeup_prompt_preserves_authorization(tmp_path: Path) -> None:
+    """A /loop wakeup is machinery input too; each tick must not revoke the task."""
+    import plugins.read_think_gate as plugin
+
+    gate = _strict_gate(tmp_path, "loop-wakeup")
+    gate.reset_for_turn("请修复解析器并运行测试")
+    sid = gate._session_id
+    plugin._GATES[sid] = gate
+    try:
+        plugin.pre_llm_call(
+            user_message=(
+                "[/loop wakeup #3 (every 10m)]\n"
+                "Recurring task: 推进项目\n\n"
+                "This is an automatic wakeup from the /loop the user set."
+            ),
+            session_id=sid,
+            platform="cli",
+        )
+    finally:
+        plugin._GATES.pop(sid, None)
+
+    assert gate.user_intent == "modify"
+    assert gate._modification_authorized is True
+
+
+def test_fallback_reads_continuous_autonomous_push_as_modify() -> None:
+    """「持续自主推进」「应该自主决策」are imperatives, not interjections."""
+    from plugins.read_think_gate_host import _fallback_detect_intent
+
+    assert (
+        _fallback_detect_intent("按 /tmp/goal.md 持续自主推进。") == "modify"
+    )
+    assert _fallback_detect_intent("你做 goal 模式应该自主决策") == "modify"
+
+
 def test_operational_feedback_keeps_task_authorization(tmp_path: Path) -> None:
     gate = _strict_gate(tmp_path, "feedback")
     gate.reset_for_turn("请修复解析器并运行测试")

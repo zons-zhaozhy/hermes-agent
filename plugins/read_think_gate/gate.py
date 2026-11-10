@@ -312,6 +312,10 @@ _MODIFY_TERMS = (
     "实现", "增加", "新增", "删除", "移除", "重构", "创建", "新建",
     "补上", "补测试", "更新", "替换", "重写", "生成", "保存到", "导出",
     "写到", "写入", "输出到", "整理成",
+    # 「按 X 持续自主推进」「应该自主决策」are imperatives; without these the
+    # fallback saw an interjection and the turn stopped to ask for permission.
+    # ``_is_interrogative`` still keeps 「怎么推进？」 out of the grant path.
+    "推进", "自主决策", "自主推进",
     "fix ", "modify", "implement", "add ", "remove ", "delete ",
     "refactor", "create ", "update ", "replace ", "rewrite", "write ",
     "generate ", "save ", "export ",

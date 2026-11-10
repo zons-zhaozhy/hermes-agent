@@ -4,11 +4,12 @@ Blocks write_file/patch/execute_code(write) if the target file has not been
 read (read_file/search_files) earlier in the same session (the read-set is
 session-persistent, not per-turn).
 
-When ``read_think_gate`` has published a verdict for this turn, writes also
-require ``intent=modify`` and a completed investigation. This is a second
-line of defense against direct dispatcher paths that skip ``pre_tool_batch``.
-An absent published verdict preserves the standalone read-before-write guard;
-an active but incomplete/ambiguous verdict fails closed.
+When ``read_think_gate`` has published a verdict for this turn, an explicit
+``read_only`` verdict refuses the write; a ``modify`` or ``ambiguous`` verdict
+requires a completed investigation. This is a second line of defense against
+direct dispatcher paths that skip ``pre_tool_batch``. An absent published
+verdict preserves the standalone read-before-write guard; an active verdict
+without investigation evidence fails closed on the investigation contract.
 
 ACTIVATION: ON by default. Set PRE_WRITE_GUARD_DISABLE=1 to turn off.
 
@@ -155,25 +156,25 @@ def _read_think_block(sid: str) -> Optional[dict[str, Any]]:
     if not state.get("active"):
         return None
     intent = str(state.get("intent") or "ambiguous")
-    if intent != "modify" or not state.get("modification_authorized"):
-        if intent == "read_only":
-            reason = "用户请求是只读的（询问、分析、审查或诊断），没有授权修改。"
-        else:
-            reason = "用户修改意图不明确；先澄清，用户明确授权前不能写。"
+    if intent == "read_only":
         return {
             "action": "block",
             "message": (
-                f"[PreWriteGuard — 用户意图门禁] 写入被阻止。\n"
-                f"  {reason}\n"
+                "[PreWriteGuard — 用户意图门禁] 写入被阻止。\n"
+                "  用户请求是只读的（询问、分析、审查或诊断），没有授权修改。\n"
                 "  只有用户消息及其明确确认可以授权修改；继续回答或调查即可。"
             ),
         }
+    # An ambiguous verdict is NOT a refusal: ReadThinkGate runs the
+    # investigation contract for it (see _fallback_detect_intent and the intent
+    # corpus: "both let the write proceed through the investigation contract").
+    # Refusing here turned an unavailable classifier into a user-authorization
+    # wait, which deadlocked goal/loop turns until the human retyped.
     if not state.get("investigation_complete"):
         return {
             "action": "block",
             "message": (
-                "[PreWriteGuard — 调查门禁] 用户已授权修改，但本 turn 的"
-                "全面调查尚未完成。\n"
+                "[PreWriteGuard — 调查门禁] 本 turn 的全面调查尚未完成。\n"
                 "  必须先检查目标现状、调用方/相关实现、测试与配置、"
                 "必要的历史意图，以及验收和验证方案。\n"
                 "  新建文件也不能跳过这次调查。"
