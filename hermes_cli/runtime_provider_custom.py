@@ -12,6 +12,7 @@ import os
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
+from hermes_cli.runtime_provider_missing_key import NO_KEY_PLACEHOLDER
 from agent.custom_entry_pool import custom_entry_for_endpoint, entry_declares_credential, entry_scoped_pool
 from agent.secret_scope import get_secret_str
 from utils import base_url_hostname
@@ -605,7 +606,7 @@ def _try_resolve_from_custom_pool(
                 # loopback endpoint with no usable secret (the config-based custom_providers fallback a few
                 # hundred lines below, and the "actual" provider's local-offline exemption further down) --
                 # this pool path was the one gap (issue #86864).
-                pool_api_key = "no-key-required"
+                pool_api_key = NO_KEY_PLACEHOLDER
             return rp._runtime(provider_label, api_mode_override or rp._detect_api_mode_for_url(base_url) or "chat_completions",
                                base_url, pool_api_key, source=f"pool:{pool_key}", credential_pool=pool)
         except Exception:
@@ -809,6 +810,16 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     result = _custom_runtime(rp, base_url, api_key, custom_provider.get("api_mode"),
                              source=f"custom_provider:{custom_provider.get('name', requested_provider)}",
                              requested_provider=requested_provider)
+    name = str(custom_provider.get("name") or requested_provider or "custom")
+    from agent.model_metadata import is_local_endpoint
+    if result.get("api_key") == NO_KEY_PLACEHOLDER and not is_local_endpoint(base_url):
+        raise rp.AuthError(
+            f"named custom provider '{name}' has no selectable API key for {base_url}; its credential "
+            f"pool may be cooling down after a rate limit. Check `hermes auth list {name}` or configure "
+            f"providers.{name}.api_key/key_env/key_cmd. Placeholder authentication was not sent remotely.",
+            provider=name,
+            code="missing_api_key",
+        )
     _apply_custom_provider_extras(custom_provider, target_model, result)
     # OpenCode-family custom providers (opencode-go/zen names, or opencode.ai hosts) serve models
     # on different API surfaces — a static api_mode 503s for /v1/responses-only models. Re-derive
