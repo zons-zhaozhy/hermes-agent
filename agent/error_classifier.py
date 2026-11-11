@@ -143,6 +143,7 @@ _ACCOUNT_WALL_PATTERNS = _BILLING_PATTERNS + _QUOTA_WINDOW_PATTERNS + (
 _WALL_WORDS = _ACCOUNT_WALL_PATTERNS + ("quota", "billing", "free tier", "free-tier")
 _RESOURCE_EXHAUSTED_PATTERNS = ("resource exhausted", "resource_exhausted", "resource-exhausted", "resourceexhausted")
 _403_404_WALL_PATTERNS = _ACCOUNT_WALL_PATTERNS + _RESOURCE_EXHAUSTED_PATTERNS
+_ZAI_TRANSIENT_429_COOLDOWN_SECONDS = 60.0
 
 # Not proof of exhaustion: Anthropic returns the same "out of extra usage" body
 # for a content-filter rejection (#82154). Verdict stays ``billing`` but is
@@ -978,6 +979,16 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     # Deterministic for this context: another provider would receive the same connector result.
     if c.code == "data_policy_denied":
         return _v(_R.data_policy_denied, retryable=False, should_fallback=False)
+    # Z.AI Coding's 1302 asks for a brief request-frequency slowdown and carries no reset
+    # timestamp. Without an explicit hint the pool applies its generic multi-entry 429 TTL
+    # (one hour), so concurrent auxiliary calls can bench every key and block the main route.
+    if status == 429 and c.code == "1302":
+        from agent.retry_utils import is_zai_coding_route
+        if is_zai_coding_route(base_url=c.base_url, model=c.model):
+            return _v(
+                _R.rate_limit, **_ROTATE_FALLBACK,
+                error_context={"reset_at": time.time() + _ZAI_TRANSIENT_429_COOLDOWN_SECONDS},
+            )
     welcome = _nous_welcome_tier(c)
     if welcome is not None:
         return welcome

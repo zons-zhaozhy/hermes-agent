@@ -3591,9 +3591,9 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
 
     def _rotate(fallback_status: int) -> bool:
         # Sized as the main loop's recover_with_credential_pool sizes it: real status, pool failure reason, model.
-        error_context: dict[str, Any] = {"message": str(exc)}
+        error_context: dict[str, Any] = dict(verdict.error_context, message=str(exc))
         if status_code is not None:
-            error_context["status_code"] = status_code
+            error_context.setdefault("status_code", status_code)
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=fallback_status if status_code is None else status_code,
             error_context=error_context, api_key_hint=failed_api_key or None,

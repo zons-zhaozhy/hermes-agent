@@ -5,7 +5,9 @@ ladder, like the main loop), #64144 (an unhealthy mark for absent credentials mu
 error), and #108349 (a vision fallback never lands on a text-only main model; an upstream-capacity 429
 never benches the credential pool).
 """
+import json
 import logging
+import time
 
 import pytest
 
@@ -132,3 +134,115 @@ def test_chinese_transient_rate_limit_is_not_mistaken_for_quota_exhaustion():
     )
     assert classify_api_error(exc).reason is FailoverReason.rate_limit
     assert aux_errors.fallback_label(aux_errors.Failure(exc, classify_api_error(exc))) == "rate limit"
+
+
+def test_zai_coding_1302_uses_short_transient_cooldown():
+    """Z.AI's request-frequency throttle must not bench every pool key for an hour.
+
+    ``1302`` carries no reset timestamp, so the credential pool otherwise applies
+    its generic multi-entry 429 TTL (3600s). Two concurrent auxiliary calls can
+    then exhaust both keys and block the main route even though Z.AI asked for a
+    brief slowdown. Reuse the existing transient rate-limit contract (60s).
+    """
+    exc = _Err(
+        "Error code: 429 - {'error': {'code': '1302', 'message': "
+        "'您的账户已达到速率限制，请您控制请求频率'}}",
+        429,
+    )
+    exc.body = {
+        "error": {
+            "code": "1302",
+            "message": "您的账户已达到速率限制，请您控制请求频率",
+        }
+    }
+    classified = classify_api_error(
+        exc,
+        provider="custom",
+        model="glm-5.3",
+        base_url="https://open.bigmodel.cn/api/coding/paas/v4",
+    )
+
+    assert classified.reason is FailoverReason.rate_limit
+    assert classified.should_rotate_credential is True
+    assert 0 < classified.error_context["reset_at"] - time.time() <= 60
+
+    class _StubPool:
+        def __init__(self):
+            self.rotate_calls = []
+
+        def has_credentials(self):
+            return True
+
+        def try_refresh_current(self):
+            return None
+
+        def mark_exhausted_and_rotate(self, **kwargs):
+            self.rotate_calls.append(kwargs)
+            return object()
+
+    pool = _StubPool()
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(ac, "load_pool", lambda _provider: pool)
+        monkeypatch.setattr(ac, "_evict_cached_clients", lambda _provider: None)
+        assert ac._recover_provider_pool(
+            "custom", exc, failed_api_key="sk-failed", verdict=classified,
+        ) is True
+
+    rotate = pool.rotate_calls[0]
+    assert rotate["status_code"] == 429
+    assert rotate["failure_reason"] == "rate_limit"
+    assert rotate["error_context"]["reset_at"] == classified.error_context["reset_at"]
+
+
+def test_zai_coding_1302_benches_only_one_key_for_the_short_cooldown(tmp_path, monkeypatch):
+    """The real credential pool consumes the classifier hint instead of applying its 1h 429 TTL."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "credential_pool": {
+            "custom": [
+                {
+                    "id": "zai-primary",
+                    "label": "zai-primary",
+                    "auth_type": "api_key",
+                    "priority": 0,
+                    "source": "manual",
+                    "access_token": "sk-zai-primary",
+                    "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+                },
+                {
+                    "id": "zai-backup",
+                    "label": "zai-backup",
+                    "auth_type": "api_key",
+                    "priority": 1,
+                    "source": "manual",
+                    "access_token": "sk-zai-backup",
+                    "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+                },
+            ],
+        },
+    }), encoding="utf-8")
+    exc = _Err(
+        "Error code: 429 - {'error': {'code': '1302', 'message': "
+        "'您的账户已达到速率限制，请您控制请求频率'}}",
+        429,
+    )
+    exc.body = {"error": {"code": "1302", "message": "您的账户已达到速率限制，请您控制请求频率"}}
+    verdict = aux_errors.classify_attempt(
+        exc,
+        "custom",
+        model="glm-5.3",
+        base_url="https://open.bigmodel.cn/api/coding/paas/v4",
+    )
+    monkeypatch.setattr(ac, "_evict_cached_clients", lambda _provider: None)
+
+    assert ac._recover_provider_pool(
+        "custom", exc, failed_api_key="sk-zai-primary", verdict=verdict,
+    ) is True
+
+    pool = ac.load_pool("custom")
+    failed = next(entry for entry in pool.entries() if entry.id == "zai-primary")
+    assert failed.last_status == "exhausted"
+    assert 0 < failed.last_error_reset_at - time.time() <= 60
