@@ -190,9 +190,9 @@ The judge is deliberately conservative: it marks a goal `done` only when the res
 
 ### Fail-open semantics
 
-If the judge errors (network blip, malformed response, unavailable aux client), Hermes treats the verdict as `continue` — a broken judge never wedges progress. The **turn budget** is the real backstop.
+If the judge errors (network blip, malformed response, unavailable aux client), Hermes treats the verdict as `continue` — a broken judge never wedges progress. The turn and consumption budgets are the real backstops.
 
-### Turn budget
+### Turn and consumption budgets
 
 Default is 20 continuation turns (`goals.max_turns` in `config.yaml`). When the budget is hit, Hermes auto-pauses and tells you exactly how to proceed:
 
@@ -201,6 +201,8 @@ Default is 20 continuation turns (`goals.max_turns` in `config.yaml`). When the 
 ```
 
 `/goal resume` resets the counter to zero, so you can keep going in measured chunks.
+
+Two additional consumption guardrails protect provider quotas. `goals.max_api_calls` (default 120) limits the model API calls a single goal can add since it was set or last resumed; `goals.max_concurrent` (default 2) limits how many recently active goals continue autonomously. When either limit trips, the affected goal parks with a visible reason — the newest goal parks when the concurrency cap is exceeded. A `done` or `blocked` verdict is decided first, so these limits never steal a completion. Set a guardrail to `0` in `config.yaml` to disable it.
 
 ### User messages always preempt
 
@@ -232,6 +234,13 @@ goals:
   # /goal resume. Default 20. Lower this if you want tighter loops;
   # raise it for long-running refactors.
   max_turns: 20
+
+  # Consumption guardrails. max_api_calls counts model API calls added by
+  # this goal since it was set or last resumed; max_concurrent caps how many
+  # recently active goals continue autonomously. Defaults 120 and 2; use 0
+  # to disable either guardrail.
+  max_api_calls: 120
+  max_concurrent: 2
 ```
 
 ### Choosing the judge model

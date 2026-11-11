@@ -1410,9 +1410,13 @@ When a standing goal is active, Hermes judges whether each assistant response sa
 ```yaml
 goals:
   max_turns: 20   # Max continuation turns before Hermes auto-pauses the goal (default: 20)
+  max_api_calls: 120  # Max model API calls one goal may add before auto-pause (default: 120)
+  max_concurrent: 2   # Max recently-active goals that may continue autonomously (default: 2)
 ```
 
 `max_turns` caps how many continuation turns a goal can drive before Hermes auto-pauses it and asks the user to `/goal resume`. It protects against judge false negatives (goal actually done but judge says continue) and unbounded model spend on fuzzy or unachievable goals. See [Goals](./features/goals.md) for the full feature.
+
+`max_api_calls` and `max_concurrent` are consumption guardrails for unattended loops. A goal measures the session's cumulative model API calls since it was set (or since the last `/goal resume`) and parks when that budget is reached. At most `max_concurrent` recently active goals continue autonomously; newer goals park when the cap is exceeded, so a burst of parallel standing goals cannot silently multiply provider usage. Set either key to `0` to disable that guardrail. A `done` or `blocked` verdict is always honored before these limits are checked.
 
 ### API Timeouts
 

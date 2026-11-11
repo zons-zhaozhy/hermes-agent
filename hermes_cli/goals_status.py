@@ -7,7 +7,7 @@ liveness probes belong to the barrier's owner, while a mirror trusts the mirrore
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from hermes_cli.goals import GoalState
@@ -57,3 +57,34 @@ def active_status_line(s: GoalState, meta: str, *, remote_barriers: bool = False
         wr = s.waiting_reason or f"{remaining}s"
         return f"⏳ Goal (parked {remaining}s — {wr}, {meta}): {s.goal}"
     return f"⊙ Goal (active, {meta}): {s.goal}"
+
+
+class GoalStatusMixin:
+    """Owner-side status introspection shared by goal managers."""
+
+    def is_active(self) -> bool:
+        return self._state is not None and self._state.status == "active"
+
+    def has_goal(self) -> bool:
+        return self._state is not None and self._state.status in {"active", "paused"}
+
+    def has_contract(self) -> bool:
+        return self._state is not None and self._state.has_contract()
+
+    def status_line(self) -> str:
+        s = self._state
+        if s is None or s.status == "cleared":
+            return "No active goal. Set one with /goal <text>."
+        meta = status_meta(s)
+        if s.status == "active":
+            return self._active_status_line(s, meta)
+        if s.status == "paused":
+            extra = f" — {s.paused_reason}" if s.paused_reason else ""
+            return f"⏸ Goal (paused, {meta}{extra}): {s.goal}"
+        if s.status == "done":
+            return f"✓ Goal done ({meta}): {s.goal}"
+        return f"Goal ({s.status}, {meta}): {s.goal}"
+
+    def _active_status_line(self, s: GoalState, meta: str) -> str:
+        """Owner-process rendering: a barrier counts only while its liveness probe holds."""
+        return active_status_line(s, meta)

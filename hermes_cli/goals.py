@@ -22,7 +22,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
-from hermes_cli.goals_status import active_status_line, status_meta
+from hermes_cli.goal_consumption import (
+    DEFAULT_MAX_API_CALLS_PER_GOAL,
+    DEFAULT_MAX_CONCURRENT_GOALS,
+    GoalParkingMixin,
+    _goals_int_setting,
+    _session_api_call_count,
+)
+from hermes_cli.goals_status import GoalStatusMixin
 from hermes_time import safe_strftime
 
 logger = logging.getLogger(__name__)
@@ -541,6 +548,9 @@ class GoalState:
     # Tracked separately from parse failures: a broken API key returns 401 every call and must
     # auto-pause instead of burning the budget on an unreachable judge.
     consecutive_transport_failures: int = 0  # judge API/transport errors in a row
+    # SessionDB ``api_call_count`` when budget tracking started. None means "anchor at the next
+    # evaluation" so goals persisted before the governor exists are not billed for old history.
+    api_calls_baseline: Optional[int] = None
     # User-added criteria (/subgoal). Both the judge and continuation prompts include them.
     subgoals: list[str] = field(default_factory=list)
     # Wait barrier (judge ``wait`` verdict or ``/goal wait``): parks the loop instead of re-poking the
@@ -581,10 +591,12 @@ class GoalState:
             k: float(data.get(k) or 0.0)
             for k in ("created_at", "last_turn_at", "waiting_until", "waiting_since")
         }
+        raw_baseline = data.get("api_calls_baseline")
         return cls(
             goal=data.get("goal", ""),
             status=data.get("status", "active"),
             max_turns=int(data.get("max_turns") or DEFAULT_MAX_TURNS),
+            api_calls_baseline=int(raw_baseline) if raw_baseline is not None else None,
             last_verdict=data.get("last_verdict"),
             last_reason=data.get("last_reason"),
             paused_reason=data.get("paused_reason"),
@@ -1476,7 +1488,7 @@ _JUDGE_CONFIG_HINT = (
 )
 
 
-class GoalManager:
+class GoalManager(GoalParkingMixin, GoalStatusMixin):
     """Per-session goal state + continuation decisions.
 
     The CLI and gateway each hold one per live session. ``evaluate_after_turn`` calls the judge and
@@ -1484,9 +1496,26 @@ class GoalManager:
     canonical user-role message to feed back into ``run_conversation``.
     """
 
-    def __init__(self, session_id: str, *, default_max_turns: int = DEFAULT_MAX_TURNS):
+    def __init__(
+        self,
+        session_id: str,
+        *,
+        default_max_turns: int = DEFAULT_MAX_TURNS,
+        max_api_calls: Optional[int] = None,
+        max_concurrent: Optional[int] = None,
+    ):
         self.session_id = session_id
         self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
+        self._max_api_calls = (
+            _goals_int_setting("max_api_calls", DEFAULT_MAX_API_CALLS_PER_GOAL)
+            if max_api_calls is None
+            else max(0, int(max_api_calls))
+        )
+        self._max_concurrent = (
+            _goals_int_setting("max_concurrent", DEFAULT_MAX_CONCURRENT_GOALS)
+            if max_concurrent is None
+            else max(0, int(max_concurrent))
+        )
         self._state: Optional[GoalState] = load_goal(session_id)
 
     def refresh(self) -> None:
@@ -1498,33 +1527,6 @@ class GoalManager:
     @property
     def state(self) -> Optional[GoalState]:
         return self._state
-
-    def is_active(self) -> bool:
-        return self._state is not None and self._state.status == "active"
-
-    def has_goal(self) -> bool:
-        return self._state is not None and self._state.status in {"active", "paused"}
-
-    def has_contract(self) -> bool:
-        return self._state is not None and self._state.has_contract()
-
-    def status_line(self) -> str:
-        s = self._state
-        if s is None or s.status == "cleared":
-            return "No active goal. Set one with /goal <text>."
-        meta = status_meta(s)
-        if s.status == "active":
-            return self._active_status_line(s, meta)
-        if s.status == "paused":
-            extra = f" — {s.paused_reason}" if s.paused_reason else ""
-            return f"⏸ Goal (paused, {meta}{extra}): {s.goal}"
-        if s.status == "done":
-            return f"✓ Goal done ({meta}): {s.goal}"
-        return f"Goal ({s.status}, {meta}): {s.goal}"
-
-    def _active_status_line(self, s: GoalState, meta: str) -> str:
-        """Owner-process rendering: a barrier counts only while its liveness probe holds."""
-        return active_status_line(s, meta)
 
     # --- mutation -----------------------------------------------------
 
@@ -1541,17 +1543,6 @@ class GoalManager:
         if self._state is None or self._state.status != "active":
             raise RuntimeError("no active goal to park")
         return self._state
-
-    def _pause_state(self, reason: str) -> None:
-        self._state.status = "paused"
-        self._state.paused_reason = reason
-        self._save()
-
-    def _pause_decision(
-        self, paused_reason: str, verdict: str, reason: str, message: str
-    ) -> dict[str, Any]:
-        self._pause_state(paused_reason)
-        return _decision("paused", False, None, verdict, reason, message)
 
     def set(
         self,
@@ -1570,6 +1561,7 @@ class GoalManager:
             created_at=time.time(),
             last_turn_at=0.0,
             max_turns=int(max_turns) if max_turns else self.default_max_turns,
+            api_calls_baseline=_session_api_call_count(self.session_id),
             contract=contract if contract is not None else GoalContract(),
         )
         return self._save()
@@ -1597,6 +1589,9 @@ class GoalManager:
         self._state.clear_wait()  # resuming starts fresh
         if reset_budget:
             self._state.turns_used = 0
+            # Re-anchor on the session's CURRENT counter: a resumed goal gets a fresh API-call
+            # budget instead of being instantly re-parked for usage from before the pause.
+            self._state.api_calls_baseline = None
         return self._save()
 
     def clear(self) -> None:
@@ -1935,17 +1930,6 @@ class GoalManager:
             f"⏳ Goal parked (judge) — waiting on {tgt}: {reason}",
         )
 
-    def _budget_pause(
-        self, state: GoalState, verdict: str, reason: str, note: str = ""
-    ) -> dict[str, Any]:
-        return self._pause_decision(
-            f"turn budget exhausted ({state.turns_used}/{state.max_turns})",
-            verdict,
-            reason,
-            f"⏸ Goal paused — {state.turns_used}/{state.max_turns} turns used{note}. "
-            "Use /goal resume to keep going, or /goal clear to stop.",
-        )
-
     def evaluate_after_turn(
         self,
         last_response: str,
@@ -1981,6 +1965,12 @@ class GoalManager:
         # so the judge is skipped and the gate's output drives the next turn (same turn budget).
         gate_decision = self._check_gates()
         if gate_decision is not None:
+            if gate_decision.get("should_continue"):
+                parked = self._maybe_park_for_consumption(
+                    state, gate_decision.get("reason", "")
+                )
+                if parked is not None:
+                    return parked
             if (
                 gate_decision.get("should_continue")
                 and state.turns_used >= state.max_turns
@@ -2069,6 +2059,9 @@ class GoalManager:
                 ),
             )
 
+        parked = self._maybe_park_for_consumption(state, reason)
+        if parked is not None:
+            return parked
         if state.turns_used >= state.max_turns:
             return self._budget_pause(state, "continue", reason)
 
