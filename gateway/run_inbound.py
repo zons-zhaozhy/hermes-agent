@@ -1,3 +1,5 @@
+# health: allow FILE_LINES -- 行数 2002 来自上游合并（cdb494051d，2026-11-11 自动合并带入 +27）；
+# 拆出函数会偏离上游文件布局、制造后续每轮同步的永久冲突面，故按门禁规程登记豁免。
 """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner.
 
 Split out of ``gateway/run.py``; bound onto ``GatewayRunner`` via the MRO.
