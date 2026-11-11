@@ -111,6 +111,7 @@ _GUARDS = {
     "config-writers": ["scripts/check_config_yaml_writers.py"],
     "config-readers": ["scripts/check_config_yaml_readers.py"],
     "owner-loop-io": ["scripts/ci/check_owner_loop_io.py"],
+    "profile-create-entry": ["scripts/check_profile_create_entry.py"],
     "os-marker-fakes": ["scripts/ci/check_os_marker_fakes.py"],
     "agents-md": ["scripts/ci/check_agents_md_size.py"],
     "case-collisions": ["scripts/check-case-collisions.py"],

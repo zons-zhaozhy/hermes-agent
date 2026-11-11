@@ -4,7 +4,7 @@
   "parameters": {
     "properties": {
       "action": {
-        "description": "Default 'spawn'. Live control of running children: 'list' = ids/goals/status/transcripts; 'steer' = queue course-correction text into one child (subagent_id + message) without stopping it; 'stop' = end one child early (subagent_id; partial result still returns). Control actions return immediately; goal/tasks are ignored unless spawning.",
+        "description": "Default 'spawn'. Live control of running children: 'list' = ids/goals/status/transcripts; 'steer' = queue course-correction text into one child without stopping it; 'stop' = end one child early (partial result still returns). Control actions return immediately; tasks are ignored unless spawning.",
         "enum": [
           "spawn",
           "list",
@@ -14,15 +14,15 @@
         "type": "string"
       },
       "message": {
-        "description": "For action='steer': the course correction, appended to the child's next tool result mid-run. Be directive and specific.",
+        "description": "Required for action='steer': the course correction, appended to the child's next tool result mid-run. Be directive and specific.",
         "type": "string"
       },
       "subagent_id": {
-        "description": "Target for action='steer'/'stop' (ids from the spawn response or action='list').",
+        "description": "Required for action='steer'/'stop' (ids from the spawn response or action='list').",
         "type": "string"
       },
       "tasks": {
-        "description": "The task(s), up to 10 in parallel for this user (set via delegation.max_concurrent_children). Each entry spawns one subagent with isolated context and terminal session; a single task is a one-entry array. Required when spawning.",
+        "description": "One entry per subagent; several run in parallel, up to 10 for this user (set via delegation.max_concurrent_children). Required when spawning.",
         "items": {
           "properties": {
             "context": {
@@ -30,18 +30,18 @@
               "type": "string"
             },
             "goal": {
-              "description": "What this subagent should accomplish. Be specific and self-contained — it knows nothing about your conversation history.",
+              "description": "What this subagent should accomplish. Be specific and self-contained.",
               "type": "string"
             },
             "images": {
-              "description": "Optional images this child must SEE (max 8): local file paths or http(s) URLs — e.g. a screenshot the user sent, a design mock, a chart. Vision-capable children receive the pixels on their first turn; non-vision children get path hints for vision_analyze. Text files do NOT belong here — put paths in 'context' instead.",
+              "description": "Images this child must SEE (max 8): local file paths or http(s) URLs — e.g. a screenshot the user sent, a design mock, a chart. Vision-capable children receive the pixels on their first turn; non-vision children get path hints for vision_analyze. Text files do NOT belong here — put paths in 'context' instead.",
               "items": {
                 "type": "string"
               },
               "type": "array"
             },
             "output_schema": {
-              "description": "Optional JSON Schema this child's final answer must validate against (told to the child up front; parent validates with one bounded correction retry; result gains schema_valid, plus schema_errors on failure — the child's raw text is still returned as summary, never discarded). Keep it forgiving — require only fields you will read.",
+              "description": "JSON Schema this child's final answer must validate against (told to the child up front; parent validates with one bounded correction retry; result gains schema_valid, plus schema_errors on failure — the child's raw text is still returned as summary, never discarded). Keep it forgiving — require only fields you will read.",
               "properties": {},
               "required": [],
               "type": "object"

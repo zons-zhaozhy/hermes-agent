@@ -29,7 +29,7 @@ _GUARD_SCRIPTS = (
     "scripts/check_tool_classification.py", "scripts/install_root_lint.py",
     "scripts/check_config_yaml_writers.py", "scripts/check_config_yaml_readers.py",
     "scripts/ci/check_owner_loop_io.py",
-    "scripts/ci/check_os_marker_fakes.py", "scripts/check-case-collisions.py",
+    "scripts/check_profile_create_entry.py", "scripts/ci/check_os_marker_fakes.py", "scripts/check-case-collisions.py",
     "scripts/ci/check_lazy_deps_imports.py", "scripts/ci/check_profile_archive_boundary.py",
     "scripts/ci/check_agents_md_size.py", "scripts/ci/check_blob_size.py",
 )

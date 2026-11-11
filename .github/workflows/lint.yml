@@ -112,6 +112,9 @@ jobs:
       # functions. Nested closures handed to asyncio.to_thread are the expected safe pattern.
       - name: Forbid direct blocking I/O in gateway owner-loop scopes
         run: python scripts/ci/check_owner_loop_io.py
+      - name: Forbid profile creation outside the provisioning entry point
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
+        run: just check --only profile-create-entry
 
       # The OS lanes import only files carrying the matching marker, so a test that fakes
       # macOS (is_macos -> True, sys.platform -> "darwin") without `platforms("macos")` is green on
