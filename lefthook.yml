@@ -2,6 +2,8 @@ pre-commit:
   jobs:
     - name: lint python
       glob: "*.py" # glob filter
+      # 唯一 lint 真相 = 仓库根 ruff.toml（just ruff 不传 --config，自动读取，与 CI
+      # scripts/check 同源同文件）；ruff.pre-commit.toml 已删除，禁再复制第二份。
       run: just ruff {staged_files}
 
     - name: lint web

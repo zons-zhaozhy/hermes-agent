@@ -115,6 +115,7 @@ f799fd8578 在官方 Linux CI "Python tests / Run tests" = success。
 | 2026-11-06 补注 | — | — | 插件面异常详情（补 1106 轮「见下」缺失）：deep-test-gate 与 outcome-collector 由 enabled 翻转为 disabled；定性=profile 运行时状态翻转（仓库 plugin.yaml 无启用语义改动），非合并损伤；1107 复核仍 disabled，未擅动待用户确认知情 | — |
 | 2026-11-07 | 3a2fd4d338 | 499 文件 | plugins.py 取 upstream（PluginContext 抽至新模块 plugins_context.py，fork 的 PluginManualGateCtxMixin 第二基类移植入新模块，MRO 验证）；hosted_room_driver.py 互补并集（fork 防退避行+upstream maintain 块）；连带修复上游 render.tsx 重复导入 2 错误解 lefthook 拦截 | 125 passed + imports OK + 插件仍 6/8（同 1106 补注） |
 | 2026-11-07 | d8b75d4068（1108 执行） | 795 文件 | 6 冲突：webhook_ingress 融合（fork 离 loop _committed + 上游 live 参数）；run_bootstrap 融合（fork recovery 模块导入 + 上游 config 重载逻辑）；run_startup 取 fork（函数外迁至 run_startup_recovery.py）；run_startup_recovery 移植上游演进体（返回 list[str]/bool 驱动重载）；hermes_state 融合（上游 pinned 连接快路径 + fork owner_loop_db_guard 守卫）；test_code_health_cli 双 hunk 并集；e2e spec 取上游重写版 | 125 passed + imports OK + 插件仍 6/8（同前） |
+| 2026-11-10 | 3070a6a766（他会话收口，账本补记） | 1310 文件/1796 提交 | 6 冲突由他会话按本账本裁决哲学解决：aux 两 hunk import 并集；gateway/run.py 状态交替并集（拆两行）；lefthook 当时取 just ruff；weixin 融合（上游 describe_proxy_error 脱敏 + fork park_on_not_ready 暂存，注释中文化）；surfaces.json 重测实测值；uv.lock 取 fork 基底 | 未由本会话执行；1111 轮补记 |
 
 ## 二、防冲突铁律（同步操作规程）
 

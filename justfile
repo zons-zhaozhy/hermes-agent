@@ -190,11 +190,13 @@ termux-payload payload +packages:
 lock:
     scripts/relock.sh
 
-# Pre-commit: the pinned ruff with ruff.pre-commit.toml on the given files
+# Pre-commit: the pinned ruff on the given files. 唯一 lint 真相 = 仓库根 ruff.toml
+# （无 --config 时自动读取，与 scripts/check 同源同文件；ruff.pre-commit.toml 已删除，
+# 禁再复制第二份——2026-10-26 实测两真相漂移导致规则集不同步）。
 [group('hooks')]
 [positional-arguments]
 ruff +files:
-    scripts/hermes-python -m scripts.code_health.ruff_runner check --config ruff.pre-commit.toml "$@"
+    scripts/hermes-python -m scripts.code_health.ruff_runner check "$@"
 
 # Pre-commit: eslint on the given files, from the calling workspace
 [group('hooks')]
