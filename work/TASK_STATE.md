@@ -1,6 +1,6 @@
 # TASK_STATE — GLM rate-limit retry precedes paid fallback
 
-Updated: 2026-11-11 03:08 Asia/Shanghai
+Updated: 2026-11-11 10:2x Asia/Shanghai
 
 ## Goal & acceptance
 - Goal: Z.AI GLM ordinary 429 retries the primary GLM first; 5-hour quota-window 429 never silently switches to DeepSeek.

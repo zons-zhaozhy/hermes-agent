@@ -69,7 +69,7 @@ def test_partial_progress_blocked_with_missing_axes_diagnosis(monkeypatch, tmp_p
     guard = _load_guard()
     monkeypatch.setattr(guard, "_read_marker", lambda sid: None)  # 放行判定恒不过
     monkeypatch.setattr(guard, "_read_progress", lambda sid: {
-        "verified": False, "axes": ["影响面", "根因", "风险"],
+        "verified": False, "axes": ["根因", "影响与风险", "验证"],
         "timestamp": _time.time(),
     })
     target = str(tmp_path / "partial.py")
@@ -77,7 +77,7 @@ def test_partial_progress_blocked_with_missing_axes_diagnosis(monkeypatch, tmp_p
                                  session_id="sess-fa-4")
     assert out is not None and out.get("action") == "block"  # 期望: 3/4 轴仍拦——放行语义零变化
     msg = out["message"]
-    assert "原意图" in msg and "影响面" not in msg.split("——")[-1]  # 期望: 只诊断缺失轴（原意图），已命中的轴不进诊断段
+    assert "方案" in msg and "根因" not in msg.split("——")[-1]  # 期望: 只诊断缺失轴（方案），已命中的轴不进诊断段
     assert "还缺 1 轴" in msg  # 期望: 缺轴计数
 
 
