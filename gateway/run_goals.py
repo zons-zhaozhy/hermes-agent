@@ -25,6 +25,9 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+QUOTA_WINDOW_PAUSE_PREFIX = "quota window exhausted; auto-resume at "
+_QUOTA_WINDOW_MINIMUM_WAIT_S = 120.0
+
 
 class GatewayGoalsMixin:
     """Goal/heartbeat continuation, post-turn hooks and loop-wakeup watcher methods for GatewayRunner."""
@@ -348,6 +351,15 @@ class GatewayGoalsMixin:
         prompt = decision.get("continuation_prompt") or ""
         if not decision.get("should_continue") or not prompt or source is None:
             return
+        await self._admit_goal_continuation(source, prompt)
+
+    async def _admit_goal_continuation(self, source: Any, prompt: str) -> None:
+        """Commit a continuation on its owner: authority admission for local viewers, FIFO otherwise.
+
+        Contract:
+          Preconditions: prompt is a non-empty continuation message; source has a delivery adapter.
+          Postconditions: never raises; the prompt reaches exactly one admission channel.
+        """
         if getattr(source, "platform", None) == Platform.LOCAL:
             # A local session's adapter FIFO has no reader: its turns are authority admissions.
             # Commit the continuation there, as main's TUI chained it after the turn.
@@ -364,7 +376,141 @@ class GatewayGoalsMixin:
             if adapter and _quick_key:
                 self._enqueue_fifo(_quick_key, self._synthetic_prompt_event(source, prompt), adapter)
         except Exception as exc:
-            logger.info("goal continuation: enqueue failed: %s", exc)
+            logger.info("goal continuation: enqueue failed: %s", exc, exc_info=True)
+
+    @staticmethod
+    def _terminal_result_for_post_turn_hooks(agent_result: Any) -> Optional[dict[str, Any]]:
+        """The failed terminal result captured for this turn, if any.
+
+        Contract:
+          Preconditions: called inside the turn's context (execution_result may be unset).
+          Postconditions: returns a dict with failed=True, or None; never raises.
+        """
+        from gateway.session_results import execution_result
+
+        captured = execution_result.get() or {}
+        result = captured.get("terminal_result", captured.get("result"))
+        if isinstance(result, dict) and result.get("failed"):
+            return result
+        return agent_result if isinstance(agent_result, dict) and agent_result.get("failed") else None
+
+    async def _pause_goal_for_quota_window(
+        self, source: Any, result: Any, *, session_id: Optional[str] = None,
+    ) -> None:
+        """Park an ACTIVE goal when a provider usage window has a future reset.
+
+        Short throttles remain owned by the retry ladder. ``session_id`` lets the gateway use the
+        resolved SessionDB id even when the transport chat id differs from it.
+
+        Contract:
+          Preconditions: result is a finished turn's dict (anything else → no-op).
+          Postconditions: never raises; pauses only an ACTIVE goal on a billing failure whose
+          reset is >_QUOTA_WINDOW_MINIMUM_WAIT_S away, notices the chat, schedules one probe.
+        """
+        if not isinstance(result, dict) or not result.get("failed"):
+            return
+        if result.get("failure_reason") != "billing":
+            return
+        resets_at = result.get("failure_resets_at")
+        if (
+            isinstance(resets_at, bool)
+            or not isinstance(resets_at, (int, float))
+            or resets_at - time.time() < _QUOTA_WINDOW_MINIMUM_WAIT_S
+        ):
+            return
+        sid = session_id or getattr(source, "chat_id", None)
+        if not sid:
+            return
+
+        reset_at_text = time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(resets_at))
+        paused_reason = QUOTA_WINDOW_PAUSE_PREFIX + reset_at_text
+
+        def _pause() -> bool:
+            """Pause only an ACTIVE goal; False means someone else already changed its state.
+
+            Contract:
+              Postconditions: True implies paused_reason == paused_reason above.
+            """
+            from hermes_cli.goals import GoalManager
+
+            manager = GoalManager(session_id=sid)
+            if not manager.is_active():
+                return False
+            return manager.pause(paused_reason) is not None
+
+        try:
+            paused = await asyncio.to_thread(_pause)
+        except Exception as exc:
+            logger.warning("goal quota pause for %s failed: %s", sid, exc, exc_info=True)
+            return
+        if not paused:
+            return
+
+        if source is not None:
+            await self._defer_goal_status_notice_after_delivery(
+                source, f"⏸ Goal paused — provider quota window exhausted; auto-resume at {reset_at_text}."
+            )
+        self._schedule_goal_quota_resume_probe(source, sid, resets_at)
+
+    def _schedule_goal_quota_resume_probe(self, source: Any, session_id: str, resets_at: float) -> None:
+        """Retain one profile-scoped resume task; it survives until the reset deadline.
+
+        Contract:
+          Preconditions: resets_at is in the future; called on the gateway event loop.
+          Postconditions: exactly one retained task; a gateway restart drops it (paused_reason
+          names the reset time, /goal resume stays the manual fallback).
+        """
+        delay = max(0.0, resets_at - time.time())
+
+        async def _probe_after_wait() -> None:
+            await asyncio.sleep(delay)
+            await self._goal_quota_resume_probe(source, session_id, wait_s=0.0)
+
+        task = asyncio.create_task(
+            _probe_after_wait(), name=f"goal-quota-resume:{session_id}:{int(resets_at)}"
+        )
+        self._retain_background_task(task)
+
+    async def _goal_quota_resume_probe(
+        self, source: Any, session_id: str, *, wait_s: Optional[float] = None,
+    ) -> bool:
+        """Resume only a goal this mixin parked for a quota window, then admit one continuation.
+
+        Contract:
+          Preconditions: wait_s=None means "sleep until resets_at" is handled by the caller.
+          Postconditions: never raises; resumes only when paused_reason starts with
+          QUOTA_WINDOW_PAUSE_PREFIX (a user-paused goal stays parked); admits ≤1 continuation.
+        """
+        if wait_s is not None and wait_s > 0:
+            await asyncio.sleep(wait_s)
+
+        def _resume() -> Optional[str]:
+            """Resume only our own quota pause; return its continuation prompt, else None.
+
+            Contract:
+              Postconditions: non-None implies the goal is active again with budget untouched.
+            """
+            from hermes_cli.goals import GoalManager
+
+            manager = GoalManager(session_id=session_id)
+            state = manager.state
+            reason = getattr(state, "paused_reason", None) if state is not None else None
+            if state is None or state.status != "paused":
+                return None
+            if not isinstance(reason, str) or not reason.startswith(QUOTA_WINDOW_PAUSE_PREFIX):
+                return None
+            manager.resume(reset_budget=False)
+            return manager.next_continuation_prompt()
+
+        try:
+            prompt = await asyncio.to_thread(_resume)
+        except Exception as exc:
+            logger.warning("goal quota resume for %s failed: %s", session_id, exc, exc_info=True)
+            return False
+        if prompt is None or source is None:
+            return prompt is not None
+        await self._admit_goal_continuation(source, prompt)
+        return True
 
     async def _run_post_turn_hooks(
         self, *, agent_result: Any, source: Any, is_internal: bool, event: Any = None,
@@ -375,6 +521,14 @@ class GatewayGoalsMixin:
         authority = active_authority(self)
         _viewer_sid = getattr(source, "chat_id", None)
         if viewer_driven(authority, _viewer_sid):
+            quota_result = self._terminal_result_for_post_turn_hooks(agent_result)
+            if quota_result is not None:
+                try:
+                    await self._pause_goal_for_quota_window(
+                        source, quota_result, session_id=_viewer_sid
+                    )
+                except Exception as exc:
+                    logger.warning("goal quota pause failed: %s", exc, exc_info=True)
             await self._log_viewer_driven_goal_deferral(authority, _viewer_sid)
             return  # the classic CLI viewer judges and continues through ``session.automation``
         final_text = self._final_text_for_post_turn_hooks(agent_result, event)
@@ -385,6 +539,14 @@ class GatewayGoalsMixin:
         except Exception as exc:
             logger.debug("post-turn session resolution failed: %s", exc)
             return
+        quota_result = self._terminal_result_for_post_turn_hooks(agent_result)
+        if quota_result is not None:
+            try:
+                await self._pause_goal_for_quota_window(
+                    source, quota_result, session_id=getattr(session_entry, "session_id", None)
+                )
+            except Exception as exc:
+                logger.warning("goal quota pause failed: %s", exc, exc_info=True)
         # Empty interrupted/errored responses must not drive /goal, but an in-flight /loop tick
         # still needs to be released and rescheduled. A failed turn with text (a refusal: its
         # folder is gone) is no evidence either (the TUI's hook skips it the same way): the tick is
