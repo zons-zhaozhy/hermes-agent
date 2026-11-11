@@ -528,6 +528,7 @@ def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
     try:
         return isinstance(obj, maybe_type)
     except TypeError:
+        logger.warning("_safe_isinstance: %r is not a type; treating as no-match", maybe_type)
         return False
 
 
@@ -4645,36 +4646,7 @@ def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optio
         return model_name
 
 
-def _named_custom_api_key(custom_entry: dict[str, Any], provider: str, custom_base: str, model: Optional[str] = None) -> Any:
-    """Credential for a named custom provider: inline api_key → key_env → key_cmd → credential pool → placeholder.
-    Aux resolves named custom providers here, not via _resolve_named_custom_runtime, so key_cmd must be
-    honoured at the same precedence or every aux call 401s."""
-    custom_key: Any = (custom_entry.get("api_key") or "").strip()
-    custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
-    if not custom_key and custom_key_env:
-        custom_key = _scoped_key_env(custom_key_env)
-    custom_key_cmd = str(custom_entry.get("key_cmd", "") or "").strip()
-    if custom_key_cmd:
-        from agent.command_token_source import build_command_token_provider
-        custom_key = build_command_token_provider(custom_key_cmd, custom_entry.get("name") or provider) or custom_key
-    if not custom_key:
-        with contextlib.suppress(Exception):
-            from agent.credential_pool import custom_provider_pool_key_candidates
-            pool_name = custom_entry.get("provider_key") or custom_entry.get("name") or provider
-            for pool_key in custom_provider_pool_key_candidates(custom_base, pool_name):
-                try:
-                    pool = load_pool(pool_key)
-                except Exception:
-                    continue
-                if (pool := entry_scoped_pool(pool, pool_key, custom_entry)) is None or not pool.has_credentials():
-                    continue
-                if (pool_entry := pool.select(model=model)) is None:
-                    continue
-                pool_api_key = getattr(pool_entry, "runtime_api_key", None) or getattr(pool_entry, "access_token", "") or ""
-                if str(pool_api_key).strip():
-                    custom_key = str(pool_api_key).strip()
-                    break
-    return custom_key or "no-key-required"
+from agent.auxiliary_named_custom import _named_custom_api_key  # split sibling (file-size ratchet)
 
 
 def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: bool) -> tuple[Optional[Any], Optional[str]]:
@@ -4926,6 +4898,7 @@ def _resolve_openai_codex_branch(req: _ResolveRequest) -> _ResolveResult:
                        "model; pass model explicitly (e.g. model.model in config.yaml "
                        "or auxiliary.<task>.model for per-task aux routing).")
         return None, None
+    # safe: log message text, not a credential (guard: name contains "token")
     no_token_msg = "resolve_provider_client: openai-codex requested but no Codex OAuth token found (run: hermes model)"
     if req.raw_codex:
         # Raw OpenAI client for callers needing responses.stream() (main agent loop).
@@ -5056,9 +5029,22 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     custom_base = (req.explicit_base_url or custom_entry.get("base_url") or "").strip()
     custom_key = _normalize_api_key(req.explicit_api_key) or _named_custom_api_key(custom_entry, provider, custom_base, req.model)
     if custom_key == "no-key-required":
+        # The placeholder is for loopback servers that ignore the Authorization header.
+        # A remote endpoint with an unresolved key would burn a doomed request that
+        # surfaces as a provider 401 ("credential rejected") instead of the real
+        # diagnosis (credential not resolvable) — decline the branch and let the
+        # resolver chain end in a clear no-credentials error.
+        from hermes_cli.auth import is_actual_local_base_url
+        if not is_actual_local_base_url(custom_base):
+            logger.error(
+                "resolve_provider_client: named custom provider %r has no resolvable "
+                "api_key for %r — refusing to send a placeholder-authenticated request; "
+                "fix the credential (hermes model / .env / credential pool) or declare "
+                "a fallback", custom_entry.get("name") or provider, custom_base)
+            return None, None
         logger.warning("resolve_provider_client: named custom provider %r has no resolvable "
-                       "api_key — request will be sent with placeholder no-key-required "
-                       "and will 401 on auth-required endpoints", custom_entry.get("name") or provider)
+                       "api_key — using placeholder no-key-required for loopback endpoint",
+                       custom_entry.get("name") or provider)
     # Actual's wire protocol takes precedence over persisted task/provider modes.
     entry_api_mode = (req.api_mode or custom_entry.get("api_mode") or "").strip()
     if _is_actual_auxiliary_route(req, custom_base):
