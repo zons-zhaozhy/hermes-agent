@@ -980,6 +980,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         try:
             token = await self._get_access_token()
             if not token:
+                logger.warning("[%s] _send_emotion %s %s skipped: no access token", self.name, action, emoji_name)
                 return
             text_emotion_cls, request_cls, headers_cls, sdk_method = _EMOTION_SDK[recall]
             text_emotion = getattr(dingtalk_robot_models, text_emotion_cls)(emotion_id=_EMOTION_ID, emotion_name=emoji_name, text=emoji_name, background_id=_EMOTION_BG)
@@ -988,7 +989,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             await self._sdk_call(getattr(self._robot_sdk, sdk_method), request, getattr(dingtalk_robot_models, headers_cls), token)
             logger.info("[%s] _send_emotion: %s %s on msg=%s", self.name, action, emoji_name, open_msg_id[:24])
         except Exception:
-            logger.debug("[%s] _send_emotion %s failed", self.name, action, exc_info=True)
+            logger.warning("[%s] _send_emotion %s failed", self.name, action, exc_info=True)
 
     async def _resolve_media_codes(self, message: ChatbotMessage) -> None:
         """Resolve download codes in the message to real URLs (in place, in parallel)."""
