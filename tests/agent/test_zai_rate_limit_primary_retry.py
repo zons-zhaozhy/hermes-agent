@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from agent.error_classifier import classify_api_error
+from agent.turn_recovery import recover_after_classification
+from agent.turn_retry_state import TurnRetryState
 from run_agent import AIAgent
 
 
@@ -84,3 +88,50 @@ def test_transient_glm_429_retries_primary_before_glm_fallback():
         ("zai", "glm-5.3-flash"),
     ]
     resolve.assert_called_once()
+
+
+def test_main_route_1302_carries_short_reset_into_credential_pool():
+    """主路径必须把分类器给 Z.AI 1302 的短冷却 reset_at 传进凭据池，而不是丢掉它。
+
+    1302 是瞬时限流（请求频率），分类器会给出 60s 的 reset_at；若主路径只透传原始
+    ``extract_api_error_context``（其中没有 reset_at），凭据池就会按默认 3600s 把两把
+    key 一起 bench 一小时，主路径无法在短暂退避后重试。"""
+    exc = ZaiTransientRateLimit()
+    classified = classify_api_error(
+        exc, provider="custom", model="glm-5.3",
+        base_url="https://open.bigmodel.cn/api/coding/paas/v4",
+    )
+    assert 0 < classified.error_context["reset_at"] - time.time() <= 60
+
+    calls: list[dict] = []
+
+    class _Agent:
+        log_prefix = ""
+        provider = "custom"
+        api_mode = ""
+        base_url = "https://open.bigmodel.cn/api/coding/paas/v4"
+        model = "glm-5.3"
+        api_key = "sk-zai-primary"
+
+        def _recover_with_credential_pool(self, **kwargs):
+            calls.append(kwargs)
+            return False, False
+
+        def _extract_api_error_context(self, error):
+            from agent.agent_runtime_helpers import extract_api_error_context
+            return extract_api_error_context(error)
+
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: None
+
+    agent = _Agent()
+    recover_after_classification(
+        agent, exc, classified, TurnRetryState(), status_code=429,
+        error_context=agent._extract_api_error_context(exc),
+        messages=[], api_messages=[],
+    )
+
+    assert calls, "主路径没有走到凭据池恢复"
+    ctx = calls[0]["error_context"]
+    assert ctx.get("reset_at") == classified.error_context["reset_at"]
+    assert ctx.get("message")

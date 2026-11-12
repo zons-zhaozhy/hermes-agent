@@ -630,12 +630,18 @@ def _reject_all_turns(agent: Any, api_error: Exception) -> bool:
 
 
 def _pool_error_context(agent, classified: Any, error_context: Any) -> Any:
-    """What the credential pool sees: a plan limit (usage-window 402) benches only the refused model on the
-    credential, until its reset; every other failure passes the error context through unchanged."""
-    if not (getattr(classified, "error_context", None) or {}).get("usage_window"):
-        return error_context
-    return {**(error_context if isinstance(error_context, dict) else {}), "usage_window": True,
-            **_usage_window_reset_context(agent)}
+    """What the credential pool sees: the turn's raw context merged with the classifier's hints.
+
+    A Z.AI 1302 transient throttle carries a short ``reset_at`` the pool would otherwise drop
+    (it is stored on ``classified.error_context``, not the raw ``extract_api_error_context``);
+    without it the pool benches every key for its generic multi-entry 429 TTL (one hour) even
+    though Z.AI asked for a brief slowdown. A plan limit (usage-window 402) benches only the
+    refused model on the credential, until its reset."""
+    raw = error_context if isinstance(error_context, dict) else {}
+    classified_ctx = getattr(classified, "error_context", None) or {}
+    if not classified_ctx.get("usage_window"):
+        return {**raw, **classified_ctx}
+    return {**raw, "usage_window": True, **_usage_window_reset_context(agent)}
 
 
 def _usage_window_reset_context(agent) -> dict[str, float]:
