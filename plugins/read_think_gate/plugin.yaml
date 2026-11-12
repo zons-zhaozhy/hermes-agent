@@ -1,6 +1,6 @@
 name: read-think-gate
-version: "1.5.0"
-description: Turn 级意图与推理门控——先由交互硬证据区分只读请求、明确修改请求和确认执行，剩下的才交给语义分类器；只有「只读」判定拒绝写入，判不明确的语句改走与明确修改相同的调查契约，并在回复里写出据以动手的原话。调查要求目标现状、影响面、测试配置、必要历史意图与验证方案齐备后才放行写入。每 assistant_message 恰一次 check_batch，四轴证据轮内累积；连续拒绝（含只读拒绝）升级为交还用户决策，不再无界重拦。clarify 表单中用户的回答与聊天消息同等构成修改授权（post_tool_call 回传重判意图）；同一任务的后台通知和运行反馈不冲掉既有授权，等待用户授权时向其它守卫发布 handoff 状态；tee/重定向到系统暂存目录的日志采集不算本 gate 的源码写通道。意图分类的准确率由 tests/agent/fixtures/read_think_intent_corpus.jsonl 标注集度量。
+version: "1.6.0"
+description: Turn 级意图与推理门控——先由交互硬证据区分只读请求、明确修改请求和确认执行，剩下的才交给语义分类器；只有「只读」判定拒绝写入，判不明确的语句改走与明确修改相同的调查契约，并在回复里写出据以动手的原话。状态追问（追问处理进度/为何未处理）不判只读——LLM 通道对此降级 ambiguous，会话级授权不因一条只读追问清零（显式禁止除外），只读拒绝首轮即引导 clarify 表单授权；拒绝不对称原理在 LLM/fallback/授权继承三条通道一致。调查要求目标现状、影响面、测试配置、必要历史意图与验证方案齐备后才放行写入。每 assistant_message 恰一次 check_batch，四轴证据轮内累积；连续拒绝（含只读拒绝）升级为交还用户决策，不再无界重拦。clarify 表单中用户的回答与聊天消息同等构成修改授权（post_tool_call 回传重判意图）；同一任务的后台通知和运行反馈不冲掉既有授权，等待用户授权时向其它守卫发布 handoff 状态；tee/重定向到系统暂存目录的日志采集不算本 gate 的源码写通道。意图分类的准确率由 tests/agent/fixtures/read_think_intent_corpus.jsonl 标注集度量。
 author: stan
 hooks:
   - pre_tool_batch

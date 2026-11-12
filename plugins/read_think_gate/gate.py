@@ -367,6 +367,11 @@ _OPERATIONAL_FEEDBACK_TERMS = (
     "status", "progress", "update me",
 )
 
+# 状态追问（追问处理进度/为何未处理）语义上是问句，但 read_only 拒写会死锁
+# 整轮（2026-11-12 钉钉群实测）。词表与判定拆在 plugins/read_think_gate_followup.py
+# （gate.py 受 2000 行 code-health 棘轮约束）。
+from plugins.read_think_gate_followup import is_status_followup as _is_status_followup
+
 _PROPOSAL_TERMS = (
     *_MODIFY_TERMS,
     "方案", "建议", "计划", "准备", "下一步", "我将", "我会",
@@ -721,6 +726,14 @@ def _detect_user_intent(
     if use_llm:
         detected = _classify_intent_via_llm(message, conversation_history)
         if detected in _INTENT_VALUES:
+            if detected == INTENT_READ_ONLY and _is_status_followup(message):
+                # LLM 判 read_only 本身没错，但状态追问被拒写会死锁整轮——
+                # 降级 ambiguous 与 fallback 的拒绝不对称原理对齐。
+                logger.info(
+                    "read-think gate: intent=%s channel=llm-downgraded (status followup)",
+                    INTENT_AMBIGUOUS,
+                )
+                return INTENT_AMBIGUOUS
             return detected
     fallback = _fallback_detect_intent(
         message, conversation_history, pending_auth_request=pending_auth_request
@@ -1203,6 +1216,22 @@ class ReadThinkGate:
                 self._user_message = (
                     f"{self._authorized_user_message}\n[follow-up] {user_message or ''}"
                 ).strip()
+            elif (
+                self._session_modification_authorized
+                and self._intent == INTENT_READ_ONLY
+                and not any(
+                    term in (user_message or "").lower()
+                    for term in _EXPLICIT_NO_MODIFY_TERMS
+                )
+            ):
+                # 已授权会话里的只读追问不清零授权：此前明确授权的任务不因
+                # 一条追问被锁死。降级 ambiguous——本 turn 写仍需调查契约解锁，
+                # 显式禁止（_EXPLICIT_NO_MODIFY_TERMS）仍当场收回授权。
+                logger.info(
+                    "read-think gate: session authorization kept; "
+                    "read-only followup downgraded to ambiguous"
+                )
+                self._intent = INTENT_AMBIGUOUS
             else:
                 self._session_modification_authorized = False
                 self._authorized_user_message = ""
@@ -1815,9 +1844,27 @@ class ReadThinkGate:
         )
         message = (
             self._build_handoff_message(first_gated) if exhausted
+            else self._build_clarify_first_message(first_gated)
+            if self._reasoning_rounds == 1
             else self._build_intent_block_message(first_gated)
         )
         return _make_synthetic_result(first_gated, message, content_len)
+
+    def _build_clarify_first_message(self, tool_name: str) -> str:
+        """首轮只读拒绝：当轮立即用 clarify 表单向用户要授权，停止文字空转。
+
+        此后每轮拒绝都是一次完整模型往返（钉钉场景实测每轮约 3 分钟），
+        首轮就把决定权交还用户比连拒 5 轮再 handoff 便宜得多。
+        """
+        return (
+            f"[ReadThink Gate — 用户意图门禁] 工具 '{tool_name}' 被阻止。\n\n"
+            "判定：用户的请求是只读的（询问、解释、分析、审查或诊断），没有授权修改。\n"
+            f"当前用户消息：{self._user_message[:500] or '（空）'}\n\n"
+            "下一步：本回合不要再重试任何写工具。二选一：\n"
+            "  1. 立即用 clarify 工具向用户发起授权询问，选项含「只读继续，直接回答」"
+            "与「授权修改并执行」；用户在表单中的回答与聊天消息同等构成授权。\n"
+            "  2. 或继续只读调查，在回复里直接回答用户的问题，不写任何文件。\n"
+        )
 
     def _build_intent_block_message(self, tool_name: str) -> str:
         """Explain a denied write: the user asked for analysis, not for a change."""
