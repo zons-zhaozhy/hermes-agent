@@ -20,7 +20,7 @@ Contract:
 from __future__ import annotations
 
 import logging
-import re
+import re  # noqa: 检测器本质需要——中文句式模糊匹配（提案式签名/拍板豁免/commit哈希）无 str 等价
 from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
