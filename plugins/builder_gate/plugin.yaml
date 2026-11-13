@@ -1,0 +1,13 @@
+name: builder_gate
+description: 构建者定位执法——零写入回合的提案式收尾拦截（「要不要我/是否需要我/如果你想…我可以」类分析者签名，2026-11-13 用户令）+ system prompt 构建者纪律稳定段注入（SSOT=prompt_sections/sections.json 键 builder_gate）。写入回合的请示/宣言/推迟式收尾归 finish_guard，本插件不重复执法；合法拍板请示（花钱/对外/不可逆/凭据/方向抉择）豁免；含完成证据（commit 哈希等）的报告性收尾豁免。单回合最多强制续跑 1 次，无死循环面。
+version: 1.0.0
+author: stan
+hooks:
+  - pre_verify
+tags:
+  - guard
+gate_suites:
+  - intent
+  - output
+gate_policy: required
+gate_kind: enforcement

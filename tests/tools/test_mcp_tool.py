@@ -1540,11 +1540,13 @@ class TestBuildSafeEnv:
         from hermes_cli import env_loader
         from tools.mcp_tool_config import _build_safe_env
 
-        monkeypatch.setitem(env_loader._SECRET_SOURCES, "GITHUB_TOKEN", "bitwarden")
+        # GITHUB_TOKEN 换 ALPACA_API_KEY：上游新策略把 Hermes 自消费凭据（含 GITHUB_TOKEN）
+        # 从 stdio env 扣留（hermes_consumed_credentials），经 env 配置显式下发——更严格语义让渡。
+        monkeypatch.setitem(env_loader._SECRET_SOURCES, "ALPACA_API_KEY", "bitwarden")
         monkeypatch.setitem(env_loader._SECRET_SOURCES, "NOTION_TOKEN", "onepassword")
-        fake_env = {"PATH": "/usr/bin", "GITHUB_TOKEN": "default-profile", "NOTION_TOKEN": "default-notion"}
+        fake_env = {"PATH": "/usr/bin", "ALPACA_API_KEY": "default-profile", "NOTION_TOKEN": "default-notion"}
         set_multiplex_active(True)
-        token = set_secret_scope({"GITHUB_TOKEN": "profile-b"})
+        token = set_secret_scope({"ALPACA_API_KEY": "profile-b"})
         try:
             with patch.dict("os.environ", fake_env, clear=True):
                 result = _build_safe_env(None)
@@ -1553,7 +1555,7 @@ class TestBuildSafeEnv:
             set_multiplex_active(False)
 
         assert result["PATH"] == "/usr/bin"
-        assert result["GITHUB_TOKEN"] == "profile-b"
+        assert result["ALPACA_API_KEY"] == "profile-b"
         assert "NOTION_TOKEN" not in result
 
     def test_scalar_env_values_reach_the_child_as_strings(self):
