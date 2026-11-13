@@ -99,3 +99,29 @@ Updated: 2026-11-11 11:42 Asia/Shanghai
 ## Risks / notes
 - Default 120 calls may pause legitimate long-running work; user can raise `goals.max_api_calls` or set 0.
 - Tests must use `scripts/run_tests.sh`; user environment exports `UV_PYTHON_PREFERENCE=only-managed`, which must be unset.
+
+---
+
+# TASK_STATE — 2026-11-13 repo housekeeping (commit/push/merge)
+
+Checkpoint: /Users/stan/code/ai/github/fork/hermes-agent/work/TASK_STATE.md
+
+## Goal & acceptance
+- Goal: 用户指令「该提交的提交、该推送的推送、该合并的合并」——清空本仓未推送/未合并遗留。
+- Acceptance: 工作区干净；本地 `main == origin/main`；PR #11 状态 MERGED；`codex/doctor-actionable-summary` 并入 main；门禁检查通过。
+
+## Progress (2026-11-13 23:32 Asia/Shanghai)
+- 起点：工作区 0 变更；`main` ahead `origin/main` 2774 / behind 0。
+- `codex/doctor-actionable-summary`（5 commits：gateway off-loop ×4 + doctor actionable summary）merge-tree 干净，待并入。
+- `codex/fix-feishu-preauth`（PR #11，2 commits）merge-tree 冲突：仅 `plugins/platforms/feishu/adapter.py` 内容冲突；`tests/gateway/test_feishu.py` 自动合并。该分支把 webhook 安全拆到 `adapter_webhook_security.py` 并改为「先认证后配额」。
+- `oauthlib-security-floor` detached worktree `9d431491a3` 已是 main 祖先，无遗留；`codex/read-think-gate-auth-flow` 为旧 main 指针，已并入。
+- 推送门禁：`core.hooksPath=/Users/stan/.hermes/githooks/pre-push` 中继回仓内 `.git/hooks/pre-push`（lefthook → scripts/check）。
+- 23:40 milestone：`codex/doctor-actionable-summary` 已并入 main（merge `99657f6ebdf`，pre-commit `scripts/check` 19 checks ok）。
+- 23:4x milestone：期间 origin/main 被外部推进到 `7c36f81d1f`（原先 2774 个未推送提交已不在待办内；main 当时 ahead 6/behind 0）。
+- 23:5x milestone：`codex/fix-feishu-preauth` 冲突已解（adapter.py 保留双 mixin：WebhookSecurity + SyntheticEvents；handler 采用 PR #11 的先认证后配额实现，HEAD 同类内联修复被其超集替代），merge commit `1671c35d680`。
+- 验证：`env -u UV_PYTHON_PREFERENCE UV_INDEX_URL=https://pypi.org/simple scripts/run_tests.sh tests/gateway/test_feishu_webhook_security.py tests/gateway/test_feishu.py tests/gateway/test_local_create_staging_off_loop.py tests/hermes_cli/test_doctor_actionable_summary.py -q` → exit 0，4 files，80 passed / 0 failed / 7 skipped。
+- 23:42 push 结果：本地 `git push origin main` 的 ref 更新输给并发自动推送（remote rejected: cannot lock ref），但 fetch 后核实 `main == origin/main == 1671c35d680`（0 ahead / 0 behind）；该次 push 的 pre-push `scripts/check` 已全绿（19 checks ok，health 0/0）。
+- PR #11 实测：state=MERGED，mergeCommit=1671c35d680，mergedAt=2026-11-13T15:42:08Z。
+
+## Next action
+- 提交本检查点收尾 commit 并推送；成功判据 exit 0 或（若再遇并发推送竞态）fetch 后 `main == origin/main` 且工作区干净；失败则保留未推送 commit 并如实汇报。
