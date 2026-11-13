@@ -348,6 +348,21 @@ def _listing_payload(skills: list[dict[str, Any]], query: str | None, note: str 
     return payload
 
 
+def _host_skills(fn):
+    """*fn* reads this host's skill files: when skills are off (a hosted scope) it answers with the
+    refusal instead, for direct callers too, not only registry dispatch."""
+    import functools
+
+    @functools.wraps(fn)
+    def gated(*args, **kwargs):
+        from tools.hosted_tool_policy import host_feature_refusal
+        if refusal := host_feature_refusal("skills", fn.__name__):
+            return _fail(refusal)
+        return fn(*args, **kwargs)
+    return gated
+
+
+@_host_skills
 def skills_list(category: str | None = None, query: str | None = None, task_id: str | None = None) -> str:
     """Tier 1 listing: name + description (+ category) only; ``task_id`` is handler parity.
 
@@ -666,6 +681,7 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
         logger.warning("Skill security warning for '%s': %s", name, "; ".join(warnings))
 
 
+@_host_skills
 def skill_view(
     name: str, file_path: str | None = None, task_id: str | None = None, preprocess: bool = True) -> str:
     """View a skill (SKILL.md) or a file within its directory, as JSON. ``name`` is a skill name
