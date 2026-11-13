@@ -35,9 +35,12 @@ from typing import Optional
 #   read_file, write_file, patch, search_files
 #                   ShellFileOperations over the sandbox env: no host fast path, a lexical path policy,
 #                   no host document extraction; an oversized result spills into the sandbox.
+# 写工具名从唯一语义 owner（plugins/guards/tool_classification.py）导入，禁本文件再持字面量
+# （单一事实源纪律；tool-classification 守卫拦截面）。
+from plugins.guards.tool_classification import STANDARD_WRITE_TOOLS as _STANDARD_WRITE_TOOLS
 HOSTED_TOOL_ALLOWLIST = frozenset({
-    "terminal", "process_manage", "execute_code", "read_file", "write_file", "patch", "search_files",
-})
+    "terminal", "process_manage", "read_file", "search_files",
+}) | _STANDARD_WRITE_TOOLS
 
 # Agent features outside tool dispatch that read or write this host's profile state, or run here.
 HOST_FEATURES = frozenset({

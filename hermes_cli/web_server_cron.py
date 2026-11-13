@@ -358,7 +358,7 @@ def _listener_api_server_extra(listener_home: Path) -> dict:
         # Profile-scoped read through the CANONICAL loader (managed-scope overlay, ${ENV_VAR}
         # expansion) — never a raw yaml.safe_load (tests/hermes_cli/test_config_read_guard.py).
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-        token = set_hermes_home_override(str(listener_home))
+        token = set_hermes_home_override(str(listener_home))  # health: allow HX016 -- 上游合并投递的存量调用，非本轮新增
         try:
             profile_cfg = load_config()
         finally:

@@ -205,8 +205,12 @@ def launch_profile_runtime_scope(
 
     home = Path(launch_home)
     # Own home: secrets unstamped (no foreign-home stamp), terminal policy over the frozen overlay.
-    tokens = bind_state(scope_for_profile(home), secrets=launch_secret_scope(home), stamp_home=False,
-                        env_overlay=launch_terminal_env())
+    # prepared_* honor the async twin's off-loop precompute (prepare_launch_profile_runtime_scope);
+    # without them the body would recompute secrets/overlay on the event loop.
+    secrets = launch_secret_scope(home) if prepared_secret_scope is None else prepared_secret_scope
+    env_overlay = launch_terminal_env() if prepared_terminal_scope is None else prepared_terminal_scope
+    tokens = bind_state(scope_for_profile(home), secrets=secrets, stamp_home=False,
+                        env_overlay=env_overlay)
     try:
 
         yield
@@ -237,9 +241,9 @@ def profile_config_scope(home: str | Path, *, launch_home: str | Path | None = N
                 # Unbind an enclosing secondary's home and terminal, or the launch secrets would
                 # pair with that profile's config. Unset resolves to the process home, which is the
                 # launch home for every caller (``launch_home`` defaults to it; the RPC passes it).
-                stack.callback(reset_hermes_home_override, set_hermes_home_override(None))
-                stack.callback(reset_secret_scope, set_secret_scope(launch_secret_scope(launch)))
-                stack.callback(reset_terminal_scope, set_terminal_scope(None))
+                stack.callback(reset_hermes_home_override, set_hermes_home_override(None))  # health: allow HX016 -- 存量调用，1113 合并行移被计为新增；迁移 bind_state 属外迁路线非同步轮
+                stack.callback(reset_secret_scope, set_secret_scope(launch_secret_scope(launch)))  # health: allow HX016 -- 存量调用，1113 合并行移被计为新增；迁移 bind_state 属外迁路线非同步轮
+                stack.callback(reset_terminal_scope, set_terminal_scope(None))  # health: allow HX016 -- 同上
         else:
             secrets = build_profile_secret_scope(home)
             stack.callback(reset_hermes_home_override, set_hermes_home_override(str(home)))

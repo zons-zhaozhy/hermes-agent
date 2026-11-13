@@ -1,3 +1,5 @@
+# health: allow FILE_LINES -- 行数 2055 来自上游合并（b0e3921709，2026-11-13，+21 超过 main 基线 2034）；
+# 拆出函数会偏离上游布局、制造后续每轮同步的永久冲突面，按门禁规程登记豁免（同 run_inbound 先例）。
 """Tool-call execution: sequential and concurrent dispatch, extracted from AIAgent.
 
 Functions take the parent ``AIAgent`` first; ``run_agent`` keeps thin wrappers and is
