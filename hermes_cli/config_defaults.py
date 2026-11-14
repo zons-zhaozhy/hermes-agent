@@ -1373,11 +1373,11 @@ DEFAULT_CONFIG = {
         # input() from a worker would deadlock). false = auto-deny, true = auto-approve "once"; both
         # log a warning audit line. true only for trusted batch work.
         "subagent_auto_approve": False,
-        # Subagent background processes (task_id "sa-...") route notify_on_complete / watch_pattern
-        # notifications to the PARENT; false suppresses them (the child's result is the
-        # deliverable). Async-delegation results are NEVER suppressed.
+        # Subagent background processes (task_id "sa-...") route notify_on_complete / watch_pattern notifications to
+        # the PARENT; false suppresses them (the child's result is the deliverable). Async-delegation results are NEVER
+        # suppressed. auto_resume: opt-in (spends tokens unattended), gives up with one failure after the deadline.
         "surface_child_process_notifications": False,
-        "resumable_ttl_hours": 48, "max_resumable": 32, "auto_resume": False,  # stopped-child records; auto: opt-in
+        "resumable_ttl_hours": 48, "max_resumable": 32, "auto_resume": False, "auto_resume_deadline_minutes": 360,
     },
     # Ephemeral prefill messages file — JSON list of {role, content} dicts injected at the start of
     # every API call for few-shot priming. Never saved to sessions/logs/trajectories.
@@ -2094,8 +2094,12 @@ DEFAULT_CONFIG = {
         "service_install_choice": None,  # null | install | decline; never authorizes ordinary launch installation.
         # Final responses are ledgered in state.db around platform send (at-least-once; see #90674).
         "delivery_ledger": True,
-        # Seconds to wait for one platform to connect at startup/reconnect (Discord sync can exceed 30s;
-        # #19776). Bridged to HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT, which wins if set. 0 = wait forever.
+        # Seconds the gateway waits for a single messaging platform to finish connecting during startup (and
+        # on reconnect). Discord in particular can blow past the old fixed 30s when an account has many
+        # slash commands to sync (#19776: 90-173 skills → ~28-31s sync). Raise this if your gateway hits
+        # "discord connect timed out" / "Timeout waiting for connection to Discord" restart loops. ``0`` or
+        # negative disables the timeout entirely (wait indefinitely). Bridged to
+        # HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT, which wins if set explicitly.
         "platform_connect_timeout": 30,
         # Event-loop liveness watchdog: a daemon thread probes the asyncio loop; after consecutive
         # missed probes it dumps all-thread stacks and hard-exits with the service-restart code so
@@ -2111,6 +2115,8 @@ DEFAULT_CONFIG = {
         # Runtime tripwire: SessionDB primitives on the gateway owner loop log a rate-limited stack
         # ("warn") or fail fast ("raise"). The static owner-loop gate is the primary protection.
         "owner_loop_db_guard": "warn",
+        # Debug: flag SessionDB calls made on the event loop ("warn" logs each site once, "raise" fails it).
+        "sessiondb_loop_guard": "off",
         # Allow all users without allowlists (security opt-in).
         "allow_all_users": False,
         # Bot-to-bot loop guard: max_events per window before a cooldown; max_hops bot messages per exchange.

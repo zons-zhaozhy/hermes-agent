@@ -164,10 +164,13 @@ gateway:
     upload_failed: "✗ Theip ar uaslódáil tuairisce dífhabhtaithe: {error}"
     header: "**Tuairisc dhífhabhtaithe uaslódáilte:**"
     auto_delete: "⏱ Scriosfar na pastes go huathoibríoch i 6 huaire."
-    full_logs_hint: "Le haghaidh uaslódálacha logála iomlána, úsáid `hermes debug share` ón CLI."
+    full_logs_hint: "Le haghaidh uaslódálacha logála iomlána, úsáid `hermes debug share --nous` ón CLI."
     share_hint: "Roinn na naisc seo le foireann Hermes le haghaidh tacaíochta."
     report_label: "Tuairisc"
-    local_refused: "Coinníonn `/debug local` an tuarascáil ar an meaisín a ritheann Hermes, mar sin níl sé ar fáil ó chomhrá. Seol `/debug` chun an achoimre a uaslódáil."
+    local_refused: "Coinníonn `/debug local` an tuarascáil ar an meaisín a ritheann Hermes, mar sin níl sé ar fáil ó chomhrá. Seol `/debug upload` chun an achoimre a uaslódáil."
+    upload_hint: "Níor uaslódáladh aon rud. Seol `/debug upload` chun an achoimre a uaslódáil."
+    upload_hint_local: "Níor uaslódáladh aon rud. Seol `/debug upload` chun an achoimre a uaslódáil, nó `/debug local` chun í a fheiceáil anseo."
+    nous_refused: "Níor uaslódáladh aon rud. Níl uaslódálacha príobháideacha Nous ar fáil as seo: rith `hermes debug share --nous` i dteirminéal, nó úsáid Send diagnostics san aip deisce. Uaslódálann `/debug upload` an achoimre chuig greamán poiblí ina ionad sin."
   deny:
     stale: "❌ Ordú diúltaithe (bhí an cead imithe i léig)."
     no_pending: "Níl aon ordú ag fanacht le diúltú."
@@ -805,6 +808,7 @@ gateway:
     ack_generate: "Ag giniúint AGENTS.md ó scanadh tionscadail…"
   moa:
     prepare_failed: "Theip ar sheal MoA a ullmhú."
+    managed_session: "Níl /moa ar fáil sa seisiún seo: ritheann seisiúin mhód sábháilte, gan chumraíocht, kanban agus oibrí bainistithe gach seal ar a samhail féin. Seol an leid gan /moa."
   quick_command:
     no_output: "Níor chuir an t-ordú aon aschur ar ais."
     timed_out: "Chuaigh an mear-ordú thar am (30s)."
@@ -980,6 +984,7 @@ platform:
     denied: "❌ Diúltaithe."
     approval_expired: "⌛ Tá an cead imithe in éag — níor ritheadh an t-ordú (chuaigh sé thar am cheana nó réitíodh é in áit eile)."
   shared:
+    response_as_file: "📎 Freagra fada: tá an téacs iomlán ceangailte."
     truncated_suffix: "\n...(giorraithe)"
     unknown: "anaithnid"
     approval_expired: "⌛ Tá an cead imithe in éag — níor ritheadh an t-ordú (chuaigh sé thar am cheana nó réitíodh é in áit eile)."
@@ -1170,8 +1175,6 @@ platform:
         unknown: "Scil anaithnid: `{name}`. Tosaigh ag clóscríobh le haghaidh moltaí uathchríochnaithe."
       auto_args_description: "Argóintí: {args_hint}"
       auto_description_fallback: "Rith /{name}"
-    limits:
-      response_truncated: "⚠️ **Freagra giorraithe** — sháraigh an freagra seo an teorainn seachadta ({max_messages} teachtaireacht). Níor seachadadh {dropped_chars} carachtar; tá an freagra iomlán i logaí an tseisiúin."
     forum:
       default_title: "Postáil Nua"
     voice:
@@ -1707,7 +1710,7 @@ slash:
   version:
     description: "Taispeáin leagan Hermes Agent"
   debug:
-    description: "Uaslódáil tuairisc dhífhabhtaithe (eolas córais + logaí) agus faigh naisc in-roinnte"
+    description: "Tuarascáil dhífhabhtaithe (leaganacha, eochracha cumraíochta, comhaireamh earráidí; gan téacs loga): taispeántar an fógra príobháideachta ar dtús; roinneann /debug upload naisc"
   quit:
     description: "Scoir den CLI (úsáid --delete chun stair an tseisiúin a bhaint freisin)"
 cli:
@@ -3920,7 +3923,7 @@ tips:
   t343: "Scoránaíonn /voice tts mód TTS amháin — freagraíonn an gníomhaire os ard ach clóscríobhann tú do leideanna fós."
   t344: "Athscanann /reload-skills ~/.hermes/skills/ ionas go dtagann scileanna drop-in chun cinn gan an seisiún a atosú."
   t345: "Roghnaíonn /indicator kaomoji|emoji|unicode|ascii stíl an táscaire gnóthach TUI a thaispeántar le linn rití gníomhaire."
-  t346: "Uaslódálann /debug cuach tacaíochta (eolas córais + logaí) agus filleann naisc inroinnte — oibríonn sé sa chomhrá freisin."
+  t346: "Uaslódálann /debug upload achoimre (leaganacha, eochracha cumraíochta, comhaireamh earráidí; gan téacs loga) agus filleann nasc inroinnte — oibríonn sé sa chomhrá freisin."
   t347: "Is é hermes -z \"<prompt>\" an aon-uaire is glaine: an freagra deiridh ar stdout, gan aon rud eile — foirfe le haghaidh píopála i scripteanna."
   t348: "Instealann hermes chat --pass-session-id ID an tseisiúin i leid an chórais ionas gur féidir leis an ngníomhaire tagairt dó féin."
   t349: "Ceanglaíonn hermes chat --image path/to/pic.png íomhá áitiúil le hiarratas -q amháin gan céim uaslódála ar leith."

@@ -190,10 +190,13 @@ gateway:
     upload_failed: "✗ Échec de l'envoi du rapport de débogage : {error}"
     header: "**Rapport de débogage envoyé :**"
     auto_delete: "⏱ Les pastes s'effaceront automatiquement dans 6 heures."
-    full_logs_hint: "Pour envoyer les journaux complets, utilisez `hermes debug share` depuis la CLI."
+    full_logs_hint: "Pour envoyer les journaux complets, utilisez `hermes debug share --nous` depuis la CLI."
     share_hint: "Partagez ces liens avec l'équipe Hermes pour obtenir de l'aide."
     report_label: "Rapport"
-    local_refused: "`/debug local` garde le rapport sur la machine qui exécute Hermes ; il n'est donc pas disponible depuis une discussion. Envoyez `/debug` pour téléverser le rapport de synthèse."
+    local_refused: "`/debug local` garde le rapport sur la machine qui exécute Hermes ; il n'est donc pas disponible depuis une discussion. Envoyez `/debug upload` pour téléverser le rapport de synthèse."
+    upload_hint: "Rien n'a été téléversé. Envoyez `/debug upload` pour téléverser le rapport de synthèse."
+    upload_hint_local: "Rien n'a été téléversé. Envoyez `/debug upload` pour téléverser le rapport de synthèse, ou `/debug local` pour l'afficher ici."
+    nous_refused: "Rien n'a été téléversé. Les envois privés vers Nous ne sont pas disponibles ici : lancez `hermes debug share --nous` dans un terminal, ou utilisez Send diagnostics dans l'application de bureau. `/debug upload` téléverse plutôt la synthèse vers un paste public."
   deny:
     stale: "❌ Commande refusée (l'approbation était périmée)."
     no_pending: "Aucune commande en attente de refus."
@@ -944,6 +947,7 @@ gateway:
     ack_generate: "Génération d'AGENTS.md à partir d'une analyse du projet…"
   moa:
     prepare_failed: "Échec de la préparation du tour MoA."
+    managed_session: "/moa n'est pas disponible dans cette session : les sessions en mode sans échec, sans configuration, kanban et à worker géré exécutent chaque tour sur leur propre modèle. Envoyez le prompt sans /moa."
   quick_command:
     no_output: "La commande n'a renvoyé aucune sortie."
     timed_out: "Délai de la commande rapide dépassé (30 s)."
@@ -1168,6 +1172,7 @@ platform:
     denied: "❌ Refusé."
     approval_expired: "⌛ Approbation expirée — la commande n'a pas été exécutée (délai dépassé ou déjà résolue ailleurs)."
   shared:
+    response_as_file: "📎 Réponse longue : le texte complet est en pièce jointe."
     truncated_suffix: |2-
 
       ...(tronqué)
@@ -1369,8 +1374,6 @@ platform:
         unknown: "Skill inconnue : `{name}`. Commencez à taper pour obtenir des suggestions."
       auto_args_description: "Arguments : {args_hint}"
       auto_description_fallback: "Exécuter /{name}"
-    limits:
-      response_truncated: "⚠️ **Réponse tronquée** — cette réponse a dépassé la limite d'envoi ({max_messages} messages). {dropped_chars} caractères n'ont pas été transmis ; la réponse complète se trouve dans les journaux de la session."
     forum:
       default_title: "Nouvelle publication"
     voice:
@@ -1956,7 +1959,7 @@ slash:
   version:
     description: "Afficher la version de Hermes Agent"
   debug:
-    description: "Envoyer un rapport de débogage (infos système + journaux) et obtenir des liens partageables"
+    description: "Rapport de débogage (versions, clés de configuration, compteurs d’erreurs ; aucun texte de journal) : affiche d'abord l'avis de confidentialité ; /debug upload partage les liens"
   quit:
     description: "Quitter la CLI (--delete supprime aussi l'historique de session)"
 cli:
@@ -4242,7 +4245,7 @@ tips:
   t343: "/voice tts bascule en mode TTS seul — l'agent répond à voix haute mais vous continuez à taper vos prompts."
   t344: "/reload-skills rescanne ~/.hermes/skills/ pour que les skills déposées apparaissent sans redémarrer la session."
   t345: "/indicator kaomoji|emoji|unicode|ascii choisit le style de l'indicateur d'activité de la TUI affiché pendant les exécutions de l'agent."
-  t346: "/debug téléverse un bundle de support (infos système + journaux) et renvoie des liens partageables — fonctionne aussi dans le chat."
+  t346: "/debug upload téléverse un résumé (versions, clés de configuration, compteurs d’erreurs ; aucun texte de journal) et renvoie un lien partageable — fonctionne aussi dans le chat."
   t347: "hermes -z \"<prompt>\" est le one-shot le plus pur : la réponse finale sur stdout, rien d'autre — idéal pour les pipes dans des scripts."
   t348: "hermes chat --pass-session-id injecte l'ID de session dans le prompt système pour que l'agent puisse y faire référence lui-même."
   t349: "hermes chat --image path/to/pic.png joint une image locale à une requête -q unique, sans étape de téléversement séparée."

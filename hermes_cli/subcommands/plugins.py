@@ -176,6 +176,13 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         "--session", metavar="ID",
         help="Show runtime evidence for one session (registration health stays global)")
     add_json_flag(plugins_gates, "Print the Gate Plane report as JSON")
+    plugins_idle = plugins_subparsers.add_parser(
+        "idle-tasks", help="List plugin idle tasks (ctx.register_idle_task) or pause/resume one",
+        description="Show each plugin idle task's last run, status and next due time in this profile.")
+    plugins_idle.add_argument("name", nargs="?", default=None, help="Plugin id (required with --pause/--resume)")
+    _idle_toggle = plugins_idle.add_mutually_exclusive_group()
+    _idle_toggle.add_argument("--pause", metavar="TASK", help="Stop running TASK until resumed")
+    _idle_toggle.add_argument("--resume", metavar="TASK", help="Resume a paused TASK")
 
     plugins_doctor = plugins_subparsers.add_parser(
         "doctor", help="Validate a plugin with the real runtime contracts")

@@ -164,10 +164,13 @@ gateway:
     upload_failed: "✗ デバッグレポートのアップロードに失敗しました: {error}"
     header: "**デバッグレポートをアップロードしました:**"
     auto_delete: "⏱ ペーストは 6 時間後に自動削除されます。"
-    full_logs_hint: "完全なログのアップロードには、CLI から `hermes debug share` を使用してください。"
+    full_logs_hint: "完全なログのアップロードには、CLI から `hermes debug share --nous` を使用してください。"
     share_hint: "サポートを受けるには、このリンクを Hermes チームに共有してください。"
     report_label: "レポート"
-    local_refused: "`/debug local` はレポートを Hermes を実行しているマシン上に保持するため、チャットからは使えません。要約レポートをアップロードするには `/debug` を送信してください。"
+    local_refused: "`/debug local` はレポートを Hermes を実行しているマシン上に保持するため、チャットからは使えません。要約レポートをアップロードするには `/debug upload` を送信してください。"
+    upload_hint: "何もアップロードされていません。要約レポートをアップロードするには `/debug upload` を送信してください。"
+    upload_hint_local: "何もアップロードされていません。要約レポートをアップロードするには `/debug upload` を、ここで表示するには `/debug local` を送信してください。"
+    nous_refused: "何もアップロードされていません。ここからは Nous へのプライベートアップロードは利用できません。ターミナルで `hermes debug share --nous` を実行するか、デスクトップアプリの Send diagnostics を使ってください。`/debug upload` は代わりに要約を公開ペーストにアップロードします。"
   deny:
     stale: "❌ コマンドを拒否しました (承認は期限切れでした)。"
     no_pending: "拒否待ちのコマンドはありません。"
@@ -805,6 +808,7 @@ gateway:
     ack_generate: "プロジェクトスキャンから AGENTS.md を生成しています…"
   moa:
     prepare_failed: "MoA ターンの準備に失敗しました。"
+    managed_session: "このセッションでは /moa を使用できません。セーフモード、設定なし、kanban、マネージドワーカーのセッションは、すべてのターンを独自のモデルで実行します。/moa を付けずにプロンプトを送信してください。"
   quick_command:
     no_output: "コマンドは出力を返しませんでした。"
     timed_out: "クイックコマンドがタイムアウトしました (30 秒)。"
@@ -980,6 +984,7 @@ platform:
     denied: "❌ 拒否しました。"
     approval_expired: "⌛ 承認の有効期限が切れました — コマンドは実行されませんでした（すでにタイムアウトしたか、別の場所で処理済みです）。"
   shared:
+    response_as_file: "📎 長い返信のため、全文をファイルで添付しました。"
     truncated_suffix: "\n...(省略)"
     unknown: "不明"
     approval_expired: "⌛ 承認の有効期限が切れました — コマンドは実行されませんでした（すでにタイムアウトしたか、別の場所で処理済みです）。"
@@ -1170,8 +1175,6 @@ platform:
         unknown: "不明なスキル: `{name}`。入力を始めると自動補完の候補が表示されます。"
       auto_args_description: "引数: {args_hint}"
       auto_description_fallback: "/{name} を実行"
-    limits:
-      response_truncated: "⚠️ **応答を省略しました** — この返信は配信上限 ({max_messages} メッセージ) を超えました。{dropped_chars} 文字が配信されていません。完全な応答はセッションログにあります。"
     forum:
       default_title: "新しい投稿"
     voice:
@@ -1707,7 +1710,7 @@ slash:
   version:
     description: "Hermes Agent のバージョンを表示"
   debug:
-    description: "デバッグレポート（システム情報 + ログ）をアップロードして共有リンクを取得"
+    description: "デバッグレポート（バージョン、設定キー名、エラー件数。ログ本文なし）: まずプライバシー通知を表示し、/debug upload でリンクを共有"
   quit:
     description: "CLI を終了（--delete でセッション履歴も削除）"
 cli:
@@ -3920,7 +3923,7 @@ tips:
   t343: "/voice tts は TTS のみのモードを切り替えます。エージェントの応答は音声で読み上げられ、プロンプトはこれまで通りタイプします。"
   t344: "/reload-skills は ~/.hermes/skills/ を再スキャンするため、セッションを再起動せずに追加したスキルが現れます。"
   t345: "/indicator kaomoji|emoji|unicode|ascii で、エージェント実行中に表示される TUI のビジーインジケーターのスタイルを選べます。"
-  t346: "/debug はサポートバンドル（システム情報とログ）をアップロードして共有用リンクを返します。チャットでも使えます。"
+  t346: "/debug upload はサマリー（バージョン、設定キー名、エラー件数。ログ本文なし）をアップロードして共有用リンクを返します。チャットでも使えます。"
   t347: "hermes -z \"<prompt>\" は最も純粋なワンショット実行です。最終回答だけを stdout に出力するため、スクリプトでのパイプ処理に理想的です。"
   t348: "hermes chat --pass-session-id はセッション ID をシステムプロンプトに注入し、エージェントが自身のセッションを参照できるようにします。"
   t349: "hermes chat --image path/to/pic.png は、別途アップロードせずに 1 回の -q クエリにローカル画像を添付します。"
