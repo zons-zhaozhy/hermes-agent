@@ -101,6 +101,9 @@ def _record_tool_trust_metadata(server_name: str, config: dict, tools: list[Any]
         _core._tool_read_only_hints[key] = {
             t.name: _annotation_read_only_hint(t) for t in tools if getattr(t, "name", None)
         }
+        # fork 专属：config 声明的 read_only_tools 一并入派发门（上游无此键；故障关闭版基底上回填）
+        _core._tool_read_only_hints[key].update(
+            {name: True for name in _config_read_only_tools(config)})
 
 
 def _warn_unknown_cost_keys(server_name: str, key, tool_names: list[str]) -> None:
