@@ -65,6 +65,7 @@ mcp_servers:
 | `idle_timeout_seconds` | number | stdio | Optional stdio server recycle after idle time (`0` disables). May also live under a `lifecycle:` mapping |
 | `max_lifetime_seconds` | number | stdio | Optional stdio server recycle after age (`0` disables). May also live under a `lifecycle:` mapping |
 | `read_only_tools` | list | both | Tool names (no `mcp_<server>_` prefix) the user asserts are read-only, for servers that ship no `readOnlyHint` annotations. An asserted tool is replayed once after a stdio child dies mid-call or a transport session expires (same policy as a server-declared `readOnlyHint: true`); it never loosens the untrusted-server approval gate. Malformed values (anything but a list of tool-name strings) skip the whole server at load with an error log |
+| `sensitive_tools` | list | both | Tool names (no `mcp_<server>_` prefix) you declare sensitive: reads that stay behind the untrusted-server approval gate even when their `readOnlyHint` is `true` (read-only is not harmless — what a tool reads matters). Re-evaluated at every discovery; a name the server does not offer logs a warning and gates nothing. Malformed values (anything but a list of tool-name strings) skip the whole server at load with an error log |
 | `tools` | mapping | both | Filtering and utility-tool policy |
 | `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |

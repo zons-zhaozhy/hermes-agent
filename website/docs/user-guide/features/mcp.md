@@ -502,6 +502,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `idle_timeout_seconds` | number | Recycle a stdio server after this many seconds without a tool call (`0` = never, default). The server restarts transparently on the next tool call. |
 | `max_lifetime_seconds` | number | Recycle a stdio server after this total age (`0` = never, default). Restarts transparently on next use. |
 | `read_only_tools` | list | Tool names you assert are read-only (for servers that ship no `readOnlyHint` annotations). An asserted tool is replayed once when the stdio child dies mid-call or a session expires — same policy as a server-declared `readOnlyHint: true`. Malformed values skip the server at load with an error log |
+| `sensitive_tools` | list | Tool names you declare sensitive: reads that stay behind the untrusted-server approval gate even when their `readOnlyHint` is `true` (read-only is not harmless). Re-evaluated at every discovery; a name the server does not offer logs a warning. Malformed values skip the server at load with an error log |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
 | `supports_parallel_tool_calls` | bool | If `true`, tools from this server may run concurrently |
 | `events` | bool | If `true`, register the experimental MCP events tools for this server (default `false`). See [MCP Events](#mcp-events-experimental) |
