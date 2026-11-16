@@ -33,6 +33,7 @@ def test_remote_endpoint_without_key_fails_closed(named_custom):
         rp.resolve_runtime_provider(requested="zai")
 
     assert excinfo.value.code == "missing_api_key"
+    assert "hermes auth reset zai" in str(excinfo.value)
 
 
 def test_loopback_endpoint_keeps_placeholder(named_custom):

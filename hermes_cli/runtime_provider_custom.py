@@ -817,7 +817,8 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
         raise rp.AuthError(
             f"named custom provider '{name}' has no selectable API key for {base_url}; its credential "
             f"pool may be cooling down after a rate limit. Check `hermes auth list {name}` or configure "
-            f"providers.{name}.api_key/key_env/key_cmd. Placeholder authentication was not sent remotely.",
+            f"providers.{name}.api_key/key_env/key_cmd; if quota was topped up or reset externally, run "
+            f"`hermes auth reset {name}`. Placeholder authentication was not sent remotely.",
             provider=name,
             code="missing_api_key",
         )

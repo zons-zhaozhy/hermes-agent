@@ -179,6 +179,21 @@ def _classify_exhausted_status(entry) -> tuple[str, bool]:
     return "exhausted", True
 
 
+def _format_wait_remaining(until: float) -> str:
+    """Format the wait until an epoch timestamp with at most two duration units.
+
+    Contract:
+      Postconditions: the return value is non-empty and never contains more than two units.
+    """
+    remaining = max(0, math.ceil(until - time.time()))
+    minutes, seconds = divmod(remaining, 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    parts = [(days, "d"), (hours, "h"), (minutes, "m"), (seconds, "s")]
+    first = next(i for i, (value, _) in enumerate(parts) if value or i == 3)
+    return " ".join(f"{value}{unit}" for value, unit in parts[first:first + 2])
+
+
 def _format_exhausted_status(entry) -> str:
     if entry.last_status != STATUS_EXHAUSTED:
         return ""
@@ -192,16 +207,28 @@ def _format_exhausted_status(entry) -> str:
     exhausted_until = _exhausted_until(entry)
     if exhausted_until is None:
         return head
-    remaining = max(0, math.ceil(exhausted_until - time.time()))
-    if remaining <= 0:
+    if exhausted_until <= time.time():
         return f"{head} (ready to retry)"
-    minutes, seconds = divmod(remaining, 60)
-    hours, minutes = divmod(minutes, 60)
-    days, hours = divmod(hours, 24)
-    parts = [(days, "d"), (hours, "h"), (minutes, "m"), (seconds, "s")]
-    first = next(i for i, (value, _) in enumerate(parts) if value or i == 3)
-    wait = " ".join(f"{value}{unit}" for value, unit in parts[first:first + 2])
-    return f"{head} ({wait} left)"
+    return f"{head} ({_format_wait_remaining(exhausted_until)} left)"
+
+
+def _format_model_cooldown_status(entry: PooledCredential, provider: str) -> str:
+    """Render only active per-model cooldowns and their deliberate-reset recovery command.
+
+    Contract:
+      Postconditions: empty when no model cooldown is active; otherwise names every active
+        model and never includes credential material.
+    """
+    now = time.time()
+    active = sorted(
+        ((str(model), float(until)) for model, until in (entry.model_cooldowns or {}).items()
+         if isinstance(until, (int, float)) and until > now),
+        key=lambda item: (item[1], item[0]), reverse=True,
+    )
+    if not active:
+        return ""
+    waits = ", ".join(f"{model} ({_format_wait_remaining(until)})" for model, until in active)
+    return f" model cooldown: {waits}; run `hermes auth reset {provider}` after an external quota reset"
 
 
 def _anthropic_oauth_login(args) -> dict:
@@ -549,7 +576,7 @@ def auth_list_command(args) -> None:
         print(f"{provider} ({len(entries)} credentials):")
         for idx, entry in enumerate(entries, start=1):
             marker = "← " if current is not None and entry.id == current.id else "  "
-            status = _format_exhausted_status(entry)
+            status = _format_exhausted_status(entry) + _format_model_cooldown_status(entry, provider)
             source = _display_source(entry.source)
             row = (
                 f"  #{idx}  {entry.label:<20} {entry.auth_type:<7} "

@@ -39,6 +39,48 @@ def _write_groq_provider_config(
     )
 
 
+def test_auth_list_shows_active_model_cooldowns(tmp_path, monkeypatch, capsys):
+    """Model-scoped cooldowns must be visible where the resolver's error sends the operator.
+
+    An externally reset quota can reopen before the provider's original reset time; the
+    recovery command is ``hermes auth reset``. Hiding ``model_cooldowns`` from ``auth list``
+    makes that guidance read as a clean pool and gives the operator no actionable state.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "deepseek": [
+                    {
+                        "id": "cred-1",
+                        "label": "api-key-1",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-test",
+                        "model_cooldowns": {"deepseek-chat": time.time() + 3600},
+                    }
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_list_command
+
+    class _Args:
+        provider = "deepseek"
+
+    auth_list_command(_Args())
+    output = capsys.readouterr().out
+
+    assert "deepseek-chat" in output
+    assert "1h" in output
+    assert "hermes auth reset deepseek" in output
+
+
 def _jwt_with_email(email: str) -> str:
     header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
     payload = base64.urlsafe_b64encode(
