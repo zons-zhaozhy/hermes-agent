@@ -58,6 +58,15 @@ def _tool_is_read_only(server_name: str, tool_name: str) -> bool:
     return _core._tool_read_only_hints.get(_resolve_server_key(server_name), {}).get(tool_name) is True
 
 
+def _tool_is_sensitive(server_name: str, tool_name: str) -> bool:
+    """True when the operator declared the tool in ``sensitive_tools`` — a read that stays behind
+    the approval gate even when read-only (what a tool reads matters, not just whether it writes).
+    Operator-side config recorded at discovery; missing metadata fails safe to False because an
+    absent declaration simply means "not declared sensitive" (same grain as read_only_tools)."""
+    from tools.mcp_tool_scope import _resolve_server_key
+    return tool_name in _core._tool_sensitive_sets.get(_resolve_server_key(server_name), set())
+
+
 def _trust_approval_key(server_name: str, tool_name: str) -> str:
     """Approval key a session/always answer to the trust gate is kept under: one (server, tool) pair,
     so allowing one write tool never covers the server's others. Session entries are per chat;
@@ -200,7 +209,10 @@ def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] =
     trust = _core._server_trust_levels.get(key)
     if trust is None:
         trust = _configured_trust(server_name, key)
-    gated = trust == _core._TRUST_UNTRUSTED and not _tool_is_read_only(server_name, tool_name)
+    gated = trust == _core._TRUST_UNTRUSTED and (
+        not _tool_is_read_only(server_name, tool_name)
+        or _tool_is_sensitive(server_name, tool_name)
+    )
     if gated and _trust_granted(server_name, tool_name):
         logger.info("MCP trust gate: trust prompt skipped for '%s' on untrusted server '%s' (key %r): remembered "
                     "grant or approval bypass", tool_name, server_name, key)
@@ -303,7 +315,8 @@ def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[lis
                 tool_name, "untrusted" if gated else "spend-limited", server_name)
     if over and charge is not None:
         return tool_error(charge.refusal(spent))
-    return tool_error(f"The user did not approve running write-capable MCP tool '{tool_name}' on untrusted server "
+    kind = "sensitive" if _tool_is_sensitive(server_name, tool_name) else "write-capable"
+    return tool_error(f"The user did not approve running {kind} MCP tool '{tool_name}' on untrusted server "
                       f"'{server_name}'. The command was NOT run. Do not retry without explicit user direction.")
 
 

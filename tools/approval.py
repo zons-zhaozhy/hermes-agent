@@ -513,6 +513,9 @@ def load_permanent(patterns: set):
 
 def _persist_choice(session_key: str, choice: str, keys: list[str]) -> None:
     """Persist a human ``session``/``always`` choice for each pattern key. ``once`` persists nothing."""
+    # Audit trail: the standing-rule moments (who's session, which keys, what choice) are the
+    # decisions an operator later needs to account for; refusals already warn elsewhere.
+    logger.info("approval decision persisted: session=%s choice=%s keys=%s", session_key, choice, keys)
     for key in keys:
         if choice not in ("session", "always"):
             continue

@@ -611,6 +611,11 @@ _CIRCUIT_BREAKER_THRESHOLD, _CIRCUIT_BREAKER_COOLDOWN_SEC = 3, 60.0
 # ``_tool_read_only_hints`` by the connection key (the server's own tool annotations).
 _server_trust_levels: dict[Any, str] = {}
 _tool_read_only_hints: dict[Any, dict[str, bool]] = {}
+# Operator-declared sensitive reads (``mcp_servers.<name>.sensitive_tools``), keyed like
+# ``_tool_read_only_hints``: re-recorded at every discovery so a reconnect re-classifies.
+# A sensitive tool stays behind the approval gate even when its readOnlyHint is True —
+# read-only is not harmless (a salary lookup reads, but what it reads matters).
+_tool_sensitive_sets: dict[Any, set[str]] = {}
 # Declared per-tool costs + per-chat spend limit (``tools.mcp_tool_costs.CostPolicy``), keyed like
 # ``_server_trust_levels``: the consuming profile's policy. Absent = no costs, behaviour unchanged.
 _server_cost_policies: dict[Any, Any] = {}

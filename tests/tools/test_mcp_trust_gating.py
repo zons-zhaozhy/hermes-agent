@@ -75,7 +75,8 @@ def fake_session():
 def _clean_trust_state():
     """Isolate the module-level trust metadata between tests."""
     with patch.dict(mcp_tool._server_trust_levels, {}, clear=True), \
-         patch.dict(mcp_tool._tool_read_only_hints, {}, clear=True):
+         patch.dict(mcp_tool._tool_read_only_hints, {}, clear=True), \
+         patch.dict(mcp_tool._tool_sensitive_sets, {}, clear=True):
         yield
 
 
@@ -416,3 +417,100 @@ class TestAnnotationCaptureAtDiscovery:
         assert _mcp_registration._annotation_read_only_hint(
             SimpleNamespace(annotations={"read_only_hint": True})
         ) is True
+
+
+def _set_sensitive(server: str, *tools: str):
+    mcp_tool._tool_sensitive_sets[server] = set(tools)
+
+
+class TestSensitiveReadGating:
+    """``sensitive_tools``：只读≠无害——敏感读在 untrusted 服务器也要过审批门。"""
+
+    def test_sensitive_read_only_tool_on_untrusted_requires_approval(self, fake_session):
+        """readOnlyHint=True 但声明为敏感 → 仍须审批；批准后放行。"""
+        _set_trust("srv", "untrusted")
+        _set_read_only("srv", "read_salary", True)
+        _set_sensitive("srv", "read_salary")
+        handler = _mcp_handlers._make_tool_handler("srv", "read_salary", 30.0)
+        with patch(
+            "tools.approval_prompt.request_elicitation_consent",
+            return_value="accept",
+        ) as consent:
+            raw = handler({"name": "alice"})
+        consent.assert_called_once()
+        assert json.loads(raw) == {"result": "ok"}
+        fake_session.call_tool.assert_awaited_once()
+
+    def test_sensitive_tool_denied_blocks_rpc(self, fake_session):
+        """敏感读被拒 → RPC 不发（fail closed）。"""
+        _set_trust("srv", "untrusted")
+        _set_read_only("srv", "read_salary", True)
+        _set_sensitive("srv", "read_salary")
+        handler = _mcp_handlers._make_tool_handler("srv", "read_salary", 30.0)
+        with patch(
+            "tools.approval_prompt.request_elicitation_consent",
+            return_value="decline",
+        ):
+            raw = handler({"name": "alice"})
+        fake_session.call_tool.assert_not_awaited()
+        assert "error" in json.loads(raw)
+        assert "sensitive" in str(raw)
+
+    def test_nonsensitive_read_only_tool_still_skips_approval(self, fake_session):
+        """未声明敏感的只读工具行为不变：直放。"""
+        _set_trust("srv", "untrusted")
+        _set_read_only("srv", "list_repos", True)
+        handler = _mcp_handlers._make_tool_handler("srv", "list_repos", 30.0)
+        with patch(
+            "tools.approval_prompt.request_elicitation_consent"
+        ) as consent:
+            raw = handler({})
+        consent.assert_not_called()
+        assert json.loads(raw) == {"result": "ok"}
+
+    def test_sensitive_on_trusted_server_skips_approval(self, fake_session):
+        """敏感标记不改变 trust: full 的语义——受信服务器不问。"""
+        _set_trust("srv", "full")
+        _set_read_only("srv", "read_salary", True)
+        _set_sensitive("srv", "read_salary")
+        handler = _mcp_handlers._make_tool_handler("srv", "read_salary", 30.0)
+        with patch(
+            "tools.approval_prompt.request_elicitation_consent"
+        ) as consent:
+            raw = handler({"name": "alice"})
+        consent.assert_not_called()
+        assert json.loads(raw) == {"result": "ok"}
+
+
+class TestSensitiveToolsRegistration:
+    """发现期记录、校验与未知名告警。"""
+
+    def _make_tool(self, name, annotations=None):
+        return SimpleNamespace(
+            name=name, description="", inputSchema=None,
+            annotations=annotations,
+        )
+
+    def test_registration_records_sensitive_set(self):
+        _mcp_registration._record_tool_trust_metadata(
+            "srv",
+            {"trust": "untrusted", "sensitive_tools": ["read_salary"]},
+            [self._make_tool("read_salary", SimpleNamespace(readOnlyHint=True))],
+        )
+        assert mcp_tool._tool_sensitive_sets["srv"] == {"read_salary"}
+
+    def test_malformed_sensitive_tools_raises(self):
+        with pytest.raises(ValueError, match="sensitive_tools"):
+            _mcp_registration._record_tool_trust_metadata(
+                "srv", {"sensitive_tools": "read_salary"}, []
+            )
+
+    def test_unknown_sensitive_name_warns(self, caplog):
+        """声明了服务器不提供的工具名 → 告警（防静默不拦）。"""
+        with caplog.at_level("WARNING", logger="tools.mcp_tool_registration"):
+            _mcp_registration._record_tool_trust_metadata(
+                "srv",
+                {"sensitive_tools": ["read_salary"]},
+                [self._make_tool("list_repos")],
+            )
+        assert any("read_salary" in r.message for r in caplog.records)

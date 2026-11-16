@@ -86,6 +86,20 @@ def _config_read_only_tools(config: Any) -> list[str]:
     return raw
 
 
+def _config_sensitive_tools(config: Any) -> list[str]:
+    """Tool names the operator declared sensitive in ``mcp_servers.<name>.sensitive_tools``:
+    reads that must stay behind the approval gate even with ``readOnlyHint=True``
+    (read-only is not harmless — the data a tool reads is what matters). Same validation
+    contract as ``read_only_tools``: malformed fails loudly, load-time validation drops
+    the whole server."""
+    raw = (config or {}).get("sensitive_tools")
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(t, str) and t for t in raw):
+        raise ValueError(f"sensitive_tools must be a list of tool-name strings, got {raw!r}")
+    return raw
+
+
 def _record_tool_trust_metadata(server_name: str, config: dict, tools: list[Any], key: Any = None) -> None:
     """Capture per-server trust and per-tool readOnlyHint at discovery — the security boundary: the call-time gate
     classifies from data we control, never re-read server-supplied state. *key* is the connection (default: the
@@ -104,6 +118,14 @@ def _record_tool_trust_metadata(server_name: str, config: dict, tools: list[Any]
         # fork 专属：config 声明的 read_only_tools 一并入派发门（上游无此键；故障关闭版基底上回填）
         _core._tool_read_only_hints[key].update(
             {name: True for name in _config_read_only_tools(config)})
+        # fork 专属：sensitive_tools 同机制记录（发现期重录=刷新重算）；未知名告警防静默不拦。
+        sensitive = _config_sensitive_tools(config)
+        offered = {t.name for t in tools if getattr(t, "name", None)}
+        unknown = [name for name in sensitive if name not in offered]
+        if unknown:
+            logger.warning("MCP server '%s': sensitive_tools names %s, which the server does "
+                           "not offer, so those tools get no sensitive gating.", server_name, unknown)
+        _core._tool_sensitive_sets[key] = set(sensitive)
 
 
 def _warn_unknown_cost_keys(server_name: str, key, tool_names: list[str]) -> None:
