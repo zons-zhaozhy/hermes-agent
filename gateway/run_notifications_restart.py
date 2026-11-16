@@ -73,7 +73,7 @@ class GatewayRestartNoticeMixin:
                 return None
             keep = True  # a send cancelled mid-flight (shutdown) is not proof of delivery: keep it
             try:
-                raw = notify_path.read_text(encoding="utf-8-sig")
+                raw = await asyncio.to_thread(notify_path.read_text, encoding="utf-8-sig")
                 if not replay:
                     self._restart_notice_claimed = raw
                 elif raw != self._restart_notice_claimed:

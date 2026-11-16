@@ -1,3 +1,6 @@
+# health: allow FILE_LINES -- 行数 2061 来自上游合并（c54ffb107f..5b292ecc4b，2026-11-15，+127 超过 main 基线 1934）；
+# 归一化/分词/模式表在同一模块内强耦合，拆分会偏离上游安全检测布局并制造后续同步的永久冲突面，
+# 按门禁规程登记豁免（同 tool_executor/run_inbound 先例）。
 """Dangerous-command detection: normalization, tokenizing, and pattern tables.
 
 Pure command classification for :mod:`tools.approval` — no approval state, config reads, or

@@ -1219,7 +1219,7 @@ class TestRefusalReadsAsTheStopLine:
     def test_the_pool_bench_lasts_until_the_refused_allowance_resets(self):
         """The 402's own headers are captured before recovery, so the pool gets the window's reset (not its
         default 60 s / 1 h bench); a state naming no reset leaves the default."""
-        from agent.turn_recovery import _usage_window_reset_context
+        from agent.turn_recovery_pool import _usage_window_reset_context
         assert _usage_window_reset_context(self._agent()) == {"reset_at": DAY_RESET / 1000}
         assert _usage_window_reset_context(SimpleNamespace(_credits_state=None)) == {}
 
@@ -1228,7 +1228,7 @@ class TestRefusalReadsAsTheStopLine:
         time, the pool bench and the card all name the day (what stops this model), not the month-away reset."""
         from agent import plan_limits as pl
         from agent.conversation_loop import _usage_window_refusal
-        from agent.turn_recovery import _usage_window_reset_context
+        from agent.turn_recovery_pool import _usage_window_reset_context
         monkeypatch.setattr(pl, "cached_pricing", lambda base_url: {
             "example/model-b": {"prompt": "0.0000004", "completion": "0.000004", "usage_level": "medium"}})
         agent = self._agent(window_top_tier_used_bp=10_000, window_top_tier_resets_at_ms=MONTH_RESET)
@@ -1242,7 +1242,7 @@ class TestRefusalReadsAsTheStopLine:
         its 300 s cache lapsed): it may be Large, so the line, retry time, pool bench and card name the later
         Large-model reset, never a daily one it would still be refused after."""
         from agent.conversation_loop import _usage_window_refusal
-        from agent.turn_recovery import _usage_window_reset_context
+        from agent.turn_recovery_pool import _usage_window_reset_context
         agent = self._agent(window_top_tier_used_bp=10_000, window_top_tier_resets_at_ms=MONTH_RESET)
         text, resets_at, limit = _usage_window_refusal(agent, SimpleNamespace(error_context={"usage_window": True}))
         assert text.startswith(f"You've hit your monthly large-model limit · resets {format_window_reset(MONTH_RESET)}")

@@ -1,3 +1,6 @@
+# health: allow FILE_LINES -- 行数 2100 来自上游合并（c54ffb107f..5b292ecc4b，2026-11-15，+149 超过 main 基线 1951）；
+# 模式注册表与本模块全局 matcher 强耦合、输出 API 有约 30 个导入点，拆分会偏离上游布局并
+# 制造后续每轮同步的永久冲突面，按门禁规程登记豁免（同 tool_executor/run_inbound 先例）。
 """Regex-based secret redaction for logs and tool output.
 
 Short tokens (< 18 chars) are fully masked; longer ones keep the first 6 and

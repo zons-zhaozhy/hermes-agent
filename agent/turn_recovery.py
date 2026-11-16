@@ -40,6 +40,7 @@ from agent.turn_failure_copy import (
 from agent.route_verdicts import route_visit
 from agent.turn_retry_state import TurnRetryState
 from agent.turn_recovery_codex import _codex_soft_failure_error, _is_codex_token_expired, _recover_stale_codex_reasoning
+from agent.turn_recovery_pool import _pool_error_context
 from hermes_constants import display_hermes_home
 from utils import base_url_host_matches
 
@@ -629,35 +630,6 @@ def _reject_all_turns(agent: Any, api_error: Exception) -> bool:
     return bool(reject(api_error)) if callable(reject) else False
 
 
-def _pool_error_context(agent, classified: Any, error_context: Any) -> Any:
-    """What the credential pool sees: the turn's raw context merged with the classifier's hints.
-
-    A Z.AI 1302 transient throttle carries a short ``reset_at`` the pool would otherwise drop
-    (it is stored on ``classified.error_context``, not the raw ``extract_api_error_context``);
-    without it the pool benches every key for its generic multi-entry 429 TTL (one hour) even
-    though Z.AI asked for a brief slowdown. A plan limit (usage-window 402) benches only the
-    refused model on the credential, until its reset."""
-    raw = error_context if isinstance(error_context, dict) else {}
-    classified_ctx = getattr(classified, "error_context", None) or {}
-    if not classified_ctx.get("usage_window"):
-        return {**raw, **classified_ctx}
-    return {**raw, "usage_window": True, **_usage_window_reset_context(agent)}
-
-
-def _usage_window_reset_context(agent) -> dict[str, float]:
-    """``{"reset_at": epoch s}`` for a usage-window 402: when the refused allowance frees up, from the usage
-    headers the 402 carried (the API's error body has no reset). Empty when the state names none, so the
-    pool keeps its default bench."""
-    try:
-        from agent.credits_tracker import window_stop_resets_at_ms
-        from agent.plan_limits import current_model_is_top_tier
-        state = getattr(agent, "_credits_state", None)
-        resets_ms = (window_stop_resets_at_ms(state, model_is_top_tier=current_model_is_top_tier(agent))
-                     if state is not None else None)
-    except Exception:
-        logger.debug("usage-window reset unavailable for the pool", exc_info=True)
-        return {}
-    return {"reset_at": resets_ms / 1000} if isinstance(resets_ms, (int, float)) and resets_ms > 0 else {}
 
 
 def recover_after_classification(

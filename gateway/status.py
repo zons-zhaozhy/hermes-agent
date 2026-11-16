@@ -28,10 +28,6 @@ from gateway.status_inline_source import (
     inline_source_flag_index,
 )
 from gateway.status_identity import canonical_hermes_home, same_hermes_home
-from hermes_constants import (
-    _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home,
-)
-from hermes_cli._subprocess_compat import pid_exists_stdlib
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
 from hermes_cli._subprocess_compat import pid_exists_stdlib, process_start_time_stdlib
 from gateway.status_lock_dir import unusable_lock_dir, unusable_lock_dir_recovered

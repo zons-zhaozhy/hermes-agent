@@ -927,7 +927,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
         stdio_child_exited = partial(_handle_stdio_child_exited_and_retry, call_may_have_side_effects=not read_only)
         text = _dispatch(
             server_name, server, op, _attempt, tool_timeout,
-            (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, session_expired),
+            (stdio_child_exited, _handle_auth_error_and_retry, session_expired),
             _on_failure, record_outcome=True)
         if isinstance(text, _RefusedRetry) and all(_never_reached_server(exc) for exc in failures):
             for charge in booked:  # refused, and no earlier attempt reached the server: nothing ran
