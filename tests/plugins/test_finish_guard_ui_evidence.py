@@ -270,3 +270,106 @@ class TestHardAssertionEvidence:
         assert ui_evidence._hard_assertion_defect(0, w, repo) is None  # 期望: role 命中自身声明词即放行（all 合并不阻断 role 原语义）
         repo2, w2 = self._mk_all(tmp_path, cfg, "任务步数实测 3 步", "staff")
         assert ui_evidence._hard_assertion_defect(0, w2, repo2) is None  # 期望: role 条目也可命中 all 通用词（合并=任一命中即算）
+
+
+class TestDesignCriteria:
+    """设计判据锚——参考图（对照对象）+ 数值判据（可对账指标），opt-in 声明即执法。"""
+
+    _CFG = {"reference_images": {"required": True},
+            "metrics": {"primary_cta_font_px": {"min": 13},
+                        "body_line_height_ratio": {"min": 1.4, "max": 1.9}}}
+
+    def _mk(self, tmp_path: Path, w: dict) -> tuple[Path, dict]:
+        repo = tmp_path / f"repo-{time.time_ns()}"
+        (repo / ".hermes").mkdir(parents=True)
+        (repo / ".hermes" / "ui_design_criteria.json").write_text(
+            json.dumps(self._CFG), encoding="utf-8")
+        return repo, w
+
+    def _ok_walkthrough(self, tmp_path: Path) -> dict:
+        ref = tmp_path / f"ref-{time.time_ns()}.png"
+        ref.write_bytes(b"\x89PNG")
+        return {"url": "http://127.0.0.1:8130/", "checked_at": int(time.time()),
+                "reference_images": [str(ref)],
+                "assertions": [
+                    {"claim": "主操作按钮字号达标", "result": "pass",
+                     "metric": "primary_cta_font_px", "measured": 14,
+                     "evidence": "CDP getComputedStyle 14px"},
+                    {"claim": "正文行高比值达标", "result": "pass",
+                     "metric": "body_line_height_ratio", "measured": 1.6,
+                     "evidence": "line-height 25.6px / font-size 16px"},
+                ]}
+
+    def test_no_declaration_file_no_enforcement(self, tmp_path):
+        repo = tmp_path / "bare"
+        (repo / ".hermes").mkdir(parents=True)
+        w = {"url": "u", "assertions": [{"claim": "c", "result": "pass"}]}
+        assert ui_evidence._design_criteria_defect(0, w, repo) is None  # 期望: 未声明项目零影响（向后兼容）
+
+    def test_ok_walkthrough_passes(self, tmp_path):
+        repo, w = self._mk(tmp_path, self._ok_walkthrough(tmp_path))
+        assert ui_evidence._design_criteria_defect(0, w, repo) is None  # 期望: 参考图存在+全指标落界+evidence 齐 → 放行
+
+    def test_missing_reference_images_rejected(self, tmp_path):
+        w = self._ok_walkthrough(tmp_path)
+        w.pop("reference_images")
+        repo, w = self._mk(tmp_path, w)
+        defect = ui_evidence._design_criteria_defect(0, w, repo)
+        # 期望: 参考图必填声明下缺 reference_images 被拦（凭空生成无对照）
+        assert defect is not None and "reference_images" in defect
+
+    def test_relative_reference_path_rejected(self, tmp_path):
+        w = self._ok_walkthrough(tmp_path)
+        w["reference_images"] = ["relative/ref.png"]
+        repo, w = self._mk(tmp_path, w)
+        defect = ui_evidence._design_criteria_defect(0, w, repo)
+        assert defect is not None and "绝对路径" in defect  # 期望: 相对路径不可定位, 被拒
+
+    def test_missing_metric_rejected(self, tmp_path):
+        w = self._ok_walkthrough(tmp_path)
+        w["assertions"] = [a for a in w["assertions"]
+                           if a.get("metric") != "body_line_height_ratio"]
+        repo, w = self._mk(tmp_path, w)
+        defect = ui_evidence._design_criteria_defect(0, w, repo)
+        # 期望: 声明指标缺数值断言被拦（软断言替代不了对账）
+        assert defect is not None and "body_line_height_ratio" in defect
+
+    def test_metric_out_of_range_rejected(self, tmp_path):
+        w = self._ok_walkthrough(tmp_path)
+        for a in w["assertions"]:
+            if a.get("metric") == "primary_cta_font_px":
+                a["measured"] = 12
+        repo, w = self._mk(tmp_path, w)
+        defect = ui_evidence._design_criteria_defect(0, w, repo)
+        # 期望: 实测值低于 min=13 被拦（不达标即缺陷, 禁措辞修饰）
+        assert defect is not None and "越界" in defect
+
+    def test_metric_without_evidence_rejected(self, tmp_path):
+        w = self._ok_walkthrough(tmp_path)
+        for a in w["assertions"]:
+            if a.get("metric") == "primary_cta_font_px":
+                a.pop("evidence")
+        repo, w = self._mk(tmp_path, w)
+        defect = ui_evidence._design_criteria_defect(0, w, repo)
+        # 期望: measured 命中但无取得方式被拦（数值可伪造, 取值路径须可复核）
+        assert defect is not None and "evidence" in defect
+
+    def test_bool_measured_not_counted_as_numeric(self, tmp_path):
+        w = self._ok_walkthrough(tmp_path)
+        for a in w["assertions"]:
+            if a.get("metric") == "primary_cta_font_px":
+                a["measured"] = True  # bool 是 int 子类, 裸 isinstance 会误判
+        repo, w = self._mk(tmp_path, w)
+        defect = ui_evidence._design_criteria_defect(0, w, repo)
+        # 期望: True(=1) 不算数值实测, 按「缺数值判据」拦
+        assert defect is not None and "缺数值判据" in defect
+
+    def test_check_level_nudged_when_declared_project_lacks_reference(self, tmp_path):
+        repo, src = _mk_repo(tmp_path)
+        (repo / ".hermes" / "ui_design_criteria.json").write_text(
+            json.dumps({"reference_images": {"required": True}}), encoding="utf-8")
+        _write_evidence(repo, int(time.time()), shot=_mk_shot(tmp_path),
+                        assets=["index-test123.js"])
+        r = ui_evidence.check([str(src)], 0, 3)
+        # 期望: 声明项目走查证据缺参考图锚 → 整体被拦强制续跑（新锚纳入 check 链）
+        assert r.get("action") == "continue" and "reference_images" in r["message"]

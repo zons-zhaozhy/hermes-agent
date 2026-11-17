@@ -109,7 +109,7 @@ def _hard_assertion_defect(idx: int, w: dict, root: Path) -> str | None:
     try:
         cfg = json.loads(cfg_file.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
-        print(f"[ui_evidence] ui_hard_assertions.json 解析失败, 本次不执法: {exc}")
+        logger.warning("ui_hard_assertions.json 解析失败, 本次不执法: %s", exc)
         return None
     if not isinstance(cfg, dict):
         return None
@@ -136,6 +136,71 @@ def _hard_assertion_defect(idx: int, w: dict, root: Path) -> str | None:
         return (f"walkthroughs[{idx}](role={role}) 硬断言命中关键词但缺 evidence: {bare}——"
                 f"关键词命中只证明措辞, 同条须给可核对的实测证据(命令/选择器/实测值), "
                 f"声明关键词 {keywords}")
+    return None
+
+
+def _design_criteria_defect(idx: int, w: dict, root: Path) -> str | None:
+    """opt-in 设计判据锚（参考图 + 数值判据）.
+
+    Contract:
+        Preconditions: w 为单条 walkthrough 字典; root 为仓库根.
+        Postconditions: 声明文件 root/.hermes/ui_design_criteria.json 形如
+            {"reference_images": {"required": true},
+             "metrics": {"<metric>": {"min": 13, "max": 1.9}}}——
+            required 时 w.reference_images 须为非空存在的绝对路径列表;
+            每个声明 metric 须至少 1 条断言带 {"metric": <name>,
+            "measured": <数值>} 且 measured 落在声明边界内、evidence 非空;
+            声明文件不存在 / 解析失败 / 空声明 → None（不执法, 向后兼容）.
+    设计动机: 三防伪锚只证「走查真的发生过」, 不证「对照了什么、好到什么程度」
+    ——参考图锚堵「凭空生成无对照」, 数值判据锚堵「好看/正常」类不可核对断言;
+    与 ui_hard_assertions.json 分开声明, 避免关键词语义与数值边界语义混 schema.
+    """
+    cfg_file = root / ".hermes" / "ui_design_criteria.json"
+    if not cfg_file.exists():
+        return None
+    try:
+        cfg = json.loads(cfg_file.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError) as exc:
+        logger.warning("ui_design_criteria.json 解析失败, 本次不执法: %s", exc)
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    ref_cfg = cfg.get("reference_images")
+    if isinstance(ref_cfg, dict) and ref_cfg.get("required"):
+        refs = w.get("reference_images")
+        if not isinstance(refs, list) or not refs:
+            return (f"walkthroughs[{idx}] 缺 reference_images（本项目已声明参考图必填——"
+                    "至少 1 张设计参考图绝对路径, 交付界面须对照参考而非凭空生成）")
+        for r in refs:
+            p = Path(str(r))
+            if not p.is_absolute():
+                return f"walkthroughs[{idx}].reference_images 须绝对路径: {r}"
+            if not p.exists():
+                return f"参考图不存在: {r}"
+    metrics = cfg.get("metrics")
+    if isinstance(metrics, dict) and metrics:
+        assertions = [a for a in (w.get("assertions") or []) if isinstance(a, dict)]
+        for name, bounds in metrics.items():
+            if not isinstance(bounds, dict):
+                continue
+            hit = [a for a in assertions if str(a.get("metric")) == name
+                   and isinstance(a.get("measured"), (int, float))
+                   and not isinstance(a.get("measured"), bool)]
+            if not hit:
+                return (f"walkthroughs[{idx}] 缺数值判据 {name}——本项目已在 "
+                        f"ui_design_criteria.json 声明, 至少 1 条断言须带 "
+                        f"{{\"metric\": \"{name}\", \"measured\": <实测值>}}（"
+                        "「好看/正常」类断言不可核对, 数值才可对账）")
+            for a in hit:
+                val = a["measured"]
+                lo, hi = bounds.get("min"), bounds.get("max")
+                if (lo is not None and val < lo) or (hi is not None and val > hi):
+                    return (f"walkthroughs[{idx}] 数值判据 {name}={val} 越界"
+                            f"（声明边界 min={lo} max={hi}）——实测值不达标即缺陷, "
+                            "禁以措辞修饰")
+                if not str(a.get("evidence") or "").strip():
+                    return (f"walkthroughs[{idx}] 数值判据 {name} 命中但缺 evidence——"
+                            "measured 须附取得方式(取值命令/选择器/计算式)可复核")
     return None
 
 
@@ -178,6 +243,9 @@ def _validate_walkthrough(idx: int, w: Any, min_checked_at: float,
         hard_defect = _hard_assertion_defect(idx, w, root)
         if hard_defect:
             return hard_defect
+        design_defect = _design_criteria_defect(idx, w, root)
+        if design_defect:
+            return design_defect
         dom_defect = _validate_dom_assets(idx, w, asset_refs or [])
         if dom_defect:
             return dom_defect
