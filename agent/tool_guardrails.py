@@ -29,8 +29,7 @@ IDEMPOTENT_TOOL_NAMES = frozenset({
 MUTATING_TOOL_NAMES = frozenset({  # tools-ok: 会话状态变更语义（含 todo/memory/browser 动作等，非 guard 写拦截面）
     "terminal", "execute_code", "write_file", "patch", "todo_list", "memory", "skill_manage",
     "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_navigate",
-    "send_message", "cronjob_manage", "delegate_task", "process_manage",
-})
+    "send_message", "cronjob_manage", "delegate_task", "process_manage",})
 
 # Pollers: legitimately re-invoked with identical args; the identical-call NOTICE never fires.
 STALL_GUARD_REPEATABLE_TOOLS = frozenset({"process_manage"})
@@ -129,7 +128,6 @@ class ToolCallGuardrailConfig:
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
-    mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
     loop_caps: LoopCapConfig = field(default_factory=LoopCapConfig)
 
     @classmethod
@@ -445,7 +443,7 @@ class ToolCallGuardrailController:
         return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
 
     def _is_idempotent(self, tool_name: str) -> bool:
-        return tool_name not in self.config.mutating_tools and tool_name in self.config.idempotent_tools
+        return tool_name in self.config.idempotent_tools
 
     def observe_call(
         self, tool_name: str, args: Mapping[str, Any] | None, result: str | None,
