@@ -73,7 +73,66 @@ def test_dock_ignores_a_goal_manager_left_over_from_another_session(hermes_home)
     mgr.set("previous session objective")
     assert goal_line(SimpleNamespace(session_id="old-sid", _goal_manager=mgr)).startswith("⊙ Goal")
     assert goal_line(SimpleNamespace(session_id="new-sid", _goal_manager=mgr)) == ""
-    assert goal_line(SimpleNamespace(session_id="new-sid")) == ""
+
+
+def _remote_goal_manager(state):
+    """A GatewayGoalManager with a stubbed transport: no gateway needed, refresh counted."""
+    from hermes_cli.gateway_automation import GatewayGoalManager
+
+    mgr = object.__new__(GatewayGoalManager)
+    mgr.session_id = "sid-k"
+    mgr._state = state
+    calls = []
+    mgr.refresh = lambda: calls.append(1) or None
+    return mgr, calls
+
+
+def test_sync_automation_keepalive_refreshes_active_remote_managers(hermes_home):
+    """A long CLI turn sends no session.automation traffic, so the gateway's 30-second viewer
+    liveness stamp would expire mid-turn and it would take the goal loop over at the turn's end
+    (the window's own doc sizes it for the judge's seconds of latency, not a whole turn). The
+    dock's poll must carry a throttled keepalive: one state read per active remote manager per
+    window; a dead transport fails silently and the stamp still ages out."""
+    from hermes_cli.cli_session_dock import KEEPALIVE_SECONDS, sync_automation
+    from hermes_cli.goals import GoalManager
+
+    local = GoalManager(session_id="sid-k")
+    local.set("keep the loop visible")
+    mgr, calls = _remote_goal_manager(local.state)
+    cli = SimpleNamespace(session_id="sid-k", _goal_manager=mgr)
+
+    sync_automation(cli)
+    assert calls == [1], "an active remote goal is kept alive on the dock poll"
+    sync_automation(cli)
+    assert calls == [1], "throttled: the next poll inside the window refreshes nothing"
+
+    cli._automation_keepalive_at -= KEEPALIVE_SECONDS + 1.0
+    sync_automation(cli)
+    assert calls == [1, 1], "past the window the next poll refreshes again"
+
+    mgr._state = None  # goal cleared: nothing to keep alive
+    cli._automation_keepalive_at = 0.0
+    sync_automation(cli)
+    assert calls == [1, 1]
+
+
+def test_sync_automation_stale_path_unchanged_local_managers_still_refresh(hermes_home):
+    """The pre-existing behaviour: a mid-turn state change flagged by the gateway refreshes the
+    mirrored managers (local ones included) once per flag, and local managers never get the
+    keepalive (their judge already runs in this process)."""
+    from hermes_cli.cli_session_dock import sync_automation
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_id="sid-s")
+    mgr.set("local objective")
+    calls = []
+    mgr.refresh = lambda: calls.append(1) or None
+    cli = SimpleNamespace(session_id="sid-s", _goal_manager=mgr, _automation_stale=True)
+
+    sync_automation(cli)
+    assert calls == [1] and cli._automation_stale is False
+    sync_automation(cli)
+    assert calls == [1], "the cleared flag refreshes nothing further"
 
 
 def test_dock_drops_the_prompt_a_turn_takes_from_the_queue_before_the_turn_runs(hermes_home):

@@ -13,16 +13,37 @@ import time
 # Queued prompts drain one per turn; past this many the dock shows a ``+N more`` line.
 QUEUE_ROWS = 3
 
+# The gateway's viewer-automation liveness window is seconds wide (sized for the judge's latency
+# after a turn), while an agentic turn runs for minutes with no ``session.automation`` traffic —
+# without a refresh the gateway takes the goal loop over at every long turn's end and the CLI
+# window that submitted the turn never sees the continuations. The dock's 1-second poll carries
+# this throttled keepalive: one ``state`` read per active remote manager per window. A dead
+# transport fails inside ``_rpc`` (debug log, mirror kept), so the gateway's stamp still ages out
+# and its takeover of a genuinely dead viewer is unchanged.
+KEEPALIVE_SECONDS = 20.0
+
 
 def sync_automation(cli) -> None:
-    """Re-read the goal/loop managers' mirrored state once after the gateway flagged it changed mid-turn
-    (``_mark_automation_stale``): one ``state`` round trip per change, none while nothing moves."""
-    if not getattr(cli, "_automation_stale", False):
+    """Re-read the goal/loop managers' mirrored state: once after the gateway flagged a mid-turn
+    change (``_mark_automation_stale``), plus the throttled keepalive for active remote managers
+    (see ``KEEPALIVE_SECONDS``). One ``state`` round trip each, none while nothing is due."""
+    stale = getattr(cli, "_automation_stale", False)
+    now = time.monotonic()
+    keepalive_due = now - getattr(cli, "_automation_keepalive_at", 0.0) >= KEEPALIVE_SECONDS
+    if not stale and not keepalive_due:
         return
     cli._automation_stale = False
+    if keepalive_due:
+        cli._automation_keepalive_at = now
+    if keepalive_due and not stale:
+        from hermes_cli.gateway_automation import _Remote
+    else:
+        _Remote = ()  # the stale path refreshes every manager kind, as before
     for attr in ("_goal_manager", "_loop_manager"):
         mgr = getattr(cli, attr, None)
-        if mgr is not None and mgr.session_id == getattr(cli, "session_id", None):
+        if mgr is None or mgr.session_id != getattr(cli, "session_id", None):
+            continue
+        if stale or (keepalive_due and isinstance(mgr, _Remote) and mgr.is_active()):
             mgr.refresh()
 
 
