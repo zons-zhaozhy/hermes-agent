@@ -44,12 +44,20 @@ def _pause(mgr, arg, render):
     )
 
 
+# `/goal resume --keep-budget` resumes without resetting the turn counter.
+_KEEP_BUDGET_FLAGS = frozenset({"--keep-budget", "--keep"})
+_RESUME_VERBS = frozenset({"resume", "continue", "unpause"})
+
+
 def _resume(mgr, arg, render):
-    state = mgr.resume()
+    keep_budget = any(token.lower() in _KEEP_BUDGET_FLAGS for token in arg.split())
+    state = mgr.resume(reset_budget=not keep_budget)
     if state is None:
         return GoalCommandResult(render("gateway.goal.no_resume", "No goal to resume."))
-    return GoalCommandResult(render("gateway.goal.resumed", "▶ Goal resumed: {goal}", goal=state.goal),
-                             prompt=mgr.next_continuation_prompt())
+    output = render("gateway.goal.resumed", "▶ Goal resumed: {goal}", goal=state.goal)
+    if keep_budget:
+        output += f"\n(turn budget kept: {state.turns_used}/{state.max_turns} turns used)"
+    return GoalCommandResult(output, prompt=mgr.next_continuation_prompt())
 
 
 def _clear(mgr, arg, render):
@@ -109,10 +117,14 @@ _CONTROL_FIRST_WORDS = _BARE_CONTROL_VERBS | {"wait", "gate"}
 
 
 def _bare_control(mgr, verb, rest, render):
-    result = _EXACT_HANDLERS[verb](mgr, "", render)
+    words = rest.split()
+    # Resume verbs accept budget flags as real arguments; everything else stays ignored text.
+    handled = [w for w in words if verb in _RESUME_VERBS and w.lower() in _KEEP_BUDGET_FLAGS]
+    result = _EXACT_HANDLERS[verb](mgr, " ".join(handled), render)
+    ignored = " ".join(w for w in words if w not in handled)
     return replace(result, output=result.output + (
-        f"\n(ignored {rest!r}: a control command never sets goal text — use /goal -- <text> "
-        "when the goal really starts with a control word.)"))
+        f"\n(ignored {ignored!r}: a control command never sets goal text — use /goal -- <text> "
+        "when the goal really starts with a control word.)") if ignored else result.output)
 
 
 def _gate(mgr, arg, authorize_gate):

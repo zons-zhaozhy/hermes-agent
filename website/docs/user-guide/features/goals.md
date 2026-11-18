@@ -63,7 +63,7 @@ What you'll see:
 | `/goal show` | Print the active goal's completion contract. |
 | `/goal` or `/goal status` | Show the current goal, its status, and turns used. |
 | `/goal pause` | Stop the auto-continuation loop without clearing the goal. |
-| `/goal resume` | Resume the loop (resets the turn counter back to zero). |
+| `/goal resume` | Resume the loop (resets the turn counter back to zero). Add `--keep-budget` to keep the current count. |
 | `/goal clear` | Drop the goal entirely. |
 | `/goal wait <pid> [reason]` | Park the loop on a background process — it stops re-poking the agent every turn while the process runs, and auto-resumes when it exits. |
 | `/goal unwait` | Drop the wait barrier and resume the loop immediately. |
@@ -200,7 +200,7 @@ Default is 20 continuation turns (`goals.max_turns` in `config.yaml`). When the 
 ⏸ Goal paused — 20/20 turns used. Use /goal resume to keep going, or /goal clear to stop.
 ```
 
-`/goal resume` resets the counter to zero, so you can keep going in measured chunks.
+`/goal resume` resets the counter to zero, so you can keep going in measured chunks. To run the resumed loop against what's left of the original budget instead, use `/goal resume --keep-budget`.
 
 Two additional consumption guardrails protect provider quotas. `goals.max_api_calls` (default 120) limits the model API calls a single goal can add since it was set or last resumed; `goals.max_concurrent` (default 2) limits how many recently active goals continue autonomously. When either limit trips, the affected goal parks with a visible reason — the newest goal parks when the concurrency cap is exceeded. A `done` or `blocked` verdict is decided first, so these limits never steal a completion. Set a guardrail to `0` in `config.yaml` to disable it.
 

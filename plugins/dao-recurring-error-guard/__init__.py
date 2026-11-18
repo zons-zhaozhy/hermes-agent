@@ -269,7 +269,7 @@ def on_pre_llm_call(**kwargs) -> Optional[dict[str, Any]]:
     over = {k: v for k, v in _counts(sid).items() if v >= _THRESHOLD}
     if not over:
         return None
-    key, n = sorted(over.items(), key=lambda kv: -kv[1])[0]
+    key, n = min(over.items(), key=lambda kv: -kv[1])
     tool, cls = key.split("×", 1)
     total = _load_persist().get(key, {}).get("n", n)
     sample = str(get_session_state(sid, _NAMESPACE).get("samples", {}).get(key, ""))

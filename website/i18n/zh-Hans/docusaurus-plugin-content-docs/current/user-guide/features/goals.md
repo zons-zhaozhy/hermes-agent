@@ -42,7 +42,7 @@ description: "设置一个持续目标，让 Hermes 跨轮次持续工作直到�
 | `/goal <text>` | 设置（或替换）持续目标。立即启动第一轮，无需再发送单独消息。 |
 | `/goal` 或 `/goal status` | 显示当前目标、状态及已用轮次。 |
 | `/goal pause` | 停止自动续行循环，但不清除目标。 |
-| `/goal resume` | 恢复循环（将轮次计数器重置为零）。 |
+| `/goal resume` | 恢复循环（将轮次计数器重置为零）。加 `--keep-budget` 可保留当前计数。 |
 | `/goal clear` | 完全删除目标。 |
 
 在 CLI 及所有 gateway 平台（Telegram、Discord、Slack、Matrix、Signal、WhatsApp、SMS、iMessage、Webhook、API server 以及 Web 控制台）上行为完全一致。
@@ -86,7 +86,7 @@ description: "设置一个持续目标，让 Hermes 跨轮次持续工作直到�
 ⏸ Goal paused — 20/20 turns used. Use /goal resume to keep going, or /goal clear to stop.
 ```
 
-`/goal resume` 将计数器重置为零，你可以按可控的块继续推进。
+`/goal resume` 将计数器重置为零，你可以按可控的块继续推进。如果希望恢复后沿用原预算的剩余部分，用 `/goal resume --keep-budget`。
 
 ### 用户消息始终优先
 

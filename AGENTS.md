@@ -29,16 +29,16 @@ A change to the stock system prompt or `tools[]` fails `tests/ci/test_prompt_sur
 
 ## Contribution rubric
 
-The project's intent layer, for contributors and for the triage sweeper (which may only close on
+The intent layer for contributors and the triage sweeper (which may only close on
 `implemented_on_main`, `cannot_reproduce` or `incoherent`; taste-based closes are a maintainer's
-call, and when in doubt a PR stays open). Long form with examples:
+call; in doubt, a PR stays open). Long form with examples:
 `website/docs/developer-guide/contributing.md` § Contribution rubric.
 
 **Wanted:** real bug fixes (repro on `main`, the exact line, the whole class incl. sibling paths);
 reach at the edges (adapters, providers, models, UI features) wired into the existing setup UX;
 god-file → module refactors; extending before duplicating (3+ PRs in one category → an ABC +
 orchestrator); behaviour-contract tests; E2E with real imports against a temp `HERMES_HOME` for
-resolution, config, security and I/O changes; salvage by cherry-pick so authorship survives.
+resolution, config, security and I/O changes; salvage by cherry-pick.
 
 **Rejected even when well-built:** hooks with no concrete consumer; new `HERMES_*` env vars for
 non-secret config (`.env` is secrets only, behaviour goes in `config.yaml`); a new core tool when
@@ -48,12 +48,12 @@ change-detector tests; plugins that touch core files; third-party products in th
 standalone plugin repo).
 
 **Before you call it a bug,** verify the claim AND the intent (`git log -p -S "<symbol>"`): the
-isolation is often the design (profiles are islands on purpose), an absence can be load-bearing,
-and a fix that cannot point to the line where the bug manifests has an unverified premise.
+isolation is often the design, an absence can be load-bearing, and a fix that cannot point to the
+failing line has an unverified premise.
 
 **Security:** `SECURITY.md` is the scope authority. A §3.1 finding goes private (GitHub Security
-Advisories or security@nousresearch.com), never into a public issue, PR, commit or comment; §3.2
-hardening is ordinary public work. Name the §2 boundary crossed, with a repro on `main`.
+Advisories or security@nousresearch.com), never public; §3.2 hardening is ordinary public work.
+Name the §2 boundary crossed, with a repro on `main`.
 
 **Footprint ladder** (take the highest rung that solves it): extend existing code → CLI command +
 skill → service-gated tool (`check_fn` answers reachability/opt-in, never per-session surface) →
@@ -62,13 +62,14 @@ otherwise).
 
 ## Development Environment
 
-`source ./activate` (`activate.fish`, `activate.ps1`) provisions and activates the PM environment; pick an isolated `HERMES_HOME`/`HERMES_RUNTIME_DIR` first
+`source ./activate` (`.fish`/`.ps1` variants) provisions the PM environment; pick an isolated
+`HERMES_HOME`/`HERMES_RUNTIME_DIR` first
 (`website/docs/reference/package-management.md#developer-workflow`). Tests need the separate test
 environment in `CONTRIBUTING.md`. **`python scripts/check`** (`just check`) runs every blocking
-lint check CI runs, with CI's pinned tools; `--install-hook pre-push` runs it on every push (re-run
-after pulling to refresh the hook). `just` lists every developer command (lefthook calls the same
-recipes); a new command is a `scripts/` file plus a recipe. The `HX0xx`/`PS-P0x` rules and their
-fixes are in `scripts/code_health/config.py`; `# noqa` does not waive a finding,
+lint check CI runs, with CI's pinned tools; `--install-hook pre-push` runs it on every push
+(re-run after pulling). `just` lists every developer command (lefthook calls the same
+recipes); a new command is a `scripts/` file plus a recipe. `HX0xx`/`PS-P0x` rules live in
+`scripts/code_health/config.py`; `# noqa` does not waive a finding,
 `# health: allow <RULE> -- <why>` does.
 
 ## Project Structure
@@ -96,10 +97,10 @@ all profile-aware via `get_hermes_home()`.
 A topic that outgrows its file becomes a folder: `<stem>/__init__.py` is the **facade** (its
 docstring names each module's job, `__all__` is the surface, PEP 562 `__getattr__` only for a
 measured startup cost or import hazard it names; no behaviour; `tools/connectors/` is the model),
-`<stem>/<topic>.py` holds the code. Flat `<stem>_<topic>.py` siblings (`gateway/run.py`,
-`tools/mcp_tool.py`) stay until touched; add none unless an area AGENTS.md still prescribes one
-(`tui_gateway` RPC methods, `tools/` backends). A family folder keeps its ABC/Protocol, one module
-per variant and a name → variant table (`tools/environments/`, its table still in
+`<stem>/<topic>.py` holds the code. Flat `<stem>_<topic>.py` siblings stay until touched; add none
+unless an area AGENTS.md still prescribes one (`tui_gateway` RPC methods, `tools/` backends).
+A family folder keeps its ABC/Protocol, one module per
+variant and a name → variant table (`tools/environments/`, its table still in
 `terminal_tool_backends.py`). Tool folders register from `tool.py`; tests mirror folders.
 
 - **Find code by topic:** `grep -rn "def name" <dir>/<stem>/ <dir>/<stem>_*.py`, not the facade.
@@ -135,8 +136,8 @@ per variant and a name → variant table (`tools/environments/`, its table still
   environment with raw pip/uv.
 - **TypeScript (desktop, TUI):** feature-owned nanostores over threaded state, thin route roots,
   narrow hooks and colocated action modules, `interface` for props and shared shapes, table-driven
-  dispatch over condition ladders; desktop keeps routes in `src/app`, atoms in `src/store`, pure
-  helpers in `src/lib`.
+  dispatch over condition ladders; desktop: routes in `src/app`, atoms in `src/store`, helpers in
+  `src/lib`.
 - **Don't add core/plugin crossings:** core never imports a specific bundled plugin, and plugins
   use only the published plugin API (`hermes_cli/data/plugin_api.json`, `ctx`). Existing crossings
   are baselined; `scripts/boundary_lint.py` fails the test suite (not `scripts/check`) on new ones.
@@ -144,12 +145,12 @@ per variant and a name → variant table (`tools/environments/`, its table still
 - **Commits and PRs:** rebase onto `main` before merging (a squash from a stale branch silently
   reverts newer fixes); 1–2 invariant tests per fix, proven red on the base.
 - **Remote branch deletion is hard-gated:** never send raw `git push --delete`; query
-  `gh pr list --state open` first. Skip and report every open-PR head unless the user separately
-  confirms the exact branch and PR number (use the bundled
+  `gh pr list --state open` first and skip every open-PR head unless the user confirms the exact
+  branch and PR (use the bundled
   `skills/software-development/finishing-a-development-branch/scripts/guarded_remote_branch_delete.py`).
 - **Tests:** always `scripts/run_tests.sh`, never bare `pytest`; behaviour contracts, never
-  change-detectors or source-reading tests; host-specific behaviour is tested on that host with
-  `@pytest.mark.platforms(...)`, never by faking `sys.platform`; tests never write to `~/.hermes/`.
+  change-detectors or source-reading tests; host-specific behaviour uses
+  `@pytest.mark.platforms(...)`, never faked `sys.platform`; tests never write to `~/.hermes/`.
 
 ## Routing Table
 

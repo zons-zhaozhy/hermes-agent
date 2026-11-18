@@ -143,6 +143,31 @@ def test_control_verb_with_trailing_words_never_replaces_the_goal(command, pause
 
 
 
+def test_resume_keep_budget_flag_preserves_turn_counter():
+    goals._DB_CACHE.clear()
+    mgr = goals.GoalManager(session_id='keep-budget')
+    mgr.set('original objective')
+    mgr.state.turns_used = 7
+    mgr._save()
+
+    result = _dispatch(mgr, 'resume --keep-budget')
+    state = goals.load_goal(mgr.session_id)
+    assert state.status == 'active'
+    assert state.turns_used == 7
+    assert 'turn budget kept: 7/' in result.output
+
+    # Default resume still resets, and the alias form keeps too.
+    mgr.pause(reason='user-paused')
+    _dispatch(mgr, 'resume')
+    assert goals.load_goal(mgr.session_id).turns_used == 0
+    mgr.state.turns_used = 3
+    mgr._save()
+    result = _dispatch(mgr, 'continue --keep budget words')
+    state = goals.load_goal(mgr.session_id)
+    assert state.turns_used == 3
+    assert '(ignored' in result.output and '--keep' not in result.output.split('(ignored')[1]
+
+
 def test_double_dash_sets_control_word_goal_and_announces_the_replace():
     goals._DB_CACHE.clear()
     mgr = goals.GoalManager(session_id='verb-escape')
