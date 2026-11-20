@@ -793,6 +793,57 @@ class DingTalkAdapter(BasePlatformAdapter):
     def _extract_media(self, message: ChatbotMessage):
         return extract_media(message)
 
+    async def _proactive_openapi_push(self, chat_id: str, content: str, at_all: bool, metadata: dict) -> Optional[SendResult]:
+        """Robot-API proactive push — the fallback when no session webhook exists.
+
+        Stream-mode session webhooks only exist right after an inbound message, so cron
+        delivery (no inbound context) always fails the webhook path; the robot OpenAPI sends
+        by conversation instead.
+
+        Contract:
+          Preconditions: ``chat_id`` is an OpenAPI conversation id (``cid`` prefix); the
+            adapter holds app credentials and an initialized HTTP/stream client.
+          Postconditions: returns ``SendResult`` with ``success=True`` iff DingTalk accepted
+            the message (HTTP < 300); a DM needs a recipient staff id from conversation
+            history or ``metadata["user_id"]``; returns ``None`` when no proactive path
+            applies (caller falls through to its original error — never fakes success).
+        """
+        if not (chat_id.startswith("cid") and self._client_id and self._client_secret and self._http_client and self._stream_client):
+            return None
+        message = self._message_contexts.get(chat_id)
+        is_group = str(getattr(message, "conversation_type", "1")) == "2"
+        staff_id = getattr(message, "sender_staff_id", "") or ""
+        meta_user = str(metadata.get("user_id") or "")
+        if not is_group and not staff_id and meta_user and not meta_user.startswith("$:"):
+            staff_id = meta_user  # home-channel delivery: the gateway injects home.user_id
+        if not is_group and not staff_id:
+            return None  # a DM push needs a recipient staff id; nothing to key oToMessages on
+        token = await self._get_access_token()
+        if not token:
+            return None
+        msg_param = json.dumps({"title": self._preview_title(content), "text": self._normalize_markdown(content[: self.MAX_MESSAGE_LENGTH])})
+        if is_group:
+            url = "https://api.dingtalk.com/v1.0/robot/groupMessages/send"
+            payload: dict[str, Any] = {"msgParam": msg_param, "msgKey": "sampleMarkdown", "openConversationId": chat_id, "robotCode": self._robot_code}
+            if at_all:
+                logger.debug("[%s] [[at-all]] dropped on OpenAPI group push (unsupported by sampleMarkdown)", self.name)
+        else:
+            url = "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend"
+            payload = {"msgParam": msg_param, "msgKey": "sampleMarkdown", "robotCode": self._robot_code, "userIds": [staff_id]}
+        logger.debug("[%s] Proactive OpenAPI push to %s (%s)", self.name, _identifier_digest(chat_id), "group" if is_group else "dm")
+        try:
+            resp = await self._http_client.post(url, json=payload, headers={"x-acs-dingtalk-access-token": token}, timeout=15.0)
+            if resp.status_code < 300:
+                logger.info("[%s] Proactive push delivered via OpenAPI (%s)", self.name, "group" if is_group else "dm")
+                return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
+            logger.warning("[%s] OpenAPI push failed HTTP %d: %s", self.name, resp.status_code, resp.text[:200])
+            return SendResult(success=False, error=f"OpenAPI push HTTP {resp.status_code}: {resp.text[:200]}")
+        except httpx.TimeoutException:
+            return SendResult(success=False, error="Timeout on DingTalk OpenAPI push")
+        except Exception as e:
+            logger.error("[%s] OpenAPI push error: %s", self.name, e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Send a reply via AI Card (when configured) or DingTalk session webhook markdown."""
         metadata = metadata or {}
@@ -811,7 +862,10 @@ class DingTalkAdapter(BasePlatformAdapter):
                      bool(self._card_template_id and self._card_sdk), at_all)
         session_webhook = metadata.get("session_webhook") or (self._get_valid_webhook(chat_id) or ("",))[0]
         if not session_webhook:
-            logger.warning("[%s] No valid session_webhook for chat_id=%s", self.name, chat_id)
+            proactive = await self._proactive_openapi_push(chat_id, content, at_all, metadata)
+            if proactive is not None:
+                return proactive
+            logger.warning("[%s] No valid session_webhook for chat_id=%s and no proactive push path", self.name, _identifier_digest(chat_id))
             return SendResult(success=False, error="No valid session_webhook available. Reply must follow an incoming message.")
         if not self._http_client:
             return SendResult(success=False, error="HTTP client not initialized")

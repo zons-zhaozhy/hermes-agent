@@ -852,5 +852,86 @@ class TestCardLifecycle:
         adapter_with_card._card_sdk.streaming_update_with_options_async.assert_awaited_once()
 
 # ---------------------------------------------------------------------------
+# Proactive OpenAPI push (no session webhook — cron delivery)
+# ---------------------------------------------------------------------------
+
+class TestProactiveOpenAPIPush:
+
+    @staticmethod
+    def _push_ready_adapter(monkeypatch=None):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._client_id = "app-key"
+        adapter._client_secret = "app-secret"
+        adapter._robot_code = "app-key"
+        adapter._stream_client = MagicMock()
+        adapter._get_access_token = AsyncMock(return_value="token")
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "{}"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+        return adapter, mock_client
+
+    @pytest.mark.asyncio
+    async def test_send_without_webhook_uses_oto_push_for_home_dm(self):
+        """DM + no webhook + home-channel user_id → oToMessages/batchSend keyed on staff id."""
+        adapter, mock_client = self._push_ready_adapter()
+        result = await adapter.send(
+            "cidaABBCC==", "夜巡报告",
+            metadata={"user_id": "186218630535684769"},
+        )
+        assert result.success is True
+        url = mock_client.post.call_args[0][0]
+        assert url.endswith("/robot/oToMessages/batchSend")
+        payload = mock_client.post.call_args[1]["json"]
+        assert payload["userIds"] == ["186218630535684769"]
+        assert payload["robotCode"] == "app-key"
+
+    @pytest.mark.asyncio
+    async def test_send_without_webhook_uses_group_push_for_group_history(self):
+        """Group conversation (history says conversation_type=2) → groupMessages/send."""
+        adapter, mock_client = self._push_ready_adapter()
+        adapter._message_contexts["cidGROUP=="] = SimpleNamespace(
+            conversation_type="2", sender_staff_id="staff-1")
+        result = await adapter.send("cidGROUP==", "晨报", metadata={})
+        assert result.success is True
+        url = mock_client.post.call_args[0][0]
+        assert url.endswith("/robot/groupMessages/send")
+        payload = mock_client.post.call_args[1]["json"]
+        assert payload["openConversationId"] == "cidGROUP=="
+
+    @pytest.mark.asyncio
+    async def test_send_without_webhook_dm_without_recipient_keeps_original_error(self):
+        """No staff-id lead → fallback returns None and the original webhook error stands."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter, mock_client = self._push_ready_adapter()
+        result = await adapter.send("cidaDM==", "msg", metadata={"user_id": "$:LWCP_v1:$union"})
+        assert result.success is False
+        assert "session_webhook" in result.error
+        mock_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_without_webhook_non_conversation_id_skips_push(self):
+        """Non-cid chat ids are not OpenAPI conversation targets — no push attempted."""
+        adapter, mock_client = self._push_ready_adapter()
+        result = await adapter.send("plain-chat-id", "msg", metadata={"user_id": "staff-1"})
+        assert result.success is False
+        mock_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_push_http_error_returns_failure(self):
+        """A real OpenAPI error surfaces as a failed SendResult, not a swallowed success."""
+        adapter, mock_client = self._push_ready_adapter()
+        err_response = MagicMock()
+        err_response.status_code = 404
+        err_response.text = '{"code":"resource.not.found"}'
+        mock_client.post = AsyncMock(return_value=err_response)
+        result = await adapter.send("cidaABBCC==", "msg", metadata={"user_id": "staff-9"})
+        assert result.success is False
+        assert "404" in result.error
+
+# ---------------------------------------------------------------------------
 # AI Card Tests
 # ---------------------------------------------------------------------------
