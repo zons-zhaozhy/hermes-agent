@@ -26,20 +26,21 @@ def _fresh_debt() -> None:
 # ── 层3：diff_debt 子防线 ─────────────────────────────────────────────────
 
 
-def test_post_records_debt_for_write_tools() -> None:
-    # 期望: write_file/patch/skill_manage 执行后各记一笔欠账
+def test_post_records_debt_only_for_skill_manage() -> None:
+    # 期望: write_file/patch 成功写零欠账（框架回显即抵账,1120 降档）；
+    # skill_manage 无框架 diff 凭证仍记账；读工具不入账
     _fresh_debt()
     diff_debt.on_post_tool_call(tool_name="write_file", args={"path": "/tmp/a.py"}, session_id="s1")
     diff_debt.on_post_tool_call(tool_name="patch", args={"path": "/tmp/b.py"}, session_id="s1")
     diff_debt.on_post_tool_call(tool_name="skill_manage", args={"name": "x"}, session_id="s1")
     diff_debt.on_post_tool_call(tool_name="read_file", args={"path": "/tmp/c.py"}, session_id="s1")
-    assert len(diff_debt._DIFF_DEBT["s1"]) == 3  # 期望: 读工具不入账（同会话 3 笔）
+    assert len(diff_debt._DIFF_DEBT["s1"]) == 1  # 期望: 仅 skill_manage 一笔
 
 
 def test_pre_blocks_when_debt_unpaid() -> None:
     # 期望: 欠账未清时下一次写被 block，消息含补救指引
     _fresh_debt()
-    diff_debt.on_post_tool_call(tool_name="write_file", args={"path": "/tmp/a.py"}, session_id="s1")
+    diff_debt.on_post_tool_call(tool_name="skill_manage", args={"name": "a"}, session_id="s1")
     verdict = diff_debt.on_pre_tool_call(tool_name="patch", args={"path": "/tmp/b.py"}, session_id="s1")
     assert verdict is not None and verdict.get("action") == "block"  # 期望: 拦
     assert "diff" in verdict["message"]  # 期望: 消息含 diff 字样（补救指引）
@@ -48,7 +49,7 @@ def test_pre_blocks_when_debt_unpaid() -> None:
 def test_batch_clears_debt_on_diff_evidence() -> None:
     # 期望: assistant 正文含 ```diff 块 → 欠账清空
     _fresh_debt()
-    diff_debt.on_post_tool_call(tool_name="write_file", args={"path": "/tmp/a.py"}, session_id="s1")
+    diff_debt.on_post_tool_call(tool_name="skill_manage", args={"name": "a"}, session_id="s1")
     out = diff_debt.on_pre_tool_batch(
         assistant_content="改动如下\n```diff\n-old\n+new\n```\n", session_id="s1")
     assert out is None and not diff_debt._DIFF_DEBT  # 期望: 批次层不拦 + 欠账清零
@@ -66,7 +67,7 @@ def test_batch_clears_debt_on_compensation_keywords() -> None:
 def test_batch_keeps_debt_without_evidence() -> None:
     # 期望: 正文无任何 diff 痕迹 → 欠账保留 → 下一次写仍被拦
     _fresh_debt()
-    diff_debt.on_post_tool_call(tool_name="write_file", args={"path": "/tmp/a.py"}, session_id="s1")
+    diff_debt.on_post_tool_call(tool_name="skill_manage", args={"name": "a"}, session_id="s1")
     diff_debt.on_pre_tool_batch(assistant_content="已完成修改，一切正常。", session_id="s1")
     verdict = diff_debt.on_pre_tool_call(tool_name="write_file", args={"path": "/tmp/a.py"}, session_id="s1")
     assert verdict is not None and verdict["action"] == "block"  # 期望: 无证据仍拦
@@ -85,7 +86,7 @@ def test_next_batch_without_evidence_still_blocks() -> None:
     # 期望: 新批次正文无 diff 证据 → 旧欠账仍拦（防放宽执法）
     _fresh_debt()
     diff_debt.on_pre_tool_batch(assistant_content="本批:\n```diff\n-a\n+b\n```\n", session_id="s1")
-    diff_debt.on_post_tool_call(tool_name="patch", args={"path": "/tmp/a.py"}, session_id="s1")
+    diff_debt.on_post_tool_call(tool_name="skill_manage", args={"name": "a"}, session_id="s1")
     diff_debt.on_pre_tool_batch(assistant_content="写完了，一切正常。", session_id="s1")
     verdict = diff_debt.on_pre_tool_call(tool_name="patch", args={"path": "/tmp/b.py"}, session_id="s1")
     assert verdict is not None and verdict["action"] == "block"  # 期望: 跨批无证据仍拦
@@ -94,7 +95,7 @@ def test_next_batch_without_evidence_still_blocks() -> None:
 def test_debt_is_session_scoped() -> None:
     # 期望: 会话隔离——A 会话的欠账不得拦 B 会话的写（网关单进程多会话）
     _fresh_debt()
-    diff_debt.on_post_tool_call(tool_name="patch", args={"path": "/tmp/a.py"}, session_id="s1")
+    diff_debt.on_post_tool_call(tool_name="skill_manage", args={"name": "a"}, session_id="s1")
     sid2_verdict = diff_debt.on_pre_tool_call(
         tool_name="patch", args={"path": "/tmp/b.py"}, session_id="s2")
     assert sid2_verdict is None  # 期望: 他会话不受牵连
@@ -105,7 +106,7 @@ def test_debt_is_session_scoped() -> None:
 def test_evidence_does_not_license_other_sessions() -> None:
     # 期望: A 会话正文出示 diff 不得给 B 会话的欠账放行
     _fresh_debt()
-    diff_debt.on_post_tool_call(tool_name="patch", args={"path": "/tmp/a.py"}, session_id="s2")
+    diff_debt.on_post_tool_call(tool_name="skill_manage", args={"name": "b"}, session_id="s2")
     diff_debt.on_pre_tool_batch(assistant_content="本批:\n```diff\n-a\n+b\n```\n", session_id="s1")
     verdict = diff_debt.on_pre_tool_call(tool_name="patch", args={"path": "/tmp/b.py"}, session_id="s2")
     assert verdict is not None and verdict["action"] == "block"  # 期望: B 会话证据位未被 A 污染
@@ -114,7 +115,7 @@ def test_evidence_does_not_license_other_sessions() -> None:
 def test_cron_session_exempt() -> None:
     # 期望: cron 会话全链路豁免（记账/执法都跳过）
     _fresh_debt()
-    diff_debt.on_post_tool_call(tool_name="write_file", args={"path": "/tmp/a.py"}, session_id="cron_job1")
+    diff_debt.on_post_tool_call(tool_name="skill_manage", args={"name": "job"}, session_id="cron_job1")
     assert not diff_debt._DIFF_DEBT  # 期望: cron 记账被跳过
     cron_verdict = diff_debt.on_pre_tool_call(tool_name="write_file", args={}, session_id="cron_job1")
     assert cron_verdict is None  # 期望: cron 会话不执法
@@ -123,7 +124,7 @@ def test_cron_session_exempt() -> None:
 def test_git_diff_output_counts_as_evidence() -> None:
     # 期望: 「1 file changed」git 输出也当证据——terminal 写通道贴 git diff 的形态
     _fresh_debt()
-    diff_debt.on_post_tool_call(tool_name="write_file", args={"path": "/tmp/a.py"}, session_id="s1")
+    diff_debt.on_post_tool_call(tool_name="skill_manage", args={"name": "a"}, session_id="s1")
     diff_debt.on_pre_tool_batch(
         assistant_content=" 1 file changed, 2 insertions(+), 1 deletion(-)", session_id="s1")
     assert not diff_debt._DIFF_DEBT  # 期望: git 统计行同样清账
@@ -147,17 +148,22 @@ def test_cancelled_write_records_no_debt() -> None:
 
 def test_ok_write_records_debt_without_status_kwarg() -> None:
     # 期望: 缺省 status 按成功处理仍记账——旧派发路径未传该字段，保持兼容
+    # （欠账载体=skill_manage；write_file/patch 成功写已零欠账）
     _fresh_debt()
-    diff_debt.on_post_tool_call(tool_name="write_file", args={"path": "/tmp/a.py"}, session_id="s1")
+    diff_debt.on_post_tool_call(tool_name="skill_manage", args={"name": "x"}, session_id="s1")
     assert len(diff_debt._DIFF_DEBT["s1"]) == 1  # 期望: 恰好一笔欠账
 
 
-def test_post_no_debt_when_result_carries_diff() -> None:
-    # 期望: 工具结果已含 unified diff 形态（框架回显）=义务已履行,不记账
+def test_write_tools_record_no_debt_even_without_diff_shaped_result() -> None:
+    # 期望: write_file 新文件形态（result 无 diff 字段,框架 diff 恒 None）同样零欠账
+    # ——1120 降档「结果回显即抵账」：回显凭证=框架生成+落盘校验,不依赖 diff 形态
     _fresh_debt()
     diff_debt.on_post_tool_call(
-        tool_name="write_file", args={"path": "/tmp/a.py"}, session_id="s1",
-        result='{"diff": "--- a//tmp/a.py\\n@@ -1 +1,2 @@\\n-old\\n+new\\n", "verified": true}')
+        tool_name="write_file", args={"path": "/tmp/new_file.py"}, session_id="s1",
+        result='{"bytes_written": 42, "verified": true}')
+    diff_debt.on_post_tool_call(
+        tool_name="patch", args={"path": "/tmp/old.py"}, session_id="s1",
+        result='{"success": true}')
     assert not diff_debt._DIFF_DEBT  # 期望: 零欠账
 
 

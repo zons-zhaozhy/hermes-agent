@@ -47,7 +47,7 @@ def test_unified_cron_platform_exempts_diff_debt() -> None:
     four_axis.on_pre_llm_call(session_id="local-cron", platform="cron")
 
     diff_debt.on_post_tool_call(
-        tool_name="write_file", args={"path": "/tmp/a.py"},
+        tool_name="skill_manage", args={"name": "a"},
         session_id="local-cron",
     )
 
@@ -62,7 +62,7 @@ def test_session_end_clears_diff_debt_and_batch_flag() -> None:
     callbacks = _capture_registration()
     assert "on_session_end" in callbacks
     diff_debt.on_post_tool_call(
-        tool_name="write_file", args={"path": "/tmp/a.py"}, session_id="s-end",
+        tool_name="skill_manage", args={"name": "end"}, session_id="s-end",
     )
     diff_debt.on_pre_tool_batch(assistant_content="done", session_id="s-end")
 
@@ -76,7 +76,7 @@ def test_session_reset_keeps_other_sessions_isolated() -> None:
     callbacks = _capture_registration()
     for sid in ("s-reset", "s-other"):
         diff_debt.on_post_tool_call(
-            tool_name="write_file", args={"path": f"/tmp/{sid}.py"}, session_id=sid,
+            tool_name="skill_manage", args={"name": sid}, session_id=sid,
         )
         diff_debt.on_pre_tool_batch(assistant_content="done", session_id=sid)
 

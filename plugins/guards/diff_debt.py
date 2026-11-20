@@ -71,11 +71,6 @@ _COMPENSATION_KEYWORDS: tuple[str, ...] = (
     "写前diff",
 )
 
-# 结果回显判定的专用形态——str(result) 的换行被转义为字面 \n 两字符,
-# 行首锚定恒 miss;结果由框架生成(非模型可控),含该子串必是 diff 回显。
-_RESULT_DIFF_RE = re.compile(r"@@ -\d|diff --git|```diff")  # re-ok: 无回溯子串探测
-
-
 def _has_diff_evidence(content: str) -> bool:
     """判定 assistant 正文是否出示了 diff 或合规代偿。
 
@@ -175,16 +170,15 @@ def on_post_tool_call(**kwargs: Any) -> None:
         return
     args = kwargs.get("args") or {}
     path = str(args.get("path") or args.get("file_path") or args.get("name") or "")
-    # 工具结果已携带 diff 形态=义务已履行的等价形态，不再记账——旧版无条件
-    # 记账把正常写链每笔都征两次义务（回显一次+正文一次），实测 17.5k 次拦截
-    # 的主要来源。豁免只对 write_file/patch 生效：其 result 的 diff 字段由框架
-    # 生成（非模型可控）。skill_manage 排除——其 result 含 frontmatter
-    # description 前 120 字符（skill_manager_tool._change.description，模型
-    # 自写内容），description 里出现 "@@ -1" 等子串即可静音欠账义务。
+    # write_file/patch 成功写零欠账：结果由框架生成并落盘校验（verified/内容
+    # 哈希回读），回显本身就是改动凭证——旧版仅豁免结果含 diff 形态的写，新
+    # 文件（diff 恒 None）被记成无法用回显清偿的死欠账，正文补 git diff 又把
+    # 每笔正常写征两次义务（17.5k 次拦截的主要来源；1120 用户裁定降档为
+    # 「结果回显即抵账」）。skill_manage 仍记账：其 result 含模型自写
+    # description（skill_manager_tool._change.description 前 120 字符），
+    # 无框架生成凭证，欠账只认 assistant 正文对照。
     if tool_name in ("write_file", "patch"):
-        result_text = str(kwargs.get("result") or "")
-        if _RESULT_DIFF_RE.search(result_text):
-            return
+        return
     # 空路径欠账无法出示对照（义务对象缺失）——记账即制造永久无法清偿的
     # 死锁条目（skill_manage 无名操作形态实测），不记。
     if not path:

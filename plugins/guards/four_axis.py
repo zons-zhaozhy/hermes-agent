@@ -32,9 +32,10 @@ logger = logging.getLogger(__name__)
 # write_file/patch 覆盖)。副防线曾额外拦 execute_code,与主防线裁定
 # 冲突,实测产生 474 次误拦。以主防线为唯一裁定源。
 from plugins.guards.tool_classification import FILE_WRITE_TOOLS as _WRITE_TOOLS
-_MARKER_MAX_AGE_SECONDS = 1800  # marker 有效期 30 分钟——600s 实测小于单任务写链时长
-                              # （含验证跑测+多笔 patch），中途过期重拦 5.3k 次；仍保留
-                              # 时效防跨任务沿用，且 gate 每 turn 重写刷新覆盖。
+_MARKER_MAX_AGE_SECONDS = 7200  # marker 有效期 2 小时——600s 实测小于单任务写链时长
+                              # （含验证跑测+多笔 patch），中途过期重拦 5.3k 次；30 分钟
+                              # 仍小于跨压缩长写链（1120 用户裁定延长）；仍保留时效
+                              # 防跨任务沿用，且 gate 每 turn 重写刷新覆盖。
 
 
 def _marker_file(session_id: str) -> Path:

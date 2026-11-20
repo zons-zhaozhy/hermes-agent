@@ -25,13 +25,16 @@ def _fresh_debt() -> None:
 
 
 def test_echo_exemption_still_applies_to_write_file() -> None:
-    # 期望: write_file 结果含 diff 形态 → 不记账
+    # 期望: write_file/patch 成功写无条件零欠账（1120 降档「结果回显即抵账」，
+    # 不再要求 result 含 diff 形态——新文件 diff 恒 None）
     _fresh_debt()
     diff_debt.on_post_tool_call(
         tool_name="write_file", args={"path": "/repo/a.py"},
-        result="{'success': True, 'diff': 'diff --git a/a.py b/a.py\\n@@ -1 +1,2 @@'}",
+        result="{'success': True, 'bytes_written': 10, 'verified': True}",
         session_id="s1")
-    assert "s1" not in diff_debt._DIFF_DEBT  # 期望: 回显豁免生效零欠账
+    diff_debt.on_post_tool_call(
+        tool_name="patch", args={"path": "/repo/b.py"}, session_id="s1")
+    assert "s1" not in diff_debt._DIFF_DEBT  # 期望: 写工具零欠账
 
 
 def test_skill_manage_result_with_diff_shaped_text_still_records_debt() -> None:

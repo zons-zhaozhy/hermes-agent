@@ -89,7 +89,7 @@ def test_reader_still_blocks_when_both_buckets_missing() -> None:
 def test_reader_ignores_expired_active_bucket() -> None:
     """负例：活跃桶 marker 过期(TTL 外) → 不借用,照拦。"""
     rtg.on_session_start("local-new-id-3")
-    _make_marker("local-new-id-3", age_seconds=7200.0)
+    _make_marker("local-new-id-3", age_seconds=9000.0)  # 9000s > 7200s TTL（1120 窗口延长后仍须过期）
     verdict = four_axis.on_pre_tool_call(
         tool_name="patch",
         args={"path": "/tmp/project/src/c.py"},
