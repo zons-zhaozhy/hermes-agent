@@ -333,7 +333,7 @@ class DeliveryRouter:
             return {"success": True, "filtered": "silence_narration", "delivered": False}
 
         send_metadata = dict(metadata or {})
-        home = self.config.get_home_channel(target.platform) if transport.is_relay else None
+        home = self.config.get_home_channel(target.platform)
         if home is not None and home.chat_id == target.chat_id:
             send_metadata.update({k: v for k, v in (("user_id", home.user_id), ("scope_id", home.scope_id)) if v})
 
