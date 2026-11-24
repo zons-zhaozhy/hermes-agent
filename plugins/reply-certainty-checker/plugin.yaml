@@ -1,11 +1,13 @@
 name: reply-certainty-checker
-version: "1.0.0"
+version: "1.1.0"
 description: |
-  回复确定性检查插件。
-  每次 LLM 回复后扫描文本，检测不确定词汇（可能、也许、大概、猜测、假设、maybe、probably、perhaps 等）。
-  如果检测到，在回复末尾追加自检警告，要求重新分析后再发送。
-
-  目的：将"不许用不确定词汇"从纪律层面提升到机制层面——代码自动扫描，抓到就亮红牌。
+  回复纪律检查插件（judge 版）。
+  每轮回复后用 LLM judge 合并判定九个维度：未标注来源的模糊断言（uncertain）、
+  完成声明缺边界（needs_audit/done_claim/has_boundary）、宣告-动手配对（violation）、
+  命名漂移（naming_drift）、自造行话（jargon_coined）、模糊指代（vague_reference）、
+  相对路径（relative_path）。命中不修改用户可见回复，只记状态，
+  下一轮 pre_llm_call 注入对应提醒，强制修正后继续。
+  目的：将回复纪律从自觉层面提升到机制层面。
 author: hermes-agent (enforcement plugin)
 hooks:
   - transform_llm_output

@@ -52,14 +52,23 @@ REPLY_SIDE_SYSTEM = (
     "（首次出现的术语无定义无完整形式、用自造词或行话替代标准说法且读者"
     "无法从字面理解）。引用代码标识符、文件路径、引号内原文引用、对不同事物"
     "的合理区分、已在本段定义清楚后继续使用的术语都不算。\\n"
+    "8. vague_reference：是否在多个对象（文件/命令/模块/方案）并列或先后提到"
+    "后，用'这个/那个/上面的/该文件/前面说的/它'等指代替代具体名称，导致读者"
+    "无法唯一定位所指对象。单对象语境且所指明确、英语习惯性 it/this 不算。\\n"
+    "9. relative_path：是否引用了具体文件或目录却用相对路径表达（如 "
+    "plugins/guards/、./x.py、src 下那个文件），未给以 / 或 ~ 开头的绝对路径。"
+    "纯概念性描述（'仓库根目录'）、URL、包名不算。\\n"
     "只回答一个 JSON 对象，含全部键："
     '{\\\"uncertain\\\": true/false, \\\"needs_audit\\\": true/false, '
     '\\\"done_claim\\\": true/false, \\\"has_boundary\\\": true/false, '
-    '\\\"violation\\\": true/false, \\\"naming_drift\\\": true/false, \\\"jargon_coined\\\": true/false}'
+    '\\\"violation\\\": true/false, \\\"naming_drift\\\": true/false, '
+    '\\\"jargon_coined\\\": true/false, \\\"vague_reference\\\": true/false, '
+    '\\\"relative_path\\\": true/false}'
 )
 
 REPLY_SIDE_KEYS = ["uncertain", "needs_audit", "done_claim", "has_boundary",
-                  "violation", "naming_drift", "jargon_coined"]
+                  "violation", "naming_drift", "jargon_coined",
+                  "vague_reference", "relative_path"]
 
 # 进程级结果缓存：同一段回复（sha1 前 16 位）只判一次，certainty/boundary 共享。
 _REPLY_SIDE_CACHE: dict[str, dict[str, Optional[bool]]] = {}
@@ -106,19 +115,6 @@ def _plugin_disabled() -> bool:
     return os.environ.get("REPLY_CERTAINTY_CHECKER_DISABLE") == "1"
 
 
-def _has_unverified_hedge(text: str) -> Optional[bool]:
-    """judge 判'未验证的技术性模糊断言'；None=fail-open。
-
-    Contract:
-      Preconditions: text 非空 str
-      Postconditions: 返回 True/False/None，绝不 raise
-    """
-    if len(text) < 20:
-        return False
-    result = judge_reply_side(text)
-    return result.get("uncertain")
-
-
 def _state(sid: str) -> dict[str, Any]:
     return get_session_state(sid, _NAMESPACE)
 
@@ -144,11 +140,22 @@ def register(ctx):
             if int(st.get("judge_calls", 0)) >= _MAX_JUDGE_CALLS:
                 return None
             st["judge_calls"] = int(st.get("judge_calls", 0)) + 1
-            flag = _has_unverified_hedge(response_text or "")
+            merged = judge_reply_side(response_text or "") if len(response_text or "") >= 20 else {}
+            flag = merged.get("uncertain")
             if flag:
                 st["pending_reminder"] = True
                 logger.info(
                     "reply-certainty-checker: 未验证模糊断言已标记（下轮注入提醒）"
+                )
+            if merged.get("vague_reference"):
+                st["pending_vague_reference"] = True
+                logger.info(
+                    "reply-certainty-checker: 模糊指代已标记（下轮注入提醒）"
+                )
+            if merged.get("relative_path"):
+                st["pending_relative_path"] = True
+                logger.info(
+                    "reply-certainty-checker: 相对路径已标记（下轮注入提醒）"
                 )
             return None
         except Exception as exc:  # fail-open
@@ -166,14 +173,30 @@ def register(ctx):
         try:
             sid = kwargs.get("session_id") or ""
             st = _state(sid)
-            if not st.get("pending_reminder"):
+            notices = []
+            if st.get("pending_reminder"):
+                del st["pending_reminder"]
+                notices.append(
+                    "【确定性检查】你的上一条回复含未标注验证来源的技术性模糊断言"
+                    "（可能/应该/大概率…）。本轮输出前重新确认这些断言：有实测证据的"
+                    "标注[实测]；没有的改为[未查证]或现在就去验证。"
+                )
+            if st.get("pending_vague_reference"):
+                del st["pending_vague_reference"]
+                notices.append(
+                    "【指代检查】你的上一条回复在多个对象并列时用了模糊指代"
+                    "（这个/那个/上面的/该文件…）。本轮重写相关表述："
+                    "指代处一律写具体名称（文件名/命令名/模块名/方案名）。"
+                )
+            if st.get("pending_relative_path"):
+                del st["pending_relative_path"]
+                notices.append(
+                    "【路径检查】你的上一条回复引用文件或目录时用了相对路径。"
+                    "本轮一律写绝对路径（以 / 或 ~ 开头）。"
+                )
+            if not notices:
                 return None
-            del st["pending_reminder"]
-            return {"context": (
-                "【确定性检查】你的上一条回复含未标注验证来源的技术性模糊断言"
-                "（可能/应该/大概率…）。本轮输出前重新确认这些断言：有实测证据的"
-                "标注[实测]；没有的改为[未查证]或现在就去验证。"
-            )}
+            return {"context": "\\n".join(notices)}
         except Exception as exc:  # fail-open
             logger.warning("reply-certainty-checker inject failed: %s", exc)
             return None

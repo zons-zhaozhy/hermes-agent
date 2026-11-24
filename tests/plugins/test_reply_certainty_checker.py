@@ -47,3 +47,35 @@ def test_uncertain_reply_injects_one_reminder_next_turn(
         assert second_reminder is None
     finally:
         clear_session(session_id)
+
+
+def test_vague_reference_and_relative_path_inject_reminders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_id = "reply-certainty-expr-paths"
+    ctx = _Ctx()
+    reply_certainty_checker.register(ctx)
+    monkeypatch.setattr(
+        reply_certainty_checker,
+        "judge_reply_side",
+        lambda _text: {"vague_reference": True, "relative_path": True},
+    )
+
+    try:
+        visible_reply = ctx.hooks["transform_llm_output"][0](
+            "改了那个文件之后，上面的配置就没问题了（示例文本，长度超过二十个字符以触发判定）。",
+            session_id=session_id,
+        )
+        reminder = ctx.hooks["pre_llm_call"][0](session_id=session_id)
+        follow_up = ctx.hooks["pre_llm_call"][0](session_id=session_id)
+
+        assert visible_reply is None
+        assert reminder is not None
+        assert "指代检查" in reminder["context"]
+        assert "具体名称" in reminder["context"]
+        assert "路径检查" in reminder["context"]
+        assert "绝对路径" in reminder["context"]
+        assert "确定性检查" not in reminder["context"]
+        assert follow_up is None
+    finally:
+        clear_session(session_id)
