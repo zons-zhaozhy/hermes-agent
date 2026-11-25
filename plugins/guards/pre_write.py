@@ -188,7 +188,13 @@ def _extract_paths_from_code(code: str) -> list:
     import re  # re-ok: 字符串字面量提取,引号嵌套非str方法可解析 # noqa: R1
     # Match string literals (single or double quoted)
     patterns = re.findall(r'["\']([^"\']+)["\']', code)  # re-ok: 字符串字面量提取
-    return [p for p in patterns if "/" in p or p.endswith(".py") or p.endswith(".md")]
+    # 去掉首尾分隔符后为空的字面量（单独的 '/'、' / '）不可能是文件路径：
+    # 把它们当成目标，会让只读分析脚本因根目录「没被读过」而被拦。
+    return [
+        p for p in patterns
+        if p.strip().strip("/\\")
+        and ("/" in p or p.endswith((".py", ".md")))
+    ]
 
 
 def _norm(path: str) -> str:
