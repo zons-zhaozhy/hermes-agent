@@ -85,6 +85,23 @@ def test_disclosed_boundary_sets_pending():
     assert msg is not None and "消" in msg["context"]  # 期望: 注入消项红牌
 
 
+def test_idle_chat_turns_clear_the_pending_reminder():
+    """挂起的边界提醒不能一直挂着: 连续两条不是交付声明的短回复后清零。"""
+    mod = _load_plugin()
+    audit, inject, state = _mk(
+        mod,
+        {"uncertain": False, "needs_audit": False,
+         "done_claim": True, "has_boundary": True},
+        "cba-test",
+    )
+    audit(_LONG_TEXT, session_id="cba-test")
+    assert state.get("pending_reminder") is True
+    for _ in range(mod._IDLE_TURNS_TO_CLEAR):
+        audit("好的，谢谢。", session_id="cba-test")
+    assert state.get("pending_reminder") is False  # 期望: 话题已离开交付, 旧账清零
+    assert inject(session_id="cba-test") is None  # 期望: None=不再逐轮注入消项红牌
+
+
 def test_stale_escalates():
     """同批边界连续 2 轮未消 → 注入升级语。"""
     mod = _load_plugin()

@@ -57,6 +57,8 @@ _NAMESPACE = "completion_boundary_audit"
 # 短回复（闲聊/确认）不触发
 _MIN_LENGTH = 80
 _MAX_REMINDERS = 3
+# 连续这么多条回复都不是交付声明, 就认为交付话题已结束, 挂起的提醒清零
+_IDLE_TURNS_TO_CLEAR = 2
 _MAX_JUDGE_CALLS = 30
 _JUDGE_RETRY_SECONDS = 300.0
 _JUDGE_RETRY_MAX_SECONDS = 3600.0
@@ -112,6 +114,21 @@ def _plugin_disabled() -> bool:
 
 def _state(sid: str) -> dict[str, Any]:
     return get_session_state(sid or "_global", _NAMESPACE)
+
+
+def _note_idle_turn(st: dict[str, Any]) -> None:
+    """一条回复不是交付声明: 连续够多就清掉挂起的边界提醒, 不让旧账一直挂着。
+
+    Contract:
+      Postconditions: idle_turns 加一; 达到 _IDLE_TURNS_TO_CLEAR 且有挂起提醒或连续计数时,
+        pending_reminder=False、streak=0。
+    """
+    idle = int(st.get("idle_turns", 0)) + 1
+    st["idle_turns"] = idle
+    if idle >= _IDLE_TURNS_TO_CLEAR and (st.get("pending_reminder") or int(st.get("streak", 0)) > 0):
+        st["pending_reminder"] = False
+        st["streak"] = 0
+        logger.info("completion-boundary-audit: 话题已离开交付, 挂起的边界提醒清零")
 
 
 def _judge_breaker_active(st: dict[str, Any]) -> bool:
@@ -235,7 +252,8 @@ def register(ctx) -> None:
         - 完成声明 + 有披露 → 记 pending + streak=1（下轮消项红牌）
         - 有 pending 时再次完成声明+有披露 → streak+1（连续未消）
         - 有 pending 时完成声明+无边界 → 已消项，清状态
-        - 无完成声明（进行中汇报）→ 不打扰（但 pending 保留，不重置）
+        - 无完成声明（进行中汇报/闲聊）→ 不打扰；连续 _IDLE_TURNS_TO_CLEAR 条都不是
+          交付声明 → 挂起的提醒清零（话题已离开交付）
 
         Contract:
           Postconditions: 恒不改回复；judge 失败、缺键或内部异常时记录诊断
@@ -247,6 +265,8 @@ def register(ctx) -> None:
         st: Optional[dict[str, Any]] = None
         try:
             if len(text) < _MIN_LENGTH:
+                # 短回复（闲聊/确认）同样不是交付声明, 一样计入「话题已离开交付」
+                _note_idle_turn(_state(session_id or ""))
                 return None
             sid = session_id or ""
             st = _state(sid)
@@ -277,7 +297,10 @@ def register(ctx) -> None:
             _mark_judge_available(st)
             seen.add(h)
             if not done:
-                return None  # 进行中汇报不打扰（pending 保留跨轮）
+                # 不是交付的回复不打扰; 交付的话题已经过去就清状态, 不让旧账一直挂着
+                _note_idle_turn(st)
+                return None
+            st["idle_turns"] = 0
             if boundary:
                 # 披露≠履约：记 pending，连续披露未消 → streak 累加
                 st["count"] = int(st.get("count", 0)) + 1

@@ -104,6 +104,12 @@ def _on_pre_verify(**kwargs: Any) -> dict:
     changed_paths = list(kwargs.get("changed_paths") or [])
     if changed_paths:
         return {}  # 写入回合的收尾形态归 finish_guard
+    # 用户这一轮不是工程话题 (聊天/问答) 时不判提案式收尾; 标记由 declare_act_guard 在
+    # pre_llm_call 记录, 未记录时按工程话题照常执法
+    from plugins._message_intent import turn_is_engineering
+
+    if not turn_is_engineering(str(kwargs.get("session_id") or "")):
+        return {}
     final_response = str(kwargs.get("final_response") or "")
     if not _is_analyst_signature(final_response):
         return {}

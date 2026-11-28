@@ -57,6 +57,8 @@ _AUTHORITATIVE_COMMANDS = re.compile(
 _ZERO_HIT_TOOLS = {"search_files"}
 
 _MAX_PROBE_HITS_BEFORE_NUDGE = 2
+# 提醒一次即清零探测计数, 所以计数只代表「上一轮之后」的探测; 一场封顶防反复打扰
+_MAX_INJECTS = 3
 
 
 def _plugin_disabled() -> bool:
@@ -119,31 +121,38 @@ def on_post_tool_call(**kwargs) -> None:
 # ── pre_llm_call hook ──────────────────────────────────────────────────
 
 _REMINDER = (
-    "[NegativeConclusionGuard] 注意：本会话已出现 {n} 次\"目录探测/零命中搜索\"，"
-    "且尚未调用任何权威验证入口。\n"
-    "  断言\"X 不存在/不在线/未找到\"之前，必须先用权威入口验证：\n"
-    "    • 插件是否在线？→ hermes plugins list | grep <name>（真实加载管线）\n"
-    "    • bundled 插件实体？→ python3 -c \"import hermes_cli.plugins as p; "
-    "print(p.get_bundled_plugins_dir())\"\n"
-    "    • 代码/符号是否存在？→ gitnexus query / codegraph_context\n"
-    "    • 只搜一个目录就断定\"不存在\"= 必错：bundled/user/project 三源独立扫描，"
-    "一个目录 miss 证明不了全局。\n"
-    "  若已用权威入口验证过，忽略本条。"
+    "[否定结论先核实] 上一轮找过 {n} 次东西都没找到。要下「某某不存在/不在线」的结论之前，"
+    "先用权威入口确认：\n"
+    "  • 插件在不在 → hermes plugins list\n"
+    "  • 代码里有没有 → gitnexus / codegraph\n"
+    "  • 自带插件在哪 → get_bundled_plugins_dir()\n"
+    "  只搜了一个目录不能下结论（插件分自带、用户、项目三处存放）。\n"
+    "  这一轮没下这种结论，或已经确认过，不用管这条。"
 )
 
 
 def on_pre_llm_call(**kwargs) -> Optional[dict[str, Any]]:
-    """Inject a reminder when probes accumulated without authority verification."""
+    """Inject a reminder when probes accumulated without authority verification.
+
+    Contract:
+      Postconditions: 探测满两次且未核实 → 提醒一次并把探测计数清零; 一场最多
+        _MAX_INJECTS 次; 已核实/未满两次/超封顶返回 None。
+    """
     if _plugin_disabled():
         return None
 
     sid = kwargs.get("session_id", "") or kwargs.get("task_id", "")
     if _get_authority_seen(sid):
         return None
-    n = _get_probe_count(sid)
+    st = get_session_state(sid, _NAMESPACE)
+    n = int(st.get("probe_count", 0))
     if n < _MAX_PROBE_HITS_BEFORE_NUDGE:
         return None
+    if int(st.get("inject_count", 0)) >= _MAX_INJECTS:
+        return None
 
+    st["probe_count"] = 0
+    st["inject_count"] = int(st.get("inject_count", 0)) + 1
     return {"context": _REMINDER.format(n=n)}
 
 

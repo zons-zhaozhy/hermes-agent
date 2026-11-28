@@ -170,6 +170,16 @@ def _on_pre_llm_call(**kwargs: Any) -> Optional[dict[str, Any]]:
         from plugins._shared_state import get_session_state
 
         sid = kwargs.get("session_id", "") or kwargs.get("task_id", "") or "__default__"
+        # 聊天、问答、情绪表达不是工程回合, 不判「宣告了没动手」; 判定结果留给拿不到
+        # 用户原话的闸门 (builder_gate) 复用
+        user_message = kwargs.get("user_message") or ""
+        if not isinstance(user_message, str):
+            user_message = ""
+        from plugins._message_intent import record_turn_intent, turn_is_engineering
+
+        record_turn_intent(sid, user_message)
+        if not turn_is_engineering(sid):
+            return None
         state = get_session_state(sid, _NAMESPACE)
 
         history = kwargs.get("conversation_history") or []
