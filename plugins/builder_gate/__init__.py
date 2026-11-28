@@ -80,7 +80,7 @@ def _is_analyst_signature(final_response: str) -> bool:
             text=tail,
             timeout=_JUDGE_TIMEOUT,
         )
-    except Exception:  # noqa: judge 任何异常 fail-open，不阻塞回合（logger 必达）
+    except Exception:  # judge 任何异常 fail-open，不阻塞回合（logger 必达）
         logger.warning("builder_gate: judge 异常，fail-open 放行", exc_info=True)
         return False
     if verdict is None:
