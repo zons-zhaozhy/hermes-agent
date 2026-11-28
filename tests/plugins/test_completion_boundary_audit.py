@@ -56,6 +56,7 @@ def _mk(mod, judge_result, sid):
 
 _LONG_TEXT = "修复已完成并全部提交。" + "细节说明" * 40  # 超过 _MIN_LENGTH
 _LONG_TEXT2 = "部署已完成，全部通过。" + "补充说明" * 40  # 第 2 轮不同措辞（同文会被去重跳过）
+_LONG_TEXT3 = "发布已完成，没有遗留。" + "另行说明" * 40  # 第 3 轮再次换措辞
 
 
 @pytest.fixture(autouse=True)
@@ -115,6 +116,34 @@ def test_stale_escalates():
     assert msg is not None
     # 期望: stale>=2 时升级语点名「连续未消」
     assert ("连续" in msg["context"]) or ("撂挑子" in msg["context"])
+
+
+def test_user_correction_supersedes_the_reminder():
+    """用户这轮当面纠正 → 不注入催办、挂账清零 (真人的纠正比自动催办新)。
+
+    背景: 用户连说「说人话」, 每轮都被塞「必须逐项消项、贴原始输出」, 回复越写越像报告。
+    判官不可用或判为非纠正时, 行为与原先逐位相同。
+    """
+    mod = _load_plugin()
+    judge = {"uncertain": False, "needs_audit": False, "done_claim": True, "has_boundary": True}
+    audit, inject, state = _mk(mod, judge, "cba-test")
+    audit(_LONG_TEXT, session_id="cba-test")
+    assert state.get("pending_reminder") is True and state.get("streak") == 1
+    mod._user_correcting = lambda message: True
+    assert inject(session_id="cba-test", user_message="说人话") is None
+    assert not state.get("pending_reminder") and state.get("streak") == 0  # 账清零: 下个无关问题不再挨催办
+    assert inject(session_id="cba-test") is None
+
+    audit(_LONG_TEXT2, session_id="cba-test")
+    assert state.get("pending_reminder") is True
+    mod._user_correcting = lambda message: False  # 用户在追问同一个交付: 照常催办
+    msg = inject(session_id="cba-test", user_message="那第二项呢？")
+    assert msg is not None and "连续" in msg["context"]
+
+    audit(_LONG_TEXT3, session_id="cba-test")
+    assert state.get("pending_reminder") is True
+    mod._user_correcting = lambda message: None  # 判官不可用: 行为与原先相同
+    assert inject(session_id="cba-test", user_message="说人话") is not None
 
 
 def test_resolved_boundary_clears_pending():

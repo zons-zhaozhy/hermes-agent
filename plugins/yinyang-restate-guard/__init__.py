@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # 判定语义与各自独立时完全一致，仅省掉一次串行调用。
 
 USER_SIDE_SYSTEM = (
-    "你是对话信号哨兵。对下面这条用户消息同时判定三个维度：\\n"
+    "你是对话信号哨兵。对下面这条用户消息同时判定四个维度：\\n"
     "1. challenge：消息是否在质疑、反驳或纠正 AI 的某个说法/结论/行为"
     "（含直接指出错误、表达不认同、要求纠正）。"
     "单纯提问、补充信息、闲聊、下达新任务不算；"
@@ -57,11 +57,15 @@ USER_SIDE_SYSTEM = (
     "（新建应用/新建目录树/新建模块/新建文件这类构造动作）。"
     "用户要求实现/开发/搭建/新建/创建/落地某个代码产物 → true；"
     "用户要求分析/设计/规划/评估/审查/讨论/汇报/查看/写文档/改现有代码 → false。\\n"
+    "4. on_work：如果这条消息在纠正 AI（challenge 为 true），纠正的是不是工作内容本身"
+    "——活没干完、结果不对、事实有误、漏了需求、没验证就说做好了 → true；"
+    "只针对说话方式——语气、措辞、格式、啰嗦、像不像人话、态度 → false。"
+    "不是纠正（challenge 为 false）时 on_work 为 false。\\n"
     "只回答一个 JSON 对象，含全部键："
-    "{\\\"challenge\\\": true/false, \\\"decision\\\": true/false, \\\"authorized\\\": true/false}"
+    "{\"challenge\": true/false, \"decision\": true/false, \"authorized\": true/false, \"on_work\": true/false}"
 )
 
-USER_SIDE_KEYS = ["challenge", "decision", "authorized"]
+USER_SIDE_KEYS = ["challenge", "decision", "authorized", "on_work"]
 
 # 进程级结果缓存：同一消息（sha1 前 16 位）只判一次，yinyang/devil 共享。
 # 插件均在同一进程内运行；缓存无淘汰（每会话 judge 硬上限 30 条兜底）。

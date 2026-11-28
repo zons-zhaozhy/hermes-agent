@@ -236,6 +236,27 @@ def _resolve_verdict(text: str) -> dict[str, Optional[bool]]:
     }
 
 
+def _user_correcting(user_message: str) -> Optional[bool]:
+    """用户这轮是不是在纠正 AI 的说话方式 (不是纠正活本身); None=判官不可用。
+
+    复用 yinyang-restate-guard 的用户侧判官 (同一条消息只判一次, 多个护栏共享)。
+
+    Contract:
+      Preconditions: user_message 为非空 str
+      Postconditions: 返回 True/False/None, 绝不 raise
+    """
+    for modname in ("hermes_plugins.yinyang_restate_guard", "plugins.yinyang_restate_guard"):
+        if modname in sys.modules:
+            mod = sys.modules[modname]
+            try:
+                verdict = mod.judge_user_side(user_message)
+                return verdict.get("challenge") is True and verdict.get("on_work") is False
+            except Exception:
+                logger.warning("user-side judge via %s unavailable", modname, exc_info=True)
+                return None
+    return None
+
+
 def register(ctx) -> None:
     """注册 transform_llm_output（检测+记状态）与 pre_llm_call（注入）。
 
@@ -356,6 +377,14 @@ def register(ctx) -> None:
                 logger.warning("completion-boundary-audit: reminder skipped; audit channel unavailable")
                 return None
             if not st.get("pending_reminder"):
+                return None
+            user_message = str(kwargs.get("user_message", "") or "").strip()
+            if user_message and _user_correcting(user_message) is True:
+                # 用户当面纠正说话方式: 听人的, 这轮不叠一份「必须逐项列证据」的自动催办
+                # (叠上去会把任何纠正都顶成一份交付报告); 话题已被人接手, 旧账清零
+                st["pending_reminder"] = False
+                st["streak"] = 0
+                logger.info("completion-boundary-audit: 用户当面纠正, 挂起的边界提醒让位")
                 return None
             del st["pending_reminder"]
             if int(st.get("streak", 0)) >= 2:

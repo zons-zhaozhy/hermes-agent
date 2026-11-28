@@ -77,7 +77,7 @@ def test_user_side_single_call_carries_authorized(monkeypatch):
     first = mod.judge_user_side(message)
     second = mod.judge_user_side(message)
 
-    assert calls == [["challenge", "decision", "authorized"]]  # 同文本只判一次
+    assert calls == [["challenge", "decision", "authorized", "on_work"]]  # 同文本只判一次
     assert first == second and first["authorized"] is True
 
 
