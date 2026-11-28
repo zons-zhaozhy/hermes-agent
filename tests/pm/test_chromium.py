@@ -8,13 +8,17 @@ from pm.packages import Chromium
 from pm.defaults import default_package_names
 from pm.paths import lockfile_path
 from pm.registry import walk
+from pm.store import current_target
 from scripts.bundles.native import _bundle_package_names
 
 
 def test_browser_default_and_bundle_ship_full_chromium_only():
     closure = {package.name for package in walk(["chromium"])}
     bundled = set(_bundle_package_names())
-    assert "chromium" in set(default_package_names()) & bundled
+    assert "chromium" in set(default_package_names())
+    # macOS leaves the browser out of the bundle on purpose (first use installs it).
+    on_macos = current_target().startswith("darwin-")
+    assert ("chromium" in bundled) is not on_macos
     assert "chromium-headless-shell" not in closure | bundled
 
 

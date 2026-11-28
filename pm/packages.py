@@ -255,7 +255,10 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         super().stage(store, staged, version, target)
         binary = self.binary(staged, target)
-        if binary is not None and sys.platform == "darwin":
+        # Only a macOS payload gets a macOS signature. Staging is cross-target:
+        # the host says nothing about the payload, and a foreign target must not
+        # run host tools at all.
+        if binary is not None and sys.platform == "darwin" and target.startswith("darwin"):
             from hermes_cli.macos_signing import sign_managed_python
 
             sign_managed_python(binary)
