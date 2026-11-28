@@ -73,18 +73,16 @@ def on_pre_llm_call(**kwargs: Any) -> dict[str, str]:
 
 
 def on_session_reset(session_id: str = "", **_kwargs: Any) -> None:
-    """A reset starts a fresh working context, so the route may be needed again."""
-    _forget(session_id)
+    """A reset starts a fresh working context, so the route may be needed again.
 
-
-def on_session_end(session_id: str = "", **_kwargs: Any) -> None:
-    """Release per-session state when the host fires its lifecycle hook."""
+    This is the only place state is dropped: ``on_session_end`` fires after every turn
+    (agent/turn_finalizer.py), so listening to it would re-inject on every message.
+    """
     _forget(session_id)
 
 
 def register(ctx: Any) -> None:
-    """Register routing and lifecycle cleanup hooks."""
+    """Register routing and the new-session reset hook."""
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
     ctx.register_hook("on_session_reset", on_session_reset)
-    ctx.register_hook("on_session_end", on_session_end)
     logger.info("workflow-router 已注册——首轮工程工作流路由就绪")

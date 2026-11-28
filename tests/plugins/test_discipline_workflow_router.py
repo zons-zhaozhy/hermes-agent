@@ -98,18 +98,40 @@ def test_ordinary_conversation_does_not_receive_routing_hint() -> None:
         workflow_router._forget(session_id)
 
 
-def test_session_end_forgets_state() -> None:
+def test_new_session_forgets_state_but_a_finished_turn_does_not() -> None:
+    """on_session_end fires after every turn (agent/turn_finalizer.py); only a reset
+    starts a fresh working context. Forgetting on end re-injected the hint on every
+    message of one conversation."""
     from plugins.discipline import workflow_router
 
     session_id = "workflow-router-reset"
     workflow_router._forget(session_id)
     try:
-        workflow_router.on_pre_llm_call(
+        assert workflow_router.on_pre_llm_call(
             session_id=session_id, platform="cli", user_message="重构这个接口"
-        )
-        workflow_router.on_session_end(session_id=session_id)
+        ).get("context")
+        # The host fires on_session_end here after the turn; the router no longer
+        # listens to it, so the next message of the same conversation gets nothing.
         assert workflow_router.on_pre_llm_call(
             session_id=session_id, platform="cli", user_message="继续重构"
+        ) == {}
+        workflow_router.on_session_reset(session_id=session_id)
+        assert workflow_router.on_pre_llm_call(
+            session_id=session_id, platform="cli", user_message="重构另一个接口"
         ).get("context")
     finally:
         workflow_router._forget(session_id)
+
+
+def test_registers_the_reset_hook_only() -> None:
+    from plugins.discipline import workflow_router
+
+    class _Ctx:
+        hooks: dict[str, object] = {}
+
+        def register_hook(self, name, fn):
+            self.hooks[name] = fn
+
+    ctx = _Ctx()
+    workflow_router.register(ctx)
+    assert set(ctx.hooks) == {"pre_llm_call", "on_session_reset"}
