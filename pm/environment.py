@@ -20,7 +20,7 @@ import time
 from typing import TextIO
 
 from pm.filesystem import native
-from pm.package import InstallError
+from pm.package import InstallError, UNDATED_INDEX_REMEDY
 from pm.progress import LiveTail, TextSink, verbose_output
 
 # Slow steps get a status line; unlisted quick ones (venv, export, pip check)
@@ -56,9 +56,6 @@ _BUILD_MARKERS = ("the build backend returned an error",)
 # and hints the version was filtered, so that case needs both lines.
 _UNDATED_PIN = "has no publish time"
 _UNDATED_FILE = ("is missing an upload date", "was filtered by `exclude-newer")
-UNDATED_INDEX_HINT = ("the package index did not report upload times, which locking Hermes's "
-                      "dependencies needs for its 3-day release-age check. Use https://pypi.org/simple "
-                      "or a mirror that serves upload times (pip.conf index-url / UV_INDEX_URL), then retry.")
 
 # uv's own English diagnostic. A localized Windows tail (os error 1224) rides
 # along, but the marker that means "packages may be installed, only the
@@ -111,7 +108,7 @@ def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallErro
     cause = f"uv {stage} exited {returncode}: {output.strip()[-600:]}"
     lowered = output.lower()
     if _UNDATED_PIN in lowered or all(marker in lowered for marker in _UNDATED_FILE):
-        return InstallError("venv", cause, UNDATED_INDEX_HINT)
+        return InstallError("venv", cause, UNDATED_INDEX_REMEDY)
     if any(marker in lowered for marker in _RESOLVER_MARKERS):
         return ResolutionConflict("venv", cause)
     if any(marker in lowered for marker in _BUILD_MARKERS):

@@ -15,11 +15,19 @@ if TYPE_CHECKING:
 
 
 class InstallError(RuntimeError):
+    """A package step failed. `remedy` is the user-facing fix; a caller that wants to
+    react to one specific situation compares against the named remedy constants here."""
+
     def __init__(self, package: str, cause: str, remedy: str = ""):
         self.package = package
         self.cause = cause
         self.remedy = remedy or "retry, or run `hermes pm doctor`"
         super().__init__(f"{package}: {cause} — {self.remedy}")
+
+
+UNDATED_INDEX_REMEDY = ("the package index did not report upload times, which locking Hermes's "
+                        "dependencies needs for its 3-day release-age check. Use https://pypi.org/simple "
+                        "or a mirror that serves upload times (pip.conf index-url / UV_INDEX_URL), then retry.")
 
 
 def compose_env(diffs: list[dict], base: Optional[dict] = None) -> dict[str, str]:

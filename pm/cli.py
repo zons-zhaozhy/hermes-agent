@@ -14,7 +14,7 @@ from pathlib import Path
 from pm import termux_libs
 from pm.install import _facts, _lockfile, _reclaim_set_aside, _store, ensure, stage_only
 from pm.operations import lock_project
-from pm.package import InstallError
+from pm.package import InstallError, UNDATED_INDEX_REMEDY
 from pm.paths import repo_root
 from pm.registry import get_package, source_install_packages, tool_roots
 from pm.store import ALL_TARGETS, current_target, hash_url
@@ -332,8 +332,22 @@ def _install_python_environments(extras: list[str], *, sync: bool, test_environm
 
         # Before the input stamps: they then cover this environment too, so
         # the shebang/run_tests.sh staleness check rebuilds it when it drifts.
+        # Quiet: an undated index is an expected outcome here and is reported below,
+        # so uv's failure tail would read like a broken install.
         try:
-            check_project_lock(repo_root(), explicit=True)
+            check_project_lock(repo_root(), explicit=True, quiet=True)
+        except InstallError as e:
+            if e.remedy != UNDATED_INDEX_REMEDY:
+                print(f"✗ {e}")
+                failed += 1
+                return failed
+            # The check resolves under the manifest's 3-day release-age rule, which an
+            # index without upload times cannot answer (pm/AGENTS.md: that rule is
+            # lock-time only). The test environment is built frozen from uv.lock
+            # either way; CI's setup_toolchain still verifies the lock.
+            print("• lock check skipped: the package index reports no upload times, which the"
+                  " 3-day release-age rule needs; CI and `hermes pm lock` still verify it")
+        try:
             ensure_testenv(repo_root(), parse_extras(test_environment))
             print("✓ test environment")
         except InstallError as e:
